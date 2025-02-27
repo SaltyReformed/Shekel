@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="homepage">
+    <h1>Welcome to Shekel Budget App</h1>
+    <p>Your one-stop solution to manage, track, and forecast your finances.</p>
+
+    <div class="features">
+        <h2>Features</h2>
+        <ul>
+            <li>Track recurring paychecks and expenses</li>
+            <li>Detailed breakdown of gross salary, taxes, deductions, and net pay</li>
+            <li>Automatic forecasting for future income and expenses</li>
+            <li>Manage financial data with a modern, responsive interface</li>
+        </ul>
+    </div>
+
+    <div class="actions">
+        <a href="/register" class="btn">Sign Up</a>
+        <a href="/login" class="btn">Log In</a>
+    </div>
+</div>
+{% endblock %}

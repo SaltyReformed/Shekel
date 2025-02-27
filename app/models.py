@@ -1,0 +1,170 @@
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+# ---------------------------
+# Lookup / Reference Tables
+# ---------------------------
+
+
+class Role(db.Model):
+    __tablename__ = "roles"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(
+        db.String(50), unique=True, nullable=False
+    )  # e.g., 'VIEW_FINANCES', 'MANAGE_FINANCES', 'ADMIN'
+    description = db.Column(db.Text)
+
+
+class AccountType(db.Model):
+    __tablename__ = "account_types"
+    id = db.Column(db.Integer, primary_key=True)
+    type_name = db.Column(
+        db.String(50), nullable=False
+    )  # e.g., 'Checking', 'Savings', etc.
+    is_debt = db.Column(db.Boolean, nullable=False)
+
+
+class ScheduleType(db.Model):
+    __tablename__ = "schedule_types"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(
+        db.String(50), unique=True, nullable=False
+    )  # e.g., 'income', 'expense'
+    description = db.Column(db.Text)
+
+
+class Frequency(db.Model):
+    __tablename__ = "frequencies"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(
+        db.String(50), unique=True, nullable=False
+    )  # e.g., 'biweekly', 'monthly', etc.
+    description = db.Column(db.Text)
+
+
+class IncomeCategory(db.Model):
+    __tablename__ = "income_categories"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50))
+    description = db.Column(db.Text)
+
+
+class ExpenseCategory(db.Model):
+    __tablename__ = "expense_categories"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50))
+    description = db.Column(db.Text)
+
+
+# ---------------------------
+# Core Tables
+# ---------------------------
+
+
+class User(db.Model):
+    __tablename__ = "users"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.Text, nullable=False)
+    email = db.Column(db.String(100))
+    role_id = db.Column(db.Integer, db.ForeignKey("roles.id"))
+    role = db.relationship("Role", backref="users")
+
+
+class Account(db.Model):
+    __tablename__ = "accounts"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    account_name = db.Column(db.String(100))
+    type_id = db.Column(db.Integer, db.ForeignKey("account_types.id"))
+    balance = db.Column(db.Numeric(10, 2), default=0.00)
+    user = db.relationship("User", backref="accounts")
+    account_type = db.relationship("AccountType", backref="accounts")
+
+
+class RecurringSchedule(db.Model):
+    __tablename__ = "recurring_schedules"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    type_id = db.Column(db.Integer, db.ForeignKey("schedule_type.id"))
+    description = db.Column(db.String(255))
+    frequency_id = db.Column(db.Integer, db.ForeignKey("frequency.id"))
+    interval = db.Column(db.Integer, default=1)
+    start_date = db.Column(db.Date, nullable=False)
+    end_date = db.Column(db.Date)
+    amount = db.Column(
+        db.Numeric(10, 2), nullable=False
+    )  # Base amount for the recurring event
+    user = db.relationship("User", backref="recurring_schedules")
+    schedule_type = db.relationship("ScheduleType", backref="recurring_schedules")
+    frequency = db.relationship("Frequency", backref="recurring_schedules")
+
+
+class Paycheck(db.Model):
+    __tablename__ = "paychecks"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    scheduled_date = db.Column(db.Date, nullable=False)
+    gross_salary = db.Column(
+        db.Numeric(10, 2), nullable=False
+    )  # Gross amount per paycheck
+    taxes = db.Column(db.Numeric(10, 2))  # May be NULL for projected paychecks
+    deductions = db.Column(db.Numeric(10, 2))  # May be NULL for projected paychecks
+    net_salary = db.Column(db.Numeric(10, 2))  # Calculated or provided net amount
+    is_projected = db.Column(db.Boolean, nullable=False, default=True)
+    category_id = db.Column(db.Integer, db.ForeignKey("income_categories.id"))
+    recurring_schedule_id = db.Column(
+        db.Integer, db.ForeignKey("recurring_schedules.id")
+    )
+    paid = db.Column(
+        db.Boolean, nullable=False, default=False
+    )  # Indicates if the paycheck has been processed
+    user = db.relationship("User", backref="paychecks")
+    income_category = db.relationship("IncomeCategory", backref="paychecks")
+    recurring_schedule = db.relationship("RecurringSchedule", backref="paychecks")
+
+
+class SalaryChange(db.Model):
+    __tablename__ = "salary_changes"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    effective_date = db.Column(
+        db.Date, nullable=False
+    )  # When the new salary takes effect
+    end_date = db.Column(db.Date)  # Optional end date for the salary period
+    gross_annual_salary = db.Column(db.Numeric(10, 2), nullable=False)
+    user = db.relationship("User", backref="salary_changes")
+
+
+class Expense(db.Model):
+    __tablename__ = "expenses"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    scheduled_date = db.Column(db.Date, nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey("expense_categories.id"))
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    description = db.Column(db.Text)
+    paid = db.Column(
+        db.Boolean, nullable=False, default=False
+    )  # Indicates if the expense has been paid
+    recurring_schedule_id = db.Column(
+        db.Integer, db.ForeignKey("recurring_schedules.id")
+    )
+    user = db.relationship("User", backref="expenses")
+    expense_category = db.relationship("ExpenseCategory", backref="expenses")
+    recurring_schedule = db.relationship("RecurringSchedule", backref="expenses")
+
+
+class ExpenseChange(db.Model):
+    __tablename__ = "expense_changes"
+    id = db.Column(db.Integer, primary_key=True)
+    recurring_schedule_id = db.Column(
+        db.Integer, db.ForeignKey("recurring_schedules.id")
+    )
+    effective_date = db.Column(
+        db.Date, nullable=False
+    )  # When the new amount takes effect
+    end_date = db.Column(db.Date)  # Optional end date for the changed period
+    new_amount = db.Column(db.Numeric(10, 2), nullable=False)
+    recurring_schedule = db.relationship("RecurringSchedule", backref="expense_changes")
