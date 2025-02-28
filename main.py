@@ -1,5 +1,6 @@
 import os
 from flask import Flask, render_template
+from flask_wtf.csrf import CSRFProtect
 from config import Config
 from models import db
 from auth import auth_bp
@@ -16,6 +17,7 @@ def create_app():
     app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 
     app.config.from_object(Config)
+    csrf = CSRFProtect(app)
     db.init_app(app)
 
     with app.app_context():
