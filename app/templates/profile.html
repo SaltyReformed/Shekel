@@ -1,0 +1,453 @@
+{% extends "base.html" %}
+
+{% block title %}My Profile - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>My Profile</h1>
+        <p class="text-muted">Manage your account information</p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Profile Information</h3>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('auth.profile') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" class="form-control" value="{{ user.username }}" disabled>
+                            <small class="form-text text-muted">Username cannot be changed</small>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group col-md-6">
+                                <label for="first_name">First Name</label>
+                                <input type="text" id="first_name" name="first_name" class="form-control"
+                                    value="{{ user.first_name or '' }}">
+                            </div>
+                            <div class="form-group col-md-6">
+                                <label for="last_name">Last Name</label>
+                                <input type="text" id="last_name" name="last_name" class="form-control"
+                                    value="{{ user.last_name or '' }}">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="email">Email Address</label>
+                            <input type="email" id="email" name="email" class="form-control"
+                                value="{{ user.email or '' }}">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="role">Role</label>
+                            <input type="text" id="role" class="form-control"
+                                value="{{ user.role.name if user.role else 'No assigned role' }}" disabled>
+                        </div>
+
+                        <div class="form-section">
+                            <h4>Change Password</h4>
+                            <div class="form-group">
+                                <label for="current_password">Current Password</label>
+                                <input type="password" id="current_password" name="current_password"
+                                    class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="new_password">New Password</label>
+                                <input type="password" id="new_password" name="new_password" class="form-control">
+                                <small class="form-text text-muted password-requirements">
+                                    Password must be at least 16 characters and include uppercase, lowercase, numbers,
+                                    and symbols.
+                                </small>
+                                <div class="password-strength-meter">
+                                    <div class="strength-bar"></div>
+                                </div>
+                                <div class="password-feedback"></div>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="update-profile-btn">Update Profile</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card info-card">
+                <div class="card-header">
+                    <h3 class="card-title">Account Information</h3>
+                </div>
+                <div class="card-body">
+                    <div class="info-item">
+                        <div class="info-label">Username</div>
+                        <div class="info-value">{{ user.username }}</div>
+                    </div>
+
+                    <div class="info-item">
+                        <div class="info-label">Name</div>
+                        <div class="info-value">
+                            {% if user.first_name or user.last_name %}
+                            {{ user.first_name or '' }} {{ user.last_name or '' }}
+                            {% else %}
+                            Not set
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="info-item">
+                        <div class="info-label">Email</div>
+                        <div class="info-value">{{ user.email or 'Not set' }}</div>
+                    </div>
+
+                    <div class="info-item">
+                        <div class="info-label">Role</div>
+                        <div class="info-value">{{ user.role.name if user.role else 'No role' }}</div>
+                    </div>
+
+                    <div class="info-item">
+                        <div class="info-label">Last Login</div>
+                        <div class="info-value">{{ 'Today' }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card security-card">
+                <div class="card-header">
+                    <h3 class="card-title">Security Tips</h3>
+                </div>
+                <div class="card-body">
+                    <ul class="security-tips">
+                        <li>Use a strong, unique password that's at least 16 characters long</li>
+                        <li>Include a mix of uppercase, lowercase, numbers, and special characters</li>
+                        <li>Update your password regularly</li>
+                        <li>Don't share your account credentials</li>
+                        <li>Add an email for account recovery</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    .col-md-6 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    .form-row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    @media (min-width: 768px) {
+        .col-md-6 {
+            flex: 0 0 50%;
+            max-width: 50%;
+        }
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .form-control:disabled {
+        background-color: var(--neutral-100);
+        opacity: 0.7;
+    }
+
+    .form-text {
+        display: block;
+        margin-top: 0.25rem;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .form-section {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .form-section h4 {
+        margin-bottom: 1rem;
+        font-size: 1.1rem;
+    }
+
+    .info-card {
+        background-color: var(--primary-light);
+    }
+
+    .security-card {
+        background-color: var(--info-light);
+    }
+
+    .info-item {
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .info-item:last-child {
+        margin-bottom: 0;
+        border-bottom: none;
+    }
+
+    .info-label {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        margin-bottom: 0.25rem;
+    }
+
+    .info-value {
+        font-weight: 500;
+    }
+
+    .security-tips {
+        padding-left: 1.5rem;
+        margin-bottom: 0;
+    }
+
+    .security-tips li {
+        margin-bottom: 0.5rem;
+    }
+
+    .security-tips li:last-child {
+        margin-bottom: 0;
+    }
+
+    /* Password strength meter */
+    .password-strength-meter {
+        height: 0.5rem;
+        background-color: var(--neutral-200);
+        border-radius: var(--border-radius);
+        margin: 0.5rem 0;
+        overflow: hidden;
+    }
+
+    .strength-bar {
+        height: 100%;
+        width: 0;
+        transition: width 0.3s, background-color 0.3s;
+    }
+
+    .strength-weak {
+        background-color: var(--danger-color);
+        width: 25%;
+    }
+
+    .strength-fair {
+        background-color: var(--warning-color);
+        width: 50%;
+    }
+
+    .strength-good {
+        background-color: var(--accent-color);
+        width: 75%;
+    }
+
+    .strength-strong {
+        background-color: var(--success-color);
+        width: 100%;
+    }
+
+    .password-feedback {
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+        min-height: 1.25rem;
+    }
+
+    .password-requirements {
+        color: var(--text-muted);
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const passwordInput = document.getElementById('new_password');
+        const strengthBar = document.querySelector('.strength-bar');
+        const feedbackDiv = document.querySelector('.password-feedback');
+        const submitButton = document.getElementById('update-profile-btn');
+
+        // Password strength checker
+        passwordInput.addEventListener('input', function () {
+            const password = this.value;
+            let strength = 0;
+            let feedback = [];
+
+            // Only check if there's a password value
+            if (password.length > 0) {
+                // Length check
+                if (password.length < 16) {
+                    feedback.push('Password must be at least 16 characters');
+                } else {
+                    strength += 1;
+                }
+
+                // Uppercase check
+                if (!/[A-Z]/.test(password)) {
+                    feedback.push('Include at least one uppercase letter');
+                } else {
+                    strength += 1;
+                }
+
+                // Lowercase check
+                if (!/[a-z]/.test(password)) {
+                    feedback.push('Include at least one lowercase letter');
+                } else {
+                    strength += 1;
+                }
+
+                // Number check
+                if (!/[0-9]/.test(password)) {
+                    feedback.push('Include at least one number');
+                } else {
+                    strength += 1;
+                }
+
+                // Symbol check
+                if (!/[^A-Za-z0-9]/.test(password)) {
+                    feedback.push('Include at least one symbol');
+                } else {
+                    strength += 1;
+                }
+            }
+
+            // Update UI based on strength
+            strengthBar.className = 'strength-bar';
+            if (strength === 0) {
+                feedbackDiv.textContent = 'Enter a password';
+            } else if (strength === 5) {
+                strengthBar.classList.add('strength-strong');
+                feedbackDiv.textContent = 'Strong password!';
+                feedbackDiv.style.color = 'var(--success-color)';
+            } else if (strength >= 3) {
+                strengthBar.classList.add('strength-good');
+                feedbackDiv.textContent = feedback[0] || 'Good password, but could be stronger';
+                feedbackDiv.style.color = 'var(--accent-color)';
+            } else if (strength >= 2) {
+                strengthBar.classList.add('strength-fair');
+                feedbackDiv.textContent = feedback[0] || 'Fair password, needs improvement';
+                feedbackDiv.style.color = 'var(--warning-color)';
+            } else {
+                strengthBar.classList.add('strength-weak');
+                feedbackDiv.textContent = feedback[0] || 'Weak password';
+                feedbackDiv.style.color = 'var(--danger-color)';
+            }
+        });
+
+        // Form validation before submit
+        document.querySelector('form').addEventListener('submit', function (e) {
+            const password = passwordInput.value;
+
+            // Only validate if a new password is provided
+            if (password && password.length > 0) {
+                // Check length
+                if (password.length < 16) {
+                    e.preventDefault();
+                    alert('Password must be at least 16 characters long');
+                    return false;
+                }
+
+                // Check for uppercase, lowercase, numbers, and symbols
+                if (!/[A-Z]/.test(password) ||
+                    !/[a-z]/.test(password) ||
+                    !/[0-9]/.test(password) ||
+                    !/[^A-Za-z0-9]/.test(password)) {
+                    e.preventDefault();
+                    alert('Password must include uppercase, lowercase, numbers, and symbols');
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    });
+</script>
+{% endblock %}

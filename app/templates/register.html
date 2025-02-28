@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+
+{% block title %}Register - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <div class="auth-header">
+            <h2>Create Your Account</h2>
+            <p>Sign up to start managing your finances with Shekel</p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=True) %}
+        {% if messages %}
+        <div class="messages">
+            {% for category, message in messages %}
+            <div class="message {{ category }}">
+                <span class="message-icon">
+                    {% if category == 'success' %}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                    {% else %}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                    {% endif %}
+                </span>
+                <span class="message-text">{{ message }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('auth.register') }}" class="auth-form" id="registration-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div class="form-group">
+                <label for="username">Username</label>
+                <div class="input-wrapper">
+                    <span class="input-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="12" cy="7" r="4"></circle>
+                        </svg>
+                    </span>
+                    <input type="text" id="username" name="username" required placeholder="Choose a username">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group col-half">
+                    <label for="first_name">First Name</label>
+                    <div class="input-wrapper">
+                        <span class="input-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="12" cy="7" r="4"></circle>
+                            </svg>
+                        </span>
+                        <input type="text" id="first_name" name="first_name" placeholder="First name">
+                    </div>
+                </div>
+                <div class="form-group col-half">
+                    <label for="last_name">Last Name</label>
+                    <div class="input-wrapper">
+                        <span class="input-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="12" cy="7" r="4"></circle>
+                            </svg>
+                        </span>
+                        <input type="text" id="last_name" name="last_name" placeholder="Last name">
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email (Optional)</label>
+                <div class="input-wrapper">
+                    <span class="input-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z">
+                            </path>
+                            <polyline points="22,6 12,13 2,6"></polyline>
+                        </svg>
+                    </span>
+                    <input type="email" id="email" name="email" placeholder="Enter your email address">
+                </div>
+                <small class="form-text text-muted">Used for account recovery (recommended)</small>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <div class="input-wrapper">
+                    <span class="input-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                    </span>
+                    <input type="password" id="password" name="password" required
+                        placeholder="Create a strong password">
+                </div>
+                <div class="password-requirements">
+                    <p>Password must include:</p>
+                    <ul>
+                        <li id="length-check">At least 16 characters</li>
+                        <li id="uppercase-check">At least one uppercase letter</li>
+                        <li id="lowercase-check">At least one lowercase letter</li>
+                        <li id="number-check">At least one number</li>
+                        <li id="symbol-check">At least one symbol</li>
+                    </ul>
+                </div>
+                <div class="password-strength-meter">
+                    <div class="strength-bar"></div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="confirm_password">Confirm Password</label>
+                <div class="input-wrapper">
+                    <span class="input-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                    </span>
+                    <input type="password" id="confirm_password" name="confirm_password" required
+                        placeholder="Confirm your password">
+                </div>
+                <div id="password-match-feedback" class="password-feedback"></div>
+            </div>
+
+            <button type="submit" class="btn btn-accent btn-block" id="submit-btn">Create Account</button>
+        </form>
+
+        <div class="auth-footer">
+            <p>Already have an account? <a href="{{ url_for('auth.login') }}">Sign in</a></p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .form-row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.5rem;
+        margin-left: -0.5rem;
+    }
+
+    .col-half {
+        flex: 0 0 50%;
+        max-width: 50%;
+        padding-right: 0.5rem;
+        padding-left: 0.5rem;
+    }
+
+    @media (max-width: 576px) {
+        .col-half {
+            flex: 0 0 100%;
+            max-width: 100%;
+        }
+    }
+
+    .password-requirements {
+        margin-top: 0.5rem;
+        padding: 0.75rem;
+        background-color: var(--neutral-100);
+        border-radius: var(--border-radius);
+        font-size: 0.875rem;
+    }
+
+    .password-requirements p {
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .password-requirements ul {
+        list-style: none;
+        padding-left: 0.5rem;
+        margin-bottom: 0;
+    }
+
+    .password-requirements li {
+        margin-bottom: 0.25rem;
+        padding-left: 1.5rem;
+        position: relative;
+        color: var(--text-muted);
+    }
+
+    .password-requirements li::before {
+        content: "✕";
+        position: absolute;
+        left: 0;
+        color: var(--danger-color);
+    }
+
+    .password-requirements li.valid::before {
+        content: "✓";
+        color: var(--success-color);
+    }
+
+    .password-requirements li.valid {
+        color: var(--success-color);
+    }
+
+    .password-strength-meter {
+        height: 0.5rem;
+        background-color: var(--neutral-200);
+        border-radius: var(--border-radius);
+        margin: 0.5rem 0;
+        overflow: hidden;
+    }
+
+    .strength-bar {
+        height: 100%;
+        width: 0;
+        transition: width 0.3s, background-color 0.3s;
+    }
+
+    .strength-weak {
+        background-color: var(--danger-color);
+        width: 25%;
+    }
+
+    .strength-fair {
+        background-color: var(--warning-color);
+        width: 50%;
+    }
+
+    .strength-good {
+        background-color: var(--accent-color);
+        width: 75%;
+    }
+
+    .strength-strong {
+        background-color: var(--success-color);
+        width: 100%;
+    }
+
+    .password-feedback {
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+        min-height: 1.25rem;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const passwordInput = document.getElementById('password');
+        const confirmInput = document.getElementById('confirm_password');
+        const submitBtn = document.getElementById('submit-btn');
+        const lengthCheck = document.getElementById('length-check');
+        const uppercaseCheck = document.getElementById('uppercase-check');
+        const lowercaseCheck = document.getElementById('lowercase-check');
+        const numberCheck = document.getElementById('number-check');
+        const symbolCheck = document.getElementById('symbol-check');
+        const strengthBar = document.querySelector('.strength-bar');
+        const matchFeedback = document.getElementById('password-match-feedback');
+
+        // Password validation
+        passwordInput.addEventListener('input', function () {
+            const password = this.value;
+            let strength = 0;
+
+            // Check length
+            if (password.length >= 16) {
+                lengthCheck.classList.add('valid');
+                strength++;
+            } else {
+                lengthCheck.classList.remove('valid');
+            }
+
+            // Check for uppercase
+            if (/[A-Z]/.test(password)) {
+                uppercaseCheck.classList.add('valid');
+                strength++;
+            } else {
+                uppercaseCheck.classList.remove('valid');
+            }
+
+            // Check for lowercase
+            if (/[a-z]/.test(password)) {
+                lowercaseCheck.classList.add('valid');
+                strength++;
+            } else {
+                lowercaseCheck.classList.remove('valid');
+            }
+
+            // Check for numbers
+            if (/[0-9]/.test(password)) {
+                numberCheck.classList.add('valid');
+                strength++;
+            } else {
+                numberCheck.classList.remove('valid');
+            }
+
+            // Check for symbols
+            if (/[^A-Za-z0-9]/.test(password)) {
+                symbolCheck.classList.add('valid');
+                strength++;
+            } else {
+                symbolCheck.classList.remove('valid');
+            }
+
+            // Update strength meter
+            strengthBar.className = 'strength-bar';
+            if (strength === 0) {
+                // No strength
+            } else if (strength < 3) {
+                strengthBar.classList.add('strength-weak');
+            } else if (strength < 5) {
+                strengthBar.classList.add('strength-fair');
+            } else {
+                strengthBar.classList.add('strength-strong');
+            }
+
+            // Check if passwords match
+            checkPasswordMatch();
+        });
+
+        // Confirm password validation
+        confirmInput.addEventListener('input', checkPasswordMatch);
+
+        function checkPasswordMatch() {
+            const password = passwordInput.value;
+            const confirmPassword = confirmInput.value;
+
+            if (confirmPassword === '') {
+                matchFeedback.textContent = '';
+                return;
+            }
+
+            if (password === confirmPassword) {
+                matchFeedback.textContent = 'Passwords match';
+                matchFeedback.style.color = 'var(--success-color)';
+            } else {
+                matchFeedback.textContent = 'Passwords do not match';
+                matchFeedback.style.color = 'var(--danger-color)';
+            }
+        }
+
+        // Form validation
+        document.getElementById('registration-form').addEventListener('submit', function (e) {
+            const password = passwordInput.value;
+            const confirmPassword = confirmInput.value;
+
+            // Check if all password requirements are met
+            if (
+                password.length < 16 ||
+                !/[A-Z]/.test(password) ||
+                !/[a-z]/.test(password) ||
+                !/[0-9]/.test(password) ||
+                !/[^A-Za-z0-9]/.test(password)
+            ) {
+                e.preventDefault();
+                alert('Please ensure your password meets all the requirements.');
+                return;
+            }
+
+            // Check if passwords match
+            if (password !== confirmPassword) {
+                e.preventDefault();
+                alert('Passwords do not match. Please try again.');
+                return;
+            }
+        });
+    });
+</script>
+{% endblock %}

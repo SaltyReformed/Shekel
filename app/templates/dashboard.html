@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Welcome, {{ session.username }}!</h1>
+        <p class="text-muted">Dashboard overview of your financial status</p>
+    </div>
+
+    <div class="dashboard-grid">
+        <!-- Summary Cards -->
+        <div class="summary-cards">
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Current Balance</h3>
+                    <p class="card-value">$<span id="total-balance">0.00</span></p>
+                    <p class="card-subtitle">Across all accounts</p>
+                </div>
+            </div>
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Monthly Income</h3>
+                    <p class="card-value">$<span id="monthly-income">0.00</span></p>
+                    <p class="card-subtitle">Current Month</p>
+                </div>
+            </div>
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Monthly Expenses</h3>
+                    <p class="card-value">$<span id="monthly-expenses">0.00</span></p>
+                    <p class="card-subtitle">Current Month</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Action Buttons -->
+        <div class="action-buttons">
+            <a href="{{ url_for('income.manage_salary') }}" class="btn btn-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+                Manage Salary
+            </a>
+            <a href="{{ url_for('income.one_time_income') }}" class="btn btn-accent">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                </svg>
+                Add Income
+            </a>
+            <a href="#" class="btn btn-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                </svg>
+                Add Expense
+            </a>
+        </div>
+
+        <!-- Recent Transactions -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Recent Transactions</h3>
+                <a href="#" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                <div class="transactions-list">
+                    <!-- Transactions will be loaded here -->
+                    <div class="empty-state">
+                        <div class="empty-state-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <rect x="2" y="5" width="20" height="14" rx="2" ry="2"></rect>
+                                <line x1="2" y1="10" x2="22" y2="10"></line>
+                            </svg>
+                        </div>
+                        <h3>No Recent Transactions</h3>
+                        <p>Your recent financial activities will appear here.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upcoming Payments -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Upcoming Payments</h3>
+                <a href="{{ url_for('config.recurring_schedules') }}" class="btn btn-sm btn-outline-primary">Manage
+                    Schedules</a>
+            </div>
+            <div class="card-body">
+                <div class="upcoming-payments">
+                    <!-- Upcoming payments will be loaded here -->
+                    <div class="empty-state">
+                        <div class="empty-state-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                <line x1="16" y1="2" x2="16" y2="6"></line>
+                                <line x1="8" y1="2" x2="8" y2="6"></line>
+                                <line x1="3" y1="10" x2="21" y2="10"></line>
+                            </svg>
+                        </div>
+                        <h3>No Upcoming Payments</h3>
+                        <p>You don't have any scheduled payments coming up.</p>
+                        <a href="{{ url_for('config.recurring_schedules') }}" class="btn btn-primary">Create
+                            Schedule</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .dashboard-grid {
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: 1fr;
+    }
+
+    .summary-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .summary-card {
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .summary-card:hover {
+        transform: translateY(-3px);
+        box-shadow: var(--shadow-md);
+    }
+
+    .summary-card:nth-child(1) {
+        border-left: 4px solid var(--primary-color);
+    }
+
+    .summary-card:nth-child(2) {
+        border-left: 4px solid var(--secondary-color);
+    }
+
+    .summary-card:nth-child(3) {
+        border-left: 4px solid var(--accent-color);
+    }
+
+    .card-value {
+        font-size: 1.75rem;
+        font-weight: 700;
+        margin: 0.5rem 0;
+    }
+
+    .card-subtitle {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+    }
+
+    .action-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .page-header {
+        margin-bottom: 2rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 2rem 1rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+    }
+
+    @media (min-width: 992px) {
+        .dashboard-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .summary-cards,
+        .action-buttons {
+            grid-column: 1 / -1;
+        }
+    }
+</style>
+{% endblock %}

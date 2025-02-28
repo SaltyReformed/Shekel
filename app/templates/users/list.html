@@ -1,0 +1,720 @@
+{% extends "base.html" %}
+
+{% block title %}User Management - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>User Management</h1>
+            <div class="header-actions">
+                <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#addUserModal">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add User
+                </button>
+            </div>
+        </div>
+        <p class="text-muted">Manage system users and their permissions.</p>
+    </div>
+
+    <div class="card">
+        {% if users %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.first_name }} {{ user.last_name }}</td>
+                        <td>{{ user.email or '-' }}</td>
+                        <td>
+                            {% if user.role %}
+                            <span class="badge {% if user.role.name == 'ADMIN' %}warning{% else %}info{% endif %}">
+                                {{ user.role.name }}
+                            </span>
+                            {% else %}
+                            <span class="badge secondary">No Role</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="action-buttons">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-toggle="modal"
+                                    data-target="#editUserModal{{ user.id }}">
+                                    Edit
+                                </button>
+                                <form method="POST" action="{{ url_for('user.delete_user', user_id=user.id) }}"
+                                    class="d-inline delete-form"
+                                    onsubmit="return confirm('Are you sure you want to delete this user?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" {% if
+                                        user.id==session.get('user_id') %}disabled{% endif %}>
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+
+                            <!-- Edit User Modal -->
+                            <div class="modal" id="editUserModal{{ user.id }}" tabindex="-1" role="dialog">
+                                <div class="modal-dialog" role="document">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title">Edit User: {{ user.username }}</h5>
+                                            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                                <span aria-hidden="true">&times;</span>
+                                            </button>
+                                        </div>
+                                        <form method="POST" action="{{ url_for('user.edit_user', user_id=user.id) }}"
+                                            class="user-form" id="edit-user-form-{{ user.id }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <div class="modal-body">
+                                                <div class="form-row">
+                                                    <div class="form-group col-md-6">
+                                                        <label for="first_name{{ user.id }}">First Name</label>
+                                                        <input type="text" class="form-control"
+                                                            id="first_name{{ user.id }}" name="first_name"
+                                                            value="{{ user.first_name or '' }}">
+                                                    </div>
+                                                    <div class="form-group col-md-6">
+                                                        <label for="last_name{{ user.id }}">Last Name</label>
+                                                        <input type="text" class="form-control"
+                                                            id="last_name{{ user.id }}" name="last_name"
+                                                            value="{{ user.last_name or '' }}">
+                                                    </div>
+                                                </div>
+                                                <div class="form-group">
+                                                    <label for="email{{ user.id }}">Email</label>
+                                                    <input type="email" class="form-control" id="email{{ user.id }}"
+                                                        name="email" value="{{ user.email or '' }}">
+                                                </div>
+                                                <div class="form-group">
+                                                    <label for="password{{ user.id }}">New Password (leave blank to keep
+                                                        current)</label>
+                                                    <input type="password" class="form-control password-field"
+                                                        id="password{{ user.id }}" name="password">
+                                                    <small class="form-text text-muted password-requirements">
+                                                        Password must be at least 16 characters and include uppercase,
+                                                        lowercase, numbers, and symbols.
+                                                    </small>
+                                                    <div class="password-strength-meter">
+                                                        <div class="strength-bar" id="strength-bar{{ user.id }}"></div>
+                                                    </div>
+                                                    <div class="password-feedback" id="password-feedback{{ user.id }}">
+                                                    </div>
+                                                </div>
+                                                <div class="form-group">
+                                                    <label for="role{{ user.id }}">Role</label>
+                                                    <select class="form-control" id="role{{ user.id }}" name="role_id">
+                                                        <option value="">-- No Role --</option>
+                                                        {% for role in roles %}
+                                                        <option value="{{ role.id }}" {% if user.role_id==role.id
+                                                            %}selected{% endif %}>
+                                                            {{ role.name }} - {{ role.description or 'No description' }}
+                                                        </option>
+                                                        {% endfor %}
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button type="button" class="btn btn-secondary"
+                                                    data-dismiss="modal">Cancel</button>
+                                                <button type="submit" class="btn btn-primary submit-btn">Save
+                                                    Changes</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+            </div>
+            <h3>No Users Found</h3>
+            <p>There are no users in the system yet. Add your first user to get started.</p>
+            <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#addUserModal">
+                Add Your First User
+            </button>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Add User Modal -->
+    <div class="modal" id="addUserModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add New User</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <form method="POST" action="{{ url_for('user.add_user') }}" class="user-form" id="add-user-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" class="form-control" id="username" name="username" required>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group col-md-6">
+                                <label for="first_name">First Name</label>
+                                <input type="text" class="form-control" id="first_name" name="first_name">
+                            </div>
+                            <div class="form-group col-md-6">
+                                <label for="last_name">Last Name</label>
+                                <input type="text" class="form-control" id="last_name" name="last_name">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="email">Email</label>
+                            <input type="email" class="form-control" id="email" name="email">
+                        </div>
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" class="form-control password-field" id="password" name="password"
+                                required>
+                            <small class="form-text text-muted password-requirements">
+                                Password must be at least 16 characters and include uppercase, lowercase, numbers, and
+                                symbols.
+                            </small>
+                            <div class="password-requirements-list">
+                                <ul>
+                                    <li id="add-length-check">At least 16 characters</li>
+                                    <li id="add-uppercase-check">At least one uppercase letter</li>
+                                    <li id="add-lowercase-check">At least one lowercase letter</li>
+                                    <li id="add-number-check">At least one number</li>
+                                    <li id="add-symbol-check">At least one symbol</li>
+                                </ul>
+                            </div>
+                            <div class="password-strength-meter">
+                                <div class="strength-bar" id="add-strength-bar"></div>
+                            </div>
+                            <div class="password-feedback" id="add-password-feedback"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="role">Role</label>
+                            <select class="form-control" id="role" name="role_id">
+                                <option value="">-- No Role --</option>
+                                {% for role in roles %}
+                                <option value="{{ role.id }}">
+                                    {{ role.name }} - {{ role.description or 'No description' }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary submit-btn">Add User</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .table-responsive {
+        overflow-x: auto;
+    }
+
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .table th,
+    .table td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .table th {
+        font-weight: 600;
+        color: var(--text-muted);
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .badge.warning {
+        background-color: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .badge.info {
+        background-color: var(--info-light);
+        color: var(--info-color);
+    }
+
+    .badge.secondary {
+        background-color: var(--neutral-200);
+        color: var(--neutral-600);
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .btn-outline-danger {
+        color: var(--danger-color);
+        border-color: var(--danger-color);
+    }
+
+    .btn-outline-danger:hover {
+        background-color: var(--danger-bg);
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 3rem 1.5rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1.5rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+    }
+
+    .d-inline {
+        display: inline-block;
+    }
+
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1050;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0, 0, 0, 0.4);
+    }
+
+    .modal.show {
+        display: block;
+    }
+
+    .modal-dialog {
+        position: relative;
+        width: auto;
+        margin: 1.75rem auto;
+        max-width: 500px;
+    }
+
+    .modal-content {
+        position: relative;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow-lg);
+        display: flex;
+        flex-direction: column;
+        outline: 0;
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    .close {
+        padding: 0;
+        background-color: transparent;
+        border: 0;
+        appearance: none;
+        font-size: 1.5rem;
+        font-weight: 700;
+        line-height: 1;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+
+    .modal-body {
+        position: relative;
+        flex: 1 1 auto;
+        padding: 1.5rem;
+    }
+
+    .modal-footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        gap: 0.5rem;
+    }
+
+    /* Form row and columns */
+    .form-row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.5rem;
+        margin-left: -0.5rem;
+    }
+
+    .col-md-6 {
+        flex: 0 0 50%;
+        max-width: 50%;
+        padding-right: 0.5rem;
+        padding-left: 0.5rem;
+    }
+
+    @media (max-width: 768px) {
+        .col-md-6 {
+            flex: 0 0 100%;
+            max-width: 100%;
+        }
+    }
+
+    /* Password strength elements */
+    .password-strength-meter {
+        height: 0.5rem;
+        background-color: var(--neutral-200);
+        border-radius: var(--border-radius);
+        margin: 0.5rem 0;
+        overflow: hidden;
+    }
+
+    .strength-bar {
+        height: 100%;
+        width: 0;
+        transition: width 0.3s, background-color 0.3s;
+    }
+
+    .strength-weak {
+        background-color: var(--danger-color);
+        width: 25%;
+    }
+
+    .strength-fair {
+        background-color: var(--warning-color);
+        width: 50%;
+    }
+
+    .strength-good {
+        background-color: var(--accent-color);
+        width: 75%;
+    }
+
+    .strength-strong {
+        background-color: var(--success-color);
+        width: 100%;
+    }
+
+    .password-feedback {
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+        min-height: 1.25rem;
+    }
+
+    .password-requirements-list {
+        margin-top: 0.5rem;
+        padding: 0.75rem;
+        background-color: var(--neutral-100);
+        border-radius: var(--border-radius);
+        font-size: 0.875rem;
+    }
+
+    .password-requirements-list ul {
+        list-style: none;
+        padding-left: 0.5rem;
+        margin-bottom: 0;
+    }
+
+    .password-requirements-list li {
+        margin-bottom: 0.25rem;
+        padding-left: 1.5rem;
+        position: relative;
+        color: var(--text-muted);
+    }
+
+    .password-requirements-list li::before {
+        content: "✕";
+        position: absolute;
+        left: 0;
+        color: var(--danger-color);
+    }
+
+    .password-requirements-list li.valid::before {
+        content: "✓";
+        color: var(--success-color);
+    }
+
+    .password-requirements-list li.valid {
+        color: var(--success-color);
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        // Modal functionality
+        const modalToggles = document.querySelectorAll('[data-toggle="modal"]');
+        const modalCloses = document.querySelectorAll('[data-dismiss="modal"]');
+
+        modalToggles.forEach(toggle => {
+            toggle.addEventListener('click', function () {
+                const targetModal = document.querySelector(this.getAttribute('data-target'));
+                if (targetModal) {
+                    targetModal.classList.add('show');
+                    document.body.style.overflow = 'hidden';
+                }
+            });
+        });
+
+        modalCloses.forEach(close => {
+            close.addEventListener('click', function () {
+                const modal = this.closest('.modal');
+                if (modal) {
+                    modal.classList.remove('show');
+                    document.body.style.overflow = '';
+                }
+            });
+        });
+
+        // Close modal when clicking outside of it
+        window.addEventListener('click', function (event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.classList.remove('show');
+                document.body.style.overflow = '';
+            }
+        });
+
+        // Password validation for Add User form
+        const addPasswordInput = document.getElementById('password');
+        const addLengthCheck = document.getElementById('add-length-check');
+        const addUppercaseCheck = document.getElementById('add-uppercase-check');
+        const addLowercaseCheck = document.getElementById('add-lowercase-check');
+        const addNumberCheck = document.getElementById('add-number-check');
+        const addSymbolCheck = document.getElementById('add-symbol-check');
+        const addStrengthBar = document.getElementById('add-strength-bar');
+        const addPasswordFeedback = document.getElementById('add-password-feedback');
+
+        if (addPasswordInput) {
+            addPasswordInput.addEventListener('input', function () {
+                validatePassword(this.value, {
+                    lengthCheck: addLengthCheck,
+                    uppercaseCheck: addUppercaseCheck,
+                    lowercaseCheck: addLowercaseCheck,
+                    numberCheck: addNumberCheck,
+                    symbolCheck: addSymbolCheck,
+                    strengthBar: addStrengthBar,
+                    feedbackEl: addPasswordFeedback
+                });
+            });
+        }
+
+        // Add form submission validation
+        document.getElementById('add-user-form').addEventListener('submit', function (e) {
+            const password = addPasswordInput.value;
+            if (!isPasswordValid(password)) {
+                e.preventDefault();
+                alert('Please ensure the password meets all requirements.');
+            }
+        });
+
+        // Password validation for all Edit User forms
+        const editForms = document.querySelectorAll('form[id^="edit-user-form-"]');
+
+        editForms.forEach(form => {
+            const userId = form.id.split('-').pop();
+            const passwordInput = document.getElementById(`password${userId}`);
+            const strengthBar = document.getElementById(`strength-bar${userId}`);
+            const feedbackEl = document.getElementById(`password-feedback${userId}`);
+
+            if (passwordInput) {
+                passwordInput.addEventListener('input', function () {
+                    // Only validate if a new password is being set
+                    if (this.value.length > 0) {
+                        validatePasswordSimple(this.value, strengthBar, feedbackEl);
+                    } else {
+                        // Clear feedback if password field is empty
+                        strengthBar.className = 'strength-bar';
+                        feedbackEl.textContent = '';
+                    }
+                });
+
+                // Form submission for edit forms
+                form.addEventListener('submit', function (e) {
+                    const password = passwordInput.value;
+
+                    // Only validate if a new password is being set
+                    if (password.length > 0 && !isPasswordValid(password)) {
+                        e.preventDefault();
+                        alert('Please ensure the password meets all requirements: at least 16 characters, uppercase, lowercase, number, and symbol.');
+                    }
+                });
+            }
+        });
+
+        // Password validation functions
+        function validatePassword(password, elements) {
+            let strength = 0;
+
+            // Check length
+            if (password.length >= 16) {
+                elements.lengthCheck.classList.add('valid');
+                strength++;
+            } else {
+                elements.lengthCheck.classList.remove('valid');
+            }
+
+            // Check for uppercase
+            if (/[A-Z]/.test(password)) {
+                elements.uppercaseCheck.classList.add('valid');
+                strength++;
+            } else {
+                elements.uppercaseCheck.classList.remove('valid');
+            }
+
+            // Check for lowercase
+            if (/[a-z]/.test(password)) {
+                elements.lowercaseCheck.classList.add('valid');
+                strength++;
+            } else {
+                elements.lowercaseCheck.classList.remove('valid');
+            }
+
+            // Check for numbers
+            if (/[0-9]/.test(password)) {
+                elements.numberCheck.classList.add('valid');
+                strength++;
+            } else {
+                elements.numberCheck.classList.remove('valid');
+            }
+
+            // Check for symbols
+            if (/[^A-Za-z0-9]/.test(password)) {
+                elements.symbolCheck.classList.add('valid');
+                strength++;
+            } else {
+                elements.symbolCheck.classList.remove('valid');
+            }
+
+            // Update strength meter
+            updateStrengthMeter(strength, elements.strengthBar, elements.feedbackEl);
+        }
+
+        function validatePasswordSimple(password, strengthBar, feedbackEl) {
+            let strength = 0;
+            let feedback = '';
+
+            // Check all requirements
+            if (password.length >= 16) strength++;
+            if (/[A-Z]/.test(password)) strength++;
+            if (/[a-z]/.test(password)) strength++;
+            if (/[0-9]/.test(password)) strength++;
+            if (/[^A-Za-z0-9]/.test(password)) strength++;
+
+            // Generate feedback
+            if (strength < 5) {
+                feedback = 'Password does not meet all requirements';
+            }
+
+            // Update strength meter
+            updateStrengthMeter(strength, strengthBar, feedbackEl, feedback);
+        }
+
+        function updateStrengthMeter(strength, strengthBar, feedbackEl, customFeedback = null) {
+            strengthBar.className = 'strength-bar';
+
+            if (strength === 0) {
+                // No strength
+                feedbackEl.textContent = '';
+            } else if (strength < 3) {
+                strengthBar.classList.add('strength-weak');
+                feedbackEl.textContent = customFeedback || 'Weak password';
+                feedbackEl.style.color = 'var(--danger-color)';
+            } else if (strength < 5) {
+                strengthBar.classList.add('strength-fair');
+                feedbackEl.textContent = customFeedback || 'Password needs improvement';
+                feedbackEl.style.color = 'var(--warning-color)';
+            } else {
+                strengthBar.classList.add('strength-strong');
+                feedbackEl.textContent = 'Strong password';
+                feedbackEl.style.color = 'var(--success-color)';
+            }
+        }
+
+        function isPasswordValid(password) {
+            return password.length >= 16 &&
+                /[A-Z]/.test(password) &&
+                /[a-z]/.test(password) &&
+                /[0-9]/.test(password) &&
+                /[^A-Za-z0-9]/.test(password);
+        }
+    });
+</script>
+{% endblock %}
