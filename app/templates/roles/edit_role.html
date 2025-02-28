@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Role - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Edit Role: {{ role.name }}</h1>
+        <p class="text-muted">Modify role details and permissions</p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('role.edit_role', role_id=role.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="form-group">
+                            <label for="name">Role Name</label>
+                            <input type="text" id="name" name="name" class="form-control" value="{{ role.name }}"
+                                required>
+                            <small class="form-text text-muted">
+                                Use uppercase and avoid spaces. Role name must be unique.
+                            </small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="description">Description</label>
+                            <textarea id="description" name="description" class="form-control"
+                                rows="3">{{ role.description or '' }}</textarea>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Update Role</button>
+                            <a href="{{ url_for('role.list_roles') }}" class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card info-card">
+                <div class="card-header">
+                    <h3 class="card-title">Role Information</h3>
+                </div>
+                <div class="card-body">
+                    <div class="info-section">
+                        <h4>Users with this Role</h4>
+                        <p class="text-muted">{{ role.users|length }} user(s) currently assigned</p>
+
+                        {% if role.users %}
+                        <div class="user-list">
+                            {% for user in role.users[:5] %}
+                            <div class="user-item">
+                                {{ user.username }}
+                            </div>
+                            {% endfor %}
+                            {% if role.users|length > 5 %}
+                            <div class="text-muted">
+                                ... and {{ role.users|length - 5 }} more
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% else %}
+                        <p class="text-muted">No users currently have this role.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="card warning-card">
+                <div class="card-header">
+                    <h3 class="card-title">Important Notes</h3>
+                </div>
+                <div class="card-body">
+                    <ul class="warning-list">
+                        <li>Changing a role's name may affect user access</li>
+                        <li>Be careful when modifying default roles like ADMIN</li>
+                        <li>You cannot delete roles with assigned users</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .info-section {
+        margin-bottom: 1rem;
+    }
+
+    .info-section h4 {
+        margin-bottom: 0.5rem;
+        font-size: 1rem;
+    }
+
+    .user-list {
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+    }
+
+    .user-item {
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .user-item:last-child {
+        border-bottom: none;
+    }
+
+    .warning-card {
+        background-color: var(--warning-light);
+    }
+
+    .warning-list {
+        padding-left: 1.5rem;
+        margin-bottom: 0;
+    }
+
+    .warning-list li {
+        margin-bottom: 0.5rem;
+        color: var(--warning-color);
+    }
+</style>
+{% endblock %}

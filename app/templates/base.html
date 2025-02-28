@@ -100,8 +100,7 @@
                                 <a href="{{ url_for('config.frequencies') }}">Payment Frequencies</a>
                                 <a href="{{ url_for('config.recurring_schedules') }}">Recurring Schedules</a>
                                 {% if is_admin %}
-                                <a href="{{ url_for('config.schedule_types') }}">Schedule Types</a>
-                                <a href="{{ url_for('user.list_users') }}">User Management</a>
+
                                 {% endif %}
                             </div>
                         </li>
@@ -120,6 +119,7 @@
                             </a>
                             <div class="dropdown-content">
                                 <a href="{{ url_for('user.list_users') }}">User Management</a>
+                                <a href="{{ url_for('role.list_roles') }}">Role Management</a>
                                 <a href="{{ url_for('config.schedule_types') }}">Schedule Types</a>
                             </div>
                         </li>
@@ -141,7 +141,7 @@
                                         <circle cx="12" cy="7" r="4"></circle>
                                     </svg>
                                 </span>
-                                <span class="user-name">{{ session.username }}</span>
+                                <span class="user-name">{{ display_name }}</span>
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                     fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                     stroke-linejoin="round" class="dropdown-icon">

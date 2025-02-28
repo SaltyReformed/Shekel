@@ -67,6 +67,8 @@ def login():
             if user and check_password_hash(user.password_hash, password):
                 session["user_id"] = user.id
                 session["username"] = user.username
+                session["first_name"] = user.first_name
+                session["last_name"] = user.last_name
                 # Store role in session if exists
                 if user.role:
                     session["role"] = user.role.name
@@ -86,6 +88,8 @@ def logout():
     # Clear the user's session
     session.pop("user_id", None)
     session.pop("username", None)
+    session.pop("first_name", None)
+    session.pop("last_name", None)
     session.pop("role", None)
     flash("You have been logged out.", "success")
     return redirect(url_for("home"))
