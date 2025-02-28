@@ -3,6 +3,8 @@ from flask import Flask, render_template
 from config import Config
 from models import db
 from auth import auth_bp
+from income import income_bp
+from config_manager import config_bp  # Import from config_manager instead of config
 
 
 def create_app():
@@ -19,8 +21,10 @@ def create_app():
     with app.app_context():
         db.create_all()
 
-    # Register the blueprint
+    # Register the blueprints
     app.register_blueprint(auth_bp)
+    app.register_blueprint(income_bp)
+    app.register_blueprint(config_bp)  # Register the config blueprint
 
     @app.route("/")
     def home():

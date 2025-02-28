@@ -1,0 +1,672 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit' if editing else 'Add' }} Salary - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>{{ 'Edit' if editing else 'Add' }} Salary Information</h1>
+        <p class="text-muted">
+            {{ 'Update your salary information to keep your paycheck calculations accurate.' if editing else 'Add your
+            salary information to calculate accurate paychecks.' }}
+        </p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form id="salaryForm" method="POST"
+                        action="{{ url_for('income.manage_salary', id=request.args.get('id')) }}">
+                        {{ form.csrf_token }}
+
+                        <div class="form-section">
+                            <h3>Salary Type</h3>
+                            <div class="radio-group">
+                                {% for subfield in form.salary_type %}
+                                <div class="radio-option">
+                                    {{ subfield }}
+                                    {{ subfield.label }}
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <div class="form-section" id="annualSalarySection">
+                            <h3>Annual Salary Details</h3>
+                            <div class="form-group">
+                                {{ form.gross_annual_salary.label }}
+                                <div class="input-with-icon">
+                                    <span class="input-icon">$</span>
+                                    {{ form.gross_annual_salary(class="form-control", id="grossAnnualSalary") }}
+                                </div>
+                                {% if form.gross_annual_salary.errors %}
+                                <div class="error-message">
+                                    {% for error in form.gross_annual_salary.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="form-section" id="paycheckDetailsSection">
+                            <h3>Paycheck Details</h3>
+                            <div class="form-group">
+                                {{ form.pay_frequency.label }}
+                                {{ form.pay_frequency(class="form-control", id="payFrequency") }}
+                                {% if form.pay_frequency.errors %}
+                                <div class="error-message">
+                                    {% for error in form.pay_frequency.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group" id="netPaycheckGroup">
+                                {{ form.net_paycheck_amount.label }}
+                                <div class="input-with-icon">
+                                    <span class="input-icon">$</span>
+                                    {{ form.net_paycheck_amount(class="form-control", id="netPaycheckAmount") }}
+                                </div>
+                                {% if form.net_paycheck_amount.errors %}
+                                <div class="error-message">
+                                    {% for error in form.net_paycheck_amount.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="form-section" id="taxDeductionSection">
+                            <h3>Tax & Deduction Rates</h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.federal_tax_rate.label }}
+                                        <div class="input-with-icon">
+                                            {{ form.federal_tax_rate(class="form-control", id="federalTaxRate") }}
+                                            <span class="input-icon-right">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.state_tax_rate.label }}
+                                        <div class="input-with-icon">
+                                            {{ form.state_tax_rate(class="form-control", id="stateTaxRate") }}
+                                            <span class="input-icon-right">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.retirement_contribution_rate.label }}
+                                        <div class="input-with-icon">
+                                            {{ form.retirement_contribution_rate(class="form-control",
+                                            id="retirementRate") }}
+                                            <span class="input-icon-right">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.health_insurance_amount.label }}
+                                        <div class="input-with-icon">
+                                            <span class="input-icon">$</span>
+                                            {{ form.health_insurance_amount(class="form-control", id="healthInsurance")
+                                            }}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.other_deductions_amount.label }}
+                                <div class="input-with-icon">
+                                    <span class="input-icon">$</span>
+                                    {{ form.other_deductions_amount(class="form-control", id="otherDeductions") }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="paycheck-calculation" id="paycheckCalculation">
+                            <div class="calculation-results">
+                                <h3>Calculated Per-Paycheck Breakdown</h3>
+                                <table class="calculation-table">
+                                    <tr>
+                                        <td>Gross Pay:</td>
+                                        <td id="calc-gross">$0.00</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Federal Tax:</td>
+                                        <td id="calc-federal">$0.00</td>
+                                    </tr>
+                                    <tr>
+                                        <td>State Tax:</td>
+                                        <td id="calc-state">$0.00</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Retirement:</td>
+                                        <td id="calc-retirement">$0.00</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Health Insurance:</td>
+                                        <td id="calc-health">$0.00</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Other Deductions:</td>
+                                        <td id="calc-other">$0.00</td>
+                                    </tr>
+                                    <tr class="calculation-total">
+                                        <td>Net Pay:</td>
+                                        <td id="calc-net">$0.00</td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Effective Dates</h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.effective_date.label }}
+                                        {{ form.effective_date(class="form-control", type="date") }}
+                                        {% if form.effective_date.errors %}
+                                        <div class="error-message">
+                                            {% for error in form.effective_date.errors %}
+                                            <span>{{ error }}</span>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.end_date.label }} <span class="text-muted">(Optional)</span>
+                                        {{ form.end_date(class="form-control", type="date") }}
+                                        {% if form.end_date.errors %}
+                                        <div class="error-message">
+                                            {% for error in form.end_date.errors %}
+                                            <span>{{ error }}</span>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Notes</h3>
+                            <div class="form-group">
+                                {{ form.notes(class="form-control", placeholder="Add any additional notes about this
+                                salary...") }}
+                            </div>
+                        </div>
+
+                        <div class="form-options">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="generatePaychecks"
+                                    name="generate_paychecks" value="1">
+                                <label class="form-check-label" for="generatePaychecks">Generate paycheck schedule from
+                                    this information</label>
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="button" id="calculateButton" class="btn btn-secondary">Calculate
+                                Paycheck</button>
+                            <button type="submit" class="btn btn-primary">{{ 'Update' if editing else 'Save' }} Salary
+                                Information</button>
+                            <a href="{{ url_for('income.overview') }}" class="btn btn-link">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">Tips</h3>
+                </div>
+                <div class="card-body">
+                    <ul class="help-list">
+                        <li>
+                            <strong>Annual Salary</strong>: Enter your total gross annual salary before taxes and
+                            deductions.
+                        </li>
+                        <li>
+                            <strong>Net Paycheck</strong>: If you know your net (take-home) pay amount, select this
+                            option to estimate your annual salary.
+                        </li>
+                        <li>
+                            <strong>Tax Rates</strong>: Enter percentage rates to estimate withholdings. Adjust these to
+                            match your actual paychecks.
+                        </li>
+                        <li>
+                            <strong>Effective Dates</strong>: Set when this salary becomes active. Add an end date for
+                            raises or changes.
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            {% if salary_history %}
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Salary History</h3>
+                </div>
+                <div class="card-body">
+                    <div class="timeline">
+                        {% for salary in salary_history[:5] %}
+                        <div class="timeline-item">
+                            <div class="timeline-marker"></div>
+                            <div class="timeline-content">
+                                <h4>${{ "{:,.2f}".format(salary.gross_annual_salary) }}</h4>
+                                <p class="timeline-date">
+                                    {{ salary.effective_date.strftime('%b %d, %Y') }}
+                                    {% if salary.end_date %}
+                                    - {{ salary.end_date.strftime('%b %d, %Y') }}
+                                    {% endif %}
+                                </p>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    {% if salary_history|length > 5 %}
+                    <div class="text-center mt-3">
+                        <a href="{{ url_for('income.overview') }}">View All History</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-md-6 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+
+    @media (min-width: 768px) {
+        .col-md-6 {
+            flex: 0 0 50%;
+            max-width: 50%;
+        }
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 2rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+        break-inside: avoid;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-section:last-child {
+        border-bottom: none;
+    }
+
+    .form-section h3 {
+        margin-bottom: 1.25rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-color);
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .radio-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .radio-option {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+    }
+
+    .radio-option input {
+        margin-right: 0.5rem;
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-icon-right {
+        position: absolute;
+        right: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-with-icon .form-control {
+        padding-left: 2rem;
+    }
+
+    .input-with-icon .input-icon-right+.form-control {
+        padding-right: 2rem;
+        padding-left: 0.75rem;
+    }
+
+    .error-message {
+        color: var(--danger-color);
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+    }
+
+    .form-check {
+        display: flex;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .form-check-input {
+        margin-right: 0.5rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .help-card {
+        background-color: var(--primary-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+    }
+
+    .help-list li {
+        margin-bottom: 1rem;
+    }
+
+    .timeline {
+        position: relative;
+        padding-left: 1.5rem;
+        margin-left: 0.5rem;
+    }
+
+    .timeline:before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 2px;
+        background-color: var(--border-color);
+    }
+
+    .timeline-item {
+        position: relative;
+        margin-bottom: 1.5rem;
+    }
+
+    .timeline-marker {
+        position: absolute;
+        left: -1.5rem;
+        top: 0.25rem;
+        width: 1rem;
+        height: 1rem;
+        border-radius: 50%;
+        background-color: var(--primary-color);
+        border: 2px solid var(--card-bg);
+    }
+
+    .timeline-content h4 {
+        margin-bottom: 0.25rem;
+        font-size: 1.1rem;
+    }
+
+    .timeline-date {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        margin-bottom: 0;
+    }
+
+    .paycheck-calculation {
+        background-color: var(--primary-light);
+        border-radius: var(--border-radius);
+        padding: 1.5rem;
+        margin-bottom: 2rem;
+    }
+
+    .calculation-table {
+        width: 100%;
+    }
+
+    .calculation-table td {
+        padding: 0.5rem;
+    }
+
+    .calculation-table td:last-child {
+        text-align: right;
+        font-weight: 500;
+    }
+
+    .calculation-total {
+        font-weight: 700;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .calculation-total td {
+        padding-top: 0.75rem;
+    }
+
+    /* Initially hide the net paycheck field when annual salary is selected */
+    #netPaycheckGroup {
+        display: none;
+    }
+
+    /* Hide calculation section initially */
+    #paycheckCalculation {
+        display: none;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        // Get references to form elements
+        const salaryTypeRadios = document.getElementsByName('salary_type');
+        const annualSalarySection = document.getElementById('annualSalarySection');
+        const netPaycheckGroup = document.getElementById('netPaycheckGroup');
+        const calculateButton = document.getElementById('calculateButton');
+        const paycheckCalculation = document.getElementById('paycheckCalculation');
+
+        // Toggle sections based on salary type selection
+        for (let i = 0; i < salaryTypeRadios.length; i++) {
+            salaryTypeRadios[i].addEventListener('change', function () {
+                if (this.value === 'annual') {
+                    annualSalarySection.style.display = 'block';
+                    netPaycheckGroup.style.display = 'none';
+                } else if (this.value === 'net_paycheck') {
+                    annualSalarySection.style.display = 'none';
+                    netPaycheckGroup.style.display = 'block';
+                }
+            });
+        }
+
+        // Handle calculate button click
+        calculateButton.addEventListener('click', function () {
+            const salaryType = document.querySelector('input[name="salary_type"]:checked').value;
+
+            if (salaryType === 'annual') {
+                calculateFromAnnual();
+            } else {
+                // For now, we don't have the reverse calculation implemented
+                alert('Net paycheck calculation is not yet implemented in the frontend. Please submit the form to calculate.');
+            }
+        });
+
+        // Function to calculate paycheck details from annual salary
+        function calculateFromAnnual() {
+            const annualSalary = parseFloat(document.getElementById('grossAnnualSalary').value) || 0;
+            const payFrequency = document.getElementById('payFrequency').value;
+            const federalTaxRate = parseFloat(document.getElementById('federalTaxRate').value) || 0;
+            const stateTaxRate = parseFloat(document.getElementById('stateTaxRate').value) || 0;
+            const retirementRate = parseFloat(document.getElementById('retirementRate').value) || 0;
+            const healthInsurance = parseFloat(document.getElementById('healthInsurance').value) || 0;
+            const otherDeductions = parseFloat(document.getElementById('otherDeductions').value) || 0;
+
+            // Make AJAX request to backend for calculation
+            fetch('/income/calculate-paycheck', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    salary_type: 'annual',
+                    gross_annual_salary: annualSalary,
+                    pay_frequency: payFrequency,
+                    federal_tax_rate: federalTaxRate,
+                    state_tax_rate: stateTaxRate,
+                    retirement_contribution_rate: retirementRate,
+                    health_insurance_amount: healthInsurance,
+                    other_deductions_amount: otherDeductions
+                }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    // Update calculation display
+                    document.getElementById('calc-gross').textContent = formatCurrency(data.gross_salary);
+                    document.getElementById('calc-federal').textContent = formatCurrency(data.federal_tax);
+                    document.getElementById('calc-state').textContent = formatCurrency(data.state_tax);
+                    document.getElementById('calc-retirement').textContent = formatCurrency(data.retirement);
+                    document.getElementById('calc-health').textContent = formatCurrency(data.health_insurance);
+                    document.getElementById('calc-other').textContent = formatCurrency(data.other_deductions);
+                    document.getElementById('calc-net').textContent = formatCurrency(data.net_pay);
+
+                    // Show the calculation section
+                    paycheckCalculation.style.display = 'block';
+                })
+                .catch((error) => {
+                    console.error('Error calculating paycheck:', error);
+                    alert('There was an error calculating the paycheck. Please try again.');
+                });
+        }
+
+        // Helper function to format currency
+        function formatCurrency(amount) {
+            return ' + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '    /* Initially hide the net paycheck field when,');
+        }
+        
+        // Set initial state based on default selection
+        const defaultSalaryType = document.querySelector('input[name="salary_type"]:checked').value;
+        if (defaultSalaryType === 'annual') {
+            annualSalarySection.style.display = 'block';
+            netPaycheckGroup.style.display = 'none';
+        } else {
+            annualSalarySection.style.display = 'none';
+            netPaycheckGroup.style.display = 'block';
+        }
+    });
+</script>
+{% endblock %}

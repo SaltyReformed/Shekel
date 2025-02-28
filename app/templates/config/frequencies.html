@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Payment Frequencies - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Payment Frequencies</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('config.add_frequency') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Frequency
+                </a>
+            </div>
+        </div>
+        <p class="text-muted">Manage payment frequencies for your recurring income and expenses.</p>
+    </div>
+
+    <div class="card">
+        {% if frequencies %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for frequency in frequencies %}
+                    <tr>
+                        <td>{{ frequency.name }}</td>
+                        <td>{{ frequency.description or '-' }}</td>
+                        <td>
+                            <div class="action-buttons">
+                                <a href="{{ url_for('config.edit_frequency', frequency_id=frequency.id) }}"
+                                    class="btn btn-sm btn-outline-secondary">Edit</a>
+                                <form method="POST"
+                                    action="{{ url_for('config.delete_frequency', frequency_id=frequency.id) }}"
+                                    class="d-inline delete-form"
+                                    onsubmit="return confirm('Are you sure you want to delete this frequency?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}

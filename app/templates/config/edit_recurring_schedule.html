@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit' if is_edit else 'Add' }} Recurring Schedule - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>{{ 'Edit' if is_edit else 'Add' }} Recurring Schedule</h1>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST">
+                        {{ form.csrf_token }}
+
+                        <div class="form-section">
+                            <h3>Basic Information</h3>
+                            <div class="form-group">
+                                {{ form.description.label }}
+                                {{ form.description(class="form-control", placeholder="E.g., Monthly Salary, Bonus,
+                                etc.") }}
+                                {% if form.description.errors %}
+                                <div class="error-message">
+                                    {% for error in form.description.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.type_id.label }}
+                                {{ form.type_id(class="form-control") }}
+                                {% if form.type_id.errors %}
+                                <div class="error-message">
+                                    {% for error in form.type_id.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.amount.label }}
+                                <div class="input-with-icon">
+                                    <span class="input-icon">$</span>
+                                    {{ form.amount(class="form-control", placeholder="0.00") }}
+                                </div>
+                                {% if form.amount.errors %}
+                                <div class="error-message">
+                                    {% for error in form.amount.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">For income, this is the gross amount. For expenses,
+                                    this is the payment amount.</small>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Schedule Details</h3>
+                            <div class="form-group">
+                                {{ form.frequency_id.label }}
+                                {{ form.frequency_id(class="form-control") }}
+                                {% if form.frequency_id.errors %}
+                                <div class="error-message">
+                                    {% for error in form.frequency_id.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">Select how often this income or expense
+                                    occurs.</small>
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.interval.label }}
+                                {{ form.interval(class="form-control", type="number", min="1") }}
+                                {% if form.interval.errors %}
+                                <div class="error-message">
+                                    {% for error in form.interval.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">Usually 1. For example, for "every 2 weeks", enter
+                                    2.</small>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.start_date.label }}
+                                        {{ form.start_date(class="form-control", type="date") }}
+                                        {% if form.start_date.errors %}
+                                        <div class="error-message">
+                                            {% for error in form.start_date.errors %}
+                                            <span>{{ error }}</span>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        {{ form.end_date.label }} <span class="text-muted">(Optional)</span>
+                                        {{ form.end_date(class="form-control", type="date") }}
+                                        {% if form.end_date.errors %}
+                                        <div class="error-message">
+                                            {% for error in form.end_date.errors %}
+                                            <span>{{ error }}</span>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">Leave blank if this is ongoing.</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">{{ 'Update' if is_edit else 'Add' }}
+                                Schedule</button>
+                            <a href="{{ url_for('config.recurring_schedules') }}"
+                                class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">About Recurring Schedules</h3>
+                </div>
+                <div class="card-body">
+                    <p>Recurring schedules automatically create income or expense entries based on the frequency you
+                        set.</p>
+
+                    <div class="info-block">
+                        <h4>Tips for Creating Schedules</h4>
+                        <ul class="help-list">
+                            <li>Use descriptive names that clearly identify the income/expense</li>
+                            <li>Set the correct frequency to match when payments actually occur</li>
+                            <li>For variable amounts, use an average or estimate</li>
+                            <li>Always set the correct start date</li>
+                            <li>Use end dates for temporary income or expenses</li>
+                        </ul>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Examples</h4>
+                        <ul class="help-list">
+                            <li><strong>Biweekly Salary</strong>: Income that occurs every 2 weeks</li>
+                            <li><strong>Monthly Rent</strong>: Expense that occurs on the 1st of each month</li>
+                            <li><strong>Annual Bonus</strong>: Income that occurs once per year</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-md-6 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+
+    @media (min-width: 768px) {
+        .col-md-6 {
+            flex: 0 0 50%;
+            max-width: 50%;
+        }
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-section:last-child {
+        border-bottom: none;
+    }
+
+    .form-section h3 {
+        font-size: 1.25rem;
+        margin-bottom: 1.25rem;
+        font-weight: 600;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-with-icon .form-control {
+        padding-left: 2rem;
+    }
+
+    .form-text {
+        display: block;
+        margin-top: 0.25rem;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .error-message {
+        color: var(--danger-color);
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .text-muted {
+        color: var(--text-muted);
+    }
+
+    .help-card {
+        background-color: var(--info-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .info-block,
+    .example-block {
+        margin-bottom: 1.5rem;
+    }
+
+    .info-block h4,
+    .example-block h4 {
+        font-size: 1rem;
+        margin-bottom: 0.75rem;
+        font-weight: 600;
+    }
+</style>
+{% endblock %}
