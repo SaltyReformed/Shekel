@@ -3,23 +3,75 @@
 {% block title %}Home - Shekel Budget App{% endblock %}
 
 {% block content %}
-<div class="homepage">
-    <h1>Welcome to Shekel Budget App</h1>
-    <p>Your one-stop solution to manage, track, and forecast your finances.</p>
-
-    <div class="features">
-        <h2>Features</h2>
-        <ul>
-            <li>Track recurring paychecks and expenses</li>
-            <li>Detailed breakdown of gross salary, taxes, deductions, and net pay</li>
-            <li>Automatic forecasting for future income and expenses</li>
-            <li>Manage financial data with a modern, responsive interface</li>
-        </ul>
+<div class="hero-section">
+    <div class="hero-content">
+        <h1 class="hero-title">Smart Financial Management with Shekel</h1>
+        <p class="hero-subtitle">Your personal finance companion for tracking, budgeting, and forecasting your money.
+        </p>
+        <div class="hero-actions">
+            <a href="/register" class="btn btn-accent">Get Started</a>
+            <a href="/login" class="btn btn-white">Sign In</a>
+        </div>
     </div>
+</div>
 
-    <div class="actions">
-        <a href="/register" class="btn">Sign Up</a>
-        <a href="/login" class="btn">Log In</a>
+<div class="features-section">
+    <h2 class="section-title">Why Choose Shekel?</h2>
+    <div class="features-grid">
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                </svg>
+            </div>
+            <h3>Paycheck Tracking</h3>
+            <p>Monitor your recurring income and understand your earnings at a glance.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1v22"></path>
+                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                </svg>
+            </div>
+            <h3>Salary Breakdown</h3>
+            <p>See detailed analysis of your gross salary, taxes, deductions, and net pay.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+            </div>
+            <h3>Expense Management</h3>
+            <p>Categorize and track your expenses to understand your spending habits.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 22h14"></path>
+                    <path d="M5 2h14"></path>
+                    <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"></path>
+                    <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"></path>
+                </svg>
+            </div>
+            <h3>Financial Forecasting</h3>
+            <p>Predict your future financial situation with our intelligent forecasting tools.</p>
+        </div>
+    </div>
+</div>
+
+<div class="cta-section">
+    <div class="cta-content">
+        <h2>Ready to take control of your finances?</h2>
+        <p>Join thousands of users who have improved their financial management with Shekel.</p>
+        <a href="/register" class="btn btn-accent">Create Your Account</a>
     </div>
 </div>
 {% endblock %}

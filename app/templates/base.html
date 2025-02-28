@@ -3,67 +3,204 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Shekel - Personal finance management and budget tracking app">
+
     <title>{% block title %}Shekel Budget App{% endblock %}</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/favicon.svg') }}">
+
+    <!-- Preconnect to Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Main CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <!-- Additional custom styles -->
+    {% block additional_styles %}{% endblock %}
 </head>
 
 <body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <a href="/" class="brand">Shekel</a>
-            <ul class="nav-menu">
-                <li class="nav-item"><a href="/">Home</a></li>
-                <li class="nav-item dropdown">
-                    <a href="/income" class="dropbtn">Income</a>
-                    <div class="dropdown-content">
-                        <a href="/income/overview">Overview</a>
-                        <a href="/income/add">Add Income</a>
-                    </div>
-                </li>
-                <li class="nav-item dropdown">
-                    <a href="/expenses" class="dropbtn">Expenses</a>
-                    <div class="dropdown-content">
-                        <a href="/expenses/overview">Overview</a>
-                        <a href="/expenses/add">Add Expense</a>
-                    </div>
-                </li>
-                <li class="nav-item"><a href="/forecast">Forecast</a></li>
-                <li class="nav-item"><a href="/profile">Profile</a></li>
-            </ul>
-            <div class="nav-buttons">
-                <a href="/login" class="btn">Log In</a>
-                <a href="/register" class="btn">Sign Up</a>
-            </div>
-        </div>
-    </nav>
+    <header>
+        <nav class="navbar">
+            <div class="nav-container">
+                <a href="/" class="brand">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        class="brand-icon">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"></path>
+                        <path d="M12 18V6"></path>
+                    </svg>
+                    Shekel
+                </a>
 
-    <div class="container">
+                <button class="mobile-menu-toggle" aria-label="Toggle menu">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
+
+                <div class="nav-content">
+                    <ul class="nav-menu">
+                        <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
+                        <li class="nav-item dropdown">
+                            <a href="/income" class="nav-link dropbtn">
+                                Income
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" class="dropdown-icon">
+                                    <path d="m6 9 6 6 6-6" />
+                                </svg>
+                            </a>
+                            <div class="dropdown-content">
+                                <a href="/income/overview">Overview</a>
+                                <a href="/income/add">Add Income</a>
+                            </div>
+                        </li>
+                        <li class="nav-item dropdown">
+                            <a href="/expenses" class="nav-link dropbtn">
+                                Expenses
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" class="dropdown-icon">
+                                    <path d="m6 9 6 6 6-6" />
+                                </svg>
+                            </a>
+                            <div class="dropdown-content">
+                                <a href="/expenses/overview">Overview</a>
+                                <a href="/expenses/add">Add Expense</a>
+                            </div>
+                        </li>
+                        <li class="nav-item"><a href="/forecast" class="nav-link">Forecast</a></li>
+                        <li class="nav-item"><a href="/profile" class="nav-link">Profile</a></li>
+                    </ul>
+
+                    <div class="nav-buttons">
+                        <a href="/login" class="btn btn-secondary btn-sm">Log In</a>
+                        <a href="/register" class="btn btn-primary btn-sm">Sign Up</a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main>
         {% block content %}
         {% with messages = get_flashed_messages(with_categories=True) %}
         {% if messages %}
-        <ul class="flashes">
-            {% for category, message in messages %}
-            <li class="flash {{ category }}">{{ message }}</li>
-            {% endfor %}
-        </ul>
+        <div class="container">
+            <div class="messages">
+                {% for category, message in messages %}
+                <div class="message {{ category }}">
+                    <span class="message-icon">
+                        {% if category == 'success' %}
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        {% else %}
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        {% endif %}
+                    </span>
+                    <span class="message-text">{{ message }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
         {% endif %}
         {% endwith %}
-
         {% endblock %}
-    </div>
+    </main>
 
-    <!-- Optional: Include JavaScript for additional dynamic behavior -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <a href="/" class="footer-logo">Shekel</a>
+                    <p class="footer-tagline">Smart financial management for everyone</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-group">
+                        <h4>Features</h4>
+                        <ul>
+                            <li><a href="/income">Income Tracking</a></li>
+                            <li><a href="/expenses">Expense Management</a></li>
+                            <li><a href="/forecast">Financial Forecasting</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-group">
+                        <h4>Support</h4>
+                        <ul>
+                            <li><a href="/help">Help Center</a></li>
+                            <li><a href="/contact">Contact Us</a></li>
+                            <li><a href="/faq">FAQ</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-group">
+                        <h4>Legal</h4>
+                        <ul>
+                            <li><a href="/privacy">Privacy Policy</a></li>
+                            <li><a href="/terms">Terms of Service</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 Shekel Budget App. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Main JS -->
     <script>
-        // Example: Toggle dropdown menus on click for mobile devices
-        // (You can expand this as needed.)
-        document.querySelectorAll('.dropdown').forEach(function (dropdown) {
-            dropdown.addEventListener('click', function (e) {
-                e.preventDefault();
-                this.classList.toggle('active');
+        // Mobile menu toggle functionality
+        document.addEventListener('DOMContentLoaded', function () {
+            const mobileMenuToggle = document.querySelector('.mobile-menu-toggle');
+            const navContent = document.querySelector('.nav-content');
+
+            if (mobileMenuToggle && navContent) {
+                mobileMenuToggle.addEventListener('click', function () {
+                    navContent.classList.toggle('active');
+                    mobileMenuToggle.classList.toggle('active');
+                });
+            }
+
+            // Handle dropdowns on mobile
+            const dropdowns = document.querySelectorAll('.dropdown');
+
+            dropdowns.forEach(function (dropdown) {
+                const dropbtn = dropdown.querySelector('.dropbtn');
+
+                if (dropbtn) {
+                    dropbtn.addEventListener('click', function (e) {
+                        // Only intercept on mobile layout
+                        if (window.innerWidth <= 768) {
+                            e.preventDefault();
+                            dropdown.classList.toggle('open');
+                        }
+                    });
+                }
             });
         });
     </script>
+
+    <!-- Additional custom scripts -->
+    {% block additional_scripts %}{% endblock %}
 </body>
 
 </html>

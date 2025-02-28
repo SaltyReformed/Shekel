@@ -9,18 +9,21 @@ services:
       - db
     environment:
       - FLASK_ENV=development
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/budgetapp
+      - FLASK_APP=run.py
+      - DATABASE_URL=postgresql://grubb:Unrelated7-Nimbly0-Whoever6-Trembling6-Refocus0@db:5432/budgetapp
+    command: flask run --host=0.0.0.0
+
   db:
-    image: postgres:17                # Use the official PostgreSQL version 13 image
-    restart: always                   # Always restart this container if it stops unexpectedly
-    environment:                      # Set up the environment variables for the database
-      POSTGRES_USER: grubb         # Database username
-      POSTGRES_PASSWORD: Unrelated7-Nimbly0-Whoever6-Trembling6-Refocus0     # Database password
-      POSTGRES_DB: budgetapp          # Name of the default database
+    image: postgres:17
+    restart: always
+    environment:
+      POSTGRES_USER: grubb
+      POSTGRES_PASSWORD: Unrelated7-Nimbly0-Whoever6-Trembling6-Refocus0
+      POSTGRES_DB: budgetapp
     ports:
-      - "5432:5432"                   # Map port 5432 in the container to port 5432 on your host
+      - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data  # Persist database data between container restarts
+      - pgdata:/var/lib/postgresql/data
 
 volumes:
-  pgdata:                             # This defines a named volume called pgdata
+  pgdata:
