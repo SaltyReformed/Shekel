@@ -3,6 +3,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from models import db, User, Role
 from functools import wraps
 import re
+from flask_wtf import FlaskForm
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -54,22 +55,30 @@ def login():
     if "user_id" in session:
         return redirect(url_for("dashboard"))
 
-    if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-        user = User.query.filter_by(username=username).first()
+    # Create a form to generate a CSRF token
+    form = FlaskForm()  # Import this from flask_wtf
 
-        if user and check_password_hash(user.password_hash, password):
-            session["user_id"] = user.id
-            session["username"] = user.username
-            # Store role in session if exists
-            if user.role:
-                session["role"] = user.role.name
-            flash("Logged in successfully.", "success")
-            return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        if form.validate_on_submit():  # This validates CSRF
+            username = request.form.get("username")
+            password = request.form.get("password")
+            user = User.query.filter_by(username=username).first()
+
+            if user and check_password_hash(user.password_hash, password):
+                session["user_id"] = user.id
+                session["username"] = user.username
+                # Store role in session if exists
+                if user.role:
+                    session["role"] = user.role.name
+                flash("Logged in successfully.", "success")
+                return redirect(url_for("dashboard"))
+            else:
+                flash("Invalid username or password.", "danger")
         else:
-            flash("Invalid username or password.", "danger")
-    return render_template("login.html")
+            # If form validation fails (like missing CSRF)
+            flash("Form validation failed. Please try again.", "danger")
+
+    return render_template("login.html", form=form)
 
 
 @auth_bp.route("/logout")

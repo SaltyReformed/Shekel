@@ -578,21 +578,28 @@
         const salaryTypeRadios = document.getElementsByName('salary_type');
         const annualSalarySection = document.getElementById('annualSalarySection');
         const netPaycheckGroup = document.getElementById('netPaycheckGroup');
-        const calculateButton = document.getElementById('calculateButton');
-        const paycheckCalculation = document.getElementById('paycheckCalculation');
 
-        // Toggle sections based on salary type selection
+        // Function to update sections based on selected salary type
+        function updateSalarySections(salaryType) {
+            if (salaryType === 'annual') {
+                annualSalarySection.style.display = 'block';
+                netPaycheckGroup.style.display = 'none';
+            } else if (salaryType === 'net_paycheck') {
+                annualSalarySection.style.display = 'none';
+                netPaycheckGroup.style.display = 'block';
+            }
+        }
+
+        // Set up event listeners for radio buttons
         for (let i = 0; i < salaryTypeRadios.length; i++) {
             salaryTypeRadios[i].addEventListener('change', function () {
-                if (this.value === 'annual') {
-                    annualSalarySection.style.display = 'block';
-                    netPaycheckGroup.style.display = 'none';
-                } else if (this.value === 'net_paycheck') {
-                    annualSalarySection.style.display = 'none';
-                    netPaycheckGroup.style.display = 'block';
-                }
+                updateSalarySections(this.value);
             });
         }
+
+        // Set initial state based on default selection
+        const selectedSalaryType = document.querySelector('input[name="salary_type"]:checked').value;
+        updateSalarySections(selectedSalaryType);
 
         // Handle calculate button click
         calculateButton.addEventListener('click', function () {
@@ -655,7 +662,7 @@
 
         // Helper function to format currency
         function formatCurrency(amount) {
-            return ' + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '    /* Initially hide the net paycheck field when,');
+            return '$' + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
         }
         
         // Set initial state based on default selection
