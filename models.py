@@ -67,6 +67,8 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.Text, nullable=False)
+    first_name = db.Column(db.String(50))
+    last_name = db.Column(db.String(50))
     email = db.Column(db.String(100))
     role_id = db.Column(db.Integer, db.ForeignKey("roles.id"))
     role = db.relationship("Role", backref="users")
@@ -190,4 +192,3 @@ class ExpensePayment(db.Model):
 
     expense = db.relationship("Expense", backref="expense_payments")
     account = db.relationship("Account", backref="expense_payments")
-
