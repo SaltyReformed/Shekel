@@ -87,9 +87,9 @@ class RecurringSchedule(db.Model):
     __tablename__ = "recurring_schedules"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    type_id = db.Column(db.Integer, db.ForeignKey("schedule_type.id"))
+    type_id = db.Column(db.Integer, db.ForeignKey("schedule_types.id"))
     description = db.Column(db.String(255))
-    frequency_id = db.Column(db.Integer, db.ForeignKey("frequency.id"))
+    frequency_id = db.Column(db.Integer, db.ForeignKey("frequencies.id"))
     interval = db.Column(db.Integer, default=1)
     start_date = db.Column(db.Date, nullable=False)
     end_date = db.Column(db.Date)
@@ -123,6 +123,17 @@ class Paycheck(db.Model):
     user = db.relationship("User", backref="paychecks")
     income_category = db.relationship("IncomeCategory", backref="paychecks")
     recurring_schedule = db.relationship("RecurringSchedule", backref="paychecks")
+
+class IncomePayment(db.Model):
+    __tablename__ = "income_payments"
+    id = db.Column(db.Integer, primary_key=True)
+    paycheck_id = db.Column(db.Integer, db.ForeignKey("paychecks.id"), nullable=False)
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=False)
+    payment_date = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+
+    paycheck = db.relationship("Paycheck", backref="income_payments")
+    account = db.relationship("Account", backref="income_payments")
 
 
 class SalaryChange(db.Model):
@@ -168,3 +179,15 @@ class ExpenseChange(db.Model):
     end_date = db.Column(db.Date)  # Optional end date for the changed period
     new_amount = db.Column(db.Numeric(10, 2), nullable=False)
     recurring_schedule = db.relationship("RecurringSchedule", backref="expense_changes")
+
+class ExpensePayment(db.Model):
+    __tablename__ = "expense_payments"
+    id = db.Column(db.Integer, primary_key=True)
+    expense_id = db.Column(db.Integer, db.ForeignKey("expenses.id"), nullable=False)
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=False)
+    payment_date = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+
+    expense = db.relationship("Expense", backref="expense_payments")
+    account = db.relationship("Account", backref="expense_payments")
+

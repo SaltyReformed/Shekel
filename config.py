@@ -9,6 +9,6 @@ class Config:
     # Use your PostgreSQL connection string; adjust the user, password, host, port, and database name as needed.
     SQLALCHEMY_DATABASE_URI = (
         os.environ.get("DATABASE_URL")
-        or "postgresql://postgres:postgres@localhost:5432/budgetapp"
+        or "postgresql://grubb:Unrelated7-Nimbly0-Whoever6-Trembling6-Refocus0@localhost:5432/budgetapp"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
