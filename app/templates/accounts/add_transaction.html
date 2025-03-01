@@ -1,0 +1,499 @@
+{% extends "base.html" %}
+
+{% block title %}Add Transaction - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Add Transaction</h1>
+        <p class="text-muted">Record deposits, withdrawals, or transfers between accounts</p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('account.add_transaction') }}" id="transactionForm">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="form-section">
+                            <h3>Transaction Type</h3>
+                            <div class="transaction-type-selector">
+                                <div class="type-option">
+                                    <input type="radio" id="deposit" name="transaction_type" value="deposit" checked>
+                                    <label for="deposit" class="type-label">
+                                        <div class="type-icon deposit-icon">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
+                                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                                stroke-linecap="round" stroke-linejoin="round">
+                                                <line x1="12" y1="19" x2="12" y2="5"></line>
+                                                <polyline points="5 12 12 5 19 12"></polyline>
+                                            </svg>
+                                        </div>
+                                        <span>Deposit</span>
+                                    </label>
+                                </div>
+                                <div class="type-option">
+                                    <input type="radio" id="withdrawal" name="transaction_type" value="withdrawal">
+                                    <label for="withdrawal" class="type-label">
+                                        <div class="type-icon withdrawal-icon">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
+                                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                                stroke-linecap="round" stroke-linejoin="round">
+                                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                                <polyline points="19 12 12 19 5 12"></polyline>
+                                            </svg>
+                                        </div>
+                                        <span>Withdrawal</span>
+                                    </label>
+                                </div>
+                                <div class="type-option">
+                                    <input type="radio" id="transfer" name="transaction_type" value="transfer">
+                                    <label for="transfer" class="type-label">
+                                        <div class="type-icon transfer-icon">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
+                                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                                stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+                                            </svg>
+                                        </div>
+                                        <span>Transfer</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Transaction Details</h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="account_id" id="account_label">Account</label>
+                                        <select id="account_id" name="account_id" class="form-control" required>
+                                            <option value="">-- Select Account --</option>
+                                            {% for account in accounts %}
+                                            <option value="{{ account.id }}">
+                                                {{ account.account_name }} (Balance: ${{
+                                                "{:,.2f}".format(account.balance) }})
+                                            </option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6" id="to_account_group" style="display: none;">
+                                    <div class="form-group">
+                                        <label for="to_account_id">To Account</label>
+                                        <select id="to_account_id" name="to_account_id" class="form-control">
+                                            <option value="">-- Select Destination Account --</option>
+                                            {% for account in accounts %}
+                                            <option value="{{ account.id }}">
+                                                {{ account.account_name }} (Balance: ${{
+                                                "{:,.2f}".format(account.balance) }})
+                                            </option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="amount">Amount</label>
+                                        <div class="input-with-icon">
+                                            <span class="input-icon">$</span>
+                                            <input type="number" id="amount" name="amount" class="form-control"
+                                                step="0.01" min="0.01" required>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="transaction_date">Date</label>
+                                        <input type="date" id="transaction_date" name="transaction_date"
+                                            class="form-control" value="{{ today }}" required>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="description">Description</label>
+                                <input type="text" id="description" name="description" class="form-control"
+                                    placeholder="Enter a description for this transaction">
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Save Transaction</button>
+                            <a href="{{ url_for('account.overview') }}" class="btn btn-link">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">About Transactions</h3>
+                </div>
+                <div class="card-body">
+                    <p>Transactions record the movement of money in and out of your accounts.</p>
+
+                    <h4>Transaction Types</h4>
+                    <ul class="help-list">
+                        <li><strong>Deposit:</strong> Money added to an account (income, refunds, etc.)</li>
+                        <li><strong>Withdrawal:</strong> Money spent or removed from an account (bills, purchases)</li>
+                        <li><strong>Transfer:</strong> Money moved between your accounts</li>
+                    </ul>
+
+                    <div class="tip-box">
+                        <div class="tip-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <div class="tip-content">
+                            <p><strong>Pro tip:</strong> For consistent tracking, add all transactions promptly, even
+                                small ones.</p>
+                        </div>
+                    </div>
+
+                    <div class="debt-note">
+                        <h4>For Debt Accounts:</h4>
+                        <ul class="help-list">
+                            <li><strong>Deposit:</strong> Represents a charge or increase in debt (new purchases)</li>
+                            <li><strong>Withdrawal:</strong> Represents a payment or decrease in debt (payments)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-md-6 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+
+    @media (min-width: 768px) {
+        .col-md-6 {
+            flex: 0 0 50%;
+            max-width: 50%;
+        }
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-section:last-child {
+        border-bottom: none;
+    }
+
+    .form-section h3 {
+        margin-bottom: 1.25rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-color);
+    }
+
+    .transaction-type-selector {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .type-option {
+        flex: 1;
+        min-width: 100px;
+    }
+
+    .type-option input[type="radio"] {
+        display: none;
+    }
+
+    .type-label {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 1.25rem 1rem;
+        background-color: var(--neutral-100);
+        border-radius: var(--border-radius);
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: center;
+    }
+
+    .type-icon {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        margin-bottom: 0.75rem;
+        transition: all 0.2s ease;
+    }
+
+    .deposit-icon {
+        color: var(--success-color);
+        background-color: var(--success-light);
+    }
+
+    .withdrawal-icon {
+        color: var(--danger-color);
+        background-color: var(--danger-light);
+    }
+
+    .transfer-icon {
+        color: var(--primary-color);
+        background-color: var(--primary-light);
+    }
+
+    .type-option input[type="radio"]:checked+.type-label {
+        background-color: var(--primary-light);
+        border: 1px solid var(--primary-color);
+    }
+
+    .type-option input[type="radio"]:checked+.type-label .type-icon {
+        transform: scale(1.1);
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-with-icon .form-control {
+        padding-left: 2rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .help-card {
+        background-color: var(--primary-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .tip-box {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+        padding: 1rem;
+        background-color: var(--info-bg);
+        border-radius: var(--border-radius);
+        margin-bottom: 1.5rem;
+    }
+
+    .tip-icon {
+        color: var(--info-color);
+        flex-shrink: 0;
+    }
+
+    .tip-content p {
+        margin-bottom: 0;
+    }
+
+    .debt-note {
+        border-top: 1px solid var(--border-color);
+        padding-top: 1.25rem;
+        margin-top: 1.25rem;
+    }
+
+    .debt-note h4 {
+        margin-bottom: 0.75rem;
+        font-size: 1.1rem;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const transactionTypeRadios = document.getElementsByName('transaction_type');
+        const toAccountGroup = document.getElementById('to_account_group');
+        const accountLabel = document.getElementById('account_label');
+        const toAccountId = document.getElementById('to_account_id');
+        const accountId = document.getElementById('account_id');
+
+        // Function to update form based on transaction type
+        function updateFormForType(type) {
+            if (type === 'transfer') {
+                toAccountGroup.style.display = 'block';
+                accountLabel.textContent = 'From Account';
+                toAccountId.required = true;
+            } else {
+                toAccountGroup.style.display = 'none';
+                accountLabel.textContent = 'Account';
+                toAccountId.required = false;
+            }
+        }
+
+        // Add event listeners for radio buttons
+        for (let i = 0; i < transactionTypeRadios.length; i++) {
+            transactionTypeRadios[i].addEventListener('change', function () {
+                updateFormForType(this.value);
+            });
+        }
+
+        // Prevent selecting the same account for from and to in transfers
+        accountId.addEventListener('change', function () {
+            if (document.getElementById('transfer').checked) {
+                // Get all options from to_account_id
+                const options = toAccountId.options;
+
+                // Enable all options first
+                for (let i = 0; i < options.length; i++) {
+                    options[i].disabled = false;
+                }
+
+                // Disable the option that matches the selected account_id
+                for (let i = 0; i < options.length; i++) {
+                    if (options[i].value === this.value) {
+                        options[i].disabled = true;
+                    }
+                }
+
+                // If the currently selected to_account is the same as account_id, reset it
+                if (toAccountId.value === this.value) {
+                    toAccountId.value = '';
+                }
+            }
+        });
+
+        // Same check when to_account changes
+        toAccountId.addEventListener('change', function () {
+            if (document.getElementById('transfer').checked) {
+                // Get all options from account_id
+                const options = accountId.options;
+
+                // Enable all options first
+                for (let i = 0; i < options.length; i++) {
+                    options[i].disabled = false;
+                }
+
+                // Disable the option that matches the selected to_account_id
+                for (let i = 0; i < options.length; i++) {
+                    if (options[i].value === this.value) {
+                        options[i].disabled = true;
+                    }
+                }
+
+                // If the currently selected account is the same as to_account_id, reset it
+                if (accountId.value === this.value) {
+                    accountId.value = '';
+                }
+            }
+        });
+
+        // Set initial state
+        updateFormForType('deposit');
+    });
+</script>
+{% endblock %}

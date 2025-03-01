@@ -1,0 +1,496 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Interest - {{ account.account_name }} - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Manage Interest for {{ account.account_name }}</h1>
+        <p class="text-muted">Configure interest settings to track interest accruals</p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('account.manage_interest', account_id=account.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="form-group">
+                            <div class="form-check">
+                                <input type="checkbox" id="enabled" name="enabled" class="form-check-input" {% if
+                                    interest_settings.enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="enabled">
+                                    Enable Interest Accrual
+                                </label>
+                            </div>
+                            <small class="form-text text-muted">When enabled, interest will be automatically calculated
+                                and applied to the account.</small>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Interest Rate</h3>
+                            <div class="form-group">
+                                <label for="rate">Annual Percentage Rate (%)</label>
+                                <div class="input-with-icon">
+                                    <input type="number" id="rate" name="rate" class="form-control"
+                                        value="{{ interest_settings.rate|float }}" step="0.01" min="0" max="100">
+                                    <span class="input-icon-right">%</span>
+                                </div>
+                                <small class="form-text text-muted">Enter the annual interest rate (e.g., 4.00 for
+                                    4%)</small>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Compounding Settings</h3>
+                            <div class="form-group">
+                                <label for="interest_type">Interest Type</label>
+                                <select id="interest_type" name="interest_type" class="form-control">
+                                    <option value="simple" {% if interest_settings.interest_type=='simple' %}selected{%
+                                        endif %}>Simple Interest</option>
+                                    <option value="compound" {% if interest_settings.interest_type=='compound'
+                                        %}selected{% endif %}>Compound Interest</option>
+                                </select>
+                                <small class="form-text text-muted">Simple interest is calculated only on the principal
+                                    amount. Compound interest is calculated on the principal plus accumulated
+                                    interest.</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="compound_frequency">Compound Frequency</label>
+                                <select id="compound_frequency" name="compound_frequency" class="form-control">
+                                    <option value="daily" {% if interest_settings.compound_frequency=='daily'
+                                        %}selected{% endif %}>Daily</option>
+                                    <option value="monthly" {% if interest_settings.compound_frequency=='monthly'
+                                        %}selected{% endif %}>Monthly</option>
+                                    <option value="quarterly" {% if interest_settings.compound_frequency=='quarterly'
+                                        %}selected{% endif %}>Quarterly</option>
+                                    <option value="annually" {% if interest_settings.compound_frequency=='annually'
+                                        %}selected{% endif %}>Annually</option>
+                                </select>
+                                <small class="form-text text-muted">How often the interest is compounded.</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="accrual_day">Accrual Day (for Monthly)</label>
+                                <input type="number" id="accrual_day" name="accrual_day" class="form-control"
+                                    value="{{ interest_settings.accrual_day or '' }}" min="1" max="31">
+                                <small class="form-text text-muted">Day of the month when interest is accrued. Leave
+                                    blank for end of month.</small>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Interest Estimates</h3>
+                            <div class="interest-calculator">
+                                <div class="calculator-inputs">
+                                    <div class="calc-row">
+                                        <label for="current_balance">Current Balance</label>
+                                        <div class="calc-value">${{ "{:,.2f}".format(account.balance) }}</div>
+                                    </div>
+                                    <div class="calc-row">
+                                        <label for="time_period">Time Period</label>
+                                        <div class="calc-input">
+                                            <input type="number" id="time_period" class="form-control" value="12"
+                                                min="1" max="360">
+                                            <span class="calc-unit">months</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button type="button" id="calculate_interest"
+                                    class="btn btn-secondary">Calculate</button>
+                                <div class="calculator-results">
+                                    <div class="result-row">
+                                        <div class="result-label">Future Balance:</div>
+                                        <div class="result-value" id="future_balance">$0.00</div>
+                                    </div>
+                                    <div class="result-row">
+                                        <div class="result-label">Interest Earned:</div>
+                                        <div class="result-value" id="interest_earned">$0.00</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Save Interest Settings</button>
+                            <a href="{{ url_for('account.overview') }}" class="btn btn-link">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">About Interest Accrual</h3>
+                </div>
+                <div class="card-body">
+                    <p>Interest accrual allows you to track and estimate interest earnings on your accounts.</p>
+
+                    <h4>Interest Types</h4>
+                    <ul class="help-list">
+                        <li><strong>Simple Interest:</strong> Calculated only on the principal amount.</li>
+                        <li><strong>Compound Interest:</strong> Calculated on principal plus previously earned interest.
+                        </li>
+                    </ul>
+
+                    <h4>Compounding Frequencies</h4>
+                    <ul class="help-list">
+                        <li><strong>Daily:</strong> Interest compounds every day (365 periods/year)</li>
+                        <li><strong>Monthly:</strong> Interest compounds once per month (12 periods/year)</li>
+                        <li><strong>Quarterly:</strong> Interest compounds every 3 months (4 periods/year)</li>
+                        <li><strong>Annually:</strong> Interest compounds once per year (1 period/year)</li>
+                    </ul>
+
+                    <div class="info-box mt-3">
+                        <div class="info-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <p>These settings help estimate future balances. For accurate tracking, manually enter interest
+                            payments when they occur in your actual accounts.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card accrue-now-card">
+                <div class="card-header">
+                    <h3 class="card-title">Manual Accrual</h3>
+                </div>
+                <div class="card-body">
+                    <p>To manually accrue interest right now (if eligible based on your settings), click the button
+                        below.</p>
+                    <a href="{{ url_for('account.accrue_interest') }}" class="btn btn-primary btn-block">Accrue Interest
+                        Now</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-section:last-child {
+        border-bottom: none;
+    }
+
+    .form-section h3 {
+        margin-bottom: 1.25rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-color);
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon-right {
+        position: absolute;
+        right: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .form-check {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+
+    .form-check-input {
+        margin-right: 0.5rem;
+    }
+
+    .form-text {
+        display: block;
+        margin-top: 0.25rem;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .help-card {
+        background-color: var(--primary-light);
+    }
+
+    .accrue-now-card {
+        background-color: var(--accent-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .help-list li:last-child {
+        margin-bottom: 0;
+    }
+
+    .info-box {
+        background-color: var(--info-bg);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+
+    .info-icon {
+        color: var(--info-color);
+        flex-shrink: 0;
+    }
+
+    .info-box p {
+        margin-bottom: 0;
+        font-size: 0.9rem;
+    }
+
+    .mt-3 {
+        margin-top: 1rem;
+    }
+
+    .interest-calculator {
+        background-color: var(--neutral-100);
+        border-radius: var(--border-radius);
+        padding: 1.25rem;
+    }
+
+    .calculator-inputs {
+        margin-bottom: 1.25rem;
+    }
+
+    .calc-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .calc-value {
+        font-weight: 600;
+    }
+
+    .calc-input {
+        display: flex;
+        align-items: center;
+        width: 150px;
+    }
+
+    .calc-unit {
+        margin-left: 0.5rem;
+        color: var(--text-muted);
+    }
+
+    .calculator-results {
+        margin-top: 1.25rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .result-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 0.75rem;
+    }
+
+    .result-label {
+        color: var(--text-muted);
+    }
+
+    .result-value {
+        font-weight: 700;
+    }
+
+    .btn-block {
+        display: block;
+        width: 100%;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        // Get references to form elements
+        const rateInput = document.getElementById('rate');
+        const interestTypeSelect = document.getElementById('interest_type');
+        const compoundFrequencySelect = document.getElementById('compound_frequency');
+        const accrualDayInput = document.getElementById('accrual_day');
+        const timePeriodInput = document.getElementById('time_period');
+        const calculateBtn = document.getElementById('calculate_interest');
+        const futureBalanceOutput = document.getElementById('future_balance');
+        const interestEarnedOutput = document.getElementById('interest_earned');
+
+        // Current balance from the server
+        const currentBalance = {{ account.balance| float
+    }};
+
+    // Function to calculate future value with interest
+    function calculateFutureValue() {
+        const rate = parseFloat(rateInput.value) / 100; // Convert percentage to decimal
+        const months = parseInt(timePeriodInput.value);
+        const interestType = interestTypeSelect.value;
+        const compoundFrequency = compoundFrequencySelect.value;
+
+        let futureValue = 0;
+
+        if (interestType === 'simple') {
+            // Simple interest: A = P(1 + rt)
+            const years = months / 12;
+            futureValue = currentBalance * (1 + (rate * years));
+        } else {
+            // Compound interest: A = P(1 + r/n)^(nt)
+            let periodsPerYear = 1;
+
+            switch (compoundFrequency) {
+                case 'daily':
+                    periodsPerYear = 365;
+                    break;
+                case 'monthly':
+                    periodsPerYear = 12;
+                    break;
+                case 'quarterly':
+                    periodsPerYear = 4;
+                    break;
+                case 'annually':
+                default:
+                    periodsPerYear = 1;
+            }
+
+            const years = months / 12;
+            futureValue = currentBalance * Math.pow((1 + (rate / periodsPerYear)), (periodsPerYear * years));
+        }
+
+        // Update results
+        const interestEarned = futureValue - currentBalance;
+
+        futureBalanceOutput.textContent = '$' + futureValue.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+
+        interestEarnedOutput.textContent = ' + interestEarned.toLocaleString('en - US', {
+        minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+    });
+        }
+
+    // Add event listener to calculate button
+    calculateBtn.addEventListener('click', calculateFutureValue);
+
+    // Initial calculation
+    calculateFutureValue();
+
+    // Show/hide accrual day input based on compound frequency
+    compoundFrequencySelect.addEventListener('change', function () {
+        if (this.value === 'monthly') {
+            accrualDayInput.parentElement.style.display = 'block';
+        } else {
+            accrualDayInput.parentElement.style.display = 'none';
+        }
+    });
+
+    // Trigger the change event to set initial visibility
+    compoundFrequencySelect.dispatchEvent(new Event('change'));
+    });
+</script>
+{% endblock %}

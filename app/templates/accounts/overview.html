@@ -1,0 +1,407 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts Overview - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Accounts Overview</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('account.add_account') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Account
+                </a>
+                <a href="{{ url_for('account.add_transaction') }}" class="btn btn-secondary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <polyline points="19 12 12 19 5 12"></polyline>
+                    </svg>
+                    Add Transaction
+                </a>
+            </div>
+        </div>
+        <p class="text-muted">Manage your financial accounts and track balances</p>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+        <div class="card summary-card">
+            <div class="card-body">
+                <h3 class="card-title">Total Assets</h3>
+                <p class="card-value">${{ "{:,.2f}".format(assets_total) }}</p>
+                <p class="card-subtitle">Non-debt accounts</p>
+            </div>
+        </div>
+        <div class="card summary-card">
+            <div class="card-body">
+                <h3 class="card-title">Total Debt</h3>
+                <p class="card-value">${{ "{:,.2f}".format(debts_total) }}</p>
+                <p class="card-subtitle">Loans & liabilities</p>
+            </div>
+        </div>
+        <div class="card summary-card">
+            <div class="card-body">
+                <h3 class="card-title">Net Worth</h3>
+                <p class="card-value">${{ "{:,.2f}".format(net_worth) }}</p>
+                <p class="card-subtitle">Assets minus debts</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Assets List -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Assets</h3>
+        </div>
+        <div class="card-body">
+            {% set has_assets = false %}
+            {% for account in accounts %}
+            {% if not account.account_type.is_debt %}
+            {% set has_assets = true %}
+            {% endif %}
+            {% endfor %}
+
+            {% if has_assets %}
+            <div class="table-responsive">
+                <table class="table accounts-table">
+                    <thead>
+                        <tr>
+                            <th>Account Name</th>
+                            <th>Type</th>
+                            <th>Balance</th>
+                            <th>Future Balance (1yr)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for account in accounts %}
+                        {% if not account.account_type.is_debt %}
+                        <tr>
+                            <td>
+                                {{ account.account_name }}
+                                {% if account.id in account_interest %}
+                                <span class="interest-badge"
+                                    title="Interest rate: {{ account_interest[account.id].rate }}% ({{ account_interest[account.id].compound_frequency }})">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round">
+                                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                    </svg>
+                                    {{ account_interest[account.id].rate }}%
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td>{{ account.account_type.type_name }}</td>
+                            <td class="amount-value">${{ "{:,.2f}".format(account.balance) }}</td>
+                            <td class="future-value">
+                                {% if account.id in future_balances %}
+                                <span class="text-accent">${{ "{:,.2f}".format(future_balances[account.id]) }}</span>
+                                <div class="growth-indicator">+${{ "{:,.2f}".format(future_balances[account.id] -
+                                    account.balance) }}</div>
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="action-buttons">
+                                    <a href="{{ url_for('account.transactions', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-secondary">Transactions</a>
+                                    <a href="{{ url_for('account.edit_account', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-primary">Edit</a>
+                                    <a href="{{ url_for('account.manage_interest', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-accent" title="Configure Interest">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                                            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                        </svg>
+                                        Interest
+                                    </a>
+                                    <form method="POST"
+                                        action="{{ url_for('account.delete_account', account_id=account.id) }}"
+                                        class="d-inline delete-form"
+                                        onsubmit="return confirm('Are you sure you want to delete this account?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-state-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="5" width="20" height="14" rx="2" ry="2"></rect>
+                        <line x1="2" y1="10" x2="22" y2="10"></line>
+                    </svg>
+                </div>
+                <h3>No Asset Accounts</h3>
+                <p>You haven't added any checking, savings, or investment accounts yet.</p>
+                <a href="{{ url_for('account.add_account') }}" class="btn btn-primary">Add Your First Account</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Debt Accounts List -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Debt Accounts</h3>
+        </div>
+        <div class="card-body">
+            {% set has_debts = false %}
+            {% for account in accounts %}
+            {% if account.account_type.is_debt %}
+            {% set has_debts = true %}
+            {% endif %}
+            {% endfor %}
+
+            {% if has_debts %}
+            <div class="table-responsive">
+                <table class="table accounts-table">
+                    <thead>
+                        <tr>
+                            <th>Account Name</th>
+                            <th>Type</th>
+                            <th>Balance</th>
+                            <th>Future Balance (1yr)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for account in accounts %}
+                        {% if account.account_type.is_debt %}
+                        <tr>
+                            <td>
+                                {{ account.account_name }}
+                                {% if account.id in account_interest %}
+                                <span class="interest-badge"
+                                    title="Interest rate: {{ account_interest[account.id].rate }}% ({{ account_interest[account.id].compound_frequency }})">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round">
+                                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                    </svg>
+                                    {{ account_interest[account.id].rate }}%
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td>{{ account.account_type.type_name }}</td>
+                            <td class="amount-value">${{ "{:,.2f}".format(account.balance) }}</td>
+                            <td class="future-value">
+                                {% if account.id in future_balances %}
+                                <span class="text-accent">${{ "{:,.2f}".format(future_balances[account.id]) }}</span>
+                                <div class="growth-indicator">+${{ "{:,.2f}".format(future_balances[account.id] -
+                                    account.balance) }}</div>
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="action-buttons">
+                                    <a href="{{ url_for('account.transactions', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-secondary">Transactions</a>
+                                    <a href="{{ url_for('account.edit_account', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-primary">Edit</a>
+                                    <a href="{{ url_for('account.manage_interest', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-accent" title="Configure Interest">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                                            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                        </svg>
+                                        Interest
+                                    </a>
+                                    <form method="POST"
+                                        action="{{ url_for('account.delete_account', account_id=account.id) }}"
+                                        class="d-inline delete-form"
+                                        onsubmit="return confirm('Are you sure you want to delete this account?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-state-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                </div>
+                <h3>No Debt Accounts</h3>
+                <p>You haven't added any credit cards, loans, or mortgage accounts yet.</p>
+                <a href="{{ url_for('account.add_account') }}" class="btn btn-primary">Add Debt Account</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="quick-links">
+        <a href="{{ url_for('account.all_transactions') }}" class="btn btn-outline-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            View All Transactions
+        </a>
+        <a href="{{ url_for('account.accrue_interest') }}" class="btn btn-outline-accent">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            Accrue Interest Now
+        </a>
+        {% if is_admin %}
+        <a href="{{ url_for('account.account_types') }}" class="btn btn-outline-secondary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path
+                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                </path>
+            </svg>
+            Manage Account Types
+        </a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .summary-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .summary-card:nth-child(1) {
+        border-left: 4px solid var(--primary-color);
+    }
+
+    .summary-card:nth-child(2) {
+        border-left: 4px solid var(--danger-color);
+    }
+
+    .summary-card:nth-child(3) {
+        border-left: 4px solid var(--accent-color);
+    }
+
+    .accounts-table th,
+    .accounts-table td {
+        padding: 0.75rem 1rem;
+    }
+
+    .amount-value {
+        font-weight: 600;
+        text-align: right;
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 2rem 1rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+    }
+
+    .quick-links {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1.5rem;
+        margin-bottom: 2rem;
+    }
+
+    .btn svg {
+        margin-right: 0.5rem;
+    }
+
+    .d-inline {
+        display: inline-block;
+    }
+
+    /* Interest-specific styles */
+    .interest-badge {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 0.5rem;
+        padding: 0.15rem 0.5rem;
+        background-color: var(--accent-light);
+        color: var(--accent-color);
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .interest-badge svg {
+        margin-right: 0.25rem;
+    }
+
+    .future-value {
+        text-align: right;
+    }
+
+    .future-value .text-accent {
+        color: var(--accent-color);
+        font-weight: 600;
+    }
+
+    .growth-indicator {
+        font-size: 0.75rem;
+        color: var(--success-color);
+    }
+
+    .btn-outline-accent {
+        color: var(--accent-color);
+        border-color: var(--accent-color);
+    }
+
+    .btn-outline-accent:hover {
+        background-color: var(--accent-bg);
+        color: var(--accent-color);
+    }
+</style>
+{% endblock %}

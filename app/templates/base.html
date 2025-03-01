@@ -48,86 +48,103 @@
                     </svg>
                 </button>
 
-                <div class="nav-content">
-                    <ul class="nav-menu">
-                        <!-- Always visible links -->
-                        <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
-
-                        <!-- Links only visible to logged-in users -->
-                        {% if is_logged_in %}
-                        <li class="nav-item"><a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a></li>
-                        <li class="nav-item dropdown">
-                            <a href="{{ url_for('income.overview') }}" class="nav-link dropbtn">
-                                Income
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="dropdown-icon">
-                                    <path d="m6 9 6 6 6-6" />
-                                </svg>
-                            </a>
-                            <div class="dropdown-content">
-                                <a href="{{ url_for('income.overview') }}">Overview</a>
-                                <a href="{{ url_for('income.manage_salary') }}">Manage Salary</a>
-                                <a href="{{ url_for('income.manage_paychecks') }}">View Paychecks</a>
-                                <a href="{{ url_for('income.one_time_income') }}">Add One-time Income</a>
-                            </div>
-                        </li>
-                        <li class="nav-item dropdown">
-                            <a href="#" class="nav-link dropbtn">
-                                Expenses
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="dropdown-icon">
-                                    <path d="m6 9 6 6 6-6" />
-                                </svg>
-                            </a>
-                            <div class="dropdown-content">
-                                <a href="#">Overview</a>
-                                <a href="#">Add Expense</a>
-                            </div>
-                        </li>
-                        <li class="nav-item dropdown">
-                            <a href="{{ url_for('config.categories') }}" class="nav-link dropbtn">
-                                Settings
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="dropdown-icon">
-                                    <path d="m6 9 6 6 6-6" />
-                                </svg>
-                            </a>
-                            <div class="dropdown-content">
-                                <a href="{{ url_for('config.categories') }}">Income Categories</a>
-                                <a href="{{ url_for('config.frequencies') }}">Payment Frequencies</a>
-                                <a href="{{ url_for('config.recurring_schedules') }}">Recurring Schedules</a>
-                                {% if is_admin %}
-
-                                {% endif %}
-                            </div>
-                        </li>
-                        {% endif %}
-
-                        <!-- Admin-only links -->
-                        {% if is_admin %}
-                        <li class="nav-item dropdown">
-                            <a href="#" class="nav-link dropbtn">
-                                Admin
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="dropdown-icon">
-                                    <path d="m6 9 6 6 6-6" />
-                                </svg>
-                            </a>
-                            <div class="dropdown-content">
-                                <a href="{{ url_for('user.list_users') }}">User Management</a>
-                                <a href="{{ url_for('role.list_roles') }}">Role Management</a>
-                                <a href="{{ url_for('config.schedule_types') }}">Schedule Types</a>
-                            </div>
-                        </li>
-                        {% endif %}
-
-                        <!-- Help/About links -->
-                        <li class="nav-item"><a href="#" class="nav-link">About</a></li>
-                    </ul>
+                <ul class="nav-menu">
+                    <!-- Always visible links -->
+                    <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
+                
+                    <!-- Links only visible to logged-in users -->
+                    {% if is_logged_in %}
+                    <li class="nav-item"><a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a></li>
+                    <li class="nav-item dropdown">
+                        <a href="{{ url_for('income.overview') }}" class="nav-link dropbtn">
+                            Income
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </a>
+                        <div class="dropdown-content">
+                            <a href="{{ url_for('income.overview') }}">Overview</a>
+                            <a href="{{ url_for('income.manage_salary') }}">Manage Salary</a>
+                            <a href="{{ url_for('income.manage_paychecks') }}">View Paychecks</a>
+                            <a href="{{ url_for('income.one_time_income') }}">Add One-time Income</a>
+                        </div>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a href="{{ url_for('account.overview') }}" class="nav-link dropbtn">
+                            Accounts
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </a>
+                        <div class="dropdown-content">
+                            <a href="{{ url_for('account.overview') }}">Accounts Overview</a>
+                            <a href="{{ url_for('account.add_account') }}">Add Account</a>
+                            <a href="{{ url_for('account.add_transaction') }}">Add Transaction</a>
+                            <a href="{{ url_for('account.all_transactions') }}">All Transactions</a>
+                        </div>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a href="#" class="nav-link dropbtn">
+                            Expenses
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </a>
+                        <div class="dropdown-content">
+                            <a href="#">Overview</a>
+                            <a href="#">Add Expense</a>
+                        </div>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a href="{{ url_for('config.categories') }}" class="nav-link dropbtn">
+                            Settings
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </a>
+                        <div class="dropdown-content">
+                            <a href="{{ url_for('config.categories') }}">Income Categories</a>
+                            <a href="{{ url_for('config.frequencies') }}">Payment Frequencies</a>
+                            <a href="{{ url_for('config.recurring_schedules') }}">Recurring Schedules</a>
+                            {% if is_admin %}
+                            <a href="{{ url_for('config.schedule_types') }}">Schedule Types</a>
+                            <a href="{{ url_for('account.account_types') }}">Account Types</a>
+                            <a href="{{ url_for('user.list_users') }}">User Management</a>
+                            {% endif %}
+                        </div>
+                    </li>
+                    {% endif %}
+                
+                    <!-- Admin-only links -->
+                    {% if is_admin %}
+                    <li class="nav-item dropdown">
+                        <a href="#" class="nav-link dropbtn">
+                            Admin
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </a>
+                        <div class="dropdown-content">
+                            <a href="{{ url_for('user.list_users') }}">User Management</a>
+                            <a href="{{ url_for('config.schedule_types') }}">Schedule Types</a>
+                            <a href="{{ url_for('account.account_types') }}">Account Types</a>
+                        </div>
+                    </li>
+                    {% endif %}
+                
+                    <!-- Help/About links -->
+                    <li class="nav-item"><a href="#" class="nav-link">About</a></li>
+                </ul>
 
                     <div class="nav-buttons">
                         {% if is_logged_in %}

@@ -1,4 +1,5 @@
 from flask_sqlalchemy import SQLAlchemy
+from datetime import date
 
 db = SQLAlchemy()
 
@@ -83,6 +84,9 @@ class Account(db.Model):
     balance = db.Column(db.Numeric(10, 2), default=0.00)
     user = db.relationship("User", backref="accounts")
     account_type = db.relationship("AccountType", backref="accounts")
+    transactions = db.relationship(
+        "Transaction", back_populates="account", cascade="all, delete-orphan"
+    )
 
 
 class RecurringSchedule(db.Model):
@@ -125,6 +129,7 @@ class Paycheck(db.Model):
     user = db.relationship("User", backref="paychecks")
     income_category = db.relationship("IncomeCategory", backref="paychecks")
     recurring_schedule = db.relationship("RecurringSchedule", backref="paychecks")
+
 
 class IncomePayment(db.Model):
     __tablename__ = "income_payments"
@@ -182,6 +187,7 @@ class ExpenseChange(db.Model):
     new_amount = db.Column(db.Numeric(10, 2), nullable=False)
     recurring_schedule = db.relationship("RecurringSchedule", backref="expense_changes")
 
+
 class ExpensePayment(db.Model):
     __tablename__ = "expense_payments"
     id = db.Column(db.Integer, primary_key=True)
@@ -192,3 +198,50 @@ class ExpensePayment(db.Model):
 
     expense = db.relationship("Expense", backref="expense_payments")
     account = db.relationship("Account", backref="expense_payments")
+
+
+
+
+# Transaction model for recording account transactions
+class Transaction(db.Model):
+    __tablename__ = "transactions"
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=False)
+    transaction_date = db.Column(db.Date, nullable=False, default=date.today)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    description = db.Column(db.String(255))
+    transaction_type = db.Column(
+        db.String(50)
+    )  # 'deposit', 'withdrawal', 'transfer_in', 'transfer_out'
+
+    # For transfers
+    related_transaction_id = db.Column(
+        db.Integer, db.ForeignKey("transactions.id"), nullable=True
+    )
+
+    account = db.relationship("Account", backref="transactions")
+    related_transaction = db.relationship(
+        "Transaction", remote_side=[id], backref="related_transactions"
+    )
+
+
+class AccountInterest(db.Model):
+    __tablename__ = "account_interest"
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer, db.ForeignKey("accounts.id"), nullable=False, unique=True
+    )
+    rate = db.Column(
+        db.Numeric(5, 2), nullable=False
+    )  # Annual interest rate (e.g., 4.00%)
+    compound_frequency = db.Column(
+        db.String(20), nullable=False, default="monthly"
+    )  # daily, monthly, quarterly, annually
+    accrual_day = db.Column(
+        db.Integer, default=None
+    )  # Day of month for accrual (NULL = end of month)
+    interest_type = db.Column(db.String(20), default="simple")  # simple or compound
+    enabled = db.Column(db.Boolean, default=True)
+    last_accrual_date = db.Column(db.Date, default=None)
+
+    account = db.relationship("Account", backref="interest_settings")

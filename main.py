@@ -2,12 +2,15 @@ import os
 from flask import Flask, render_template, redirect, url_for, session, flash
 from flask_wtf.csrf import CSRFProtect
 from config import Config
-from models import db, User
+from models import db
 from auth import auth_bp
 from income import income_bp
 from config_manager import config_bp
 from user_management import user_bp
-from role_management import role_bp
+from account_manager import (
+    account_bp,
+    Transaction,
+)  # Import the new account management blueprint and Transaction model
 
 
 def create_app():
@@ -31,7 +34,7 @@ def create_app():
     app.register_blueprint(income_bp)
     app.register_blueprint(config_bp)
     app.register_blueprint(user_bp)
-    app.register_blueprint(role_bp)
+    app.register_blueprint(account_bp)  # Register the account management blueprint
 
     # Helper function to check if user is logged in
     def is_logged_in():
@@ -42,12 +45,7 @@ def create_app():
     def home():
         if is_logged_in():
             return redirect(url_for("dashboard"))
-        # Get the logged-in user's information
-        user = User.query.get(session.get("user_id"))
-
-        # Use first name if available, otherwise fallback to username
-        display_name = user.first_name if user.first_name else session.get("username")
-        return render_template("index.html", display_name=display_name)
+        return render_template("index.html")
 
     # Dashboard route for logged-in users
     @app.route("/dashboard")
@@ -55,21 +53,18 @@ def create_app():
         if not is_logged_in():
             flash("Please log in to access the dashboard.", "danger")
             return redirect(url_for("auth.login"))
-        # Get the logged-in user's information
 
-        user = User.query.get(session.get("user_id"))
-
-        # Use first name if available, otherwise fallback to username
-        display_name = user.first_name if user.first_name else session.get("username")
-
-        return render_template("dashboard.html", display_name=display_name)
+        return render_template("dashboard.html")
 
     # Make user session info available to all templates
     @app.context_processor
     def inject_user_info():
+        from datetime import date
+
         user_info = {
             "is_logged_in": is_logged_in(),
             "is_admin": session.get("role") == "ADMIN" if is_logged_in() else False,
+            "today": date.today(),  # Make today's date available for templates
         }
         return user_info
 
