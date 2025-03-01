@@ -55,18 +55,11 @@
     </div>
 
     <!-- Assets List -->
-    <div class="card">
+    <div class="asset-card">
         <div class="card-header">
             <h3 class="card-title">Assets</h3>
         </div>
         <div class="card-body">
-            {% set has_assets = false %}
-            {% for account in accounts %}
-            {% if not account.account_type.is_debt %}
-            {% set has_assets = true %}
-            {% endif %}
-            {% endfor %}
-
             {% if has_assets %}
             <div class="table-responsive">
                 <table class="table accounts-table">
@@ -80,8 +73,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% for account in accounts %}
-                        {% if not account.account_type.is_debt %}
+                        {% for account in accounts if not account.account_type.is_debt %}
                         <tr>
                             <td>
                                 {{ account.account_name }}
@@ -111,10 +103,10 @@
                             <td>
                                 <div class="action-buttons">
                                     <a href="{{ url_for('account.transactions', account_id=account.id) }}"
-                                        class="btn btn-sm btn-outline-secondary">Transactions</a>
+                                        class="btn btn-sm btn-outline-secondary">>Transactions</a>
                                     <a href="{{ url_for('account.edit_account', account_id=account.id) }}"
-                                        class="btn btn-sm btn-outline-primary">Edit</a>
-                                    <a href="{{ url_for('account.manage_interest', account_id=account.id) }}"
+                                        class="btn btn-sm btn-outline-primary"">Edit</a>
+                                    <a href=" {{ url_for('account.manage_interest', account_id=account.id) }}"
                                         class="btn btn-sm btn-outline-accent" title="Configure Interest">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
                                             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -133,7 +125,6 @@
                                 </div>
                             </td>
                         </tr>
-                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
@@ -143,8 +134,9 @@
                 <div class="empty-state-icon">
                     <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
                         stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="2" y="5" width="20" height="14" rx="2" ry="2"></rect>
-                        <line x1="2" y1="10" x2="22" y2="10"></line>
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
                     </svg>
                 </div>
                 <h3>No Asset Accounts</h3>
@@ -155,19 +147,13 @@
         </div>
     </div>
 
+
     <!-- Debt Accounts List -->
-    <div class="card">
+    <div class="debt-card">
         <div class="card-header">
-            <h3 class="card-title">Debt Accounts</h3>
+            <h3 class="card-title">Debts</h3>
         </div>
         <div class="card-body">
-            {% set has_debts = false %}
-            {% for account in accounts %}
-            {% if account.account_type.is_debt %}
-            {% set has_debts = true %}
-            {% endif %}
-            {% endfor %}
-
             {% if has_debts %}
             <div class="table-responsive">
                 <table class="table accounts-table">
@@ -181,8 +167,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% for account in accounts %}
-                        {% if account.account_type.is_debt %}
+                        {% for account in accounts if account.account_type.is_debt %}
                         <tr>
                             <td>
                                 {{ account.account_name }}
@@ -234,7 +219,6 @@
                                 </div>
                             </td>
                         </tr>
-                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
@@ -256,6 +240,7 @@
             {% endif %}
         </div>
     </div>
+
 
     <!-- Quick Links -->
     <div class="quick-links">
@@ -402,6 +387,61 @@
     .btn-outline-accent:hover {
         background-color: var(--accent-bg);
         color: var(--accent-color);
+    }
+
+    .accounts-table th,
+    .accounts-table td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+    }
+
+    /* Set explicit widths and alignment if needed */
+    .accounts-table th:nth-child(1),
+    .accounts-table td:nth-child(1) {
+        width: 30%;
+    }
+
+    .accounts-table th:nth-child(2),
+    .accounts-table td:nth-child(2) {
+        width: 20%;
+    }
+
+    .accounts-table th:nth-child(3),
+    .accounts-table td:nth-child(3) {
+        width: 20%;
+    }
+
+    .accounts-table th:nth-child(4),
+    .accounts-table td:nth-child(4) {
+        width: 15%;
+        text-align: right;
+    }
+
+    .accounts-table th:nth-child(5),
+    .accounts-table td:nth-child(5) {
+        width: 15%;
+        text-align: right;
+    }
+
+    .asset-card,
+    .debt-card {
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        margin-bottom: 2rem;
+        padding: 15px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Use a soft green background for asset accounts */
+    .asset-card {
+        background-color: #e8f5e90d;
+        border-color: #4CAF50;
+    }
+
+    /* Use a soft red background for debt accounts */
+    .debt-card {
+        background-color: #ffebee07;
+        border-color: #F44336;
     }
 </style>
 {% endblock %}

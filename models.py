@@ -200,8 +200,6 @@ class ExpensePayment(db.Model):
     account = db.relationship("Account", backref="expense_payments")
 
 
-
-
 # Transaction model for recording account transactions
 class Transaction(db.Model):
     __tablename__ = "transactions"
@@ -219,7 +217,7 @@ class Transaction(db.Model):
         db.Integer, db.ForeignKey("transactions.id"), nullable=True
     )
 
-    account = db.relationship("Account", backref="transactions")
+    account = db.relationship("Account", back_populates="transactions")
     related_transaction = db.relationship(
         "Transaction", remote_side=[id], backref="related_transactions"
     )

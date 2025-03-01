@@ -47,6 +47,10 @@ def overview():
                 account, 12
             )  # 12 months projection
 
+    # Determine if there are any asset or debt accounts
+    has_assets = any(not a.account_type.is_debt for a in accounts)
+    has_debts = any(a.account_type.is_debt for a in accounts)
+
     return render_template(
         "accounts/overview.html",
         accounts=accounts,
@@ -55,6 +59,8 @@ def overview():
         net_worth=net_worth,
         account_interest=account_interest,
         future_balances=future_balances,
+        has_assets=has_assets,
+        has_debts=has_debts,
     )
 
 
