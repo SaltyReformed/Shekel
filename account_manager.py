@@ -3,6 +3,8 @@ from models import db, Account, AccountType, User, Transaction, AccountInterest
 from functools import wraps
 from datetime import date
 from decimal import Decimal
+import calendar
+
 
 account_bp = Blueprint("account", __name__, url_prefix="/accounts")
 
@@ -424,15 +426,28 @@ def add_transaction():
 def all_transactions():
     user_id = session.get("user_id")
     accounts = Account.query.filter_by(user_id=user_id).all()
-
-    # Get transactions from all user accounts
     account_ids = [a.id for a in accounts]
-    transactions = (
-        Transaction.query.filter(Transaction.account_id.in_(account_ids))
-        .order_by(Transaction.transaction_date.desc())
-        .all()
-    )
 
+    query = Transaction.query.filter(Transaction.account_id.in_(account_ids))
+
+    # Filter by account if specified
+    account_filter = request.args.get("account")
+    if account_filter:
+        query = query.filter_by(account_id=account_filter)
+
+    # Filter by date range if specified
+    start_date = request.args.get("start_date")
+    if start_date:
+        query = query.filter(
+            Transaction.transaction_date >= date.fromisoformat(start_date)
+        )
+    end_date = request.args.get("end_date")
+    if end_date:
+        query = query.filter(
+            Transaction.transaction_date <= date.fromisoformat(end_date)
+        )
+
+    transactions = query.order_by(Transaction.transaction_date.desc()).all()
     return render_template(
         "accounts/transactions.html", transactions=transactions, accounts=accounts
     )
@@ -444,16 +459,163 @@ def transactions(account_id):
     user_id = session.get("user_id")
     account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
 
-    # Get transactions for this account
-    transactions = (
-        Transaction.query.filter_by(account_id=account_id)
-        .order_by(Transaction.transaction_date.desc())
-        .all()
-    )
+    query = Transaction.query.filter_by(account_id=account_id)
 
+    # Filter by transaction type if provided
+    transaction_type = request.args.get("transaction_type")
+    if transaction_type:
+        if transaction_type == "transfer":
+            query = query.filter(
+                Transaction.transaction_type.in_(["transfer_in", "transfer_out"])
+            )
+        else:
+            query = query.filter_by(transaction_type=transaction_type)
+
+    # Filter by date range if provided
+    start_date = request.args.get("start_date")
+    if start_date:
+        query = query.filter(
+            Transaction.transaction_date >= date.fromisoformat(start_date)
+        )
+    end_date = request.args.get("end_date")
+    if end_date:
+        query = query.filter(
+            Transaction.transaction_date <= date.fromisoformat(end_date)
+        )
+
+    transactions = query.order_by(Transaction.transaction_date.desc()).all()
     return render_template(
         "accounts/account_transactions.html", account=account, transactions=transactions
     )
+
+
+# Add these routes to your account_manager.py file, somewhere near the other transaction routes
+
+
+@account_bp.route("/transaction/<int:transaction_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_transaction(transaction_id):
+    user_id = session.get("user_id")
+
+    # Find the transaction
+    transaction = Transaction.query.get_or_404(transaction_id)
+
+    # Check if the transaction belongs to the user
+    account = Account.query.filter_by(
+        id=transaction.account_id, user_id=user_id
+    ).first_or_404()
+
+    # Get all user accounts for the form dropdown
+    accounts = Account.query.filter_by(user_id=user_id).all()
+
+    if request.method == "POST":
+        # Get form data
+        description = request.form.get("description", "")
+        transaction_date_str = request.form.get("transaction_date")
+
+        # Only allow changing description and date for simplicity
+        # Changing amount or type would require complex balance adjustments
+
+        # Convert date
+        try:
+            transaction_date = date.fromisoformat(transaction_date_str)
+        except:
+            flash("Invalid date format", "danger")
+            return render_template(
+                "accounts/edit_transaction.html",
+                transaction=transaction,
+                accounts=accounts,
+            )
+
+        # Update transaction
+        transaction.description = description
+        transaction.transaction_date = transaction_date
+
+        db.session.commit()
+
+        flash("Transaction updated successfully", "success")
+
+        # Redirect back to the appropriate transactions page
+        if request.form.get("redirect_to_account"):
+            return redirect(
+                url_for("account.transactions", account_id=transaction.account_id)
+            )
+        else:
+            return redirect(url_for("account.all_transactions"))
+
+    return render_template(
+        "accounts/edit_transaction.html", transaction=transaction, accounts=accounts
+    )
+
+
+@account_bp.route("/transaction/<int:transaction_id>/delete", methods=["POST"])
+@login_required
+def delete_transaction(transaction_id):
+    user_id = session.get("user_id")
+
+    # Find the transaction
+    transaction = Transaction.query.get_or_404(transaction_id)
+
+    # Check if the transaction belongs to the user
+    account = Account.query.filter_by(
+        id=transaction.account_id, user_id=user_id
+    ).first_or_404()
+
+    # Store information for redirection and message
+    account_id = transaction.account_id
+    redirect_to_account = request.form.get("redirect_to_account") == "1"
+    transaction_date = transaction.transaction_date.strftime("%b %d, %Y")
+    transaction_type = transaction.transaction_type
+    transaction_amount = transaction.amount
+
+    try:
+        # Reverse the transaction effect on balance
+        if transaction_type == "deposit" or transaction_type == "transfer_in":
+            account.balance -= transaction_amount
+        elif transaction_type == "withdrawal" or transaction_type == "transfer_out":
+            account.balance += transaction_amount
+
+        # If it's a transfer, handle the related transaction
+        if transaction.related_transaction_id:
+            related_transaction = Transaction.query.get(
+                transaction.related_transaction_id
+            )
+            if related_transaction:
+                # Find the related account
+                related_account = Account.query.get(related_transaction.account_id)
+                if related_account and related_account.user_id == user_id:
+                    # Reverse the effect on the related account
+                    if (
+                        related_transaction.transaction_type == "deposit"
+                        or related_transaction.transaction_type == "transfer_in"
+                    ):
+                        related_account.balance -= related_transaction.amount
+                    elif (
+                        related_transaction.transaction_type == "withdrawal"
+                        or related_transaction.transaction_type == "transfer_out"
+                    ):
+                        related_account.balance += related_transaction.amount
+
+                    # Delete the related transaction
+                    db.session.delete(related_transaction)
+
+        # Delete the transaction
+        db.session.delete(transaction)
+        db.session.commit()
+
+        flash(
+            f"Transaction from {transaction_date} for ${transaction_amount:,.2f} deleted successfully",
+            "success",
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting transaction: {str(e)}", "danger")
+
+    # Redirect back to the appropriate transactions page
+    if redirect_to_account:
+        return redirect(url_for("account.transactions", account_id=account_id))
+    else:
+        return redirect(url_for("account.all_transactions"))
 
 
 @account_bp.route("/<int:account_id>/interest", methods=["GET", "POST"])

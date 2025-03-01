@@ -16,17 +16,17 @@
                     <form method="POST" action="{{ url_for('account.manage_interest', account_id=account.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-                        <div class="form-group">
+                        <div class="form-group interest-option">
                             <div class="form-check">
                                 <input type="checkbox" id="enabled" name="enabled" class="form-check-input" {% if
                                     interest_settings.enabled %}checked{% endif %}>
-                                <label class="form-check-label" for="enabled">
-                                    Enable Interest Accrual
-                                </label>
+                                <label class="form-check-label" for="enabled">Enable Interest Accrual</label>
                             </div>
                             <small class="form-text text-muted">When enabled, interest will be automatically calculated
-                                and applied to the account.</small>
+                                and applied to the
+                                account.</small>
                         </div>
+
 
                         <div class="form-section">
                             <h3>Interest Rate</h3>
@@ -404,6 +404,23 @@
         display: block;
         width: 100%;
     }
+
+    /* Adjust the spacing and alignment for the interest accrual checkbox */
+    .form-check {
+        display: flex;
+        align-items: center;
+        gap: 0.05rem;
+        /* reduces the gap between checkbox and label */
+    }
+
+    /* Optionally, add a border or background to highlight this option */
+    .interest-option {
+        padding: 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+        background-color: var(--neutral-100);
+        margin-bottom: 1rem;
+    }
 </style>
 {% endblock %}
 
@@ -423,6 +440,7 @@
         // Current balance from the server
         const currentBalance = {{ account.balance| float
     }};
+
 
     // Function to calculate future value with interest
     function calculateFutureValue() {
@@ -468,11 +486,12 @@
             maximumFractionDigits: 2
         });
 
-        interestEarnedOutput.textContent = ' + interestEarned.toLocaleString('en - US', {
-        minimumFractionDigits: 2,
+        interestEarnedOutput.textContent = '$' + interestEarned.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
             maximumFractionDigits: 2
-    });
-        }
+        });
+
+    }
 
     // Add event listener to calculate button
     calculateBtn.addEventListener('click', calculateFutureValue);

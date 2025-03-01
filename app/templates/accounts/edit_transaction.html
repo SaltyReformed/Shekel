@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Transaction - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Edit Transaction</h1>
+        <p class="text-muted">Update transaction details</p>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST"
+                        action="{{ url_for('account.edit_transaction', transaction_id=transaction.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        {% if request.referrer and 'transactions/' in request.referrer %}
+                        <input type="hidden" name="redirect_to_account" value="1">
+                        {% endif %}
+
+                        <div class="transaction-info">
+                            <div class="info-row">
+                                <div class="info-label">Account:</div>
+                                <div class="info-value">{{ transaction.account.account_name }}</div>
+                            </div>
+                            <div class="info-row">
+                                <div class="info-label">Type:</div>
+                                <div class="info-value">
+                                    {% if transaction.transaction_type == 'deposit' %}
+                                    <span class="badge success">Deposit</span>
+                                    {% elif transaction.transaction_type == 'withdrawal' %}
+                                    <span class="badge danger">Withdrawal</span>
+                                    {% elif transaction.transaction_type == 'transfer_in' %}
+                                    <span class="badge primary">Transfer In</span>
+                                    {% elif transaction.transaction_type == 'transfer_out' %}
+                                    <span class="badge warning">Transfer Out</span>
+                                    {% else %}
+                                    <span class="badge secondary">{{ transaction.transaction_type }}</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="info-row">
+                                <div class="info-label">Amount:</div>
+                                <div class="info-value amount">
+                                    {% if transaction.transaction_type in ['deposit', 'transfer_in'] %}
+                                    <span class="text-success">+${{ "{:,.2f}".format(transaction.amount) }}</span>
+                                    {% else %}
+                                    <span class="text-danger">-${{ "{:,.2f}".format(transaction.amount) }}</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <div class="form-group">
+                                <label for="transaction_date">Date</label>
+                                <input type="date" id="transaction_date" name="transaction_date" class="form-control"
+                                    value="{{ transaction.transaction_date.strftime('%Y-%m-%d') }}" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="description">Description</label>
+                                <input type="text" id="description" name="description" class="form-control"
+                                    value="{{ transaction.description }}" placeholder="Enter a description">
+                            </div>
+                        </div>
+
+                        <div class="edit-notice">
+                            <div class="notice-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                </svg>
+                            </div>
+                            <div class="notice-text">
+                                <p>For simplicity, you can only edit the date and description of a transaction.
+                                    To change the amount or type, delete this transaction and create a new one.</p>
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Update Transaction</button>
+                            {% if request.referrer and 'transactions/' in request.referrer %}
+                            <a href="{{ url_for('account.transactions', account_id=transaction.account_id) }}"
+                                class="btn btn-link">Cancel</a>
+                            {% else %}
+                            <a href="{{ url_for('account.all_transactions') }}" class="btn btn-link">Cancel</a>
+                            {% endif %}
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">About Editing Transactions</h3>
+                </div>
+                <div class="card-body">
+                    <p>You can update the date and description of your transaction.</p>
+
+                    <p>For security and accuracy reasons, changing the transaction amount or type is not supported
+                        directly. If you need to change these details, please delete this transaction and create a new
+                        one with the correct information.</p>
+
+                    <div class="info-box mt-3">
+                        <div class="info-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <p>When you update a transaction, your account balance will not change since you're not
+                            modifying the transaction amount.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .transaction-info {
+        background-color: var(--neutral-100);
+        border-radius: var(--border-radius);
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .info-row {
+        display: flex;
+        margin-bottom: 0.75rem;
+    }
+
+    .info-row:last-child {
+        margin-bottom: 0;
+    }
+
+    .info-label {
+        width: 100px;
+        font-weight: 500;
+        color: var(--text-muted);
+    }
+
+    .info-value {
+        flex: 1;
+    }
+
+    .info-value.amount {
+        font-weight: 600;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .badge.success {
+        background-color: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .badge.danger {
+        background-color: var(--danger-light);
+        color: var(--danger-color);
+    }
+
+    .badge.primary {
+        background-color: var(--primary-light);
+        color: var(--primary-color);
+    }
+
+    .badge.warning {
+        background-color: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .badge.secondary {
+        background-color: var(--neutral-200);
+        color: var(--neutral-700);
+    }
+
+    .form-section {
+        margin-bottom: 1.5rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .text-success {
+        color: var(--success-color);
+    }
+
+    .text-danger {
+        color: var(--danger-color);
+    }
+
+    .edit-notice {
+        display: flex;
+        background-color: var(--warning-light);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+        gap: 0.75rem;
+        align-items: flex-start;
+    }
+
+    .notice-icon {
+        color: var(--warning-color);
+        flex-shrink: 0;
+    }
+
+    .notice-text p {
+        margin-bottom: 0;
+        font-size: 0.9rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .help-card {
+        background-color: var(--primary-light);
+    }
+
+    .info-box {
+        background-color: var(--info-bg);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+
+    .info-icon {
+        color: var(--info-color);
+        flex-shrink: 0;
+    }
+
+    .info-box p {
+        margin-bottom: 0;
+        font-size: 0.9rem;
+    }
+
+    .mt-3 {
+        margin-top: 1rem;
+    }
+</style>
+{% endblock %}

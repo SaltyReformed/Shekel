@@ -288,7 +288,7 @@
     }
 
     .summary-card:nth-child(1) {
-        border-left: 4px solid var(--primary-color);
+        border-left: 4px solid var(--accent-color);
     }
 
     .summary-card:nth-child(2) {
@@ -296,7 +296,7 @@
     }
 
     .summary-card:nth-child(3) {
-        border-left: 4px solid var(--accent-color);
+        border-left: 4px solid var(--primary-color);
     }
 
     .accounts-table th,
@@ -434,14 +434,14 @@
 
     /* Use a soft green background for asset accounts */
     .asset-card {
-        background-color: #e8f5e90d;
-        border-color: #4CAF50;
+        /* background-color: #e8f5e900; */
+        border-color: var(--accent-color);
     }
 
     /* Use a soft red background for debt accounts */
     .debt-card {
-        background-color: #ffebee07;
-        border-color: #F44336;
+        /* background-color: #ffebee00; */
+        border-color: var(--danger-color);
     }
 </style>
 {% endblock %}
