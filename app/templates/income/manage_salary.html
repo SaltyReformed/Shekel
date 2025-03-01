@@ -578,6 +578,27 @@
         const salaryTypeRadios = document.getElementsByName('salary_type');
         const annualSalarySection = document.getElementById('annualSalarySection');
         const netPaycheckGroup = document.getElementById('netPaycheckGroup');
+        const calculateButton = document.getElementById('calculateButton');
+        const paycheckCalculation = document.getElementById('paycheckCalculation');
+
+        // Form fields
+        const grossAnnualSalary = document.getElementById('grossAnnualSalary');
+        const netPaycheckAmount = document.getElementById('netPaycheckAmount');
+        const payFrequency = document.getElementById('payFrequency');
+        const federalTaxRate = document.getElementById('federalTaxRate');
+        const stateTaxRate = document.getElementById('stateTaxRate');
+        const retirementRate = document.getElementById('retirementRate');
+        const healthInsurance = document.getElementById('healthInsurance');
+        const otherDeductions = document.getElementById('otherDeductions');
+
+        // Result display fields
+        const calcGross = document.getElementById('calc-gross');
+        const calcFederal = document.getElementById('calc-federal');
+        const calcState = document.getElementById('calc-state');
+        const calcRetirement = document.getElementById('calc-retirement');
+        const calcHealth = document.getElementById('calc-health');
+        const calcOther = document.getElementById('calc-other');
+        const calcNet = document.getElementById('calc-net');
 
         // Function to update sections based on selected salary type
         function updateSalarySections(salaryType) {
@@ -588,6 +609,9 @@
                 annualSalarySection.style.display = 'none';
                 netPaycheckGroup.style.display = 'block';
             }
+
+            // Hide calculation results when switching salary type
+            paycheckCalculation.style.display = 'none';
         }
 
         // Set up event listeners for radio buttons
@@ -597,83 +621,94 @@
             });
         }
 
-        // Set initial state based on default selection
-        const selectedSalaryType = document.querySelector('input[name="salary_type"]:checked').value;
-        updateSalarySections(selectedSalaryType);
+        // Add event listeners to tax and deduction fields to update calculation when they change
+        [federalTaxRate, stateTaxRate, retirementRate, healthInsurance, otherDeductions].forEach(input => {
+            input.addEventListener('input', function () {
+                // If calculation is already shown, update it automatically
+                if (paycheckCalculation.style.display === 'block') {
+                    calculateButton.click();
+                }
+            });
+        });
 
         // Handle calculate button click
         calculateButton.addEventListener('click', function () {
             const salaryType = document.querySelector('input[name="salary_type"]:checked').value;
 
-            if (salaryType === 'annual') {
-                calculateFromAnnual();
-            } else {
-                // For now, we don't have the reverse calculation implemented
-                alert('Net paycheck calculation is not yet implemented in the frontend. Please submit the form to calculate.');
+            // Validate inputs before sending API request
+            if (salaryType === 'annual' && (!grossAnnualSalary.value || parseFloat(grossAnnualSalary.value) <= 0)) {
+                alert('Please enter a valid annual salary amount.');
+                grossAnnualSalary.focus();
+                return;
             }
-        });
 
-        // Function to calculate paycheck details from annual salary
-        function calculateFromAnnual() {
-            const annualSalary = parseFloat(document.getElementById('grossAnnualSalary').value) || 0;
-            const payFrequency = document.getElementById('payFrequency').value;
-            const federalTaxRate = parseFloat(document.getElementById('federalTaxRate').value) || 0;
-            const stateTaxRate = parseFloat(document.getElementById('stateTaxRate').value) || 0;
-            const retirementRate = parseFloat(document.getElementById('retirementRate').value) || 0;
-            const healthInsurance = parseFloat(document.getElementById('healthInsurance').value) || 0;
-            const otherDeductions = parseFloat(document.getElementById('otherDeductions').value) || 0;
+            if (salaryType === 'net_paycheck' && (!netPaycheckAmount.value || parseFloat(netPaycheckAmount.value) <= 0)) {
+                alert('Please enter a valid net paycheck amount.');
+                netPaycheckAmount.focus();
+                return;
+            }
 
-            // Make AJAX request to backend for calculation
+            // Create the payload object with common fields
+            const payload = {
+                salary_type: salaryType,
+                pay_frequency: payFrequency.value,
+                federal_tax_rate: parseFloat(federalTaxRate.value) || 0,
+                state_tax_rate: parseFloat(stateTaxRate.value) || 0,
+                retirement_contribution_rate: parseFloat(retirementRate.value) || 0,
+                health_insurance_amount: parseFloat(healthInsurance.value) || 0,
+                other_deductions_amount: parseFloat(otherDeductions.value) || 0
+            };
+
+            // Add salary-type specific values
+            if (salaryType === 'annual') {
+                payload.gross_annual_salary = parseFloat(grossAnnualSalary.value) || 0;
+            } else {
+                payload.net_paycheck_amount = parseFloat(netPaycheckAmount.value) || 0;
+            }
+
+            // Show loading state
+            calculateButton.disabled = true;
+            calculateButton.textContent = 'Calculating...';
+
+            // Call the API to calculate paycheck
             fetch('/income/calculate-paycheck', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    salary_type: 'annual',
-                    gross_annual_salary: annualSalary,
-                    pay_frequency: payFrequency,
-                    federal_tax_rate: federalTaxRate,
-                    state_tax_rate: stateTaxRate,
-                    retirement_contribution_rate: retirementRate,
-                    health_insurance_amount: healthInsurance,
-                    other_deductions_amount: otherDeductions
-                }),
+                body: JSON.stringify(payload)
             })
                 .then(response => response.json())
                 .then(data => {
-                    // Update calculation display
-                    document.getElementById('calc-gross').textContent = formatCurrency(data.gross_salary);
-                    document.getElementById('calc-federal').textContent = formatCurrency(data.federal_tax);
-                    document.getElementById('calc-state').textContent = formatCurrency(data.state_tax);
-                    document.getElementById('calc-retirement').textContent = formatCurrency(data.retirement);
-                    document.getElementById('calc-health').textContent = formatCurrency(data.health_insurance);
-                    document.getElementById('calc-other').textContent = formatCurrency(data.other_deductions);
-                    document.getElementById('calc-net').textContent = formatCurrency(data.net_pay);
+                    // Update the calculation result fields
+                    calcGross.textContent = formatCurrency(data.gross_salary);
+                    calcFederal.textContent = formatCurrency(data.federal_tax);
+                    calcState.textContent = formatCurrency(data.state_tax);
+                    calcRetirement.textContent = formatCurrency(data.retirement);
+                    calcHealth.textContent = formatCurrency(data.health_insurance);
+                    calcOther.textContent = formatCurrency(data.other_deductions);
+                    calcNet.textContent = formatCurrency(data.net_pay);
+
+                    // If we calculated from net paycheck, update the estimated annual salary
+                    if (salaryType === 'net_paycheck' && data.estimated_annual) {
+                        grossAnnualSalary.value = data.estimated_annual;
+                    }
 
                     // Show the calculation section
                     paycheckCalculation.style.display = 'block';
-                })
-                .catch((error) => {
-                    console.error('Error calculating paycheck:', error);
-                    alert('There was an error calculating the paycheck. Please try again.');
-                });
-        }
 
-        // Helper function to format currency
-        function formatCurrency(amount) {
-            return '$' + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
-        }
-        
-        // Set initial state based on default selection
-        const defaultSalaryType = document.querySelector('input[name="salary_type"]:checked').value;
-        if (defaultSalaryType === 'annual') {
-            annualSalarySection.style.display = 'block';
-            netPaycheckGroup.style.display = 'none';
-        } else {
-            annualSalarySection.style.display = 'none';
-            netPaycheckGroup.style.display = 'block';
-        }
-    });
+                    // Reset button state
+                    calculateButton.disabled = false;
+                    calculateButton.textContent = 'Calculate Paycheck';
+                })
+                .catch(error => {
+                    console.error('Error calculating paycheck:', error);
+                    alert('Error calculating paycheck. Please check your inputs and try again.');
+
+                    // Reset button state
+                    calculateButton.disabled = false;
+                    calculateButton.textContent = 'Calculate Paycheck';
+                });
+        });
 </script>
 {% endblock %}

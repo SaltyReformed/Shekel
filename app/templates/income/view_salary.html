@@ -1,0 +1,473 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Salary - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Manage Salary</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('income.manage_salary') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add New Salary
+                </a>
+            </div>
+        </div>
+        <p class="text-muted">Manage your salary records and generate paychecks</p>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Salary Details</h3>
+        </div>
+        <div class="card-body">
+            <div class="salary-info">
+                <h4>${{ "{:,.2f}".format(salary.gross_annual_salary) }}</h4>
+                <div class="salary-dates">
+                    <p>Effective: {{ salary.effective_date.strftime('%b %d, %Y') }}</p>
+                    {% if salary.end_date %}
+                    <p>End Date: {{ salary.end_date.strftime('%b %d, %Y') }}</p>
+                    {% else %}
+                    <p><span class="badge success">Current</span></p>
+                    {% endif %}
+                </div>
+
+                {% if salary.notes %}
+                <div class="salary-notes">
+                    <h5>Notes:</h5>
+                    <p>{{ salary.notes }}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card actions-card">
+                <div class="card-header">
+                    <h3 class="card-title">Salary Actions</h3>
+                </div>
+                <div class="card-body">
+                    <div class="action-buttons-stacked">
+                        <a href="{{ url_for('income.manage_salary', id=salary.id) }}" class="btn btn-primary btn-block">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                            Edit Salary Information
+                        </a>
+
+                        <form method="POST" action="{{ url_for('income.delete_salary', salary_id=salary.id) }}" id="deleteSalaryForm"
+                            onsubmit="return confirmSalaryDelete();">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="delete_paychecks" id="deletePaychecks" value="0">
+                            <button type="button" class="btn btn-danger btn-block" onclick="showDeleteConfirmation()">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 6h18"></path>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                                Delete Salary Record
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card actions-card">
+                <div class="card-header">
+                    <h3 class="card-title">Generate Paychecks</h3>
+                </div>
+                <div class="card-body">
+                    <form method="POST"
+                        action="{{ url_for('income.generate_paychecks_from_salary', salary_id=salary.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="form-group">
+                            <label for="frequency">Pay Frequency</label>
+                            <select id="frequency" name="frequency" class="form-control">
+                                <option value="weekly">Weekly</option>
+                                <option value="biweekly" selected>Biweekly</option>
+                                <option value="semimonthly">Twice Monthly</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                            <small class="form-text text-muted">Select how often you receive paychecks</small>
+                        </div>
+
+                        <div class="alert alert-info">
+                            <div class="alert-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                </svg>
+                            </div>
+                            <div class="alert-content">
+                                <p>This will generate a recurring paycheck schedule starting from the effective date of
+                                    this salary.</p>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-accent btn-block">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                <line x1="16" y1="2" x2="16" y2="6"></line>
+                                <line x1="8" y1="2" x2="8" y2="6"></line>
+                                <line x1="3" y1="10" x2="21" y2="10"></line>
+                            </svg>
+                            Generate Paycheck Schedule
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="back-link">
+        <a href="{{ url_for('income.overview') }}" class="btn btn-outline-secondary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+            </svg>
+            Back to Income Overview
+        </a>
+        <!-- Delete Confirmation Modal -->
+        <div class="modal" id="deleteConfirmationModal">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Confirm Deletion</h5>
+                        <button type="button" class="close" onclick="closeDeleteModal()">
+                            <span>&times;</span>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Are you sure you want to delete this salary record? This cannot be undone.</p>
+        
+                        <div class="form-check mt-3">
+                            <input type="checkbox" class="form-check-input" id="deletePaychecksCheck">
+                            <label class="form-check-label" for="deletePaychecksCheck">
+                                Also delete all paychecks generated from this salary
+                            </label>
+                        </div>
+        
+                        <div class="alert alert-warning mt-3">
+                            <div class="alert-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path
+                                        d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z">
+                                    </path>
+                                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                                </svg>
+                            </div>
+                            <div class="alert-content">
+                                <p>If you've already received these paychecks, deleting them will remove them from your records
+                                    and may affect your financial reporting.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+                        <button type="button" class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block additional_scripts %}
+<script>
+    function showDeleteConfirmation() {
+        document.getElementById('deleteConfirmationModal').classList.add('show');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeDeleteModal() {
+        document.getElementById('deleteConfirmationModal').classList.remove('show');
+        document.body.style.overflow = '';
+    }
+
+    function confirmDelete() {
+        // Set the hidden input based on checkbox
+        const deletePaychecks = document.getElementById('deletePaychecksCheck').checked;
+        document.getElementById('deletePaychecks').value = deletePaychecks ? "1" : "0";
+
+        // Submit the form
+        document.getElementById('deleteSalaryForm').submit();
+    }
+
+    function confirmSalaryDelete() {
+        // This function is needed for form's onsubmit, but we'll handle via modal
+        return false;
+    }
+
+    // Close modal when clicking outside of it
+    window.addEventListener('click', function (event) {
+        const modal = document.getElementById('deleteConfirmationModal');
+        if (event.target === modal) {
+            closeDeleteModal();
+        }
+    });
+</script>
+{% endblock %}
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-6 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-6 {
+            flex: 0 0 50%;
+            max-width: 50%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .salary-info h4 {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+        color: var(--primary-color);
+    }
+
+    .salary-dates {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .salary-dates p {
+        margin: 0;
+    }
+
+    .salary-notes {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .salary-notes h5 {
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .badge.success {
+        background-color: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .actions-card {
+        height: 100%;
+    }
+
+    .action-buttons-stacked {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .btn-block {
+        display: block;
+        width: 100%;
+        text-align: center;
+    }
+
+    .alert {
+        display: flex;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        border-radius: var(--border-radius);
+        align-items: flex-start;
+    }
+
+    .alert-info {
+        background-color: var(--info-bg);
+        color: var(--info-color);
+    }
+
+    .alert-icon {
+        margin-right: 0.75rem;
+        display: flex;
+    }
+
+    .alert-content p {
+        margin: 0;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-text {
+        display: block;
+        margin-top: 0.25rem;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .back-link {
+        margin-top: 1rem;
+    }
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1050;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0, 0, 0, 0.4);
+    }
+    
+    .modal.show {
+        display: block;
+    }
+    
+    .modal-dialog {
+        position: relative;
+        width: auto;
+        margin: 1.75rem auto;
+        max-width: 500px;
+    }
+    
+    .modal-content {
+        position: relative;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow-lg);
+        outline: 0;
+    }
+    
+    .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+    
+    .modal-title {
+        margin: 0;
+    }
+    
+    .close {
+        padding: 0;
+        background-color: transparent;
+        border: 0;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+    
+    .modal-body {
+        padding: 1.5rem;
+    }
+    
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        gap: 0.5rem;
+    }
+    
+    .mt-3 {
+        margin-top: 1rem;
+    }
+    
+    .form-check {
+        display: flex;
+        align-items: center;
+    }
+    
+    .form-check-input {
+        margin-right: 0.5rem;
+    }
+</style>
+{% endblock %}
