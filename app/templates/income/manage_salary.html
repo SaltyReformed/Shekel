@@ -170,6 +170,68 @@
                                 </table>
                             </div>
                         </div>
+                        <div class="form-section" id="depositAllocationSection">
+                            <h3>Deposit Allocation Options</h3>
+                            <p>Set a default deposit account or split your paycheck deposit by amount or percentage.</p>
+                            <div class="deposit-allocations">
+                                {% for alloc in form.deposit_allocations %}
+                                <div class="allocation-row">
+                                    <div class="row">
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                {{ alloc.account_id.label }}
+                                                {{ alloc.account_id(class="form-control") }}
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                {{ alloc.allocation_type.label }}
+                                                <div class="allocation-type-toggle">
+                                                    <div class="btn-group" role="group">
+                                                        <button type="button"
+                                                            class="btn btn-outline-primary allocation-percentage-btn {% if alloc.allocation_type.data == 'percentage' %}active{% endif %}"
+                                                            data-type="percentage">Percentage</button>
+                                                        <button type="button"
+                                                            class="btn btn-outline-primary allocation-amount-btn {% if alloc.allocation_type.data == 'amount' %}active{% endif %}"
+                                                            data-type="amount">Fixed Amount</button>
+                                                    </div>
+                                                    {{ alloc.allocation_type(style="display:none;") }}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group allocation-percentage-field" {% if
+                                                alloc.allocation_type.data=='amount' %}style="display:none;" {% endif
+                                                %}>
+                                                {{ alloc.percentage.label }}
+                                                <div class="input-with-icon">
+                                                    {{ alloc.percentage(class="form-control", step="0.01", min="0",
+                                                    max="100") }}
+                                                    <span class="input-icon-right">%</span>
+                                                </div>
+                                            </div>
+                                            <div class="form-group allocation-amount-field" {% if
+                                                alloc.allocation_type.data=='percentage' %}style="display:none;" {%
+                                                endif %}>
+                                                {{ alloc.amount.label }}
+                                                <div class="input-with-icon">
+                                                    <span class="input-icon">$</span>
+                                                    {{ alloc.amount(class="form-control", step="0.01", min="0") }}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <hr class="allocation-divider">
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div class="allocation-actions">
+                                <button type="button" id="add-allocation" class="btn btn-outline-primary btn-sm">
+                                    Add Another Allocation
+                                </button>
+                            </div>
+                        </div>
+
 
                         <div class="form-section">
                             <h3>Effective Dates</h3>
