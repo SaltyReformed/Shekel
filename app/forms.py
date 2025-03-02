@@ -8,6 +8,9 @@ from wtforms import (
     BooleanField,
     TextAreaField,
     IntegerField,
+    FieldList,
+    FormField,
+    HiddenField,
 )
 from wtforms.validators import DataRequired, Optional, NumberRange, Length
 from datetime import date
@@ -128,3 +131,44 @@ class RecurringScheduleForm(FlaskForm):
 class ScheduleTypeForm(FlaskForm):
     name = StringField("Type Name", validators=[DataRequired(), Length(max=50)])
     description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
+
+
+class DepositAllocationForm(FlaskForm):
+    """Form for a single deposit allocation"""
+
+    allocation_type = RadioField(
+        "Allocation Type",
+        choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
+        default="percentage",
+    )
+    account_id = SelectField("Account", coerce=int, validators=[DataRequired()])
+    percentage = DecimalField(
+        "Percentage",
+        validators=[Optional(), NumberRange(min=0, max=100)],
+        default=100.0,
+    )
+    amount = DecimalField(
+        "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
+    )
+    # Used to track existing records when editing
+    payment_id = HiddenField()
+
+    class Meta:
+        # Don't use CSRF for this nested form
+        csrf = False
+
+
+class PaycheckDepositForm(FlaskForm):
+    """Form for managing paycheck deposits"""
+
+    allocations = FieldList(FormField(DepositAllocationForm), min_entries=1)
+
+    def validate_allocations(form, field):
+        """Validate that percentages sum to 100% if using percentage allocation"""
+        percentage_sum = 0
+        for allocation in field.data:
+            if allocation["allocation_type"] == "percentage":
+                percentage_sum += float(allocation["percentage"] or 0)
+
+        if percentage_sum != 0 and abs(percentage_sum - 100.0) > 0.01:
+            raise ValueError("Percentage allocations must sum to 100%")

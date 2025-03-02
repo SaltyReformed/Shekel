@@ -138,6 +138,11 @@ class IncomePayment(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=False)
     payment_date = db.Column(db.Date, nullable=False)
     amount = db.Column(db.Numeric(10, 2), nullable=False)
+    # New fields for tracking allocation type
+    is_percentage = db.Column(db.Boolean, default=False)
+    percentage = db.Column(
+        db.Numeric(5, 2), nullable=True
+    )  # Store percentage if applicable
 
     paycheck = db.relationship("Paycheck", backref="income_payments")
     account = db.relationship("Account", backref="income_payments")

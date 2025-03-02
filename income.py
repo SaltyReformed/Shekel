@@ -481,9 +481,49 @@ def edit_paycheck(paycheck_id):
     user_id = session.get("user_id")
     paycheck = Paycheck.query.filter_by(id=paycheck_id, user_id=user_id).first_or_404()
 
-    # Simple form for this route, could reuse SalaryForm with modifications
+    # Get all accounts for dropdown selection
+    accounts = Account.query.filter_by(user_id=user_id).all()
+
+    # Create the deposit allocation form
+    from app.forms import PaycheckDepositForm, DepositAllocationForm
+
+    deposit_form = PaycheckDepositForm()
+
+    # Set up the account choices for each allocation form
+    for alloc_form in deposit_form.allocations:
+        alloc_form.account_id.choices = [(a.id, a.account_name) for a in accounts]
+
+    # For GET requests, populate the form with existing data
+    if request.method == "GET":
+        # If there are existing payments, populate the allocation forms
+        if paycheck.income_payments:
+            # We need to create the right number of allocation forms
+            while len(deposit_form.allocations) < len(paycheck.income_payments):
+                deposit_form.allocations.append_entry()
+
+            # Now populate each allocation form with data from existing payments
+            for i, payment in enumerate(paycheck.income_payments):
+                form = deposit_form.allocations[i]
+                form.account_id.choices = [(a.id, a.account_name) for a in accounts]
+                form.account_id.data = payment.account_id
+                form.payment_id.data = payment.id
+
+                # Determine if this was a percentage or amount allocation
+                if payment.is_percentage:
+                    form.allocation_type.data = "percentage"
+                    form.percentage.data = payment.percentage
+                else:
+                    form.allocation_type.data = "amount"
+                    form.amount.data = payment.amount
+        else:
+            # No existing payments, initialize with a default 100% allocation
+            deposit_form.allocations[0].allocation_type.data = "percentage"
+            deposit_form.allocations[0].percentage.data = 100.0
+            if accounts:
+                deposit_form.allocations[0].account_id.data = accounts[0].id
+
     if request.method == "POST":
-        # Update paycheck
+        # Basic paycheck data
         paycheck.gross_salary = decimal.Decimal(request.form.get("gross_salary", 0))
         paycheck.taxes = decimal.Decimal(request.form.get("taxes", 0))
         paycheck.deductions = decimal.Decimal(request.form.get("deductions", 0))
@@ -493,33 +533,127 @@ def edit_paycheck(paycheck_id):
         paycheck.scheduled_date = datetime.strptime(
             request.form.get("scheduled_date"), "%Y-%m-%d"
         ).date()
+        was_paid = paycheck.paid
         paycheck.paid = "paid" in request.form
 
-        # If changing to paid, create a payment record
-        if paycheck.paid and not paycheck.income_payments:
-            account_id = request.form.get("account_id")
-            if account_id:
+        # Process deposit allocations if the paycheck is marked as paid
+        if paycheck.paid:
+            # Get allocation data from the form
+            allocation_data = []
+
+            # Form field names follow the pattern allocations-0-account_id, allocations-0-percentage, etc.
+            allocation_count = 0
+            index = 0
+            while f"allocations-{index}-account_id" in request.form:
+                account_id = request.form.get(f"allocations-{index}-account_id")
+                allocation_type = request.form.get(
+                    f"allocations-{index}-allocation_type"
+                )
+                percentage = request.form.get(f"allocations-{index}-percentage", "0")
+                amount = request.form.get(f"allocations-{index}-amount", "0")
+                payment_id = request.form.get(f"allocations-{index}-payment_id", "")
+
+                # Skip if no account is selected
+                if not account_id:
+                    index += 1
+                    continue
+
+                allocation_data.append(
+                    {
+                        "account_id": int(account_id),
+                        "allocation_type": allocation_type,
+                        "percentage": decimal.Decimal(percentage or 0),
+                        "amount": decimal.Decimal(amount or 0),
+                        "payment_id": payment_id,
+                    }
+                )
+                allocation_count += 1
+                index += 1
+
+            # Validate percentage allocations sum to 100%
+            percentage_allocations = [
+                a for a in allocation_data if a["allocation_type"] == "percentage"
+            ]
+            if percentage_allocations:
+                sum_percentage = sum(a["percentage"] for a in percentage_allocations)
+                if abs(sum_percentage - 100) > 0.01:  # Allow small rounding errors
+                    flash("Percentage allocations must sum to 100%", "danger")
+                    return render_template(
+                        "income/edit_paycheck.html",
+                        paycheck=paycheck,
+                        accounts=accounts,
+                        deposit_form=deposit_form,
+                    )
+
+            # Calculate amounts for percentage allocations
+            for allocation in allocation_data:
+                if allocation["allocation_type"] == "percentage":
+                    allocation["amount"] = (
+                        paycheck.net_salary * allocation["percentage"] / 100
+                    )
+
+            # Check that fixed amount allocations don't exceed net salary
+            sum_fixed_amounts = sum(
+                a["amount"] for a in allocation_data if a["allocation_type"] == "amount"
+            )
+            remaining_for_percentages = paycheck.net_salary - sum_fixed_amounts
+
+            if remaining_for_percentages < 0:
+                flash("Fixed amount allocations exceed net salary", "danger")
+                return render_template(
+                    "income/edit_paycheck.html",
+                    paycheck=paycheck,
+                    accounts=accounts,
+                    deposit_form=deposit_form,
+                )
+
+            # Now process the payments:
+
+            # 1. First, revert any existing payments to reset account balances
+            if was_paid and paycheck.income_payments:
+                for payment in paycheck.income_payments:
+                    account = Account.query.get(payment.account_id)
+                    if account:
+                        account.balance -= payment.amount
+
+            # 2. Delete existing payments - we'll create new ones
+            for payment in paycheck.income_payments:
+                db.session.delete(payment)
+
+            # 3. Create new payments
+            for allocation in allocation_data:
+                account = Account.query.get(allocation["account_id"])
+                if not account:
+                    continue
+
+                # Create the income payment record
                 income_payment = IncomePayment(
                     paycheck_id=paycheck.id,
-                    account_id=account_id,
+                    account_id=allocation["account_id"],
                     payment_date=date.today(),
-                    amount=paycheck.net_salary,
+                    amount=allocation["amount"],
+                    # Store allocation metadata
+                    is_percentage=(allocation["allocation_type"] == "percentage"),
+                    percentage=(
+                        allocation["percentage"]
+                        if allocation["allocation_type"] == "percentage"
+                        else None
+                    ),
                 )
                 db.session.add(income_payment)
 
                 # Update account balance
-                account = Account.query.get(account_id)
-                account.balance += paycheck.net_salary
+                account.balance += allocation["amount"]
 
         db.session.commit()
         flash("Paycheck updated successfully.", "success")
         return redirect(url_for("income.manage_paychecks"))
 
-    # Get accounts for dropdown
-    accounts = Account.query.filter_by(user_id=user_id).all()
-
     return render_template(
-        "income/edit_paycheck.html", paycheck=paycheck, accounts=accounts
+        "income/edit_paycheck.html",
+        paycheck=paycheck,
+        accounts=accounts,
+        deposit_form=deposit_form,
     )
 
 
