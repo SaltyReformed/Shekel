@@ -11,10 +11,10 @@
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/shekel.png') }}">
 
-    <!-- Preconnect to Google Fonts -->
+    <!-- Preconnect to Bunny Fonts -->
     <link rel="preconnect" href="https://fonts.bunny.net">
 
-    <!-- Google Fonts -->
+    <!-- Bunny Fonts -->
     <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700" rel="stylesheet" />
 
     <!-- Main CSS -->
@@ -336,7 +336,7 @@
                             // Set a timeout before closing the dropdown
                             leaveTimeout = setTimeout(function () {
                                 dropdown.classList.remove('open');
-                            }, 500); // 500ms delay before closing
+                            }, 50); // 50ms delay before closing
                         });
 
                         // If mouse returns to dropdown, cancel the leave timeout
@@ -370,7 +370,7 @@
                 userDropdown.addEventListener('mouseleave', function () {
                     userLeaveTimeout = setTimeout(function () {
                         userDropdownContent.classList.remove('active');
-                    }, 500); // 500ms delay before closing
+                    }, 50); // 50ms delay before closing
                 });
 
                 // Close when clicking outside
