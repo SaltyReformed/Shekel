@@ -92,13 +92,6 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if paycheck.paid %}
-                                    <span class="badge success">Received</span>
-                                    {% else %}
-                                    <span class="badge warning">Pending</span>
-                                    {% endif %}
-                                </td>
-                                <td>
                                     <div class="action-buttons">
                                         <a href="{{ url_for('income.edit_paycheck', paycheck_id=paycheck.id) }}"
                                             class="btn btn-sm btn-outline-primary">Edit</a>
