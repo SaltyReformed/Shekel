@@ -1,30 +1,33 @@
+import decimal
+from datetime import date, datetime, timedelta
+from functools import wraps
+
 from flask import (
     Blueprint,
+    flash,
+    jsonify,
+    redirect,
     render_template,
     request,
-    redirect,
-    url_for,
-    flash,
     session,
-    jsonify,
+    url_for,
 )
-from app.forms import SalaryForm, OneTimeIncomeForm
+from sqlalchemy import func
+
+from app.forms import OneTimeIncomeForm, SalaryForm
 from models import (
-    db,
-    User,
-    SalaryChange,
-    Paycheck,
-    RecurringSchedule,
-    ScheduleType,
+    Account,
     Frequency,
     IncomeCategory,
-    Account,
     IncomePayment,
+    Paycheck,
+    RecurringSchedule,
+    SalaryChange,
+    SalaryDepositAllocation,
+    ScheduleType,
+    User,
+    db,
 )
-from datetime import datetime, date, timedelta
-from sqlalchemy import func
-import decimal
-from functools import wraps
 
 income_bp = Blueprint("income", __name__, url_prefix="/income")
 
@@ -179,6 +182,30 @@ def manage_salary():
             form.end_date.data = salary.end_date
             form.notes.data = salary.notes if hasattr(salary, "notes") else ""
 
+            # Load existing deposit allocations
+            salary_allocations = SalaryDepositAllocation.query.filter_by(
+                salary_id=salary.id
+            ).all()
+
+            # If we have existing allocations, we need to make sure we have enough form entries
+            if salary_allocations:
+                # Add more entries to the form if needed
+                while len(form.deposit_allocations) < len(salary_allocations):
+                    form.deposit_allocations.append_entry()
+
+                # Update each form entry with allocation data
+                for i, allocation in enumerate(salary_allocations):
+                    form.deposit_allocations[i].account_id.data = allocation.account_id
+                    form.deposit_allocations[i].allocation_type.data = (
+                        "percentage" if allocation.is_percentage else "amount"
+                    )
+                    if allocation.is_percentage:
+                        form.deposit_allocations[i].percentage.data = (
+                            allocation.percentage
+                        )
+                    else:
+                        form.deposit_allocations[i].amount.data = allocation.amount
+
     if form.validate_on_submit():
         if salary_id:
             # Update existing salary
@@ -193,6 +220,17 @@ def manage_salary():
         # Set the salary data
         if form.salary_type.data == "annual":
             # Direct annual salary entry
+            if form.gross_annual_salary.data is None:
+                flash("Annual salary amount is required.", "danger")
+                return render_template(
+                    "income/manage_salary.html",
+                    form=form,
+                    salary_history=SalaryChange.query.filter_by(user_id=user_id)
+                    .order_by(SalaryChange.effective_date.desc())
+                    .all(),
+                    accounts=accounts,
+                    editing=bool(salary_id),
+                )
             salary.gross_annual_salary = form.gross_annual_salary.data
         else:
             # Calculate annual from net paycheck
@@ -207,8 +245,6 @@ def manage_salary():
             periods = pay_periods.get(frequency, 26)
 
             # Estimate approximate gross annual from net paycheck
-            # This is a simplification - a real implementation would need more complex logic
-            # to reverse-calculate the gross from net
             tax_deduction_factor = (
                 1
                 + (
@@ -229,30 +265,62 @@ def manage_salary():
 
         salary.effective_date = form.effective_date.data
         salary.end_date = form.end_date.data
+        if hasattr(form, "notes"):  # Make sure notes field exists
+            salary.notes = form.notes.data
 
         db.session.add(salary)
         db.session.commit()
 
-        # Process deposit allocations if provided
-        if form.deposit_allocations and form.deposit_allocations.data:
-            # Process and store allocations
-            # Example: Just printing them for now, you'd store these in your database
-            for allocation in form.deposit_allocations.data:
-                if allocation["account_id"]:
-                    print(f"Account ID: {allocation['account_id']}")
-                    print(f"Allocation Type: {allocation['allocation_type']}")
-                    if allocation["allocation_type"] == "percentage":
-                        print(f"Percentage: {allocation['percentage']}")
-                    else:
-                        print(f"Amount: {allocation['amount']}")
+        # Process deposit allocations
+        # First, delete any existing allocations
+        if salary_id:
+            SalaryDepositAllocation.query.filter_by(salary_id=salary.id).delete()
+            db.session.commit()
+
+        # Process deposit allocations from the form data
+        allocation_index = 0
+        while f"deposit_allocations-{allocation_index}-account_id" in request.form:
+            account_id = request.form.get(
+                f"deposit_allocations-{allocation_index}-account_id"
+            )
+            allocation_type = request.form.get(
+                f"deposit_allocations-{allocation_index}-allocation_type"
+            )
+
+            if account_id and int(account_id) > 0:
+                if allocation_type == "percentage":
+                    percentage = request.form.get(
+                        f"deposit_allocations-{allocation_index}-percentage"
+                    )
+                    allocation = SalaryDepositAllocation(
+                        salary_id=salary.id,
+                        account_id=int(account_id),
+                        is_percentage=True,
+                        percentage=decimal.Decimal(percentage),
+                        amount=None,
+                    )
+                else:
+                    amount = request.form.get(
+                        f"deposit_allocations-{allocation_index}-amount"
+                    )
+                    allocation = SalaryDepositAllocation(
+                        salary_id=salary.id,
+                        account_id=int(account_id),
+                        is_percentage=False,
+                        percentage=None,
+                        amount=decimal.Decimal(amount),
+                    )
+                db.session.add(allocation)
+
+            allocation_index += 1
+
+        db.session.commit()
 
         # If we need to generate paychecks immediately:
         if "generate_paychecks" in request.form:
-            # Your existing code for generating paychecks
-            # ...
-            flash(
-                "Salary updated and paycheck schedule created. You can now edit individual paychecks.",
-                "success",
+            # Redirect to the generate paychecks function
+            return redirect(
+                url_for("income.generate_paychecks_from_salary", salary_id=salary.id)
             )
         else:
             flash("Salary information updated successfully.", "success")
@@ -266,12 +334,20 @@ def manage_salary():
         .all()
     )
 
+    # Get existing allocations for the template
+    salary_allocations = []
+    if salary_id:
+        salary_allocations = SalaryDepositAllocation.query.filter_by(
+            salary_id=salary_id
+        ).all()
+
     return render_template(
         "income/manage_salary.html",
         form=form,
         salary_history=salary_history,
-        accounts=accounts,  # Pass accounts to the template
+        accounts=accounts,
         editing=bool(salary_id),
+        salary_allocations=salary_allocations,
     )
 
 
@@ -691,36 +767,42 @@ def generate_paychecks_from_salary(salary_id):
     db.session.commit()
 
     # Generate initial paychecks
-    # For simplicity, we'll create 6 paychecks from the start date
-    from datetime import datetime, timedelta
-
     start_date = salary.effective_date
-    tax_rate = decimal.Decimal(
-        "0.22"
-    )  # Default federal tax rate (can be made more sophisticated)
+    tax_rate = decimal.Decimal("0.22")  # Default federal tax rate
     deduction_rate = decimal.Decimal("0.05")  # Default retirement rate
 
-    for i in range(6):
+    # Get custom allocations for this salary
+    salary_allocations = SalaryDepositAllocation.query.filter_by(
+        salary_id=salary.id
+    ).all()
+
+    # List to store created paychecks
+    paychecks = []
+
+    # Generate paychecks until the end_date is reached
+    i = 0
+    while True:
         # Calculate paycheck date based on frequency
         if frequency_name == "weekly":
             paycheck_date = start_date + timedelta(days=7 * i)
         elif frequency_name == "biweekly":
             paycheck_date = start_date + timedelta(days=14 * i)
         elif frequency_name == "semimonthly":
-            # Simplified - not accounting for exact dates of semi-monthly
+            # Simplified – not accounting for exact semi-monthly dates
             paycheck_date = start_date + timedelta(days=15 * i)
         elif frequency_name == "monthly":
-            # Simplified - not accounting for varying month lengths
+            # Simplified – does not account for different month lengths
             paycheck_date = start_date + timedelta(days=30 * i)
         else:
             paycheck_date = start_date + timedelta(days=14 * i)  # Default to biweekly
 
-        # Skip if end date is set and we're past it
+        # Break the loop if we've passed the end_date (if one is set)
         if salary.end_date and paycheck_date > salary.end_date:
-            continue
+            break
 
-        # Skip if the date is in the past (more than 30 days ago)
+        # Optionally, skip if the date is too far in the past
         if paycheck_date < datetime.now().date() - timedelta(days=30):
+            i += 1
             continue
 
         # Calculate paycheck components
@@ -737,14 +819,59 @@ def generate_paychecks_from_salary(salary_id):
             taxes=taxes,
             deductions=deductions,
             net_salary=net,
-            is_projected=True,  # These are projected future paychecks
+            is_projected=True,
             recurring_schedule_id=schedule.id,
-            paid=False,  # Not paid yet
+            paid=False,
         )
-
         db.session.add(paycheck)
+        db.session.commit()  # Commit to get the paycheck ID
 
-    db.session.commit()
+        paychecks.append(paycheck)
+
+        # Add income payment records based on allocations
+        if salary_allocations:
+            fixed_amount_total = decimal.Decimal("0.00")
+            for allocation in [a for a in salary_allocations if not a.is_percentage]:
+                payment = IncomePayment(
+                    paycheck_id=paycheck.id,
+                    account_id=allocation.account_id,
+                    payment_date=paycheck_date,
+                    amount=allocation.amount,
+                    is_percentage=False,
+                )
+                db.session.add(payment)
+                fixed_amount_total += allocation.amount
+
+            remaining_amount = net - fixed_amount_total
+            for allocation in [a for a in salary_allocations if a.is_percentage]:
+                amount = (remaining_amount * allocation.percentage / 100).quantize(
+                    decimal.Decimal("0.01")
+                )
+                payment = IncomePayment(
+                    paycheck_id=paycheck.id,
+                    account_id=allocation.account_id,
+                    payment_date=paycheck_date,
+                    amount=amount,
+                    is_percentage=True,
+                    percentage=allocation.percentage,
+                )
+                db.session.add(payment)
+        else:
+            default_account = Account.query.filter_by(user_id=user_id).first()
+            if default_account:
+                payment = IncomePayment(
+                    paycheck_id=paycheck.id,
+                    account_id=default_account.id,
+                    payment_date=paycheck_date,
+                    amount=net,
+                    is_percentage=True,
+                    percentage=100,
+                )
+                db.session.add(payment)
+
+        db.session.commit()
+
+        i += 1
 
     flash(
         f"Successfully generated paycheck schedule from salary record. View your paychecks for details.",

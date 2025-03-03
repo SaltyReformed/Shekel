@@ -160,6 +160,21 @@ class SalaryChange(db.Model):
     user = db.relationship("User", backref="salary_changes")
 
 
+class SalaryDepositAllocation(db.Model):
+    __tablename__ = "salary_deposit_allocations"
+    id = db.Column(db.Integer, primary_key=True)
+    salary_id = db.Column(
+        db.Integer, db.ForeignKey("salary_changes.id"), nullable=False
+    )
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=False)
+    is_percentage = db.Column(db.Boolean, default=True)
+    percentage = db.Column(db.Numeric(5, 2), nullable=True)
+    amount = db.Column(db.Numeric(10, 2), nullable=True)
+
+    salary = db.relationship("SalaryChange", backref="deposit_allocations")
+    account = db.relationship("Account", backref="salary_allocations")
+
+
 class Expense(db.Model):
     __tablename__ = "expenses"
     id = db.Column(db.Integer, primary_key=True)
