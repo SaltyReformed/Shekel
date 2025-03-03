@@ -360,7 +360,8 @@
                         <div class="form-section">
                             <h3>Notes</h3>
                             <div class="form-group">
-                                {{ form.notes(class="form-control", placeholder="Add any additional notes about this salary...") }}
+                                {{ form.notes(class="form-control", placeholder="Add any additional notes about this
+                                salary...") }}
                             </div>
                         </div>
 
@@ -868,17 +869,39 @@
                 const lastRow = container.querySelector('.allocation-row:last-child');
                 if (!lastRow) return;
 
+                // Get the current highest index from existing rows
+                const allRows = container.querySelectorAll('.allocation-row');
+                const newIndex = allRows.length; // This will be the next index (0-based)
+
                 // Clone the row
                 const newRow = lastRow.cloneNode(true);
 
                 // Clear input values
                 newRow.querySelectorAll('input[type="text"], input[type="number"]').forEach(input => {
-                    input.value = '';
+                    if (!input.name.includes('allocation_type')) { // Don't clear the allocation type
+                        input.value = '';
+                    }
                 });
 
                 // Reset the allocation type to percentage
                 const typeInput = newRow.querySelector('input[name$="allocation_type"]');
                 if (typeInput) typeInput.value = 'percentage';
+
+                // Update all input and select names with the new index
+                newRow.querySelectorAll('input, select').forEach(element => {
+                    if (element.name) {
+                        // Replace the index number in the name attribute
+                        // For example: deposit_allocations-0-account_id -> deposit_allocations-1-account_id
+                        const newName = element.name.replace(/deposit_allocations-\d+/, `deposit_allocations-${newIndex}`);
+                        element.name = newName;
+
+                        // Also update IDs if they exist and follow the same pattern
+                        if (element.id && element.id.match(/\d+/)) {
+                            const newId = element.id.replace(/\d+/, newIndex);
+                            element.id = newId;
+                        }
+                    }
+                });
 
                 // Show percentage field, hide amount field
                 const percentageField = newRow.querySelector('.allocation-percentage-field');
@@ -896,41 +919,45 @@
 
                 // Add a remove button if not already present
                 if (!newRow.querySelector('.remove-allocation')) {
-                    const actionsDiv = document.createElement('div');
-                    actionsDiv.className = 'allocation-actions';
-                    actionsDiv.innerHTML = `
-                    <button type="button" class="btn btn-outline-danger btn-sm remove-allocation">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" 
-                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                        Remove
-                    </button>
-                `;
-                    newRow.appendChild(actionsDiv);
+                    const removeButton = document.createElement('button');
+                    removeButton.type = 'button';
+                    removeButton.className = 'btn btn-outline-danger btn-sm remove-allocation';
+                    removeButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" 
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                Remove
+            `;
+
+                    // Add the remove button to the row
+                    const buttonContainer = document.createElement('div');
+                    buttonContainer.className = 'mt-2';
+                    buttonContainer.appendChild(removeButton);
+                    newRow.appendChild(buttonContainer);
                 }
 
+                // Set up the remove button functionality
+                const removeButton = newRow.querySelector('.remove-allocation');
+                if (removeButton) {
+                    removeButton.addEventListener('click', function () {
+                        newRow.remove();
+                    });
+                }
+
+                // Add a divider before the new row if needed
+                const divider = document.createElement('hr');
+                divider.className = 'allocation-divider';
+
                 // Add the new row to the container
-                container.insertBefore(newRow, container.querySelector('.allocation-actions'));
+                container.appendChild(divider);
+                container.appendChild(newRow);
 
                 // Set up the toggle buttons for the new row
                 setupAllocationToggles();
-
-                // Set up remove button functionality
-                newRow.querySelector('.remove-allocation')?.addEventListener('click', function () {
-                    newRow.remove();
-                });
             });
         }
-
-        // Set up existing remove allocation buttons
-        document.querySelectorAll('.remove-allocation').forEach(button => {
-            button.addEventListener('click', function () {
-                const row = this.closest('.allocation-row');
-                if (row) row.remove();
-            });
-        });
 
         // Helper function to format currency
         function formatCurrency(value) {
