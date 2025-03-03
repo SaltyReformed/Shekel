@@ -55,9 +55,8 @@
                                             <input type="checkbox" id="paid" name="paid" value="1" {% if paycheck.paid
                                                 %}checked{% endif %}>
                                             <label for="paid" class="toggle-label">
-                                                <span class="toggle-status">{{ 'Received' if paycheck.paid else
-                                                    'Pending' }}</span>
-                                            </label>
+                                                <span class="toggle-status">{{ 'Received' if paycheck.paid else 'Pending' }}</span>
+                                            </label> 
                                         </div>
                                     </div>
                                 </div>

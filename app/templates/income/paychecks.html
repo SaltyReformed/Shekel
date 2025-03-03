@@ -92,10 +92,27 @@
                                     {% endif %}
                                 </td>
                                 <td>
+                                    {% if paycheck.paid %}
+                                    <span class="badge success">Received</span>
+                                    {% else %}
+                                    <span class="badge warning">Pending</span>
+                                    {% endif %}
+                                </td>
+                                <td>
                                     <div class="action-buttons">
                                         <a href="{{ url_for('income.edit_paycheck', paycheck_id=paycheck.id) }}"
                                             class="btn btn-sm btn-outline-primary">Edit</a>
-                                        <form method="POST" action="{{ url_for('income.delete_paycheck', paycheck_id=paycheck.id) }}"
+                                        {% if not paycheck.paid %}
+                                        <form method="POST"
+                                            action="{{ url_for('income.mark_paycheck_received', paycheck_id=paycheck.id) }}"
+                                            class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-success">Mark
+                                                Received</button>
+                                        </form>
+                                        {% endif %}
+                                        <form method="POST"
+                                            action="{{ url_for('income.delete_paycheck', paycheck_id=paycheck.id) }}"
                                             class="d-inline delete-form"
                                             onsubmit="return confirm('Are you sure you want to delete this paycheck? This cannot be undone.');">
                                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

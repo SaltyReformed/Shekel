@@ -26,6 +26,7 @@ from models import (
     SalaryChange,
     SalaryDepositAllocation,
     ScheduleType,
+    Transaction,
     User,
     db,
 )
@@ -1008,5 +1009,84 @@ def delete_paycheck(paycheck_id):
     except Exception as e:
         db.session.rollback()
         flash(f"Error deleting paycheck: {str(e)}", "danger")
+
+    return redirect(url_for("income.manage_paychecks"))
+
+
+@income_bp.route("/paychecks/<int:paycheck_id>/mark-received", methods=["POST"])
+@login_required
+def mark_paycheck_received(paycheck_id):
+    """Mark a paycheck as received and create corresponding transactions"""
+    user_id = session.get("user_id")
+    paycheck = Paycheck.query.filter_by(id=paycheck_id, user_id=user_id).first_or_404()
+
+    # Check if already marked as paid
+    if paycheck.paid:
+        flash("Paycheck is already marked as received.", "info")
+        return redirect(url_for("income.manage_paychecks"))
+
+    try:
+        # Get the income payments (deposit allocations) for this paycheck
+        income_payments = IncomePayment.query.filter_by(paycheck_id=paycheck.id).all()
+
+        # If no income payments found, check if we need to create default allocation
+        if not income_payments:
+            # Get default account (just take the first one if no specific allocation)
+            default_account = Account.query.filter_by(user_id=user_id).first()
+
+            if default_account:
+                # Create a default payment with 100% allocation
+                payment = IncomePayment(
+                    paycheck_id=paycheck.id,
+                    account_id=default_account.id,
+                    payment_date=paycheck.scheduled_date,
+                    amount=paycheck.net_salary,
+                    is_percentage=True,
+                    percentage=100,
+                )
+                db.session.add(payment)
+                db.session.flush()  # Get the ID but don't commit yet
+                income_payments = [payment]
+            else:
+                flash(
+                    "Cannot mark paycheck as received without any accounts. Please add an account first.",
+                    "danger",
+                )
+                return redirect(
+                    url_for("income.edit_paycheck", paycheck_id=paycheck.id)
+                )
+
+        # For each payment, create a corresponding transaction and update account balance
+        for payment in income_payments:
+            account = Account.query.get(payment.account_id)
+            if not account:
+                continue
+
+            # Create transaction
+            transaction = Transaction(
+                account_id=account.id,
+                transaction_date=paycheck.scheduled_date,
+                amount=payment.amount,
+                description=f"Paycheck deposit: {paycheck.recurring_schedule.description if paycheck.recurring_schedule else 'Income'}",
+                transaction_type="deposit",
+            )
+            db.session.add(transaction)
+
+            # Update account balance
+            account.balance += payment.amount
+
+        # Mark paycheck as paid
+        paycheck.paid = True
+
+        # Commit all changes
+        db.session.commit()
+
+        flash(
+            f"Paycheck for {paycheck.scheduled_date.strftime('%B %d, %Y')} has been marked as received and deposit transactions were created.",
+            "success",
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error marking paycheck as received: {str(e)}", "danger")
 
     return redirect(url_for("income.manage_paychecks"))
