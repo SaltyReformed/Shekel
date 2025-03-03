@@ -15,7 +15,7 @@ with app.app_context():
         {"name": "Certificate of Deposit", "is_debt": False},
         {"name": "Investment", "is_debt": False},
         {"name": "Retirement", "is_debt": False},
-        {"name": "HSA", "is_debt": False},
+        {"name": "FSA", "is_debt": False},
         {"name": "Other Asset", "is_debt": False},
     ]
 

@@ -1,5 +1,6 @@
-from main import create_app
 import os
+
+from main import create_app
 
 app = create_app()
 

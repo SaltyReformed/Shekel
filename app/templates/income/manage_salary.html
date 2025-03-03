@@ -174,59 +174,62 @@
                             <h3>Deposit Allocation Options</h3>
                             <p>Set a default deposit account or split your paycheck deposit by amount or percentage.</p>
                             <div class="deposit-allocations">
-                                {% for alloc in form.deposit_allocations %}
                                 <div class="allocation-row">
                                     <div class="row">
                                         <div class="col-md-4">
                                             <div class="form-group">
-                                                {{ alloc.account_id.label }}
-                                                {{ alloc.account_id(class="form-control") }}
+                                                <label for="account_id_0">Account</label>
+                                                <select id="account_id_0" name="deposit_allocations-0-account_id" class="form-control">
+                                                    <option value="">-- Select Account --</option>
+                                                    {% for account in accounts %}
+                                                    <option value="{{ account.id }}">{{ account.account_name }}</option>
+                                                    {% endfor %}
+                                                </select>
                                             </div>
                                         </div>
                                         <div class="col-md-4">
                                             <div class="form-group">
-                                                {{ alloc.allocation_type.label }}
+                                                <label>Allocation Type</label>
                                                 <div class="allocation-type-toggle">
                                                     <div class="btn-group" role="group">
-                                                        <button type="button"
-                                                            class="btn btn-outline-primary allocation-percentage-btn {% if alloc.allocation_type.data == 'percentage' %}active{% endif %}"
+                                                        <button type="button" class="btn btn-outline-primary allocation-percentage-btn active"
                                                             data-type="percentage">Percentage</button>
-                                                        <button type="button"
-                                                            class="btn btn-outline-primary allocation-amount-btn {% if alloc.allocation_type.data == 'amount' %}active{% endif %}"
+                                                        <button type="button" class="btn btn-outline-primary allocation-amount-btn"
                                                             data-type="amount">Fixed Amount</button>
                                                     </div>
-                                                    {{ alloc.allocation_type(style="display:none;") }}
+                                                    <input type="hidden" name="deposit_allocations-0-allocation_type" value="percentage">
                                                 </div>
                                             </div>
                                         </div>
                                         <div class="col-md-4">
-                                            <div class="form-group allocation-percentage-field" {% if
-                                                alloc.allocation_type.data=='amount' %}style="display:none;" {% endif
-                                                %}>
-                                                {{ alloc.percentage.label }}
+                                            <div class="form-group allocation-percentage-field">
+                                                <label for="percentage_0">Percentage</label>
                                                 <div class="input-with-icon">
-                                                    {{ alloc.percentage(class="form-control", step="0.01", min="0",
-                                                    max="100") }}
+                                                    <input type="number" id="percentage_0" name="deposit_allocations-0-percentage"
+                                                        class="form-control" value="100" step="0.01" min="0" max="100">
                                                     <span class="input-icon-right">%</span>
                                                 </div>
                                             </div>
-                                            <div class="form-group allocation-amount-field" {% if
-                                                alloc.allocation_type.data=='percentage' %}style="display:none;" {%
-                                                endif %}>
-                                                {{ alloc.amount.label }}
+                                            <div class="form-group allocation-amount-field" style="display:none;">
+                                                <label for="amount_0">Amount</label>
                                                 <div class="input-with-icon">
                                                     <span class="input-icon">$</span>
-                                                    {{ alloc.amount(class="form-control", step="0.01", min="0") }}
+                                                    <input type="number" id="amount_0" name="deposit_allocations-0-amount" class="form-control"
+                                                        step="0.01" min="0">
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                     <hr class="allocation-divider">
                                 </div>
-                                {% endfor %}
                             </div>
                             <div class="allocation-actions">
                                 <button type="button" id="add-allocation" class="btn btn-outline-primary btn-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                    </svg>
                                     Add Another Allocation
                                 </button>
                             </div>
@@ -251,7 +254,7 @@
                                 </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
-                                        {{ form.end_date.label }} <span class="text-muted">(Optional)</span>
+                                        <span {{ form.end_date.label }}  class="text-muted">(Optional)</span>
                                         {{ form.end_date(class="form-control", type="date") }}
                                         {% if form.end_date.errors %}
                                         <div class="error-message">
@@ -268,8 +271,7 @@
                         <div class="form-section">
                             <h3>Notes</h3>
                             <div class="form-group">
-                                {{ form.notes(class="form-control", placeholder="Add any additional notes about this
-                                salary...") }}
+                                {{ form.notes(class="form-control", placeholder="Add any additional notes about this salary...") }}
                             </div>
                         </div>
 
@@ -636,141 +638,297 @@
 {% block additional_scripts %}
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        // Get references to form elements
-        const salaryTypeRadios = document.getElementsByName('salary_type');
-        const annualSalarySection = document.getElementById('annualSalarySection');
-        const netPaycheckGroup = document.getElementById('netPaycheckGroup');
-        const calculateButton = document.getElementById('calculateButton');
-        const paycheckCalculation = document.getElementById('paycheckCalculation');
+            // Get references to form elements
+            const salaryTypeRadios = document.getElementsByName('salary_type');
+            const annualSalarySection = document.getElementById('annualSalarySection');
+            const netPaycheckGroup = document.getElementById('netPaycheckGroup');
+            const calculateButton = document.getElementById('calculateButton');
+            const paycheckCalculation = document.getElementById('paycheckCalculation');
+            const taxDeductionSection = document.getElementById('taxDeductionSection');
+            const depositAllocationSection = document.getElementById('depositAllocationSection');
+            const addAllocationButton = document.getElementById('add-allocation');
 
-        // Form fields
-        const grossAnnualSalary = document.getElementById('grossAnnualSalary');
-        const netPaycheckAmount = document.getElementById('netPaycheckAmount');
-        const payFrequency = document.getElementById('payFrequency');
-        const federalTaxRate = document.getElementById('federalTaxRate');
-        const stateTaxRate = document.getElementById('stateTaxRate');
-        const retirementRate = document.getElementById('retirementRate');
-        const healthInsurance = document.getElementById('healthInsurance');
-        const otherDeductions = document.getElementById('otherDeductions');
+            // Form fields
+            const grossAnnualSalary = document.getElementById('grossAnnualSalary');
+            const netPaycheckAmount = document.getElementById('netPaycheckAmount');
+            const payFrequency = document.getElementById('payFrequency');
+            const federalTaxRate = document.getElementById('federalTaxRate');
+            const stateTaxRate = document.getElementById('stateTaxRate');
+            const retirementRate = document.getElementById('retirementRate');
+            const healthInsurance = document.getElementById('healthInsurance');
+            const otherDeductions = document.getElementById('otherDeductions');
 
-        // Result display fields
-        const calcGross = document.getElementById('calc-gross');
-        const calcFederal = document.getElementById('calc-federal');
-        const calcState = document.getElementById('calc-state');
-        const calcRetirement = document.getElementById('calc-retirement');
-        const calcHealth = document.getElementById('calc-health');
-        const calcOther = document.getElementById('calc-other');
-        const calcNet = document.getElementById('calc-net');
+            // Result display fields
+            const calcGross = document.getElementById('calc-gross');
+            const calcFederal = document.getElementById('calc-federal');
+            const calcState = document.getElementById('calc-state');
+            const calcRetirement = document.getElementById('calc-retirement');
+            const calcHealth = document.getElementById('calc-health');
+            const calcOther = document.getElementById('calc-other');
+            const calcNet = document.getElementById('calc-net');
 
-        // Function to update sections based on selected salary type
-        function updateSalarySections(salaryType) {
-            if (salaryType === 'annual') {
-                annualSalarySection.style.display = 'block';
-                netPaycheckGroup.style.display = 'none';
-            } else if (salaryType === 'net_paycheck') {
-                annualSalarySection.style.display = 'none';
-                netPaycheckGroup.style.display = 'block';
+            // Function to update sections based on selected salary type
+            function updateSalarySections() {
+                // Find which radio is checked
+                let selectedType = '';
+                for (let radio of salaryTypeRadios) {
+                    if (radio.checked) {
+                        selectedType = radio.value;
+                        break;
+                    }
+                }
+
+                if (selectedType === 'annual') {
+                    annualSalarySection.style.display = 'block';
+                    netPaycheckGroup.style.display = 'none';
+                } else if (selectedType === 'net_paycheck') {
+                    annualSalarySection.style.display = 'none';
+                    netPaycheckGroup.style.display = 'block';
+                }
+
+                // Hide calculation results when switching salary type
+                paycheckCalculation.style.display = 'none';
             }
 
-            // Hide calculation results when switching salary type
-            paycheckCalculation.style.display = 'none';
-        }
+            // Set up event listeners for radio buttons
+            for (let i = 0; i < salaryTypeRadios.length; i++) {
+                salaryTypeRadios[i].addEventListener('change', updateSalarySections);
+            }
 
-        // Set up event listeners for radio buttons
-        for (let i = 0; i < salaryTypeRadios.length; i++) {
-            salaryTypeRadios[i].addEventListener('change', function () {
-                updateSalarySections(this.value);
-            });
-        }
+            // Initialize the form state based on current radio selection
+            updateSalarySections();
 
-        // Add event listeners to tax and deduction fields to update calculation when they change
-        [federalTaxRate, stateTaxRate, retirementRate, healthInsurance, otherDeductions].forEach(input => {
-            input.addEventListener('input', function () {
-                // If calculation is already shown, update it automatically
-                if (paycheckCalculation.style.display === 'block') {
-                    calculateButton.click();
+            // Add event listeners to tax and deduction fields to update calculation when they change
+            [federalTaxRate, stateTaxRate, retirementRate, healthInsurance, otherDeductions].forEach(input => {
+                if (input) {
+                    input.addEventListener('input', function () {
+                        // If calculation is already shown, update it automatically
+                        if (paycheckCalculation.style.display === 'block') {
+                            calculateButton.click();
+                        }
+                    });
                 }
             });
-        });
 
-        // Handle calculate button click
-        calculateButton.addEventListener('click', function () {
-            const salaryType = document.querySelector('input[name="salary_type"]:checked').value;
+            // Handle allocation type toggle buttons
+            const setupAllocationToggles = () => {
+                // Get all percentage and amount buttons
+                const percentageButtons = document.querySelectorAll('.allocation-percentage-btn');
+                const amountButtons = document.querySelectorAll('.allocation-amount-btn');
 
-            // Validate inputs before sending API request
-            if (salaryType === 'annual' && (!grossAnnualSalary.value || parseFloat(grossAnnualSalary.value) <= 0)) {
-                alert('Please enter a valid annual salary amount.');
-                grossAnnualSalary.focus();
-                return;
-            }
+                // Set up event listeners for percentage buttons
+                percentageButtons.forEach(button => {
+                    button.addEventListener('click', function () {
+                        // Get the parent allocation row
+                        const row = this.closest('.allocation-row');
 
-            if (salaryType === 'net_paycheck' && (!netPaycheckAmount.value || parseFloat(netPaycheckAmount.value) <= 0)) {
-                alert('Please enter a valid net paycheck amount.');
-                netPaycheckAmount.focus();
-                return;
-            }
+                        // Update the hidden input value
+                        const typeInput = row.querySelector('input[name$="allocation_type"]');
+                        if (typeInput) typeInput.value = 'percentage';
 
-            // Create the payload object with common fields
-            const payload = {
-                salary_type: salaryType,
-                pay_frequency: payFrequency.value,
-                federal_tax_rate: parseFloat(federalTaxRate.value) || 0,
-                state_tax_rate: parseFloat(stateTaxRate.value) || 0,
-                retirement_contribution_rate: parseFloat(retirementRate.value) || 0,
-                health_insurance_amount: parseFloat(healthInsurance.value) || 0,
-                other_deductions_amount: parseFloat(otherDeductions.value) || 0
+                        // Show/hide the appropriate fields
+                        const percentageField = row.querySelector('.allocation-percentage-field');
+                        const amountField = row.querySelector('.allocation-amount-field');
+
+                        if (percentageField) percentageField.style.display = 'block';
+                        if (amountField) amountField.style.display = 'none';
+
+                        // Update active state of buttons
+                        this.classList.add('active');
+                        const amountBtn = row.querySelector('.allocation-amount-btn');
+                        if (amountBtn) amountBtn.classList.remove('active');
+                    });
+                });
+
+                // Set up event listeners for amount buttons
+                amountButtons.forEach(button => {
+                    button.addEventListener('click', function () {
+                        // Get the parent allocation row
+                        const row = this.closest('.allocation-row');
+
+                        // Update the hidden input value
+                        const typeInput = row.querySelector('input[name$="allocation_type"]');
+                        if (typeInput) typeInput.value = 'amount';
+
+                        // Show/hide the appropriate fields
+                        const percentageField = row.querySelector('.allocation-percentage-field');
+                        const amountField = row.querySelector('.allocation-amount-field');
+
+                        if (percentageField) percentageField.style.display = 'none';
+                        if (amountField) amountField.style.display = 'block';
+
+                        // Update active state of buttons
+                        this.classList.add('active');
+                        const percentageBtn = row.querySelector('.allocation-percentage-btn');
+                        if (percentageBtn) percentageBtn.classList.remove('active');
+                    });
+                });
             };
 
-            // Add salary-type specific values
-            if (salaryType === 'annual') {
-                payload.gross_annual_salary = parseFloat(grossAnnualSalary.value) || 0;
-            } else {
-                payload.net_paycheck_amount = parseFloat(netPaycheckAmount.value) || 0;
-            }
+            // Set up initial allocation toggles
+            setupAllocationToggles();
 
-            // Show loading state
-            calculateButton.disabled = true;
-            calculateButton.textContent = 'Calculating...';
+            // Function to add a new allocation row
+            if (addAllocationButton) {
+                addAllocationButton.addEventListener('click', function () {
+                    // Get the allocation container
+                    const container = document.querySelector('.deposit-allocations');
+                    if (!container) return;
 
-            // Call the API to calculate paycheck
-            fetch('/income/calculate-paycheck', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload)
-            })
-                .then(response => response.json())
-                .then(data => {
-                    // Update the calculation result fields
-                    calcGross.textContent = formatCurrency(data.gross_salary);
-                    calcFederal.textContent = formatCurrency(data.federal_tax);
-                    calcState.textContent = formatCurrency(data.state_tax);
-                    calcRetirement.textContent = formatCurrency(data.retirement);
-                    calcHealth.textContent = formatCurrency(data.health_insurance);
-                    calcOther.textContent = formatCurrency(data.other_deductions);
-                    calcNet.textContent = formatCurrency(data.net_pay);
+                    // Get the last allocation row
+                    const lastRow = container.querySelector('.allocation-row:last-child');
+                    if (!lastRow) return;
 
-                    // If we calculated from net paycheck, update the estimated annual salary
-                    if (salaryType === 'net_paycheck' && data.estimated_annual) {
-                        grossAnnualSalary.value = data.estimated_annual;
+                    // Clone the row
+                    const newRow = lastRow.cloneNode(true);
+
+                    // Clear input values
+                    newRow.querySelectorAll('input[type="text"], input[type="number"]').forEach(input => {
+                        input.value = '';
+                    });
+
+                    // Reset the allocation type to percentage
+                    const typeInput = newRow.querySelector('input[name$="allocation_type"]');
+                    if (typeInput) typeInput.value = 'percentage';
+
+                    // Show percentage field, hide amount field
+                    const percentageField = newRow.querySelector('.allocation-percentage-field');
+                    const amountField = newRow.querySelector('.allocation-amount-field');
+
+                    if (percentageField) percentageField.style.display = 'block';
+                    if (amountField) amountField.style.display = 'none';
+
+                    // Reset button active states
+                    const percentageBtn = newRow.querySelector('.allocation-percentage-btn');
+                    const amountBtn = newRow.querySelector('.allocation-amount-btn');
+
+                    if (percentageBtn) percentageBtn.classList.add('active');
+                    if (amountBtn) amountBtn.classList.remove('active');
+
+                    // Add a remove button if not already present
+                    if (!newRow.querySelector('.remove-allocation')) {
+                        const actionsDiv = document.createElement('div');
+                        actionsDiv.className = 'allocation-actions';
+                        actionsDiv.innerHTML = `
+                    <button type="button" class="btn btn-outline-danger btn-sm remove-allocation">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" 
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                        Remove
+                    </button>
+                `;
+                        newRow.appendChild(actionsDiv);
                     }
 
-                    // Show the calculation section
-                    paycheckCalculation.style.display = 'block';
+                    // Add the new row to the container
+                    container.insertBefore(newRow, container.querySelector('.allocation-actions'));
 
-                    // Reset button state
-                    calculateButton.disabled = false;
-                    calculateButton.textContent = 'Calculate Paycheck';
-                })
-                .catch(error => {
-                    console.error('Error calculating paycheck:', error);
-                    alert('Error calculating paycheck. Please check your inputs and try again.');
+                    // Set up the toggle buttons for the new row
+                    setupAllocationToggles();
 
-                    // Reset button state
-                    calculateButton.disabled = false;
-                    calculateButton.textContent = 'Calculate Paycheck';
+                    // Set up remove button functionality
+                    newRow.querySelector('.remove-allocation')?.addEventListener('click', function () {
+                        newRow.remove();
+                    });
                 });
+            }
+
+            // Set up existing remove allocation buttons
+            document.querySelectorAll('.remove-allocation').forEach(button => {
+                button.addEventListener('click', function () {
+                    const row = this.closest('.allocation-row');
+                    if (row) row.remove();
+                });
+            });
+
+            // Helper function to format currency
+            function formatCurrency(value) {
+                return '$' + parseFloat(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+            }
+
+            // Handle calculate button click
+            if (calculateButton) {
+                calculateButton.addEventListener('click', function () {
+                    const salaryType = document.querySelector('input[name="salary_type"]:checked').value;
+
+                    // Validate inputs before sending API request
+                    if (salaryType === 'annual' && (!grossAnnualSalary.value || parseFloat(grossAnnualSalary.value) <= 0)) {
+                        alert('Please enter a valid annual salary amount.');
+                        grossAnnualSalary.focus();
+                        return;
+                    }
+
+                    if (salaryType === 'net_paycheck' && (!netPaycheckAmount.value || parseFloat(netPaycheckAmount.value) <= 0)) {
+                        alert('Please enter a valid net paycheck amount.');
+                        netPaycheckAmount.focus();
+                        return;
+                    }
+
+                    // Create the payload object with common fields
+                    const payload = {
+                        salary_type: salaryType,
+                        pay_frequency: payFrequency.value,
+                        federal_tax_rate: parseFloat(federalTaxRate.value) || 0,
+                        state_tax_rate: parseFloat(stateTaxRate.value) || 0,
+                        retirement_contribution_rate: parseFloat(retirementRate.value) || 0,
+                        health_insurance_amount: parseFloat(healthInsurance.value) || 0,
+                        other_deductions_amount: parseFloat(otherDeductions.value) || 0
+                    };
+
+                    // Add salary-type specific values
+                    if (salaryType === 'annual') {
+                        payload.gross_annual_salary = parseFloat(grossAnnualSalary.value) || 0;
+                    } else {
+                        payload.net_paycheck_amount = parseFloat(netPaycheckAmount.value) || 0;
+                    }
+
+                    // Show loading state
+                    calculateButton.disabled = true;
+                    calculateButton.textContent = 'Calculating...';
+
+                    // Call the API to calculate paycheck
+                    fetch('/income/calculate-paycheck', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(payload)
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            // Update the calculation result fields
+                            calcGross.textContent = formatCurrency(data.gross_salary);
+                            calcFederal.textContent = formatCurrency(data.federal_tax);
+                            calcState.textContent = formatCurrency(data.state_tax);
+                            calcRetirement.textContent = formatCurrency(data.retirement);
+                            calcHealth.textContent = formatCurrency(data.health_insurance);
+                            calcOther.textContent = formatCurrency(data.other_deductions);
+                            calcNet.textContent = formatCurrency(data.net_pay);
+
+                            // If we calculated from net paycheck, update the estimated annual salary
+                            if (salaryType === 'net_paycheck' && data.estimated_annual) {
+                                grossAnnualSalary.value = data.estimated_annual;
+                            }
+
+                            // Show the calculation section
+                            paycheckCalculation.style.display = 'block';
+
+                            // Reset button state
+                            calculateButton.disabled = false;
+                            calculateButton.textContent = 'Calculate Paycheck';
+                        })
+                        .catch(error => {
+                            console.error('Error calculating paycheck:', error);
+                            alert('Error calculating paycheck. Please check your inputs and try again.');
+
+                            // Reset button state
+                            calculateButton.disabled = false;
+                            calculateButton.textContent = 'Calculate Paycheck';
+                        });
+                });
+            }
         });
 </script>
 {% endblock %}

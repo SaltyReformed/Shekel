@@ -20,12 +20,12 @@ from datetime import date
 class DepositAllocationForm(FlaskForm):
     """Form for a single deposit allocation"""
 
+    account_id = SelectField("Account", coerce=int, validators=[Optional()])
     allocation_type = RadioField(
         "Allocation Type",
         choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
         default="percentage",
     )
-    account_id = SelectField("Account", coerce=int, validators=[DataRequired()])
     percentage = DecimalField(
         "Percentage",
         validators=[Optional(), NumberRange(min=0, max=100)],
@@ -34,9 +34,32 @@ class DepositAllocationForm(FlaskForm):
     amount = DecimalField(
         "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
     )
-    payment_id = HiddenField()
 
     class Meta:
+        # Don't use CSRF for this nested form
+        csrf = False
+
+
+class DepositAllocationForm(FlaskForm):
+    """Form for a single deposit allocation"""
+
+    account_id = SelectField("Account", coerce=int, validators=[Optional()])
+    allocation_type = RadioField(
+        "Allocation Type",
+        choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
+        default="percentage",
+    )
+    percentage = DecimalField(
+        "Percentage",
+        validators=[Optional(), NumberRange(min=0, max=100)],
+        default=100.0,
+    )
+    amount = DecimalField(
+        "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
+    )
+
+    class Meta:
+        # Don't use CSRF for this nested form
         csrf = False
 
 
@@ -47,9 +70,13 @@ class SalaryForm(FlaskForm):
         default="annual",
         validators=[DataRequired()],
     )
+
+    # Annual salary fields
     gross_annual_salary = DecimalField(
         "Gross Annual Salary", validators=[Optional(), NumberRange(min=0)], places=2
     )
+
+    # Paycheck fields
     pay_frequency = SelectField(
         "Pay Frequency",
         choices=[
@@ -60,9 +87,12 @@ class SalaryForm(FlaskForm):
         ],
         default="biweekly",
     )
+
     net_paycheck_amount = DecimalField(
         "Net Paycheck Amount", validators=[Optional(), NumberRange(min=0)], places=2
     )
+
+    # Tax and deduction rates
     federal_tax_rate = DecimalField(
         "Federal Tax Rate (%)",
         default=22.0,
@@ -93,13 +123,18 @@ class SalaryForm(FlaskForm):
         validators=[Optional(), NumberRange(min=0)],
         places=2,
     )
+
+    # Deposit allocation
+    deposit_allocations = FieldList(FormField(DepositAllocationForm), min_entries=1)
+
+    # Date range
     effective_date = DateField(
         "Effective Date", default=date.today, validators=[DataRequired()]
     )
     end_date = DateField("End Date", validators=[Optional()])
+
+    # Notes
     notes = StringField("Notes")
-    # NEW: Add deposit allocation options
-    deposit_allocations = FieldList(FormField(DepositAllocationForm), min_entries=1)
 
 
 class OneTimeIncomeForm(FlaskForm):
