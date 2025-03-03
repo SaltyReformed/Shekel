@@ -652,76 +652,6 @@ def edit_paycheck(paycheck_id):
         return redirect(url_for("income.manage_paychecks"))
 
 
-@income_bp.route("/salary/delete/<int:salary_id>", methods=["POST"])
-@login_required
-def delete_salary(salary_id):
-    """Delete a salary record with option to delete associated paychecks"""
-    user_id = session.get("user_id")
-    salary = SalaryChange.query.filter_by(id=salary_id, user_id=user_id).first_or_404()
-
-    # Check if this salary has generated any paychecks via recurring schedules
-    associated_schedules = RecurringSchedule.query.filter_by(
-        user_id=user_id, description=f"Salary - ${salary.gross_annual_salary:,.2f}/year"
-    ).all()
-
-    # Get the schedule IDs
-    schedule_ids = [schedule.id for schedule in associated_schedules]
-
-    # Find paychecks associated with these schedules
-    associated_paychecks = Paycheck.query.filter(
-        Paycheck.user_id == user_id,
-        Paycheck.recurring_schedule_id.in_(schedule_ids) if schedule_ids else False,
-    ).all()
-
-    # Check if we should delete associated paychecks
-    delete_paychecks = request.form.get("delete_paychecks") == "1"
-
-    try:
-        # Save the details for flash message
-        effective_date = salary.effective_date.strftime("%b %d, %Y")
-        annual_amount = salary.gross_annual_salary
-
-        # If we should delete associated paychecks
-        paycheck_count = 0
-        if delete_paychecks and associated_paychecks:
-            for paycheck in associated_paychecks:
-                # If there are any income_payments associated with this paycheck, delete them first
-                if paycheck.income_payments:
-                    for payment in paycheck.income_payments:
-                        # If the payment updated an account balance, reverse that update
-                        if payment.account:
-                            payment.account.balance -= payment.amount
-                        db.session.delete(payment)
-
-                # Delete the paycheck
-                db.session.delete(paycheck)
-                paycheck_count += 1
-
-            # Delete the associated schedules
-            for schedule in associated_schedules:
-                db.session.delete(schedule)
-
-        # Delete the salary record
-        db.session.delete(salary)
-        db.session.commit()
-
-        if delete_paychecks and paycheck_count > 0:
-            flash(
-                f"Salary record (${annual_amount:,.2f} from {effective_date}) and {paycheck_count} associated paychecks were deleted successfully.",
-                "success",
-            )
-        else:
-            flash(
-                f"Salary record (${annual_amount:,.2f} from {effective_date}) deleted successfully.",
-                "success",
-            )
-    except Exception as e:
-        db.session.rollback()
-        flash(f"Error deleting salary record: {str(e)}", "danger")
-
-    return redirect(url_for("income.overview"))
-
-
 @income_bp.route("/generate-paychecks/<int:salary_id>", methods=["POST"])
 @login_required
 def generate_paychecks_from_salary(salary_id):
@@ -958,36 +888,77 @@ def generate_recurring_paychecks(
     return paychecks
 
 
-@income_bp.route("/paychecks/delete/<int:paycheck_id>", methods=["POST"])
+@income_bp.route("/salary/delete/<int:salary_id>", methods=["POST"])
 @login_required
-def delete_paycheck(paycheck_id):
-    """Delete an individual paycheck"""
+def delete_salary(salary_id):
+    """Delete a salary record with option to delete associated paychecks"""
     user_id = session.get("user_id")
-    paycheck = Paycheck.query.filter_by(id=paycheck_id, user_id=user_id).first_or_404()
+    salary = SalaryChange.query.filter_by(id=salary_id, user_id=user_id).first_or_404()
 
-    # Store information for the flash message
-    paycheck_date = paycheck.scheduled_date.strftime("%b %d, %Y")
-    paycheck_amount = paycheck.gross_salary
+    # Check if this salary has generated any paychecks via recurring schedules
+    associated_schedules = RecurringSchedule.query.filter_by(
+        user_id=user_id, description=f"Salary - ${salary.gross_annual_salary:,.2f}/year"
+    ).all()
+
+    # Get the schedule IDs
+    schedule_ids = [schedule.id for schedule in associated_schedules]
+
+    # Find paychecks associated with these schedules
+    associated_paychecks = Paycheck.query.filter(
+        Paycheck.user_id == user_id,
+        Paycheck.recurring_schedule_id.in_(schedule_ids) if schedule_ids else False,
+    ).all()
+
+    # Check if we should delete associated paychecks
+    delete_paychecks = request.form.get("delete_paychecks") == "1"
 
     try:
-        # If there are any income_payments associated with this paycheck, delete them first
-        if paycheck.income_payments:
-            for payment in paycheck.income_payments:
-                # If the payment updated an account balance, reverse that update
-                if payment.account:
-                    payment.account.balance -= payment.amount
-                db.session.delete(payment)
+        # Save the details for flash message
+        effective_date = salary.effective_date.strftime("%b %d, %Y")
+        annual_amount = salary.gross_annual_salary
 
-        # Delete the paycheck
-        db.session.delete(paycheck)
+        # First, delete any deposit allocations associated with this salary
+        SalaryDepositAllocation.query.filter_by(salary_id=salary_id).delete()
+
+        # If we should delete associated paychecks
+        paycheck_count = 0
+        if delete_paychecks and associated_paychecks:
+            for paycheck in associated_paychecks:
+                # If there are any income_payments associated with this paycheck, delete them first
+                if paycheck.income_payments:
+                    for payment in paycheck.income_payments:
+                        # If the payment updated an account balance, reverse that update
+                        if (
+                            payment.account
+                            and payment.account.balance >= payment.amount
+                        ):
+                            payment.account.balance -= payment.amount
+                        db.session.delete(payment)
+
+                # Delete the paycheck
+                db.session.delete(paycheck)
+                paycheck_count += 1
+
+            # Delete the associated schedules
+            for schedule in associated_schedules:
+                db.session.delete(schedule)
+
+        # Delete the salary record
+        db.session.delete(salary)
         db.session.commit()
 
-        flash(
-            f"Paycheck for {paycheck_date} (${paycheck_amount:,.2f}) was successfully deleted.",
-            "success",
-        )
+        if delete_paychecks and paycheck_count > 0:
+            flash(
+                f"Salary record (${annual_amount:,.2f} from {effective_date}) and {paycheck_count} associated paychecks were deleted successfully.",
+                "success",
+            )
+        else:
+            flash(
+                f"Salary record (${annual_amount:,.2f} from {effective_date}) deleted successfully.",
+                "success",
+            )
     except Exception as e:
         db.session.rollback()
-        flash(f"Error deleting paycheck: {str(e)}", "danger")
+        flash(f"Error deleting salary record: {str(e)}", "danger")
 
-    return redirect(url_for("income.manage_paychecks"))
+    return redirect(url_for("income.overview"))
