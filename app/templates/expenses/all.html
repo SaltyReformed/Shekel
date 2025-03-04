@@ -8,13 +8,21 @@
         <div class="header-content">
             <h1>Manage Expenses</h1>
             <div class="header-actions">
-                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-secondary">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 5v14"></path>
                         <path d="M5 12h14"></path>
                     </svg>
-                    Add Expense
+                    Add One-Time Expense
+                </a>
+                <a href="{{ url_for('expense.add_recurring_expense') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Recurring Expense
                 </a>
             </div>
         </div>
@@ -23,7 +31,7 @@
     <div class="filters-section">
         <div class="card">
             <div class="card-body">
-                <form method="GET" action="{{ url_for('expense.manage_expenses') }}" id="filterForm"
+                <form method="GET" action="{{ url_for('expense.all_expenses') }}" id="filterForm"
                     class="filter-form">
                     <div class="filter-row">
                         <div class="filter-group">
@@ -60,7 +68,7 @@
                         </div>
                         <div class="filter-actions">
                             <button type="submit" class="btn btn-secondary">Apply Filters</button>
-                            <a href="{{ url_for('expense.manage_expenses') }}" class="btn btn-link">Clear</a>
+                            <a href="{{ url_for('expense.all_expenses') }}" class="btn btn-link">Clear</a>
                         </div>
                     </div>
                 </form>

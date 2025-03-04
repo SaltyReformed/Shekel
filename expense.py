@@ -118,6 +118,9 @@ def add_expense():
     form.category_id.choices = [(0, "-- Select Category --")] + [
         (c.id, c.name) for c in categories
     ]
+    form.account_id.choices = [(0, "-- Select Account --")] + [
+        (a.id, a.account_name) for a in accounts
+    ]
 
     if form.validate_on_submit():
         description = form.description.data
@@ -386,6 +389,7 @@ def add_recurring_expense():
     frequencies = Frequency.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
     categories = ExpenseCategory.query.all()
+    form.frequency_id.choices = [(f.id, f.name) for f in frequencies]
     form.category_id.choices = [(0, "-- Select Category --")] + [
         (c.id, c.name) for c in categories
     ]
@@ -549,7 +553,7 @@ def all_expenses():
         expenses_by_month[month_key]["expenses"].append(expense)
         expenses_by_month[month_key]["total"] += expense.amount
 
-    sorted_months = sorted(expenses_by_month.keys(), reverse=True)
+    sorted_months = sorted(expenses_by_month.keys(), reverse=False)
     categories = ExpenseCategory.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
 
@@ -570,11 +574,14 @@ def recurring_expenses():
     status = request.args.get("status")
     category_id = request.args.get("category", type=int)
     schedule_type = ScheduleType.query.filter_by(name="expense").first()
+
     if not schedule_type:
         return render_template(
             "expenses/recurring.html", recurring_expenses=[], categories=[]
         )
+
     query = RecurringSchedule.query.filter_by(user_id=user_id, type_id=schedule_type.id)
+
     if status == "active":
         query = query.filter(
             db.or_(
@@ -587,12 +594,68 @@ def recurring_expenses():
             RecurringSchedule.end_date != None,
             RecurringSchedule.end_date < date.today(),
         )
-    # Note: Category filtering for recurring expenses is not implemented.
-    recurring_expenses = query.all()
-    categories = ExpenseCategory.query.all()
-    form.category_id.choices = [(0, "-- Select Category --")] + [(c.id, c.name) for c in categories]
-f   form.account_id.choices = [(0, "-- Select Account --")] + [(a.id, a.account_name) for a in accounts]
 
+    recurring_expenses = query.all()
+
+    # Calculate next_due_date for each recurring expense
+    today = date.today()
+    for schedule in recurring_expenses:
+        # Find the most recent expense for this schedule
+        latest_expense = (
+            Expense.query.filter_by(recurring_schedule_id=schedule.id)
+            .order_by(Expense.scheduled_date.desc())
+            .first()
+        )
+
+        # Get the category for this schedule
+        if latest_expense and latest_expense.category_id:
+            category = ExpenseCategory.query.get(latest_expense.category_id)
+            schedule.category = category
+        else:
+            # Create a dummy category if none is found
+            dummy_category = type("obj", (object,), {"name": "Uncategorized"})
+            schedule.category = dummy_category
+
+        # Calculate the next due date based on frequency
+        if latest_expense:
+            last_date = latest_expense.scheduled_date
+        else:
+            last_date = schedule.start_date
+
+        # Use the same logic from your generate_recurring_expenses function
+        from dateutil.relativedelta import relativedelta
+
+        if hasattr(schedule, "frequency") and schedule.frequency:
+            freq_name = schedule.frequency.name.lower()
+            if freq_name == "weekly":
+                delta = timedelta(days=7 * schedule.interval)
+            elif freq_name == "biweekly":
+                delta = timedelta(days=14 * schedule.interval)
+            elif freq_name == "semimonthly":
+                delta = timedelta(days=15 * schedule.interval)
+            elif freq_name == "monthly":
+                delta = relativedelta(months=schedule.interval)
+            elif freq_name == "quarterly":
+                delta = relativedelta(months=3 * schedule.interval)
+            elif freq_name == "annually":
+                delta = relativedelta(years=schedule.interval)
+            else:
+                delta = timedelta(days=30 * schedule.interval)  # Default
+
+            # Calculate next due date
+            next_due = last_date + delta
+
+            # If the calculated date is in the past, keep adding the interval until we get a future date
+            while next_due < today:
+                next_due += delta
+
+            # Add this as an attribute to the schedule object
+            schedule.next_due_date = next_due
+        else:
+            # If there's no frequency, just use the start date
+            schedule.next_due_date = schedule.start_date
+
+    categories = ExpenseCategory.query.all()
 
     return render_template(
         "expenses/recurring.html",

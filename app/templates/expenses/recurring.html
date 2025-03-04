@@ -8,7 +8,7 @@
         <div class="header-content">
             <h1>Recurring Expenses</h1>
             <div class="header-actions">
-                <a href="{{ url_for('expense.add_expense') }}?recurring=true" class="btn btn-primary">
+                <a href="{{ url_for('expense.add_recurring_expense') }}?recurring=true" class="btn btn-primary">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 5v14"></path>
@@ -126,7 +126,7 @@
             </div>
             <h3>No Recurring Expenses</h3>
             <p>You haven't set up any recurring expenses yet.</p>
-            <a href="{{ url_for('expense.add_expense') }}?recurring=true" class="btn btn-primary">Add Your First
+            <a href="{{ url_for('expense.add_recurring_expense') }}?recurring=true" class="btn btn-primary">Add Your First
                 Recurring Expense</a>
         </div>
         {% endif %}

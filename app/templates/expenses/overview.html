@@ -37,7 +37,7 @@
 
         <!-- Action Buttons -->
         <div class="action-buttons">
-            <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">
+            <a href="{{ url_for('expense.add_expense') }}" class="btn btn-secondary">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 5v14"></path>
@@ -45,7 +45,7 @@
                 </svg>
                 Add Expense
             </a>
-            <a href="{{ url_for('expense.add_recurring_expense') }}" class="btn btn-secondary">
+            <a href="{{ url_for('expense.add_recurring_expense') }}" class="btn btn-primary">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 5v14"></path>
@@ -114,7 +114,7 @@
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">Upcoming Expenses</h3>
-                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-sm btn-outline-primary">Add Expense</a>
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-sm btn-outline-secondary">Add Expense</a>
             </div>
             <div class="card-body">
                 {% if expenses %}

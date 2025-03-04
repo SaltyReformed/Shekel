@@ -547,8 +547,8 @@ def manage_paychecks():
             }
         paychecks_by_month[month_key]["paychecks"].append(paycheck)
 
-    # Sort months in reverse order (newest first)
-    sorted_months = sorted(paychecks_by_month.keys(), reverse=True)
+    # Sort months in reverse order (oldest first)
+    sorted_months = sorted(paychecks_by_month.keys(), reverse=False)
 
     return render_template(
         "income/paychecks.html",
