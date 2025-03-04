@@ -220,3 +220,52 @@ class PaycheckDepositForm(FlaskForm):
 
         if percentage_sum != 0 and abs(percentage_sum - 100.0) > 0.01:
             raise ValueError("Percentage allocations must sum to 100%")
+
+
+# Expense Management Forms
+class ExpenseForm(FlaskForm):
+    """Form for adding and editing expenses"""
+
+    description = StringField(
+        "Description", validators=[DataRequired(), Length(max=255)]
+    )
+    amount = DecimalField(
+        "Amount", validators=[DataRequired(), NumberRange(min=0)], places=2
+    )
+    expense_date = DateField("Date", default=date.today, validators=[DataRequired()])
+    category_id = SelectField("Category", coerce=int)
+    account_id = SelectField("Pay from Account", coerce=int)
+    is_paid = BooleanField("Mark as Paid", default=False)
+    notes = TextAreaField("Notes", validators=[Optional(), Length(max=500)])
+
+
+class RecurringExpenseForm(FlaskForm):
+    """Form for managing recurring expenses"""
+
+    description = StringField(
+        "Description", validators=[DataRequired(), Length(max=255)]
+    )
+    amount = DecimalField(
+        "Amount", validators=[DataRequired(), NumberRange(min=0)], places=2
+    )
+    frequency_id = SelectField("Frequency", coerce=int, validators=[DataRequired()])
+    interval = IntegerField("Interval", default=1, validators=[NumberRange(min=1)])
+    start_date = DateField(
+        "Start Date", default=date.today, validators=[DataRequired()]
+    )
+    end_date = DateField("End Date", validators=[Optional()])
+    category_id = SelectField("Category", coerce=int)
+    account_id = SelectField("Default Payment Account", coerce=int)
+    num_periods = IntegerField(
+        "Number of instances to generate",
+        default=3,
+        validators=[NumberRange(min=1, max=24)],
+    )
+    generate_new = BooleanField("Generate new instances", default=False)
+
+
+class CategoryForm(FlaskForm):
+    """Form for managing expense categories"""
+
+    name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
+    description = TextAreaField("Description", validators=[Optional(), Length(max=200)])

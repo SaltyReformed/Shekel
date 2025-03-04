@@ -1,0 +1,539 @@
+{% extends "base.html" %}
+
+{% block title %}Expense Overview - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Expense Overview</h1>
+        <p class="text-muted">Overview of your expenses and spending</p>
+    </div>
+
+    <div class="dashboard-grid">
+        <!-- Expense Summary Cards -->
+        <div class="summary-cards">
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Monthly Expenses</h3>
+                    <p class="card-value">${{ "{:,.2f}".format(month_expenses) }}</p>
+                    <p class="card-subtitle">Current Month</p>
+                </div>
+            </div>
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Annual Expenses</h3>
+                    <p class="card-value">${{ "{:,.2f}".format(year_expenses) }}</p>
+                    <p class="card-subtitle">Year to Date</p>
+                </div>
+            </div>
+            <div class="card summary-card">
+                <div class="card-body">
+                    <h3 class="card-title">Upcoming Due</h3>
+                    <p class="card-value">${{ "{:,.2f}".format(upcoming_expenses|sum(attribute='amount') if
+                        upcoming_expenses else 0) }}</p>
+                    <p class="card-subtitle">Next 30 days</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                </svg>
+                Add One-time Expense
+            </a>
+            <a href="{{ url_for('expense.recurring_expense') }}" class="btn btn-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                Add Recurring Expense
+            </a>
+            <a href="{{ url_for('expense.manage_expenses') }}" class="btn btn-outline-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="16" y1="2" x2="16" y2="6"></line>
+                    <line x1="8" y1="2" x2="8" y2="6"></line>
+                    <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                View All Expenses
+            </a>
+        </div>
+
+        <!-- Upcoming Expenses -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Upcoming Expenses</h3>
+                <a href="{{ url_for('expense.manage_expenses') }}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                {% if upcoming_expenses %}
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Description</th>
+                                <th>Category</th>
+                                <th>Amount</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for expense in upcoming_expenses %}
+                            <tr>
+                                <td>{{ expense.scheduled_date.strftime('%b %d, %Y') }}</td>
+                                <td>{{ expense.description }}</td>
+                                <td>
+                                    {% if expense.category_id %}
+                                    {{ expense.expense_category.name }}
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="amount-value">${{ "{:,.2f}".format(expense.amount) }}</td>
+                                <td>
+                                    <form method="POST"
+                                        action="{{ url_for('expense.mark_expense_paid', expense_id=expense.id) }}"
+                                        class="d-inline mark-paid-form" id="markPaidForm-{{ expense.id }}">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="account_id" id="account_id-{{ expense.id }}"
+                                            value="">
+                                        <button type="button" onclick="showAccountSelector({{ expense.id }})"
+                                            class="btn btn-sm btn-outline-success">Mark Paid</button>
+                                    </form>
+                                    <a href="{{ url_for('expense.edit_expense', expense_id=expense.id) }}"
+                                        class="btn btn-sm btn-outline-secondary">Edit</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                            <line x1="16" y1="2" x2="16" y2="6"></line>
+                            <line x1="8" y1="2" x2="8" y2="6"></line>
+                            <line x1="3" y1="10" x2="21" y2="10"></line>
+                        </svg>
+                    </div>
+                    <h3>No Upcoming Expenses</h3>
+                    <p>You don't have any upcoming expenses due.</p>
+                    <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">Add an Expense</a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Recent Paid Expenses -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Recent Paid Expenses</h3>
+                <a href="{{ url_for('expense.manage_expenses') }}?status=paid"
+                    class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                {% if recent_expenses %}
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Description</th>
+                                <th>Category</th>
+                                <th>Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for expense in recent_expenses %}
+                            <tr>
+                                <td>{{ expense.scheduled_date.strftime('%b %d, %Y') }}</td>
+                                <td>{{ expense.description }}</td>
+                                <td>
+                                    {% if expense.category_id %}
+                                    {{ expense.expense_category.name }}
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="amount-value">${{ "{:,.2f}".format(expense.amount) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                            <line x1="16" y1="2" x2="16" y2="6"></line>
+                            <line x1="8" y1="2" x2="8" y2="6"></line>
+                            <line x1="3" y1="10" x2="21" y2="10"></line>
+                        </svg>
+                    </div>
+                    <h3>No Recent Expenses</h3>
+                    <p>You haven't recorded any paid expenses yet.</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Recurring Expenses -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Recurring Expenses</h3>
+                <a href="{{ url_for('expense.manage_recurring') }}" class="btn btn-sm btn-outline-primary">Manage</a>
+            </div>
+            <div class="card-body">
+                {% if recurring_schedules %}
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Description</th>
+                                <th>Frequency</th>
+                                <th>Amount</th>
+                                <th>Next Due</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for schedule in recurring_schedules %}
+                            <tr>
+                                <td>{{ schedule.description }}</td>
+                                <td>
+                                    {% if schedule.frequency %}
+                                    {{ schedule.frequency.name | capitalize }}
+                                    {% if schedule.interval and schedule.interval > 1 %}
+                                    (Every {{ schedule.interval }})
+                                    {% endif %}
+                                    {% else %}
+                                    One-time
+                                    {% endif %}
+                                </td>
+                                <td class="amount-value">${{ "{:,.2f}".format(schedule.amount) }}</td>
+                                <td>
+                                    {% set next_expense = namespace(found=false) %}
+                                    {% for expense in upcoming_expenses if expense.recurring_schedule_id == schedule.id
+                                    and not expense.paid %}
+                                    {% if not next_expense.found %}
+                                    {{ expense.scheduled_date.strftime('%b %d, %Y') }}
+                                    {% set next_expense.found = true %}
+                                    {% endif %}
+                                    {% endfor %}
+                                    {% if not next_expense.found %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                    </div>
+                    <h3>No Recurring Expenses</h3>
+                    <p>You haven't set up any recurring expenses yet.</p>
+                    <a href="{{ url_for('expense.recurring_expense') }}" class="btn btn-primary">Add Recurring
+                        Expense</a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Account Selection Modal -->
+<div class="modal" id="accountModal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Select Payment Account</h5>
+                <button type="button" class="close" onclick="closeModal()">
+                    <span>&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>Please select the account this expense was paid from:</p>
+                <div class="form-group">
+                    <select id="modalAccountSelect" class="form-control">
+                        {% for account in accounts %}
+                        <option value="{{ account.id }}">{{ account.account_name }} (${{
+                            "{:,.2f}".format(account.balance) }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="submitPayment()">Mark as Paid</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .dashboard-grid {
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: 1fr;
+    }
+
+    .summary-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .summary-card {
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .summary-card:hover {
+        transform: translateY(-3px);
+        box-shadow: var(--shadow-md);
+    }
+
+    .summary-card:nth-child(1) {
+        border-left: 4px solid var(--danger-color);
+    }
+
+    .summary-card:nth-child(2) {
+        border-left: 4px solid var(--warning-color);
+    }
+
+    .summary-card:nth-child(3) {
+        border-left: 4px solid var(--accent-color);
+    }
+
+    .card-value {
+        font-size: 1.75rem;
+        font-weight: 700;
+        margin: 0.5rem 0;
+    }
+
+    .card-subtitle {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+    }
+
+    .action-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .page-header {
+        margin-bottom: 2rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .table th,
+    .table td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .table th {
+        font-weight: 600;
+        color: var(--text-muted);
+    }
+
+    .amount-value {
+        font-weight: 600;
+        text-align: right;
+    }
+
+    .text-success {
+        color: var(--success-color);
+    }
+
+    .text-danger {
+        color: var(--danger-color);
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 2rem 1rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+    }
+
+    @media (min-width: 992px) {
+        .dashboard-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .summary-cards,
+        .action-buttons {
+            grid-column: 1 / -1;
+        }
+    }
+
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1050;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0, 0, 0, 0.4);
+    }
+
+    .modal.show {
+        display: block;
+    }
+
+    .modal-dialog {
+        position: relative;
+        width: auto;
+        margin: 1.75rem auto;
+        max-width: 500px;
+    }
+
+    .modal-content {
+        position: relative;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow-lg);
+        outline: 0;
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+        margin: 0;
+    }
+
+    .close {
+        padding: 0;
+        background-color: transparent;
+        border: 0;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+
+    .modal-body {
+        padding: 1.5rem;
+    }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        gap: 0.5rem;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    // Variable to store the current expense ID being processed
+    let currentExpenseId = null;
+
+    // Function to show the account selection modal
+    function showAccountSelector(expenseId) {
+        currentExpenseId = expenseId;
+        document.getElementById('accountModal').classList.add('show');
+        document.body.style.overflow = 'hidden';
+    }
+
+    // Function to close the modal
+    function closeModal() {
+        document.getElementById('accountModal').classList.remove('show');
+        document.body.style.overflow = '';
+        currentExpenseId = null;
+    }
+
+    // Function to submit the payment
+    function submitPayment() {
+        if (currentExpenseId) {
+            const accountId = document.getElementById('modalAccountSelect').value;
+            document.getElementById(`account_id-${currentExpenseId}`).value = accountId;
+            document.getElementById(`markPaidForm-${currentExpenseId}`).submit();
+        }
+        closeModal();
+    }
+
+    // Close modal when clicking outside of it
+    window.addEventListener('click', function (event) {
+        const modal = document.getElementById('accountModal');
+        if (event.target === modal) {
+            closeModal();
+        }
+    });
+</script>
+{% endblock %}

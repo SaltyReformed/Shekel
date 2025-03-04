@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Expense - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Edit Expense</h1>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('expense.edit_expense', expense_id=expense.id) }}">
+                        {{ form.csrf_token }}
+
+                        <div class="form-section">
+                            <h3>Expense Details</h3>
+
+                            <div class="form-group">
+                                {{ form.description.label }}
+                                {{ form.description(class="form-control", placeholder="E.g., Rent, Utility Bill,
+                                Groceries, etc.") }}
+                                {% if form.description.errors %}
+                                <div class="error-message">
+                                    {% for error in form.description.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.amount.label }}
+                                <div class="input-with-icon">
+                                    <span class="input-icon">$</span>
+                                    {{ form.amount(class="form-control", placeholder="0.00") }}
+                                </div>
+                                {% if form.amount.errors %}
+                                <div class="error-message">
+                                    {% for error in form.amount.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.expense_date.label }}
+                                {{ form.expense_date(class="form-control", type="date") }}
+                                {% if form.expense_date.errors %}
+                                <div class="error-message">
+                                    {% for error in form.expense_date.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <div class="form-group">
+                                {{ form.category_id.label }}
+                                {{ form.category_id(class="form-control") }}
+                                {% if form.category_id.errors %}
+                                <div class="error-message">
+                                    {% for error in form.category_id.errors %}
+                                    <span>{{ error }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Payment Information</h3>
+
+                            <div class="form-check payment-check">
+                                {{ form.is_paid(class="form-check-input") }}
+                                {{ form.is_paid.label(class="form-check-label") }}
+                                <span class="text-muted help-text">(Account balance will be updated)</span>
+                            </div>
+
+                            <div id="payment-section"
+                                style="display: {% if expense.paid %}block{% else %}none{% endif %};">
+                                <div class="form-group">
+                                    {{ form.account_id.label }}
+                                    {{ form.account_id(class="form-control") }}
+                                    {% if form.account_id.errors %}
+                                    <div class="error-message">
+                                        {% for error in form.account_id.errors %}
+                                        <span>{{ error }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section">
+                            <h3>Additional Notes</h3>
+                            <div class="form-group">
+                                {{ form.notes(class="form-control", rows=3, placeholder="Add any details about this
+                                expense...") }}
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">Update Expense</button>
+                            <a href="{{ url_for('expense.all_expenses') }}" class="btn btn-link">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card info-card">
+                <div class="card-header">
+                    <h3 class="card-title">Expense Information</h3>
+                </div>
+                <div class="card-body">
+                    <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value">
+                            {% if expense.paid %}
+                            <span class="badge success">Paid</span>
+                            {% else %}
+                            <span class="badge warning">Pending</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if expense.recurring_schedule_id %}
+                    <div class="info-item">
+                        <div class="info-label">Recurring</div>
+                        <div class="info-value">
+                            <span class="badge info">Part of recurring schedule</span>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <div class="warning-box">
+                        <div class="warning-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <div class="warning-content">
+                            {% if expense.paid %}
+                            <p>Unchecking "Mark as Paid" will reverse the transaction and restore the account balance.
+                            </p>
+                            {% else %}
+                            <p>Checking "Mark as Paid" will deduct the expense amount from the selected account.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="delete-section">
+                        <h4>Delete Expense</h4>
+                        <p>Use caution when deleting expenses. This action cannot be undone.</p>
+                        <form method="POST" action="{{ url_for('expense.delete_expense', expense_id=expense.id) }}"
+                            onsubmit="return confirm('Are you sure you want to delete this expense? This cannot be undone.');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-outline-danger btn-block">Delete Expense</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 2rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+        break-inside: avoid;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-section {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-section:last-child {
+        border-bottom: none;
+    }
+
+    .form-section h3 {
+        margin-bottom: 1.25rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-color);
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-with-icon .form-control {
+        padding-left: 2rem;
+    }
+
+    .error-message {
+        color: var(--danger-color);
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+    }
+
+    .payment-check {
+        display: flex;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+    }
+
+    .form-check-input {
+        margin-right: 0.5rem;
+        margin-top: 0.3rem;
+    }
+
+    .form-check-label {
+        font-weight: 500;
+    }
+
+    .help-text {
+        display: block;
+        margin-top: 0.25rem;
+        font-size: 0.875rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .info-card {
+        background-color: var(--card-bg);
+    }
+
+    .info-item {
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .info-item:last-child {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: none;
+    }
+
+    .info-label {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        margin-bottom: 0.25rem;
+    }
+
+    .info-value {
+        font-weight: 500;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .badge.success {
+        background-color: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .badge.warning {
+        background-color: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .badge.info {
+        background-color: var(--info-light);
+        color: var(--info-color);
+    }
+
+    .warning-box {
+        display: flex;
+        background-color: var(--warning-light);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        margin: 1rem 0;
+        gap: 0.75rem;
+        align-items: flex-start;
+    }
+
+    .warning-icon {
+        color: var(--warning-color);
+        flex-shrink: 0;
+    }
+
+    .warning-content p {
+        margin-bottom: 0;
+        font-size: 0.9rem;
+    }
+
+    .delete-section {
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .delete-section h4 {
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+        color: var(--danger-color);
+    }
+
+    .delete-section p {
+        font-size: 0.9rem;
+        margin-bottom: 1rem;
+    }
+
+    .btn-block {
+        display: block;
+        width: 100%;
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const isPaidCheckbox = document.getElementById('is_paid');
+        const paymentSection = document.getElementById('payment-section');
+
+        // Function to toggle payment section visibility
+        function togglePaymentSection() {
+            if (isPaidCheckbox.checked) {
+                paymentSection.style.display = 'block';
+            } else {
+                paymentSection.style.display = 'none';
+            }
+        }
+
+        // Add event listener
+        isPaidCheckbox.addEventListener('change', togglePaymentSection);
+    });
+</script>
+{% endblock %}v

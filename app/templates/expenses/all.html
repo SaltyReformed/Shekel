@@ -1,0 +1,552 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Expenses - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Manage Expenses</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Expense
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="filters-section">
+        <div class="card">
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('expense.manage_expenses') }}" id="filterForm"
+                    class="filter-form">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label for="category_id">Category</label>
+                            <select id="category_id" name="category_id" class="form-control">
+                                <option value="0">All Categories</option>
+                                {% for category in categories %}
+                                <option value="{{ category.id }}" {% if
+                                    request.args.get('category_id')==category.id|string %}selected{% endif %}>
+                                    {{ category.name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="is_paid">Status</label>
+                            <select id="is_paid" name="is_paid" class="form-control">
+                                <option value="">All</option>
+                                <option value="paid" {% if request.args.get('is_paid')=='paid' %}selected{% endif %}>
+                                    Paid</option>
+                                <option value="unpaid" {% if request.args.get('is_paid')=='unpaid' %}selected{% endif
+                                    %}>Unpaid</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="start_date">From Date</label>
+                            <input type="date" id="start_date" name="start_date" class="form-control"
+                                value="{{ request.args.get('start_date', '') }}">
+                        </div>
+                        <div class="filter-group">
+                            <label for="end_date">To Date</label>
+                            <input type="date" id="end_date" name="end_date" class="form-control"
+                                value="{{ request.args.get('end_date', '') }}">
+                        </div>
+                        <div class="filter-actions">
+                            <button type="submit" class="btn btn-secondary">Apply Filters</button>
+                            <a href="{{ url_for('expense.manage_expenses') }}" class="btn btn-link">Clear</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="expenses-container">
+        {% if sorted_months %}
+        {% for month in sorted_months %}
+        <div class="month-section">
+            <div class="month-header">
+                <h2>{{ expenses_by_month[month]['month_name'] }}</h2>
+                <div class="month-total">
+                    <span class="total-label">Total:</span>
+                    <span class="total-value">${{ "{:,.2f}".format(expenses_by_month[month]['total']) }}</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="table-responsive">
+                    <table class="table expenses-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Description</th>
+                                <th>Category</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for expense in expenses_by_month[month]['expenses'] %}
+                            <tr>
+                                <td>{{ expense.scheduled_date.strftime('%b %d, %Y') }}</td>
+                                <td>{{ expense.description }}</td>
+                                <td>
+                                    {% if expense.category %}
+                                    {{ expense.category.name }}
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="amount-value">${{ "{:,.2f}".format(expense.amount) }}</td>
+                                <td>
+                                    {% if expense.paid %}
+                                    <span class="badge success">Paid</span>
+                                    {% else %}
+                                    <span class="badge warning">Pending</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <div class="action-buttons">
+                                        <a href="{{ url_for('expense.edit_expense', expense_id=expense.id) }}"
+                                            class="btn btn-sm btn-outline-primary">Edit</a>
+                                        {% if not expense.paid %}
+                                        <form method="POST"
+                                            action="{{ url_for('expense.mark_expense_paid', expense_id=expense.id) }}"
+                                            class="mark-paid-form">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <!-- Default to first account, will be replaced by dropdown in the modal -->
+                                            <input type="hidden" name="account_id"
+                                                value="{{ accounts[0].id if accounts else '' }}">
+                                            <button type="button" class="btn btn-sm btn-outline-success mark-paid-btn">
+                                                Mark Paid
+                                            </button>
+                                        </form>
+                                        {% endif %}
+                                        <form method="POST"
+                                            action="{{ url_for('expense.delete_expense', expense_id=expense.id) }}"
+                                            class="d-inline delete-form"
+                                            onsubmit="return confirm('Are you sure you want to delete this expense? This action cannot be undone.');">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+            </div>
+            <h3>No Expenses Found</h3>
+            <p>There are no expenses matching your current filters.</p>
+            <div class="empty-state-actions">
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">Add Expense</a>
+                <a href="{{ url_for('expense.add_recurring_expense') }}" class="btn btn-secondary">Create Recurring
+                    Expense</a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- "Mark as Paid" Modal -->
+    <div class="modal" id="markPaidModal">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Mark Expense as Paid</h5>
+                    <button type="button" class="close" onclick="closeMarkPaidModal()">
+                        <span>&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p>Select the account to pay this expense from:</p>
+                    <div class="form-group">
+                        <label for="modal-account-select">Account</label>
+                        <select id="modal-account-select" class="form-control">
+                            {% for account in accounts %}
+                            <option value="{{ account.id }}">
+                                {{ account.account_name }} (Balance: ${{ "{:,.2f}".format(account.balance) }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="alert alert-info">
+                        <div class="alert-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <div class="alert-content">
+                            <p>This will reduce the selected account's balance by the expense amount.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeMarkPaidModal()">Cancel</button>
+                    <button type="button" class="btn btn-success" id="confirmMarkPaidBtn">Mark as Paid</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .filters-section {
+        margin-bottom: 2rem;
+    }
+
+    .filter-form {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-end;
+    }
+
+    .filter-group {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .filter-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .filter-actions {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    .month-section {
+        margin-bottom: 2.5rem;
+    }
+
+    .month-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .month-header h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    .month-total {
+        font-size: 1.125rem;
+    }
+
+    .total-label {
+        color: var(--text-muted);
+        margin-right: 0.5rem;
+    }
+
+    .total-value {
+        font-weight: 700;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .table-responsive {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .expenses-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .expenses-table th,
+    .expenses-table td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .expenses-table th {
+        font-weight: 600;
+        color: var(--text-muted);
+        white-space: nowrap;
+    }
+
+    .amount-value {
+        font-weight: 600;
+        text-align: right;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .badge.success {
+        background-color: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .badge.warning {
+        background-color: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .empty-state {
+        text-align: center;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        padding: 3rem 1.5rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1.5rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+        font-size: 1.5rem;
+    }
+
+    .empty-state p {
+        margin-bottom: 2rem;
+        color: var(--text-muted);
+        max-width: 500px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .empty-state-actions {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .text-muted {
+        color: var(--text-muted);
+    }
+
+    .d-inline {
+        display: inline-block;
+    }
+
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1050;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0, 0, 0, 0.4);
+    }
+
+    .modal.show {
+        display: block;
+    }
+
+    .modal-dialog {
+        position: relative;
+        width: auto;
+        margin: 1.75rem auto;
+        max-width: 500px;
+    }
+
+    .modal-content {
+        position: relative;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow-lg);
+        outline: 0;
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+        margin: 0;
+    }
+
+    .close {
+        padding: 0;
+        background-color: transparent;
+        border: 0;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+
+    .modal-body {
+        padding: 1.5rem;
+    }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        gap: 0.5rem;
+    }
+
+    .alert {
+        display: flex;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        border-radius: var(--border-radius);
+        align-items: flex-start;
+    }
+
+    .alert-info {
+        background-color: var(--info-bg);
+        color: var(--info-color);
+    }
+
+    .alert-icon {
+        margin-right: 0.75rem;
+        display: flex;
+    }
+
+    .alert-content p {
+        margin: 0;
+    }
+
+    @media (max-width: 768px) {
+
+        .expenses-table th,
+        .expenses-table td {
+            white-space: nowrap;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        // Mark as Paid Modal
+        const markPaidModal = document.getElementById('markPaidModal');
+        const accountSelect = document.getElementById('modal-account-select');
+        const confirmMarkPaidBtn = document.getElementById('confirmMarkPaidBtn');
+        let currentForm = null;
+
+        // Set up event listeners for mark paid buttons
+        const markPaidButtons = document.querySelectorAll('.mark-paid-btn');
+        markPaidButtons.forEach(button => {
+            button.addEventListener('click', function () {
+                // Store reference to the form
+                currentForm = this.closest('form');
+
+                // Show the modal
+                markPaidModal.classList.add('show');
+                document.body.style.overflow = 'hidden';
+            });
+        });
+
+        // Confirm mark as paid
+        confirmMarkPaidBtn.addEventListener('click', function () {
+            if (currentForm) {
+                // Update the account_id input in the form
+                const accountInput = currentForm.querySelector('input[name="account_id"]');
+                accountInput.value = accountSelect.value;
+
+                // Submit the form
+                currentForm.submit();
+            }
+
+            // Close the modal
+            closeMarkPaidModal();
+        });
+
+        // Close when clicking outside modal
+        window.addEventListener('click', function (event) {
+            if (event.target === markPaidModal) {
+                closeMarkPaidModal();
+            }
+        });
+    });
+
+    // Function to close the modal
+    function closeMarkPaidModal() {
+        const markPaidModal = document.getElementById('markPaidModal');
+        markPaidModal.classList.remove('show');
+        document.body.style.overflow = '';
+    }
+</script>
+{% endblock %}
