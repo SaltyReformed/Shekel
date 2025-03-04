@@ -1,4 +1,9 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session
+import decimal
+from datetime import date, datetime, timedelta
+from functools import wraps
+
+from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+
 from app.forms import (
     ExpenseCategoryForm,
     ExpenseFilterForm,
@@ -11,20 +16,18 @@ from app.forms import (
     ScheduleTypeForm,
 )
 from models import (
-    db,
     Account,
     Expense,
     ExpenseCategory,
     ExpensePayment,
+    Frequency,
+    IncomeCategory,
     RecurringSchedule,
     ScheduleType,
     Transaction,
-    Frequency,
-    IncomeCategory,
     User,
+    db,
 )
-from functools import wraps
-from datetime import date, datetime, timedelta
 
 config_bp = Blueprint("config", __name__, url_prefix="/config")
 
@@ -401,7 +404,7 @@ def add_expense_category():
         db.session.add(category)
         db.session.commit()
         flash(f"Category '{category.name}' created successfully", "success")
-        return redirect(url_for("expense.categories"))
+        return redirect(url_for("config.expense_categories"))
     return render_template(
         "config/edit_expense_category.html", form=form, is_edit=False
     )
@@ -426,7 +429,7 @@ def edit_expense_category(category_id):
             category.monthly_budget = None
         db.session.commit()
         flash(f"Category '{category.name}' updated successfully", "success")
-        return redirect(url_for("expense.categories"))
+        return redirect(url_for("config.expense_categories"))
     return render_template(
         "config/edit_expense_category.html", form=form, category=category, is_edit=True
     )

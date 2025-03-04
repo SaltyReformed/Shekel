@@ -554,7 +554,7 @@ def all_expenses():
     accounts = Account.query.filter_by(user_id=user_id).all()
 
     return render_template(
-        "expense/all.html",
+        "expenses/all.html",
         expenses_by_month=expenses_by_month,
         sorted_months=sorted_months,
         categories=categories,
@@ -572,7 +572,7 @@ def recurring_expenses():
     schedule_type = ScheduleType.query.filter_by(name="expense").first()
     if not schedule_type:
         return render_template(
-            "expense/recurring.html", recurring_expenses=[], categories=[]
+            "expenses/recurring.html", recurring_expenses=[], categories=[]
         )
     query = RecurringSchedule.query.filter_by(user_id=user_id, type_id=schedule_type.id)
     if status == "active":
@@ -590,9 +590,12 @@ def recurring_expenses():
     # Note: Category filtering for recurring expenses is not implemented.
     recurring_expenses = query.all()
     categories = ExpenseCategory.query.all()
+    form.category_id.choices = [(0, "-- Select Category --")] + [(c.id, c.name) for c in categories]
+f   form.account_id.choices = [(0, "-- Select Account --")] + [(a.id, a.account_name) for a in accounts]
+
 
     return render_template(
-        "expense/recurring.html",
+        "expenses/recurring.html",
         recurring_expenses=recurring_expenses,
         categories=categories,
     )
@@ -651,7 +654,7 @@ def edit_recurring_expense(expense_id):
         form.end_date.data = schedule.end_date
 
     return render_template(
-        "expense/edit_recurring_expense.html",
+        "expenses/edit_recurring_expense.html",
         form=form,
         schedule=schedule,
         is_edit=True,
