@@ -1,14 +1,30 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session
 from app.forms import (
-    IncomeCategoryForm,
+    ExpenseCategoryForm,
+    ExpenseFilterForm,
+    ExpensePaymentForm,
     FrequencyForm,
+    IncomeCategoryForm,
+    OneTimeExpenseForm,
+    RecurringExpenseForm,
     RecurringScheduleForm,
     ScheduleTypeForm,
-    ExpenseCategoryForm,
 )
-from models import db, IncomeCategory, Frequency, RecurringSchedule, ScheduleType, User
+from models import (
+    db,
+    Account,
+    Expense,
+    ExpenseCategory,
+    ExpensePayment,
+    RecurringSchedule,
+    ScheduleType,
+    Transaction,
+    Frequency,
+    IncomeCategory,
+    User,
+)
 from functools import wraps
-from datetime import date
+from datetime import date, datetime, timedelta
 
 config_bp = Blueprint("config", __name__, url_prefix="/config")
 
@@ -334,60 +350,106 @@ def delete_recurring_schedule(schedule_id):
 @config_bp.route("/expense_categories")
 @login_required
 def expense_categories():
+    user_id = session.get("user_id")
     categories = ExpenseCategory.query.all()
-    return render_template("config/expense_categories.html", categories=categories)
+    current_month = datetime.now().month
+    current_year = datetime.now().year
+    start_of_month = date(current_year, current_month, 1)
+    if current_month == 12:
+        end_of_month = date(current_year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end_of_month = date(current_year, current_month + 1, 1) - timedelta(days=1)
+    total_budget = sum(c.monthly_budget or 0 for c in categories)
+    month_spent = (
+        db.session.query(db.func.sum(Expense.amount))
+        .filter(
+            Expense.user_id == user_id,
+            Expense.scheduled_date >= start_of_month,
+            Expense.scheduled_date <= end_of_month,
+        )
+        .scalar()
+        or 0
+    )
+    return render_template(
+        "config/expense_categories.html",
+        categories=categories,
+        total_budget=total_budget,
+        month_spent=month_spent,
+    )
 
 
+# Route to add a new expense category
 @config_bp.route("/expense_categories/add", methods=["GET", "POST"])
 @login_required
 def add_expense_category():
-    form = ExpenseCategoryForm()
+    from app.forms import ExpenseCategoryForm
 
+    form = ExpenseCategoryForm()
     if form.validate_on_submit():
+        color = request.form.get("color", "#6c757d")
+        monthly_budget = request.form.get("monthly_budget")
+        if monthly_budget and monthly_budget.strip():
+            monthly_budget = decimal.Decimal(monthly_budget)
+        else:
+            monthly_budget = None
         category = ExpenseCategory(
-            name=form.name.data, description=form.description.data
+            name=form.name.data,
+            description=form.description.data,
+            color=color,
+            monthly_budget=monthly_budget,
         )
         db.session.add(category)
         db.session.commit()
-
-        flash("Expense category added successfully.", "success")
-        return redirect(url_for("config.expense_categories"))
-
+        flash(f"Category '{category.name}' created successfully", "success")
+        return redirect(url_for("expense.categories"))
     return render_template(
         "config/edit_expense_category.html", form=form, is_edit=False
     )
 
 
-@config_bp.route("/expense_categories/edit/<int:category_id>", methods=["GET", "POST"])
+# Route to edit an expense category
+@config_bp.route("/expense_categories/<int:category_id>/edit", methods=["GET", "POST"])
 @login_required
 def edit_expense_category(category_id):
+    from app.forms import ExpenseCategoryForm
+
     category = ExpenseCategory.query.get_or_404(category_id)
     form = ExpenseCategoryForm(obj=category)
-
     if form.validate_on_submit():
         category.name = form.name.data
         category.description = form.description.data
+        category.color = request.form.get("color", "#6c757d")
+        monthly_budget = request.form.get("monthly_budget")
+        if monthly_budget and monthly_budget.strip():
+            category.monthly_budget = decimal.Decimal(monthly_budget)
+        else:
+            category.monthly_budget = None
         db.session.commit()
-
-        flash("Expense category updated successfully.", "success")
-        return redirect(url_for("config.expense_categories"))
-
+        flash(f"Category '{category.name}' updated successfully", "success")
+        return redirect(url_for("expense.categories"))
     return render_template(
-        "config/edit_expense_category.html", form=form, is_edit=True, category=category
+        "config/edit_expense_category.html", form=form, category=category, is_edit=True
     )
 
 
-@config_bp.route("/expense_categories/delete/<int:category_id>", methods=["POST"])
+# Route to delete an expense category
+@config_bp.route("/expense_categories/<int:category_id>/delete", methods=["POST"])
 @login_required
 def delete_expense_category(category_id):
     category = ExpenseCategory.query.get_or_404(category_id)
-
     try:
+        expenses_count = Expense.query.filter_by(category_id=category_id).count()
+        if expenses_count > 0:
+            flash(
+                f"Cannot delete category '{category.name}' because it's used by {expenses_count} expenses.",
+                "danger",
+            )
+            return redirect(url_for("config.expense_categories"))
+        category_name = category.name
         db.session.delete(category)
         db.session.commit()
-        flash("Expense category deleted successfully.", "success")
+        flash(f"Category '{category_name}' deleted successfully", "success")
     except Exception as e:
         db.session.rollback()
-        flash("Cannot delete this category because it is in use.", "danger")
-
+        flash(f"Error deleting category: {str(e)}", "danger")
     return redirect(url_for("config.expense_categories"))
