@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+
+{% block title %}Expense Categories - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Expense Categories</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('expense.add_category') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Category
+                </a>
+            </div>
+        </div>
+        <p class="text-muted">Manage your expense categories to better track and organize your spending</p>
+    </div>
+
+    <div class="card">
+        {% if categories %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Monthly Budget</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for category in categories %}
+                    <tr>
+                        <td>
+                            <div class="category-name">
+                                <span class="category-icon" style="background-color: {{ category.color or '#6c757d' }}">
+                                    {% if category.icon %}
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round">
+                                        <path d="{{ category.icon }}"></path>
+                                    </svg>
+                                    {% else %}
+                                    {{ category.name[0] | upper }}
+                                    {% endif %}
+                                </span>
+                                {{ category.name }}
+                            </div>
+                        </td>
+                        <td>{{ category.description or '-' }}</td>
+                        <td>
+                            {% if category.monthly_budget %}
+                            ${{ "{:,.2f}".format(category.monthly_budget) }}
+                            {% else %}
+                            <span class="text-muted">Not set</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="action-buttons">
+                                <a href="{{ url_for('expense.edit_category', category_id=category.id) }}"
+                                    class="btn btn-sm btn-outline-secondary">Edit</a>
+                                <form method="POST"
+                                    action="{{ url_for('expense.delete_category', category_id=category.id) }}"
+                                    class="d-inline delete-form"
+                                    onsubmit="return confirm('Are you sure you want to delete this category?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <path
+                        d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83">
+                    </path>
+                </svg>
+            </div>
+            <h3>No Expense Categories</h3>
+            <p>You haven't created any expense categories yet.</p>
+            <a href="{{ url_for('expense.add_category') }}" class="btn btn-primary">Add Your First Category</a>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if categories %}
+    <div class="budget-summary-card">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Budget Summary</h3>
+            </div>
+            <div class="card-body">
+                <div class="budget-summary">
+                    <div class="budget-item">
+                        <div class="budget-label">Total Monthly Budget</div>
+                        <div class="budget-amount">${{ "{:,.2f}".format(total_budget) }}</div>
+                    </div>
+                    <div class="budget-item">
+                        <div class="budget-label">Spent This Month</div>
+                        <div class="budget-amount spent">${{ "{:,.2f}".format(month_spent) }}</div>
+                    </div>
+                    <div class="budget-item">
+                        <div class="budget-label">Remaining</div>
+                        <div class="budget-amount remaining">${{ "{:,.2f}".format(total_budget - month_spent) }}</div>
+                    </div>
+                </div>
+
+                <div class="budget-progress">
+                    {% set progress_percentage = (month_spent / total_budget * 100) if total_budget > 0 else 0 %}
+                    <div class="progress-bar-label">Monthly Budget Usage</div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" style="width: {{ progress_percentage }}%;"></div>
+                    </div>
+                    <div class="progress-bar-percentage">{{ "%.1f"|format(progress_percentage) }}%</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="info-box mt-4">
+        <div class="info-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+        </div>
+        <div class="info-content">
+            <h4>About Expense Categories</h4>
+            <p>Expense categories help you organize your spending, track your budget, and understand your financial
+                habits.</p>
+            <p>Common expense categories include:</p>
+            <ul class="categories-list">
+                <li>Housing (rent, mortgage, repairs)</li>
+                <li>Utilities (electricity, water, internet)</li>
+                <li>Transportation (car payments, gas, public transit)</li>
+                <li>Food (groceries, dining out)</li>
+                <li>Healthcare (insurance, medications, doctor visits)</li>
+                <li>Entertainment (movies, subscriptions, hobbies)</li>
+                <li>Personal Care (haircuts, gym memberships)</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .table-responsive {
+        overflow-x: auto;
+    }
+
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .table th,
+    .table td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .table th {
+        font-weight: 600;
+        color: var(--text-muted);
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .btn-outline-danger {
+        color: var(--danger-color);
+        border-color: var(--danger-color);
+    }
+
+    .btn-outline-danger:hover {
+        background-color: var(--danger-bg);
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 3rem 1.5rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1.5rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+    }
+
+    .info-box {
+        display: flex;
+        background-color: var(--info-bg);
+        border-radius: var(--border-radius-lg);
+        padding: 1.5rem;
+        gap: 1rem;
+        align-items: flex-start;
+    }
+
+    .info-icon {
+        color: var(--info-color);
+        flex-shrink: 0;
+        margin-top: 0.25rem;
+    }
+
+    .info-content h4 {
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .info-content p {
+        margin-bottom: 0.5rem;
+    }
+
+    .categories-list {
+        padding-left: 1.5rem;
+        margin-bottom: 0;
+        columns: 2;
+    }
+
+    .categories-list li {
+        margin-bottom: 0.5rem;
+        break-inside: avoid;
+    }
+
+    .mt-4 {
+        margin-top: 1.5rem;
+    }
+
+    .d-inline {
+        display: inline-block;
+    }
+
+    .category-name {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    .category-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        color: white;
+        font-weight: 600;
+    }
+
+    .budget-summary-card {
+        margin-top: 2rem;
+    }
+
+    .budget-summary {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+    }
+
+    .budget-item {
+        text-align: center;
+        flex: 1;
+    }
+
+    .budget-label {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        margin-bottom: 0.5rem;
+    }
+
+    .budget-amount {
+        font-size: 1.5rem;
+        font-weight: 700;
+    }
+
+    .budget-amount.spent {
+        color: var(--danger-color);
+    }
+
+    .budget-amount.remaining {
+        color: var(--success-color);
+    }
+
+    .budget-progress {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .progress-bar-label {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .progress-bar-container {
+        height: 20px;
+        background-color: var(--neutral-200);
+        border-radius: var(--border-radius);
+        overflow: hidden;
+    }
+
+    .progress-bar {
+        height: 100%;
+        background-color: var(--danger-color);
+        transition: width 0.5s ease-in-out;
+    }
+
+    .progress-bar-percentage {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        text-align: right;
+    }
+</style>
+{% endblock %}

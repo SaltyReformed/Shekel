@@ -5,6 +5,7 @@ from config import Config
 from models import db
 from auth import auth_bp
 from income import income_bp
+from expense import expense_bp
 from config_manager import config_bp
 from user_management import user_bp
 from account_manager import (
@@ -34,7 +35,8 @@ def create_app():
     app.register_blueprint(income_bp)
     app.register_blueprint(config_bp)
     app.register_blueprint(user_bp)
-    app.register_blueprint(account_bp)  # Register the account management blueprint
+    app.register_blueprint(account_bp)
+    app.register_blueprint(expense_bp)
 
     # Helper function to check if user is logged in
     def is_logged_in():

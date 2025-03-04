@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit' if is_edit else 'Add' }} Expense Category - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>{{ 'Edit' if is_edit else 'Add' }} Expense Category</h1>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST">
+                        {{ form.csrf_token }}
+
+                        <div class="form-group">
+                            {{ form.name.label }}
+                            {{ form.name(class="form-control") }}
+                            {% if form.name.errors %}
+                            <div class="error-message">
+                                {% for error in form.name.errors %}
+                                <span>{{ error }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="form-group">
+                            {{ form.description.label }} <span class="text-muted">(Optional)</span>
+                            {{ form.description(class="form-control", rows=3) }}
+                            {% if form.description.errors %}
+                            <div class="error-message">
+                                {% for error in form.description.errors %}
+                                <span>{{ error }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="form-group">
+                            <label for="color">Category Color</label>
+                            <div class="color-picker-wrapper">
+                                <input type="color" id="color" name="color" class="form-control color-input"
+                                    value="{{ category.color if is_edit and category.color else '#6c757d' }}">
+                                <span class="color-preview" id="colorPreview"
+                                    style="background-color: {{ category.color if is_edit and category.color else '#6c757d' }}"></span>
+                            </div>
+                            <small class="form-text text-muted">Choose a color to visually identify this
+                                category</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="monthly_budget">Monthly Budget <span
+                                    class="text-muted">(Optional)</span></label>
+                            <div class="input-with-icon">
+                                <span class="input-icon">$</span>
+                                <input type="number" id="monthly_budget" name="monthly_budget" step="0.01" min="0"
+                                    class="form-control"
+                                    value="{{ category.monthly_budget if is_edit and category.monthly_budget else '' }}">
+                            </div>
+                            <small class="form-text text-muted">Set a monthly spending limit for this category</small>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">{{ 'Update' if is_edit else 'Add' }}
+                                Category</button>
+                            <a href="{{ url_for('expense.categories') }}" class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">Category Tips</h3>
+                </div>
+                <div class="card-body">
+                    <p>Creating specific expense categories helps you track where your money is going and stay within
+                        budget.</p>
+                    <p>Tips for effective categories:</p>
+                    <ul class="help-list">
+                        <li><strong>Be specific but not too granular</strong> - "Dining Out" is better than just "Food"
+                            or overly specific like "Italian Restaurants"</li>
+                        <li><strong>Set realistic budgets</strong> based on your actual spending patterns</li>
+                        <li><strong>Choose distinct colors</strong> to easily identify categories in reports and charts
+                        </li>
+                        <li><strong>Regularly review</strong> your categories to make sure they still match your
+                            lifestyle</li>
+                    </ul>
+
+                    <div class="suggested-categories">
+                        <h4>Suggested Categories</h4>
+                        <div class="category-chips">
+                            <div class="category-chip" data-name="Housing" data-color="#3563e6">Housing</div>
+                            <div class="category-chip" data-name="Groceries" data-color="#00b894">Groceries</div>
+                            <div class="category-chip" data-name="Utilities" data-color="#fdcb6e">Utilities</div>
+                            <div class="category-chip" data-name="Transportation" data-color="#fd79a8">Transportation
+                            </div>
+                            <div class="category-chip" data-name="Entertainment" data-color="#6c5ce7">Entertainment
+                            </div>
+                            <div class="category-chip" data-name="Dining Out" data-color="#e74c3c">Dining Out</div>
+                            <div class="category-chip" data-name="Healthcare" data-color="#0abde3">Healthcare</div>
+                            <div class="category-chip" data-name="Shopping" data-color="#f368e0">Shopping</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .error-message {
+        color: var(--danger-color);
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .text-muted {
+        color: var(--text-muted);
+    }
+
+    .help-card {
+        background-color: var(--primary-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .help-list li:last-child {
+        margin-bottom: 0;
+    }
+
+    .color-picker-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .color-input {
+        width: 100px;
+        padding: 0.25rem;
+        height: 40px;
+    }
+
+    .color-preview {
+        display: inline-block;
+        width: 40px;
+        height: 40px;
+        border-radius: var(--border-radius);
+        border: 1px solid var(--border-color);
+    }
+
+    .input-with-icon {
+        position: relative;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+
+    .input-with-icon .form-control {
+        padding-left: 2rem;
+    }
+
+    .suggested-categories {
+        margin-top: 1.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .suggested-categories h4 {
+        font-size: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .category-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .category-chip {
+        display: inline-block;
+        padding: 0.5rem 0.75rem;
+        border-radius: var(--border-radius);
+        background-color: var(--neutral-200);
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition: transform 0.2s ease;
+    }
+
+    .category-chip:hover {
+        transform: translateY(-2px);
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        // Update color preview when color input changes
+        const colorInput = document.getElementById('color');
+        const colorPreview = document.getElementById('colorPreview');
+
+        if (colorInput && colorPreview) {
+            colorInput.addEventListener('input', function () {
+                colorPreview.style.backgroundColor = this.value;
+            });
+        }
+
+        // Handle category chip clicks to prefill form
+        const categoryChips = document.querySelectorAll('.category-chip');
+        const nameInput = document.getElementById('name');
+
+        categoryChips.forEach(chip => {
+            chip.addEventListener('click', function () {
+                const categoryName = this.dataset.name;
+                const categoryColor = this.dataset.color;
+
+                // Set the form values
+                if (nameInput) {
+                    nameInput.value = categoryName;
+                }
+
+                if (colorInput) {
+                    colorInput.value = categoryColor;
+                    colorPreview.style.backgroundColor = categoryColor;
+                }
+
+                // Style chip as selected
+                categoryChips.forEach(c => c.classList.remove('selected'));
+                this.classList.add('selected');
+            });
+
+            // Set chip background color
+            chip.style.backgroundColor = chip.dataset.color;
+            chip.style.color = 'white';
+        });
+    });
+</script>
+{% endblock %}

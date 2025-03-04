@@ -40,29 +40,6 @@ class DepositAllocationForm(FlaskForm):
         csrf = False
 
 
-class DepositAllocationForm(FlaskForm):
-    """Form for a single deposit allocation"""
-
-    account_id = SelectField("Account", coerce=int, validators=[Optional()])
-    allocation_type = RadioField(
-        "Allocation Type",
-        choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
-        default="percentage",
-    )
-    percentage = DecimalField(
-        "Percentage",
-        validators=[Optional(), NumberRange(min=0, max=100)],
-        default=100.0,
-    )
-    amount = DecimalField(
-        "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
-    )
-
-    class Meta:
-        # Don't use CSRF for this nested form
-        csrf = False
-
-
 class SalaryForm(FlaskForm):
     salary_type = RadioField(
         "Salary Type",
@@ -181,31 +158,6 @@ class ScheduleTypeForm(FlaskForm):
     description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
 
 
-class DepositAllocationForm(FlaskForm):
-    """Form for a single deposit allocation"""
-
-    allocation_type = RadioField(
-        "Allocation Type",
-        choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
-        default="percentage",
-    )
-    account_id = SelectField("Account", coerce=int, validators=[DataRequired()])
-    percentage = DecimalField(
-        "Percentage",
-        validators=[Optional(), NumberRange(min=0, max=100)],
-        default=100.0,
-    )
-    amount = DecimalField(
-        "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
-    )
-    # Used to track existing records when editing
-    payment_id = HiddenField()
-
-    class Meta:
-        # Don't use CSRF for this nested form
-        csrf = False
-
-
 class PaycheckDepositForm(FlaskForm):
     """Form for managing paycheck deposits"""
 
@@ -223,24 +175,31 @@ class PaycheckDepositForm(FlaskForm):
 
 
 # Expense Management Forms
-class ExpenseForm(FlaskForm):
-    """Form for adding and editing expenses"""
 
-    description = StringField(
-        "Description", validators=[DataRequired(), Length(max=255)]
-    )
+
+class ExpenseCategoryForm(FlaskForm):
+    """Form for managing expense categories"""
+
+    name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
+    description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
+
+
+class OneTimeExpenseForm(FlaskForm):
+    """Form for adding a one-time expense"""
+
+    description = StringField("Description", validators=[DataRequired()])
     amount = DecimalField(
         "Amount", validators=[DataRequired(), NumberRange(min=0)], places=2
     )
     expense_date = DateField("Date", default=date.today, validators=[DataRequired()])
     category_id = SelectField("Category", coerce=int)
-    account_id = SelectField("Pay from Account", coerce=int)
+    account_id = SelectField("Pay from Account", coerce=int, validators=[Optional()])
     is_paid = BooleanField("Mark as Paid", default=False)
-    notes = TextAreaField("Notes", validators=[Optional(), Length(max=500)])
+    notes = StringField("Notes")
 
 
 class RecurringExpenseForm(FlaskForm):
-    """Form for managing recurring expenses"""
+    """Form for setting up recurring expenses"""
 
     description = StringField(
         "Description", validators=[DataRequired(), Length(max=255)]
@@ -255,17 +214,37 @@ class RecurringExpenseForm(FlaskForm):
     )
     end_date = DateField("End Date", validators=[Optional()])
     category_id = SelectField("Category", coerce=int)
-    account_id = SelectField("Default Payment Account", coerce=int)
-    num_periods = IntegerField(
-        "Number of instances to generate",
-        default=3,
-        validators=[NumberRange(min=1, max=24)],
+    account_id = SelectField(
+        "Default Payment Account", coerce=int, validators=[Optional()]
     )
-    generate_new = BooleanField("Generate new instances", default=False)
+    auto_pay = BooleanField("Automatically mark as paid when due", default=False)
+    notes = StringField("Notes")
 
 
-class CategoryForm(FlaskForm):
-    """Form for managing expense categories"""
+class ExpensePaymentForm(FlaskForm):
+    """Form for marking an expense as paid"""
 
-    name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
-    description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
+    account_id = SelectField(
+        "Pay from Account", coerce=int, validators=[DataRequired()]
+    )
+    payment_date = DateField(
+        "Payment Date", default=date.today, validators=[DataRequired()]
+    )
+    payment_amount = DecimalField(
+        "Payment Amount", validators=[DataRequired(), NumberRange(min=0)], places=2
+    )
+    notes = StringField("Payment Notes")
+
+
+class ExpenseFilterForm(FlaskForm):
+    """Form for filtering expenses on the overview page"""
+
+    category_id = SelectField("Category", coerce=int, validators=[Optional()])
+    start_date = DateField("From Date", validators=[Optional()])
+    end_date = DateField("To Date", validators=[Optional()])
+    status = SelectField(
+        "Status",
+        choices=[("", "All Statuses"), ("paid", "Paid"), ("unpaid", "Unpaid")],
+        validators=[Optional()],
+    )
+    recurring_only = BooleanField("Show only recurring expenses", default=False)
