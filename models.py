@@ -56,6 +56,11 @@ class ExpenseCategory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50))
     description = db.Column(db.Text)
+    color = db.Column(db.String(7), default="#6c757d")  # Hex color code
+    monthly_budget = db.Column(
+        db.Numeric(10, 2), nullable=True
+    )  # Monthly budget amount
+    icon = db.Column(db.String(100), nullable=True)  # Optional SVG path for icon
 
 
 # ---------------------------
@@ -192,6 +197,7 @@ class Expense(db.Model):
     user = db.relationship("User", backref="expenses")
     expense_category = db.relationship("ExpenseCategory", backref="expenses")
     recurring_schedule = db.relationship("RecurringSchedule", backref="expenses")
+    notes = db.Column(db.Text)  # For additional notes about the expense
 
 
 class ExpenseChange(db.Model):

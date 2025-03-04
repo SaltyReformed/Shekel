@@ -4,6 +4,7 @@ from app.forms import (
     FrequencyForm,
     RecurringScheduleForm,
     ScheduleTypeForm,
+    ExpenseCategoryForm,
 )
 from models import db, IncomeCategory, Frequency, RecurringSchedule, ScheduleType, User
 from functools import wraps
@@ -43,16 +44,16 @@ def admin_required(f):
 
 
 # Income Categories Management
-@config_bp.route("/categories")
+@config_bp.route("/income_categories")
 @login_required
-def categories():
+def income_categories():
     categories = IncomeCategory.query.all()
-    return render_template("config/categories.html", categories=categories)
+    return render_template("config/income_categories.html", categories=categories)
 
 
-@config_bp.route("/categories/add", methods=["GET", "POST"])
+@config_bp.route("/income_categories/add", methods=["GET", "POST"])
 @login_required
-def add_category():
+def add_income_category():
     form = IncomeCategoryForm()
 
     if form.validate_on_submit():
@@ -63,14 +64,14 @@ def add_category():
         db.session.commit()
 
         flash("Income category added successfully.", "success")
-        return redirect(url_for("config.categories"))
+        return redirect(url_for("config.income_categories"))
 
-    return render_template("config/edit_category.html", form=form, is_edit=False)
+    return render_template("config/edit_income_category.html", form=form, is_edit=False)
 
 
-@config_bp.route("/categories/edit/<int:category_id>", methods=["GET", "POST"])
+@config_bp.route("/income_categories/edit/<int:category_id>", methods=["GET", "POST"])
 @login_required
-def edit_category(category_id):
+def edit_income_category(category_id):
     category = IncomeCategory.query.get_or_404(category_id)
     form = IncomeCategoryForm(obj=category)
 
@@ -80,16 +81,16 @@ def edit_category(category_id):
         db.session.commit()
 
         flash("Income category updated successfully.", "success")
-        return redirect(url_for("config.categories"))
+        return redirect(url_for("config.income_categories"))
 
     return render_template(
-        "config/edit_category.html", form=form, is_edit=True, category=category
+        "config/edit_income_category.html", form=form, is_edit=True, category=category
     )
 
 
-@config_bp.route("/categories/delete/<int:category_id>", methods=["POST"])
+@config_bp.route("/income_categories/delete/<int:category_id>", methods=["POST"])
 @login_required
-def delete_category(category_id):
+def delete_income_category(category_id):
     category = IncomeCategory.query.get_or_404(category_id)
 
     try:
@@ -100,7 +101,7 @@ def delete_category(category_id):
         db.session.rollback()
         flash("Cannot delete this category because it is in use.", "danger")
 
-    return redirect(url_for("config.categories"))
+    return redirect(url_for("config.income_categories"))
 
 
 # Frequencies Management
@@ -328,3 +329,66 @@ def delete_recurring_schedule(schedule_id):
         flash("Cannot delete this schedule because it is in use.", "danger")
 
     return redirect(url_for("config.recurring_schedules"))
+
+
+# Expense Categories Management
+@config_bp.route("/expense_categories")
+@login_required
+def expense_categories():
+    categories = ExpenseCategory.query.all()
+    return render_template("config/expense_categories.html", categories=categories)
+
+
+@config_bp.route("/expense_categories/add", methods=["GET", "POST"])
+@login_required
+def add_expense_category():
+    form = ExpenseCategoryForm()
+
+    if form.validate_on_submit():
+        category = ExpenseCategory(
+            name=form.name.data, description=form.description.data
+        )
+        db.session.add(category)
+        db.session.commit()
+
+        flash("Expense category added successfully.", "success")
+        return redirect(url_for("config.expense_categories"))
+
+    return render_template(
+        "config/edit_expense_category.html", form=form, is_edit=False
+    )
+
+
+@config_bp.route("/expense_categories/edit/<int:category_id>", methods=["GET", "POST"])
+@login_required
+def edit_expense_category(category_id):
+    category = ExpenseCategory.query.get_or_404(category_id)
+    form = ExpenseCategoryForm(obj=category)
+
+    if form.validate_on_submit():
+        category.name = form.name.data
+        category.description = form.description.data
+        db.session.commit()
+
+        flash("Expense category updated successfully.", "success")
+        return redirect(url_for("config.expense_categories"))
+
+    return render_template(
+        "config/edit_expense_category.html", form=form, is_edit=True, category=category
+    )
+
+
+@config_bp.route("/expense_categories/delete/<int:category_id>", methods=["POST"])
+@login_required
+def delete_expense_category(category_id):
+    category = ExpenseCategory.query.get_or_404(category_id)
+
+    try:
+        db.session.delete(category)
+        db.session.commit()
+        flash("Expense category deleted successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash("Cannot delete this category because it is in use.", "danger")
+
+    return redirect(url_for("config.expense_categories"))

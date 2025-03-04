@@ -51,16 +51,16 @@
                 <ul class="nav-menu">
                     <!-- Always visible links -->
                     <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
-                
+
                     <!-- Links only visible to logged-in users -->
                     {% if is_logged_in %}
                     <li class="nav-item"><a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a></li>
                     <li class="nav-item dropdown">
                         <a href="{{ url_for('income.overview') }}" class="nav-link dropbtn">
                             Income
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
@@ -74,9 +74,9 @@
                     <li class="nav-item dropdown">
                         <a href="{{ url_for('account.overview') }}" class="nav-link dropbtn">
                             Accounts
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
@@ -87,31 +87,35 @@
                             <a href="{{ url_for('account.all_transactions') }}">All Transactions</a>
                         </div>
                     </li>
+                    <!-- Add these links to your navigation menu in base.html -->
                     <li class="nav-item dropdown">
                         <a href="#" class="nav-link dropbtn">
                             Expenses
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
                         <div class="dropdown-content">
-                            <a href="#">Overview</a>
-                            <a href="#">Add Expense</a>
+                            <a href="{{ url_for('expense.overview') }}">Overview</a>
+                            <a href="{{ url_for('expense.all_expenses') }}">All Expenses</a>
+                            <a href="{{ url_for('expense.add_expense') }}">Add Expense</a>
+                            <a href="{{ url_for('expense.recurring_expenses') }}">Recurring Expenses</a>
                         </div>
                     </li>
                     <li class="nav-item dropdown">
-                        <a href="{{ url_for('config.categories') }}" class="nav-link dropbtn">
+                        <a href="{{ url_for('config.expense_categories') }}" class="nav-link dropbtn">
                             Settings
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
                         <div class="dropdown-content">
-                            <a href="{{ url_for('config.categories') }}">Income Categories</a>
+                            <a href="{{ url_for('config.income_categories') }}">Income Categories</a>
+                            <a href="{{ url_for('expense.categories') }}">Expense Categories</a>
                             <a href="{{ url_for('config.frequencies') }}">Payment Frequencies</a>
                             <a href="{{ url_for('config.recurring_schedules') }}">Recurring Schedules</a>
                             {% if is_admin %}
@@ -122,15 +126,15 @@
                         </div>
                     </li>
                     {% endif %}
-                
+
                     <!-- Admin-only links -->
                     {% if is_admin %}
                     <li class="nav-item dropdown">
                         <a href="#" class="nav-link dropbtn">
                             Admin
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
@@ -141,71 +145,71 @@
                         </div>
                     </li>
                     {% endif %}
-                
+
                     <!-- Help/About links -->
                     <li class="nav-item"><a href="#" class="nav-link">About</a></li>
                 </ul>
 
-                    <div class="nav-buttons">
-                        {% if is_logged_in %}
-                        <div class="user-dropdown">
-                            <button class="user-button">
-                                <span class="user-avatar">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
-                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                        stroke-linejoin="round">
-                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                                        <circle cx="12" cy="7" r="4"></circle>
-                                    </svg>
-                                </span>
-                                <span class="user-name">{{ display_name }}</span>
+                <div class="nav-buttons">
+                    {% if is_logged_in %}
+                    <div class="user-dropdown">
+                        <button class="user-button">
+                            <span class="user-avatar">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                            </span>
+                            <span class="user-name">{{ display_name }}</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
+                                <path d="m6 9 6 6 6-6" />
+                            </svg>
+                        </button>
+                        <div class="user-dropdown-content">
+                            <a href="{{ url_for('auth.profile') }}">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                     fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="dropdown-icon">
-                                    <path d="m6 9 6 6 6-6" />
+                                    stroke-linejoin="round">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
                                 </svg>
-                            </button>
-                            <div class="user-dropdown-content">
-                                <a href="{{ url_for('auth.profile') }}">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                        stroke-linejoin="round">
-                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                                        <circle cx="12" cy="7" r="4"></circle>
-                                    </svg>
-                                    My Profile
-                                </a>
-                                {% if is_admin %}
-                                <a href="{{ url_for('user.list_users') }}">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                        stroke-linejoin="round">
-                                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                                        <circle cx="9" cy="7" r="4"></circle>
-                                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                                    </svg>
-                                    User Management
-                                </a>
-                                {% endif %}
-                                <a href="{{ url_for('auth.logout') }}">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                        stroke-linejoin="round">
-                                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                                        <polyline points="16 17 21 12 16 7"></polyline>
-                                        <line x1="21" y1="12" x2="9" y2="12"></line>
-                                    </svg>
-                                    Logout
-                                </a>
-                            </div>
+                                My Profile
+                            </a>
+                            {% if is_admin %}
+                            <a href="{{ url_for('user.list_users') }}">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="9" cy="7" r="4"></circle>
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                                </svg>
+                                User Management
+                            </a>
+                            {% endif %}
+                            <a href="{{ url_for('auth.logout') }}">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                    <polyline points="16 17 21 12 16 7"></polyline>
+                                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                                </svg>
+                                Logout
+                            </a>
                         </div>
-                        {% else %}
-                        <a href="{{ url_for('auth.login') }}" class="btn btn-secondary btn-sm">Log In</a>
-                        <a href="{{ url_for('auth.register') }}" class="btn btn-primary btn-sm">Sign Up</a>
-                        {% endif %}
                     </div>
+                    {% else %}
+                    <a href="{{ url_for('auth.login') }}" class="btn btn-secondary btn-sm">Log In</a>
+                    <a href="{{ url_for('auth.register') }}" class="btn btn-primary btn-sm">Sign Up</a>
+                    {% endif %}
                 </div>
+            </div>
             </div>
         </nav>
     </header>
