@@ -17,8 +17,8 @@
                     Add One-Time Expense
                 </a>
                 <a href="{{ url_for('expense.add_recurring_expense') }}" class="btn btn-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 5v14"></path>
                         <path d="M5 12h14"></path>
                     </svg>
@@ -31,8 +31,7 @@
     <div class="filters-section">
         <div class="card">
             <div class="card-body">
-                <form method="GET" action="{{ url_for('expense.all_expenses') }}" id="filterForm"
-                    class="filter-form">
+                <form method="GET" action="{{ url_for('expense.all_expenses') }}" id="filterForm" class="filter-form">
                     <div class="filter-row">
                         <div class="filter-group">
                             <label for="category_id">Category</label>
@@ -96,6 +95,7 @@
                                 <th>Date</th>
                                 <th>Description</th>
                                 <th>Category</th>
+                                <th>Type</th>
                                 <th>Amount</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -107,10 +107,17 @@
                                 <td>{{ expense.scheduled_date.strftime('%b %d, %Y') }}</td>
                                 <td>{{ expense.description }}</td>
                                 <td>
-                                    {% if expense.category %}
-                                    {{ expense.category.name }}
+                                    {% if expense.expense_category %}
+                                    {{ expense.expense_category.name }}
                                     {% else %}
                                     <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if expense.recurring_schedule_id %}
+                                    <span class="badge info">Recurring</span>
+                                    {% else %}
+                                    <span class="badge secondary">One-time</span>
                                     {% endif %}
                                 </td>
                                 <td class="amount-value">${{ "{:,.2f}".format(expense.amount) }}</td>
@@ -493,6 +500,16 @@
 
     .alert-content p {
         margin: 0;
+    }
+
+    .badge.info {
+        background-color: var(--info-light);
+        color: var(--info-color);
+    }
+
+    .badge.secondary {
+        background-color: var(--neutral-200);
+        color: var(--neutral-700);
     }
 
     @media (max-width: 768px) {

@@ -259,16 +259,28 @@ def recurring_schedules():
 def add_recurring_schedule():
     form = RecurringScheduleForm()
 
-    # Get all frequencies for the dropdown
+    # Populate form choices
     frequencies = Frequency.query.all()
     form.frequency_id.choices = [(f.id, f.name) for f in frequencies]
 
-    # Get all schedule types for the dropdown
     types = ScheduleType.query.all()
     form.type_id.choices = [(t.id, t.name) for t in types]
 
+    # Add account choices
+    user_id = session.get("user_id")
+    accounts = Account.query.filter_by(user_id=user_id).all()
+    form.default_account_id.choices = [(0, "-- Select Account --")] + [
+        (a.id, a.account_name) for a in accounts
+    ]
+
+    # Add category choices (will be populated via JavaScript based on type)
+    expense_categories = ExpenseCategory.query.all()
+    income_categories = IncomeCategory.query.all()
+
     if form.validate_on_submit():
         user_id = session.get("user_id")
+
+        # Create the schedule
         schedule = RecurringSchedule(
             user_id=user_id,
             description=form.description.data,
@@ -278,7 +290,26 @@ def add_recurring_schedule():
             end_date=form.end_date.data,
             amount=form.amount.data,
             type_id=form.type_id.data,
+            default_account_id=(
+                form.default_account_id.data
+                if form.default_account_id.data != 0
+                else None
+            ),
         )
+
+        # Set category based on type
+        schedule_type = ScheduleType.query.get(form.type_id.data).name
+        if schedule_type == "expense":
+            schedule.category_type = "expense"
+            schedule.category_id = (
+                form.category_id.data if form.category_id.data != 0 else None
+            )
+        elif schedule_type == "income":
+            schedule.category_type = "income"
+            schedule.category_id = (
+                form.category_id.data if form.category_id.data != 0 else None
+            )
+
         db.session.add(schedule)
         db.session.commit()
 
@@ -286,7 +317,11 @@ def add_recurring_schedule():
         return redirect(url_for("config.recurring_schedules"))
 
     return render_template(
-        "config/edit_recurring_schedule.html", form=form, is_edit=False
+        "config/edit_recurring_schedule.html",
+        form=form,
+        is_edit=False,
+        expense_categories=expense_categories,
+        income_categories=income_categories,
     )
 
 

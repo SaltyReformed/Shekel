@@ -49,7 +49,7 @@ class IncomeCategory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50))
     description = db.Column(db.Text)
-    color = db.Column(db.String(7), default="#0a6901")  # Hex color code    
+    color = db.Column(db.String(7), default="#0a6901")  # Hex color code
     icon = db.Column(db.String(100), nullable=True)  # Optional SVG path for icon
 
 
@@ -106,12 +106,40 @@ class RecurringSchedule(db.Model):
     interval = db.Column(db.Integer, default=1)
     start_date = db.Column(db.Date, nullable=False)
     end_date = db.Column(db.Date)
+    category_type = db.Column(db.String(20))  # 'income' or 'expense'
+    category_id = db.Column(db.Integer)  # ID of the category (not a direct foreign key)
+    default_account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"))
     amount = db.Column(
         db.Numeric(10, 2), nullable=False
     )  # Base amount for the recurring event
     user = db.relationship("User", backref="recurring_schedules")
     schedule_type = db.relationship("ScheduleType", backref="recurring_schedules")
     frequency = db.relationship("Frequency", backref="recurring_schedules")
+    default_account = db.relationship("Account", backref="recurring_schedules")
+
+    @property
+    def category(self):
+        """Returns the appropriate category object based on the schedule type"""
+        if not self.category_id or not self.category_type:
+            return None
+
+        if self.category_type == "income":
+            return IncomeCategory.query.get(self.category_id)
+        elif self.category_type == "expense":
+            return ExpenseCategory.query.get(self.category_id)
+        return None
+
+    def set_category(self, category_obj):
+        """Sets the category based on an income or expense category object"""
+        if isinstance(category_obj, IncomeCategory):
+            self.category_type = "income"
+            self.category_id = category_obj.id
+        elif isinstance(category_obj, ExpenseCategory):
+            self.category_type = "expense"
+            self.category_id = category_obj.id
+        else:
+            self.category_type = None
+            self.category_id = None
 
 
 class Paycheck(db.Model):

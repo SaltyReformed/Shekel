@@ -155,6 +155,10 @@ class RecurringScheduleForm(FlaskForm):
     end_date = DateField("End Date", validators=[Optional()])
     amount = StringField("Amount", validators=[DataRequired()])
     type_id = SelectField("Type", coerce=int, validators=[DataRequired()])
+    category_id = SelectField("Category", coerce=int, validators=[Optional()])
+    default_account_id = SelectField(
+        "Default Account", coerce=int, validators=[Optional()]
+    )
 
 
 class ScheduleTypeForm(FlaskForm):

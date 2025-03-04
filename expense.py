@@ -339,19 +339,32 @@ def mark_expense_paid(expense_id):
     user_id = session.get("user_id")
     expense = Expense.query.filter_by(id=expense_id, user_id=user_id).first_or_404()
 
-    if expense.paid:
-        flash("Expense is already marked as paid.", "info")
-        return redirect(url_for("expense.overview"))
-
+    # Get account_id from POST or use default
     account_id = request.form.get("account_id")
+
+    # If no account specified, try to get default from recurring schedule
+    if not account_id and expense.recurring_schedule_id:
+        schedule = RecurringSchedule.query.get(expense.recurring_schedule_id)
+        if schedule and schedule.default_account_id:
+            account_id = schedule.default_account_id
+
     if not account_id:
         flash("Please select an account to pay from.", "danger")
         return redirect(url_for("expense.edit_expense", expense_id=expense_id))
 
-    account = Account.query.get(account_id)
-    if not account:
-        flash("Selected account not found.", "danger")
-        return redirect(url_for("expense.edit_expense", expense_id=expense_id))
+    if expense.paid:
+        flash("Expense is already marked as paid.", "info")
+        return redirect(url_for("expense.overview"))
+
+    # account_id = request.form.get("account_id")
+    # if not account_id:
+    #     flash("Please select an account to pay from.", "danger")
+    #     return redirect(url_for("expense.edit_expense", expense_id=expense_id))
+
+    # account = Account.query.get(account_id)
+    # if not account:
+    #     flash("Selected account not found.", "danger")
+    #     return redirect(url_for("expense.edit_expense", expense_id=expense_id))
 
     try:
         transaction_description = f"Expense {expense.id}: {expense.description}"
@@ -408,11 +421,27 @@ def add_recurring_expense():
         account_id = form.account_id.data if form.account_id.data != 0 else None
         auto_pay = form.auto_pay.data if hasattr(form, "auto_pay") else False
 
-        schedule_type = ScheduleType.query.filter_by(name="expense").first()
-        if not schedule_type:
-            schedule_type = ScheduleType(name="expense", description="Expense")
-            db.session.add(schedule_type)
-            db.session.commit()
+        # Set the category based on type
+        schedule_type = ScheduleType.query.get(form.type_id.data)
+        if schedule_type.name == "expense":
+            schedule.category_type = "expense"
+            schedule.category_id = (
+                form.category_id.data if form.category_id.data != 0 else None
+            )
+        elif schedule_type.name == "income":
+            schedule.category_type = "income"
+            schedule.category_id = (
+                form.income_category_id.data
+                if hasattr(form, "income_category_id")
+                and form.income_category_id.data != 0
+                else None
+            )
+
+        schedule.default_account_id = (
+            form.account_id.data if form.account_id.data != 0 else None
+        )
+        db.session.add(schedule_type)
+        db.session.commit()
 
         schedule = RecurringSchedule(
             user_id=user_id,
@@ -427,7 +456,13 @@ def add_recurring_expense():
         db.session.add(schedule)
         db.session.commit()
 
-        generate_recurring_expenses(user_id, schedule.id, auto_pay=auto_pay)
+        generate_recurring_expenses(
+            user_id,
+            schedule.id,
+            auto_pay=auto_pay,
+            category_id=category_id,
+            account_id=account_id,
+        )
         flash(
             "Recurring expense added successfully with future occurrences.", "success"
         )
@@ -443,7 +478,14 @@ def add_recurring_expense():
 
 
 # Helper function to generate recurring expenses using relativedelta for accurate date math.
-def generate_recurring_expenses(user_id, schedule_id, num_periods=6, auto_pay=False):
+def generate_recurring_expenses(
+    user_id,
+    schedule_id,
+    num_periods=6,
+    auto_pay=False,
+    category_id=None,
+    account_id=None,
+):
     schedule = RecurringSchedule.query.get_or_404(schedule_id)
     frequency = Frequency.query.get_or_404(schedule.frequency_id)
 
@@ -493,6 +535,11 @@ def generate_recurring_expenses(user_id, schedule_id, num_periods=6, auto_pay=Fa
                 recurring_schedule_id=schedule_id,
                 paid=False,
             )
+
+            # Set category if appropriate
+            if schedule.category_type == "expense" and schedule.category_id:
+                expense.category_id = schedule.category_id
+
             db.session.add(expense)
             expenses_created += 1
 
@@ -519,7 +566,11 @@ def all_expenses():
     start_date_str = request.args.get("start_date")
     end_date_str = request.args.get("end_date")
 
-    query = Expense.query.filter_by(user_id=user_id)
+    # Use join to eagerly load the expense_category relationship
+    query = Expense.query.filter_by(user_id=user_id).join(
+        ExpenseCategory, Expense.category_id == ExpenseCategory.id, isouter=True
+    )
+
     if category_id:
         query = query.filter_by(category_id=category_id)
     if is_paid == "paid":
@@ -553,7 +604,9 @@ def all_expenses():
         expenses_by_month[month_key]["expenses"].append(expense)
         expenses_by_month[month_key]["total"] += expense.amount
 
-    sorted_months = sorted(expenses_by_month.keys(), reverse=False)
+    sorted_months = sorted(
+        expenses_by_month.keys(), reverse=False
+    )  # Changed to reverse=False to show oldest first
     categories = ExpenseCategory.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
 
@@ -704,6 +757,8 @@ def edit_recurring_expense(expense_id):
             user_id,
             schedule.id,
             auto_pay=form.auto_pay.data if hasattr(form, "auto_pay") else False,
+            category_id=form.category_id.data if form.category_id.data != 0 else None,
+            account_id=form.account_id.data if form.account_id.data != 0 else None,
         )
         flash("Recurring expense updated successfully", "success")
         return redirect(url_for("expense.recurring_expenses"))
