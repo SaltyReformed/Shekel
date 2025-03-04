@@ -21,8 +21,7 @@
 
                             <div class="form-group">
                                 {{ form.description.label }}
-                                {{ form.description(class="form-control", placeholder="E.g., Rent, Utility Bill,
-                                Groceries, etc.") }}
+                                {{ form.description(class="form-control", placeholder="E.g., Rent, Utility Bill, Groceries, etc.") }}
                                 {% if form.description.errors %}
                                 <div class="error-message">
                                     {% for error in form.description.errors %}
@@ -99,8 +98,7 @@
                         <div class="form-section">
                             <h3>Additional Notes</h3>
                             <div class="form-group">
-                                {{ form.notes(class="form-control", rows=3, placeholder="Add any details about this
-                                expense...") }}
+                                {{ form.notes(class="form-control", rows=3, placeholder="Add any details about this expense...") }}
                             </div>
                         </div>
 

@@ -49,6 +49,8 @@ class IncomeCategory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50))
     description = db.Column(db.Text)
+    color = db.Column(db.String(7), default="#0a6901")  # Hex color code    
+    icon = db.Column(db.String(100), nullable=True)  # Optional SVG path for icon
 
 
 class ExpenseCategory(db.Model):
@@ -56,7 +58,7 @@ class ExpenseCategory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50))
     description = db.Column(db.Text)
-    color = db.Column(db.String(7), default="#6c757d")  # Hex color code
+    color = db.Column(db.String(7), default="#fe0000")  # Hex color code
     monthly_budget = db.Column(
         db.Numeric(10, 2), nullable=True
     )  # Monthly budget amount

@@ -38,6 +38,18 @@
                             </div>
                             {% endif %}
                         </div>
+                        <div class="form-group">
+                            <label for="color">Category Color</label>
+                            <div class="color-picker-wrapper">
+                                <input type="color" id="color" name="color" class="form-control color-input"
+                                    value="{{ category.color if is_edit and category.color else '#0a6901' }}">
+                                <span class="color-preview" id="colorPreview"
+                                    style="background-color: {{ category.color if is_edit and category.color else '#0a6901' }}"></span>
+                            </div>
+                            <small class="form-text text-muted">Choose a color to visually identify this category.</small>
+                        </div>
+                        
+
 
                         <div class="form-actions">
                             <button type="submit" class="btn btn-primary">{{ 'Update' if is_edit else 'Add' }}

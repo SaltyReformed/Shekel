@@ -20,12 +20,12 @@ from datetime import date
 class DepositAllocationForm(FlaskForm):
     """Form for a single deposit allocation"""
 
-    account_id = SelectField("Account", coerce=int, validators=[Optional()])
     allocation_type = RadioField(
         "Allocation Type",
         choices=[("percentage", "Percentage"), ("amount", "Fixed Amount")],
         default="percentage",
     )
+    account_id = SelectField("Account", coerce=int, validators=[DataRequired()])
     percentage = DecimalField(
         "Percentage",
         validators=[Optional(), NumberRange(min=0, max=100)],
@@ -34,6 +34,8 @@ class DepositAllocationForm(FlaskForm):
     amount = DecimalField(
         "Amount", validators=[Optional(), NumberRange(min=0)], default=0.0
     )
+    # Used to track existing records when editing
+    payment_id = HiddenField()
 
     class Meta:
         # Don't use CSRF for this nested form
@@ -132,6 +134,8 @@ class OneTimeIncomeForm(FlaskForm):
 class IncomeCategoryForm(FlaskForm):
     name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
     description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
+    color = StringField("Category Color", default="#0a6901")
+    icon = StringField("Icon SVG Path", validators=[Optional(), Length(max=100)])
 
 
 class FrequencyForm(FlaskForm):

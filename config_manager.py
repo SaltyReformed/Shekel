@@ -74,15 +74,14 @@ def add_income_category():
 def edit_income_category(category_id):
     category = IncomeCategory.query.get_or_404(category_id)
     form = IncomeCategoryForm(obj=category)
-
     if form.validate_on_submit():
         category.name = form.name.data
         category.description = form.description.data
+        category.color = form.color.data or "#0a6901"
+        category.icon = form.icon.data
         db.session.commit()
-
         flash("Income category updated successfully.", "success")
         return redirect(url_for("config.income_categories"))
-
     return render_template(
         "config/edit_income_category.html", form=form, is_edit=True, category=category
     )
