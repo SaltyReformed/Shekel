@@ -5,6 +5,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Shekel - Personal finance management and budget tracking app">
+    <meta name="keywords" content="personal finance, budget, tracking, Shekel">
+    <meta property="og:title" content="Shekel Budget App">
+    <meta property="og:description" content="Smart financial management and budget tracking.">
+    <meta property="og:image" content="{{ url_for('static', filename='images/shekel.png') }}">
+    <!-- Example CSP meta (best set via HTTP headers) -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; font-src https://fonts.bunny.net; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline';">
 
     <title>{% block title %}Shekel Budget App{% endblock %}</title>
 
@@ -26,7 +33,7 @@
 
 <body>
     <header>
-        <nav class="navbar">
+        <nav class="navbar" role="navigation">
             <div class="nav-container">
                 <a href="/" class="brand">
                     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none"
@@ -39,9 +46,10 @@
                     Shekel
                 </a>
 
+                <!-- Hamburger toggle button -->
                 <button class="mobile-menu-toggle" aria-label="Toggle menu">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
-                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="3" y1="12" x2="21" y2="12"></line>
                         <line x1="3" y1="6" x2="21" y2="6"></line>
                         <line x1="3" y1="18" x2="21" y2="18"></line>
@@ -56,7 +64,8 @@
                     {% if is_logged_in %}
                     <li class="nav-item"><a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a></li>
                     <li class="nav-item dropdown">
-                        <a href="{{ url_for('income.overview') }}" class="nav-link dropbtn">
+                        <a href="{{ url_for('income.overview') }}" class="nav-link dropbtn" aria-haspopup="true"
+                            aria-expanded="false">
                             Income
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -72,7 +81,8 @@
                         </div>
                     </li>
                     <li class="nav-item dropdown">
-                        <a href="{{ url_for('account.overview') }}" class="nav-link dropbtn">
+                        <a href="{{ url_for('account.overview') }}" class="nav-link dropbtn" aria-haspopup="true"
+                            aria-expanded="false">
                             Accounts
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -87,9 +97,8 @@
                             <a href="{{ url_for('account.all_transactions') }}">All Transactions</a>
                         </div>
                     </li>
-                    <!-- Add these links to your navigation menu in base.html -->
                     <li class="nav-item dropdown">
-                        <a href="#" class="nav-link dropbtn">
+                        <a href="#" class="nav-link dropbtn" aria-haspopup="true" aria-expanded="false">
                             Expenses
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -105,11 +114,12 @@
                             <a href="{{ url_for('expense.add_expense') }}">Add One-Time Expense</a>
                         </div>
                     </li>
-                    <li class="nav-item dropdown"
-                        <a href="#" class="nav-link dropbtn">
+                    <li class="nav-item dropdown">
+                        <a href="#" class="nav-link dropbtn" aria-haspopup="true" aria-expanded="false">
                             Settings
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
@@ -130,7 +140,7 @@
                     <!-- Admin-only links -->
                     {% if is_admin %}
                     <li class="nav-item dropdown">
-                        <a href="#" class="nav-link dropbtn">
+                        <a href="#" class="nav-link dropbtn" aria-haspopup="true" aria-expanded="false">
                             Admin
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -153,7 +163,7 @@
                 <div class="nav-buttons">
                     {% if is_logged_in %}
                     <div class="user-dropdown">
-                        <button class="user-button">
+                        <button class="user-button" aria-haspopup="true" aria-expanded="false">
                             <span class="user-avatar">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
                                     fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -209,7 +219,6 @@
                     <a href="{{ url_for('auth.register') }}" class="btn btn-primary btn-sm">Sign Up</a>
                     {% endif %}
                 </div>
-            </div>
             </div>
         </nav>
     </header>
@@ -292,16 +301,17 @@
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const mobileMenuToggle = document.querySelector('.mobile-menu-toggle');
-            const navContent = document.querySelector('.nav-content');
+            // Updated mobile menu targets the nav-menu element
+            const navMenu = document.querySelector('.nav-menu');
 
-            if (mobileMenuToggle && navContent) {
+            if (mobileMenuToggle && navMenu) {
                 mobileMenuToggle.addEventListener('click', function () {
-                    navContent.classList.toggle('active');
+                    navMenu.classList.toggle('active');
                     mobileMenuToggle.classList.toggle('active');
                 });
             }
 
-            // Updated dropdown behavior
+            // Dropdown functionality for both mobile (click) and desktop (hover)
             const dropdowns = document.querySelectorAll('.dropdown');
             let activeDropdown = null;
 
@@ -310,40 +320,39 @@
                 const dropdownContent = dropdown.querySelector('.dropdown-content');
 
                 if (dropbtn && dropdownContent) {
-                    // When clicking on dropdown button
+                    // Mobile click event
                     dropbtn.addEventListener('click', function (e) {
-                        // Only intercept on mobile layout
                         if (window.innerWidth <= 768) {
                             e.preventDefault();
+                            let expanded = dropbtn.getAttribute('aria-expanded') === 'true';
+                            dropbtn.setAttribute('aria-expanded', !expanded);
+
                             if (activeDropdown && activeDropdown !== dropdown) {
                                 activeDropdown.classList.remove('open');
+                                activeDropdown.querySelector('.dropbtn').setAttribute('aria-expanded', 'false');
                             }
                             dropdown.classList.toggle('open');
                             activeDropdown = dropdown.classList.contains('open') ? dropdown : null;
                         }
                     });
 
-                    // For desktop - handle hover with delay
+                    // Desktop hover events with slight delay for better UX
                     if (window.innerWidth > 768) {
-                        // Variables to track timeout
-                        let hoverTimeout;
                         let leaveTimeout;
 
-                        // Mouse enter dropdown
                         dropdown.addEventListener('mouseenter', function () {
-                            clearTimeout(leaveTimeout); // Cancel any pending leave timeout
+                            clearTimeout(leaveTimeout);
                             dropdown.classList.add('open');
+                            dropbtn.setAttribute('aria-expanded', 'true');
                         });
 
-                        // Mouse leave dropdown
                         dropdown.addEventListener('mouseleave', function () {
-                            // Set a timeout before closing the dropdown
                             leaveTimeout = setTimeout(function () {
                                 dropdown.classList.remove('open');
-                            }, 50); // 50ms delay before closing
+                                dropbtn.setAttribute('aria-expanded', 'false');
+                            }, 50);
                         });
 
-                        // If mouse returns to dropdown, cancel the leave timeout
                         dropdownContent.addEventListener('mouseenter', function () {
                             clearTimeout(leaveTimeout);
                         });
@@ -359,28 +368,30 @@
             if (userButton && userDropdownContent) {
                 let userLeaveTimeout;
 
-                // Toggle on click
                 userButton.addEventListener('click', function (e) {
                     e.preventDefault();
+                    let expanded = userButton.getAttribute('aria-expanded') === 'true';
+                    userButton.setAttribute('aria-expanded', !expanded);
                     userDropdownContent.classList.toggle('active');
                 });
 
-                // Better hover behavior
                 userDropdown.addEventListener('mouseenter', function () {
                     clearTimeout(userLeaveTimeout);
                     userDropdownContent.classList.add('active');
+                    userButton.setAttribute('aria-expanded', 'true');
                 });
 
                 userDropdown.addEventListener('mouseleave', function () {
                     userLeaveTimeout = setTimeout(function () {
                         userDropdownContent.classList.remove('active');
-                    }, 50); // 50ms delay before closing
+                        userButton.setAttribute('aria-expanded', 'false');
+                    }, 50);
                 });
 
-                // Close when clicking outside
                 document.addEventListener('click', function (event) {
                     if (!event.target.closest('.user-dropdown')) {
                         userDropdownContent.classList.remove('active');
+                        userButton.setAttribute('aria-expanded', 'false');
                     }
                 });
             }

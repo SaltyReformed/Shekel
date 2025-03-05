@@ -666,6 +666,12 @@ def all_expenses():
     """View all expenses with filtering"""
     user_id = session.get("user_id")
     query = prepare_expense_filter_query(user_id)
+
+    # Add explicit join to RecurringSchedule to load default_account_id
+    query = query.outerjoin(
+        RecurringSchedule, Expense.recurring_schedule_id == RecurringSchedule.id
+    )
+
     expenses = query.order_by(Expense.scheduled_date.desc()).all()
 
     # Group expenses by month
