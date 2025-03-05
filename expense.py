@@ -274,9 +274,16 @@ def generate_recurring_expenses(
     delta = get_time_delta_for_frequency(schedule.frequency.name, schedule.interval)
 
     expenses_created = 0
-    current_date = (
-        start_date + delta if isinstance(delta, relativedelta) else start_date + delta
-    )
+    # Set the current_date to the start_date initially (don't skip the first instance)
+    current_date = start_date
+
+    # If we have a latest expense, then we should start after that date
+    if latest_expense:
+        current_date = (
+            start_date + delta
+            if isinstance(delta, relativedelta)
+            else start_date + delta
+        )
 
     # If schedule has an end_date, we'll generate expenses until that date
     # Otherwise, we'll generate num_periods expenses
