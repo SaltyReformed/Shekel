@@ -1,18 +1,21 @@
 {% extends "base.html" %}
 
-{% block title %}Edit Expense - Shekel Budget App{% endblock %}
+{% block title %}{{ 'Edit' if is_edit else 'Add' }} Expense - Shekel Budget App{% endblock %}
 
 {% block content %}
 <div class="container">
     <div class="page-header">
-        <h1>Edit Expense</h1>
+        <h1>{{ 'Edit' if is_edit else 'Add' }} Expense</h1>
+        <p class="text-muted">{{ 'Update your expense details' if is_edit else 'Record a single expense or bill payment'
+            }}</p>
     </div>
 
     <div class="row">
         <div class="col-lg-8">
             <div class="card">
                 <div class="card-body">
-                    <form method="POST" action="{{ url_for('expense.edit_expense', expense_id=expense.id) }}">
+                    <form method="POST"
+                        action="{{ url_for('expense.edit_expense', expense_id=expense.id) if is_edit else url_for('expense.add_expense') }}">
                         {{ form.csrf_token }}
 
                         <div class="form-section">
@@ -77,11 +80,11 @@
                             <div class="form-check payment-check">
                                 {{ form.is_paid(class="form-check-input") }}
                                 {{ form.is_paid.label(class="form-check-label") }}
-                                <span class="text-muted help-text">(Account balance will be updated)</span>
+                                <span class="text-muted help-text">(Account balance will be updated{% if not is_edit %}
+                                    immediately{% endif %})</span>
                             </div>
 
-                            <div id="payment-section"
-                                style="display: {% if expense.paid %}block{% else %}none{% endif %};">
+                            <div id="payment-section" style="display: none;">
                                 <div class="form-group">
                                     {{ form.account_id.label }}
                                     {{ form.account_id(class="form-control") }}
@@ -105,7 +108,8 @@
                         </div>
 
                         <div class="form-actions">
-                            <button type="submit" class="btn btn-primary">Update Expense</button>
+                            <button type="submit" class="btn btn-primary">{{ 'Update' if is_edit else 'Save' }}
+                                Expense</button>
                             <a href="{{ url_for('expense.all_expenses') }}" class="btn btn-link">Cancel</a>
                         </div>
                     </form>
@@ -114,6 +118,38 @@
         </div>
 
         <div class="col-lg-4">
+            <div class="card help-card">
+                <div class="card-header">
+                    <h3 class="card-title">About {{ 'Editing Expenses' if is_edit else 'Expenses' }}</h3>
+                </div>
+                <div class="card-body">
+                    <p>Use this form to {{ 'update your existing' if is_edit else 'record individual' }} expenses like:
+                    </p>
+                    <ul class="help-list">
+                        <li>Unexpected Expense</li>
+                        <li>Credit Card</li>
+                        <li>Eating Out</li>
+                        <li>One-Time services</li>
+                        <li>One-time purchases</li>
+                    </ul>
+
+                    <div class="info-box">
+                        <div class="info-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <p>For recurring expenses like monthly bills, consider setting up a <a
+                                href="{{ url_for('expense.add_recurring_expense') }}">recurring expense</a> instead.</p>
+                    </div>
+                </div>
+            </div>
+
+            {% if is_edit %}
             <div class="card info-card">
                 <div class="card-header">
                     <h3 class="card-title">Expense Information</h3>
@@ -170,6 +206,7 @@
                     </div>
                 </div>
             </div>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -322,6 +359,38 @@
         margin-top: 2rem;
     }
 
+    .help-card {
+        background-color: var(--info-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .info-box {
+        background-color: var(--warning-light);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+
+    .info-icon {
+        color: var(--warning-color);
+        flex-shrink: 0;
+    }
+
+    .info-box p {
+        margin-bottom: 0;
+        font-size: 0.9rem;
+    }
+
     .info-card {
         background-color: var(--card-bg);
     }
@@ -430,8 +499,11 @@
             }
         }
 
+        // Set initial state
+        togglePaymentSection();
+
         // Add event listener
         isPaidCheckbox.addEventListener('change', togglePaymentSection);
     });
 </script>
-{% endblock %}v
+{% endblock %}

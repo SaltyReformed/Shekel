@@ -113,6 +113,8 @@ def overview():
 def add_expense():
     user_id = session.get("user_id")
     form = OneTimeExpenseForm()
+
+    # Populate form choices
     accounts = Account.query.filter_by(user_id=user_id).all()
     categories = ExpenseCategory.query.all()
     form.category_id.choices = [(0, "-- Select Category --")] + [
@@ -176,8 +178,13 @@ def add_expense():
         flash("Expense added successfully.", "success")
         return redirect(url_for("expense.overview"))
 
+    # Pass is_edit=False to the template to indicate we're adding a new expense
     return render_template(
-        "expenses/add_expense.html", form=form, accounts=accounts, categories=categories
+        "expenses/expense_form.html",  # Use the new combined template
+        form=form,
+        accounts=accounts,
+        categories=categories,
+        is_edit=False,  # We're in "add" mode
     )
 
 
@@ -190,14 +197,18 @@ def edit_expense(expense_id):
     accounts = Account.query.filter_by(user_id=user_id).all()
     categories = ExpenseCategory.query.all()
 
-    # Use the OneTimeExpenseForm pre-populated with expense data.
+    # Use the OneTimeExpenseForm pre-populated with expense data
     form = OneTimeExpenseForm(obj=expense)
 
+    # Set dropdown choices
     form.category_id.choices = [(0, "-- Select Category --")] + [
         (c.id, c.name) for c in categories
     ]
+    form.account_id.choices = [(0, "-- Select Account --")] + [
+        (a.id, a.account_name) for a in accounts
+    ]
 
-    # Retrieve existing payment (if any) and store its old details.
+    # Retrieve existing payment (if any) and store its old details
     payment = ExpensePayment.query.filter_by(expense_id=expense_id).first()
     old_payment = None
     if payment:
@@ -206,6 +217,8 @@ def edit_expense(expense_id):
             "amount": expense.amount,
             "payment_date": payment.payment_date,
         }
+        # Set the account_id in the form
+        form.account_id.data = payment.account_id
 
     if form.validate_on_submit():
         description = form.description.data
@@ -218,7 +231,7 @@ def edit_expense(expense_id):
 
         transaction_description = f"Expense {expense.id}: {description}"
 
-        # Update expense details.
+        # Update expense details
         expense.description = description
         expense.amount = new_amount
         expense.scheduled_date = new_date
@@ -226,7 +239,7 @@ def edit_expense(expense_id):
         expense.notes = notes
         expense.paid = is_paid
 
-        # Fetch the related transaction record using the description pattern.
+        # Fetch the related transaction record using the description pattern
         transaction = Transaction.query.filter(
             Transaction.description.like(f"Expense {expense.id}:%"),
             Transaction.transaction_type == "withdrawal",
@@ -234,7 +247,7 @@ def edit_expense(expense_id):
 
         if is_paid:
             if not payment:
-                # Create a new payment record if none exists.
+                # Create a new payment record if none exists
                 if new_account_id:
                     account = Account.query.get(new_account_id)
                     new_payment = ExpensePayment(
@@ -254,13 +267,13 @@ def edit_expense(expense_id):
                     db.session.add(new_transaction)
                     account.balance -= new_amount
             else:
-                # Payment already exists – update accordingly.
+                # Payment already exists – update accordingly
                 if new_account_id != payment.account_id:
-                    # Restore the old account balance.
+                    # Restore the old account balance
                     if payment.account_id:
                         old_account = Account.query.get(payment.account_id)
                         old_account.balance += old_payment["amount"]
-                    # Deduct the new amount from the new account.
+                    # Deduct the new amount from the new account
                     if new_account_id:
                         new_account = Account.query.get(new_account_id)
                         new_account.balance -= new_amount
@@ -268,7 +281,7 @@ def edit_expense(expense_id):
                     if transaction:
                         transaction.account_id = new_account_id
                 else:
-                    # Same account; adjust for the difference.
+                    # Same account; adjust for the difference
                     diff = new_amount - old_payment["amount"]
                     if diff != 0:
                         account = Account.query.get(new_account_id)
@@ -281,7 +294,7 @@ def edit_expense(expense_id):
                     transaction.amount = new_amount
                     transaction.description = transaction_description
         else:
-            # Expense is no longer marked as paid.
+            # Expense is no longer marked as paid
             if payment:
                 account = Account.query.get(payment.account_id)
                 account.balance += old_payment["amount"]
@@ -293,13 +306,14 @@ def edit_expense(expense_id):
         flash("Expense updated successfully.", "success")
         return redirect(url_for("expense.overview"))
 
+    # Pass is_edit=True to the template to indicate we're editing
     return render_template(
-        "expenses/edit_expense.html",
+        "expenses/expense_form.html",  # Use the new combined template
         expense=expense,
         form=form,
         accounts=accounts,
         categories=categories,
-        selected_account_id=payment.account_id if payment else None,
+        is_edit=True,  # We're in "edit" mode
     )
 
 
@@ -399,9 +413,13 @@ def mark_expense_paid(expense_id):
 def add_recurring_expense():
     user_id = session.get("user_id")
     form = RecurringExpenseForm()
+
+    # Load necessary data for dropdowns
     frequencies = Frequency.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
     categories = ExpenseCategory.query.all()
+
+    # Set form choices
     form.frequency_id.choices = [(f.id, f.name) for f in frequencies]
     form.category_id.choices = [(0, "-- Select Category --")] + [
         (c.id, c.name) for c in categories
@@ -411,14 +429,19 @@ def add_recurring_expense():
     ]
 
     if request.method == "POST" and form.validate_on_submit():
+        # Get form data
         description = form.description.data
         amount = form.amount.data
         frequency_id = form.frequency_id.data
         interval = form.interval.data or 1
         start_date = form.start_date.data
         end_date = form.end_date.data if form.end_date.data else None
+
+        # Get category and account IDs, defaulting to None if not selected
         category_id = form.category_id.data if form.category_id.data != 0 else None
         account_id = form.account_id.data if form.account_id.data != 0 else None
+
+        # Auto-pay setting if it exists
         auto_pay = form.auto_pay.data if hasattr(form, "auto_pay") else False
 
         # Get or create the expense schedule type
@@ -428,7 +451,7 @@ def add_recurring_expense():
             db.session.add(schedule_type)
             db.session.commit()
 
-        # Create the schedule with all properties set properly
+        # Create the schedule with all properties explicitly set
         schedule = RecurringSchedule(
             user_id=user_id,
             type_id=schedule_type.id,
@@ -443,30 +466,41 @@ def add_recurring_expense():
             default_account_id=account_id,
         )
 
-        # Debug print statements (optional, for verification)
+        # Debug output
         print(f"Creating expense: category_id={category_id}, account_id={account_id}")
 
         db.session.add(schedule)
         db.session.commit()
 
-        # Debug verification (optional)
+        # Debug verification
         print(
             f"Saved schedule: ID={schedule.id}, category_id={schedule.category_id}, account_id={schedule.default_account_id}"
         )
 
-        # Generate recurring expenses
-        generate_recurring_expenses(
-            user_id,
-            schedule.id,
-            auto_pay=auto_pay,
-            category_id=category_id,
-            account_id=account_id,
-        )
+        # Generate recurring expenses for future dates
+        if "generate_expenses" in request.form:
+            generate_recurring_expenses(
+                user_id,
+                schedule.id,
+                auto_pay=auto_pay,
+                category_id=category_id,
+                account_id=account_id,
+            )
 
         flash(
             "Recurring expense added successfully with future occurrences.", "success"
         )
-        return redirect(url_for("expense.overview"))
+        return redirect(url_for("expense.recurring_expenses"))
+
+    # For GET requests, render the template with is_edit=False
+    return render_template(
+        "expenses/recurring_expense_form.html",  # New combined template name
+        form=form,
+        categories=categories,
+        accounts=accounts,
+        today=date.today(),
+        is_edit=False,  # Indicate we're in "add" mode
+    )
 
 
 # Helper function to generate recurring expenses using relativedelta for accurate date math.
@@ -727,12 +761,14 @@ def edit_recurring_expense(expense_id):
     if schedule.type_id != expense_type.id:
         flash("Invalid recurring expense", "danger")
         return redirect(url_for("expense.recurring_expenses"))
-    from app.forms import RecurringExpenseForm
 
+    # Load the form
     frequencies = Frequency.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
     categories = ExpenseCategory.query.all()
-    form = RecurringExpenseForm(obj=schedule)
+    form = RecurringExpenseForm()
+
+    # Set form choices
     form.frequency_id.choices = [(f.id, f.name) for f in frequencies]
     form.category_id.choices = [(0, "-- Select Category --")] + [
         (c.id, c.name) for c in categories
@@ -741,7 +777,28 @@ def edit_recurring_expense(expense_id):
         (a.id, a.account_name) for a in accounts
     ]
 
+    # When loading the form, populate it with existing data
+    if request.method == "GET":
+        form.description.data = schedule.description
+        form.amount.data = schedule.amount
+        form.frequency_id.data = schedule.frequency_id
+        form.interval.data = schedule.interval
+        form.start_date.data = schedule.start_date
+        form.end_date.data = schedule.end_date
+
+        # Set category and account
+        if schedule.category_type == "expense" and schedule.category_id:
+            form.category_id.data = schedule.category_id
+
+        if schedule.default_account_id:
+            form.account_id.data = schedule.default_account_id
+
+        # Handle notes if they exist
+        if hasattr(schedule, "notes") and schedule.notes:
+            form.notes.data = schedule.notes
+
     if form.validate_on_submit():
+        # Update schedule with form data
         schedule.description = form.description.data
         schedule.amount = form.amount.data
         schedule.frequency_id = form.frequency_id.data
@@ -753,33 +810,47 @@ def edit_recurring_expense(expense_id):
         category_id = form.category_id.data if form.category_id.data != 0 else None
         account_id = form.account_id.data if form.account_id.data != 0 else None
 
-        schedule.category_type = "expense"  # Since we're in the expense module
+        # Always set these explicitly
+        schedule.category_type = "expense"
         schedule.category_id = category_id
         schedule.default_account_id = account_id
 
+        # Debug output to server logs
+        print(f"Updating schedule: category_id={category_id}, account_id={account_id}")
+
+        # Handle notes if they exist on the model
         if hasattr(schedule, "notes"):
             schedule.notes = form.notes.data
 
-        # Debug print (optional)
-        print(f"Updating schedule: category_id={category_id}, account_id={account_id}")
-
+        # Save changes
         db.session.commit()
 
-        # Debug verification (optional)
+        # Verify the data was saved
         print(
             f"Updated schedule: ID={schedule.id}, category_id={schedule.category_id}, account_id={schedule.default_account_id}"
         )
 
-        generate_recurring_expenses(
-            user_id,
-            schedule.id,
-            auto_pay=form.auto_pay.data if hasattr(form, "auto_pay") else False,
-            category_id=category_id,
-            account_id=account_id,
-        )
+        # Generate future occurrences
+        if "generate_expenses" in request.form:
+            generate_recurring_expenses(
+                user_id,
+                schedule.id,
+                auto_pay=form.auto_pay.data if hasattr(form, "auto_pay") else False,
+                category_id=category_id,
+                account_id=account_id,
+            )
 
         flash("Recurring expense updated successfully", "success")
         return redirect(url_for("expense.recurring_expenses"))
+
+    # Render the template with is_edit=True
+    return render_template(
+        "expenses/recurring_expense_form.html",  # New combined template name
+        form=form,
+        schedule=schedule,
+        today=date.today(),
+        is_edit=True,  # Indicate we're in "edit" mode
+    )
 
 
 # Route to delete a recurring expense and optionally its associated expenses
