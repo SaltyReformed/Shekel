@@ -703,7 +703,7 @@ def all_expenses():
         expenses_by_month[month_key]["expenses"].append(expense)
         expenses_by_month[month_key]["total"] += expense.amount
 
-    sorted_months = sorted(expenses_by_month.keys(), reverse=True)
+    sorted_months = sorted(expenses_by_month.keys(), reverse=False)
     categories = ExpenseCategory.query.all()
     accounts = Account.query.filter_by(user_id=user_id).all()
 
@@ -930,6 +930,140 @@ def delete_recurring_expense(expense_id):
         flash(f"Error deleting recurring expense: {str(e)}", "danger")
 
     return redirect(url_for("expense.recurring_expenses"))
+
+
+@expense_bp.route("/by-paycheck")
+@login_required
+def expenses_by_paycheck():
+    """View expenses organized by which paycheck they'll be paid from"""
+    user_id = session.get("user_id")
+
+    # Get date range filter (default to next 60 days if not specified)
+    start_date, end_date = get_date_range_filter()
+    if not start_date:
+        start_date = date.today()
+    if not end_date:
+        end_date = start_date + timedelta(days=60)
+
+    # Get all paychecks in the date range
+    paychecks = (
+        Paycheck.query.filter(
+            Paycheck.user_id == user_id,
+            Paycheck.scheduled_date >= start_date,
+            Paycheck.scheduled_date <= end_date,
+        )
+        .order_by(Paycheck.scheduled_date)
+        .all()
+    )
+
+    # Get all expenses in the date range
+    expense_query = Expense.query.filter(
+        Expense.user_id == user_id,
+        Expense.scheduled_date >= start_date,
+        Expense.scheduled_date <= end_date,
+    )
+
+    # Apply category filter if specified
+    category_id = request.args.get("category_id", type=int)
+    if category_id:
+        expense_query = expense_query.filter_by(category_id=category_id)
+
+    expenses = expense_query.order_by(Expense.scheduled_date).all()
+
+    # Map expenses to paychecks (each expense goes to the next upcoming paycheck)
+    expenses_by_paycheck = {p.id: [] for p in paychecks}
+
+    for expense in expenses:
+        # Assign to the first paycheck that comes on or after the expense date
+        assigned = False
+        for paycheck in paychecks:
+            if paycheck.scheduled_date >= expense.scheduled_date:
+                expenses_by_paycheck[paycheck.id].append(expense)
+                assigned = True
+                break
+
+        # If no upcoming paycheck, assign to the last paycheck
+        if not assigned and paychecks:
+            expenses_by_paycheck[paychecks[-1].id].append(expense)
+
+    # Calculate totals
+    paycheck_totals = {}
+    paycheck_remaining = {}
+
+    for paycheck in paychecks:
+        total_expenses = sum(
+            expense.amount for expense in expenses_by_paycheck[paycheck.id]
+        )
+        paycheck_totals[paycheck.id] = total_expenses
+        paycheck_remaining[paycheck.id] = paycheck.net_salary - total_expenses
+
+    # Get all expense categories for filtering
+    categories = ExpenseCategory.query.all()
+
+    # Get accounts for payment modal
+    accounts = Account.query.filter_by(user_id=user_id).all()
+
+    # Read the JavaScript for drag and drop functionality
+    with open("app/static/js/drag-drop.js", "r") as js_file:
+        drag_drop_js = js_file.read()
+
+    return render_template(
+        "expenses/expenses_by_paycheck.html",
+        paychecks=paychecks,
+        expenses=expenses,
+        expenses_by_paycheck=expenses_by_paycheck,
+        paycheck_totals=paycheck_totals,
+        paycheck_remaining=paycheck_remaining,
+        categories=categories,
+        accounts=accounts,
+        start_date=start_date,
+        end_date=end_date,
+        today=date.today(),
+        include_drag_drop_js=drag_drop_js,
+    )
+
+
+@expense_bp.route("/assign-to-paycheck", methods=["POST"])
+@login_required
+def assign_expense_to_paycheck():
+    """API endpoint to assign an expense to a specific paycheck"""
+    user_id = session.get("user_id")
+
+    # Get expense and paycheck IDs from request
+    expense_id = request.json.get("expense_id")
+    paycheck_id = request.json.get("paycheck_id")
+
+    if not expense_id or not paycheck_id:
+        return (
+            jsonify({"success": False, "message": "Missing expense_id or paycheck_id"}),
+            400,
+        )
+
+    # Verify the expense belongs to the user
+    expense = Expense.query.filter_by(id=expense_id, user_id=user_id).first()
+    if not expense:
+        return jsonify({"success": False, "message": "Expense not found"}), 404
+
+    # Verify the paycheck belongs to the user
+    paycheck = Paycheck.query.filter_by(id=paycheck_id, user_id=user_id).first()
+    if not paycheck:
+        return jsonify({"success": False, "message": "Paycheck not found"}), 404
+
+    # Update the expense's scheduled date to match the paycheck date
+    try:
+        expense.scheduled_date = paycheck.scheduled_date
+        db.session.commit()
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "Expense assigned successfully",
+                "expense_date": expense.scheduled_date.isoformat(),
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 # Legacy route names for backward compatibility

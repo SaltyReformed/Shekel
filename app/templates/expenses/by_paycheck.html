@@ -1,0 +1,663 @@
+{% extends "base.html" %}
+
+{% block title %}Expenses By Paycheck - Shekel Budget App{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div class="header-content">
+            <h1>Expenses By Paycheck</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14"></path>
+                        <path d="M5 12h14"></path>
+                    </svg>
+                    Add Expense
+                </a>
+            </div>
+        </div>
+        <p class="text-muted">View which paychecks will cover your upcoming expenses</p>
+        <div class="drag-drop-instructions">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="12" y1="18" x2="12" y2="12"></line>
+                <line x1="9" y1="15" x2="15" y2="15"></line>
+            </svg>
+            <span>Tip: Drag and drop expenses to reassign them to different paychecks</span>
+        </div>
+    </div>
+
+    <div class="filters-section">
+        <div class="card">
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('expense.expenses_by_paycheck') }}" id="filterForm"
+                    class="filter-form">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label for="start_date">From Date</label>
+                            <input type="date" id="start_date" name="start_date" class="form-control"
+                                value="{{ start_date.isoformat() }}">
+                        </div>
+                        <div class="filter-group">
+                            <label for="end_date">To Date</label>
+                            <input type="date" id="end_date" name="end_date" class="form-control"
+                                value="{{ end_date.isoformat() }}">
+                        </div>
+                        <div class="filter-group">
+                            <label for="category_id">Category</label>
+                            <select id="category_id" name="category_id" class="form-control">
+                                <option value="">All Categories</option>
+                                {% for category in categories %}
+                                <option value="{{ category.id }}" {% if
+                                    request.args.get('category_id')==category.id|string %}selected{% endif %}>
+                                    {{ category.name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="filter-actions">
+                            <button type="submit" class="btn btn-secondary">Apply Filters</button>
+                            <a href="{{ url_for('expense.expenses_by_paycheck') }}" class="btn btn-link">Clear</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="paycheck-expenses-container">
+        {% if paychecks %}
+        <div class="table-responsive">
+            <table class="table table-expenses-by-paycheck">
+                <thead>
+                    <tr>
+                        <th class="expense-info-column">Expense</th>
+                        {% for paycheck in paychecks %}
+                        <th class="paycheck-column" data-paycheck-id="{{ paycheck.id }}">
+                            <div class="paycheck-header">
+                                <div class="paycheck-date">{{ paycheck.scheduled_date.strftime('%b %d, %Y') }}</div>
+                                <div class="paycheck-amount">${{ "{:,.2f}".format(paycheck.net_salary) }}</div>
+                            </div>
+                        </th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for expense in expenses %}
+                    <tr class="expense-row" data-expense-id="{{ expense.id }}">
+                        <td class="expense-info-cell">
+                            <div class="expense-details">
+                                <div class="expense-description">
+                                    {{ expense.description }}
+                                    {% if expense.paid %}
+                                    <span class="badge success">Paid</span>
+                                    {% else %}
+                                    <span class="badge warning">Pending</span>
+                                    {% endif %}
+                                </div>
+                                <div class="expense-meta">
+                                    <span class="expense-date">{{ expense.scheduled_date.strftime('%b %d, %Y') }}</span>
+                                    <span class="expense-amount">${{ "{:,.2f}".format(expense.amount) }}</span>
+                                    {% if expense.expense_category %}
+                                    <span class="expense-category">{{ expense.expense_category.name }}</span>
+                                    {% endif %}
+                                </div>
+                                <div class="expense-actions">
+                                    <a href="{{ url_for('expense.edit_expense', expense_id=expense.id) }}"
+                                        class="btn btn-sm btn-outline-primary">Edit</a>
+                                    {% if not expense.paid %}
+                                    <button class="btn btn-sm btn-outline-success mark-paid-btn"
+                                        data-expense-id="{{ expense.id }}" data-expense-amount="{{ expense.amount }}">
+                                        Mark Paid
+                                    </button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </td>
+
+                        {% for paycheck in paychecks %}
+                        <td class="expense-paycheck-cell {% if expense in expenses_by_paycheck[paycheck.id] %}active{% endif %}"
+                            data-paycheck-id="{{ paycheck.id }}">
+                            {% if expense in expenses_by_paycheck[paycheck.id] %}
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="expense-marker">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="8" x2="12" y2="16"></line>
+                                <line x1="8" y1="12" x2="16" y2="12"></line>
+                            </svg>
+                            {% endif %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr class="totals-row">
+                        <td class="totals-label">Total Expenses:</td>
+                        {% for paycheck in paychecks %}
+                        <td class="paycheck-total" data-paycheck-id="{{ paycheck.id }}">
+                            ${{ "{:,.2f}".format(paycheck_totals[paycheck.id]) }}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    <tr class="remaining-row">
+                        <td class="totals-label">Remaining:</td>
+                        {% for paycheck in paychecks %}
+                        <td class="paycheck-remaining {% if paycheck_remaining[paycheck.id] < 0 %}negative{% endif %}"
+                            data-paycheck-id="{{ paycheck.id }}">
+                            ${{ "{:,.2f}".format(paycheck_remaining[paycheck.id]) }}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="16" y1="2" x2="16" y2="6"></line>
+                    <line x1="8" y1="2" x2="8" y2="6"></line>
+                    <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+            </div>
+            <h3>No Paychecks or Expenses Found</h3>
+            <p>No paychecks or expenses were found in the date range.</p>
+            <div class="empty-state-actions">
+                <a href="{{ url_for('income.manage_paychecks') }}" class="btn btn-primary">Manage Paychecks</a>
+                <a href="{{ url_for('expense.add_expense') }}" class="btn btn-secondary">Add Expense</a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Notification element -->
+<div id="notification" class="notification"></div>
+
+<!-- Payment Modal (reused from your existing code) -->
+<div id="paymentModal" class="modal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Mark Expense as Paid</h5>
+                <button type="button" class="close" onclick="closePaymentModal()">
+                    <span>&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="paymentForm" action="" method="POST">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                    <div class="form-group">
+                        <label for="modal-account-id">Pay from Account</label>
+                        <select id="modal-account-id" name="account_id" class="form-control" required>
+                            <option value="">-- Select Account --</option>
+                            {% for account in accounts %}
+                            <option value="{{ account.id }}">
+                                {{ account.account_name }} (Balance: ${{ "{:,.2f}".format(account.balance) }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="modal-payment-date">Payment Date</label>
+                        <input type="date" id="modal-payment-date" name="payment_date" class="form-control"
+                            value="{{ today.isoformat() }}" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="modal-payment-amount">Amount</label>
+                        <div class="input-with-icon">
+                            <span class="input-icon">$</span>
+                            <input type="number" id="modal-payment-amount" name="payment_amount" class="form-control"
+                                step="0.01" min="0.01" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="modal-notes">Notes (Optional)</label>
+                        <input type="text" id="modal-notes" name="notes" class="form-control"
+                            placeholder="Payment notes...">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closePaymentModal()">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="submitPaymentForm()">Mark as Paid</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block additional_styles %}
+<style>
+    /* Base styles from your existing templates */
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .filters-section {
+        margin-bottom: 2rem;
+    }
+
+    .filter-form {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-end;
+    }
+
+    .filter-group {
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .filter-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .filter-actions {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    /* Specific styles for the paycheck-expenses table */
+    .table-responsive {
+        overflow-x: auto;
+    }
+
+    .table-expenses-by-paycheck {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid var(--border-color);
+    }
+
+    .expense-info-column {
+        width: 300px;
+        min-width: 300px;
+        text-align: left;
+        position: sticky;
+        left: 0;
+        z-index: 10;
+        background-color: var(--card-bg);
+        border-right: 2px solid var(--border-color);
+    }
+
+    .paycheck-column {
+        min-width: 150px;
+        text-align: center;
+        border-left: 1px solid var(--border-color);
+    }
+
+    .paycheck-header {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 0.75rem 0;
+    }
+
+    .paycheck-date {
+        font-weight: 600;
+    }
+
+    .paycheck-amount {
+        font-weight: 700;
+        color: var(--success-color);
+    }
+
+    .expense-row {
+        transition: background-color 0.2s ease;
+    }
+
+    .expense-row:nth-child(odd) {
+        background-color: var(--neutral-100);
+    }
+
+    .expense-row.dragging {
+        opacity: 0.7;
+        background-color: var(--primary-light);
+        cursor: move;
+    }
+
+    .expense-row.draggable {
+        cursor: pointer;
+    }
+
+    .expense-row.draggable:hover {
+        background-color: var(--primary-light);
+    }
+
+    .expense-info-cell {
+        position: sticky;
+        left: 0;
+        background-color: inherit;
+        z-index: 5;
+        border-right: 2px solid var(--border-color);
+        padding: 0.75rem;
+    }
+
+    .expense-details {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .expense-description {
+        font-weight: 500;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .expense-meta {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+
+    .expense-date,
+    .expense-amount {
+        white-space: nowrap;
+    }
+
+    .expense-category {
+        padding: 0.125rem 0.375rem;
+        border-radius: var(--border-radius);
+        background-color: var(--neutral-200);
+        font-size: 0.75rem;
+    }
+
+    .expense-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .expense-paycheck-cell {
+        text-align: center;
+        border-left: 1px solid var(--border-color);
+        transition: background-color 0.2s ease;
+    }
+
+    .expense-paycheck-cell.active {
+        background-color: rgba(var(--primary-color-rgb), 0.1);
+    }
+
+    /* Drag and drop specific styles */
+    .expense-paycheck-cell.drop-target {
+        border: 2px dashed var(--border-color);
+    }
+
+    .expense-paycheck-cell.drag-over {
+        background-color: var(--primary-light);
+        border: 2px dashed var(--primary-color);
+    }
+
+    .expense-paycheck-cell.loading {
+        position: relative;
+    }
+
+    .expense-paycheck-cell.loading::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(255, 255, 255, 0.5);
+        background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>');
+        background-repeat: no-repeat;
+        background-position: center;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        0% {
+            transform: rotate(0deg);
+        }
+
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+
+    .expense-marker {
+        color: var(--primary-color);
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: var(--border-radius);
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+    }
+
+    .badge.success {
+        background-color: var(--success-light);
+        color: var(--success-color);
+    }
+
+    .badge.warning {
+        background-color: var(--warning-light);
+        color: var(--warning-color);
+    }
+
+    .totals-row,
+    .remaining-row {
+        font-weight: 700;
+    }
+
+    .totals-label {
+        text-align: right;
+        position: sticky;
+        left: 0;
+        background-color: var(--card-bg);
+        z-index: 10;
+        border-right: 2px solid var(--border-color);
+    }
+
+    .paycheck-total,
+    .paycheck-remaining {
+        text-align: center;
+        border-left: 1px solid var(--border-color);
+    }
+
+    .paycheck-remaining.negative {
+        color: var(--danger-color);
+    }
+
+    .empty-state {
+        text-align: center;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        padding: 3rem 1.5rem;
+    }
+
+    .empty-state-icon {
+        margin-bottom: 1.5rem;
+        color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+        margin-bottom: 0.5rem;
+        font-size: 1.5rem;
+    }
+
+    .empty-state p {
+        margin-bottom: 2rem;
+        color: var(--text-muted);
+        max-width: 500px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .empty-state-actions {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1050;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0, 0, 0, 0.4);
+    }
+
+    .modal.show {
+        display: block;
+    }
+
+    .modal-dialog {
+        position: relative;
+        width: auto;
+        margin: 1.75rem auto;
+        max-width: 500px;
+    }
+
+    .modal-content {
+        position: relative;
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow-lg);
+        outline: 0;
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+        margin: 0;
+    }
+
+    .close {
+        padding: 0;
+        background-color: transparent;
+        border: 0;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+
+    .modal-body {
+        padding: 1.5rem;
+    }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border-color);
+        gap: 0.5rem;
+    }
+
+    /* Drag instruction banner */
+    .drag-drop-instructions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: var(--info-bg);
+        color: var(--info-color);
+        padding: 0.5rem 1rem;
+        border-radius: var(--border-radius);
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    /* Notification styling */
+    .notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 24px;
+        border-radius: var(--border-radius);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        color: white;
+        z-index: 1100;
+        opacity: 0;
+        transform: translateY(-20px);
+        transition: opacity 0.3s, transform 0.3s;
+    }
+
+    .notification.show {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .notification.success {
+        background-color: var(--success-color);
+    }
+
+    .notification.error {
+        background-color: var(--danger-color);
+    }
+
+    .notification.info {
+        background-color: var(--info-color);
+    }
+</style>
+{% endblock %}
+
+{% block additional_scripts %}
+<script>
+    // The JavaScript code will be included here, between script tags
+    { { include_drag_drop_js | safe } }
+</script>
+{% endblock %}
