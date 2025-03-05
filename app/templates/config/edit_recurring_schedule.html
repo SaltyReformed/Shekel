@@ -196,7 +196,7 @@
         // Expense categories
         const expenseCategories = [
             {% for category in expense_categories %}
-            { id: {{ category.id }}, name: "{{ category.name }}"},
+                { id: {{ category.id }}, name: "{{ category.name }}" },
         {% endfor %}
         ];
 
@@ -222,7 +222,6 @@
                 option.value = category.id;
                 option.textContent = category.name;
 
-                // Set as selected if editing and matches current category
                 {% if is_edit and schedule.category_id %}
                 if (category.id === {{ schedule.category_id }
             } && "{{ schedule.category_type }}" === "expense") {
@@ -238,7 +237,6 @@
             option.value = category.id;
             option.textContent = category.name;
 
-            // Set as selected if editing and matches current category
             {% if is_edit and schedule.category_id %}
             if (category.id === {{ schedule.category_id }
         } && "{{ schedule.category_type }}" === "income") {

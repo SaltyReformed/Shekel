@@ -421,28 +421,14 @@ def add_recurring_expense():
         account_id = form.account_id.data if form.account_id.data != 0 else None
         auto_pay = form.auto_pay.data if hasattr(form, "auto_pay") else False
 
-        # Set the category based on type
-        schedule_type = ScheduleType.query.get(form.type_id.data)
-        if schedule_type.name == "expense":
-            schedule.category_type = "expense"
-            schedule.category_id = (
-                form.category_id.data if form.category_id.data != 0 else None
-            )
-        elif schedule_type.name == "income":
-            schedule.category_type = "income"
-            schedule.category_id = (
-                form.income_category_id.data
-                if hasattr(form, "income_category_id")
-                and form.income_category_id.data != 0
-                else None
-            )
+        # Get or create the expense schedule type
+        schedule_type = ScheduleType.query.filter_by(name="expense").first()
+        if not schedule_type:
+            schedule_type = ScheduleType(name="expense", description="Expense")
+            db.session.add(schedule_type)
+            db.session.commit()
 
-        schedule.default_account_id = (
-            form.account_id.data if form.account_id.data != 0 else None
-        )
-        db.session.add(schedule_type)
-        db.session.commit()
-
+        # Create the schedule with all properties set properly
         schedule = RecurringSchedule(
             user_id=user_id,
             type_id=schedule_type.id,
@@ -452,10 +438,23 @@ def add_recurring_expense():
             start_date=start_date,
             end_date=end_date,
             amount=amount,
+            category_type="expense",  # Setting directly for expense
+            category_id=category_id,
+            default_account_id=account_id,
         )
+
+        # Debug print statements (optional, for verification)
+        print(f"Creating expense: category_id={category_id}, account_id={account_id}")
+
         db.session.add(schedule)
         db.session.commit()
 
+        # Debug verification (optional)
+        print(
+            f"Saved schedule: ID={schedule.id}, category_id={schedule.category_id}, account_id={schedule.default_account_id}"
+        )
+
+        # Generate recurring expenses
         generate_recurring_expenses(
             user_id,
             schedule.id,
@@ -463,18 +462,11 @@ def add_recurring_expense():
             category_id=category_id,
             account_id=account_id,
         )
+
         flash(
             "Recurring expense added successfully with future occurrences.", "success"
         )
         return redirect(url_for("expense.overview"))
-
-    return render_template(
-        "expenses/add_recurring_expense.html",
-        form=form,
-        frequencies=frequencies,
-        accounts=accounts,
-        categories=categories,
-    )
 
 
 # Helper function to generate recurring expenses using relativedelta for accurate date math.
@@ -667,7 +659,13 @@ def recurring_expenses():
         else:
             # Create a dummy category if none is found
             dummy_category = type("obj", (object,), {"name": "Uncategorized"})
-            schedule.category = dummy_category
+            # Create or store the category as an attribute instead of trying to set the property
+            if not hasattr(schedule, 'category') or schedule.category is None:
+                dummy_category = type("obj", (object,), {"name": "Uncategorized"})
+                # Add as a regular attribute, not trying to use the property
+                setattr(schedule, '_category', dummy_category)
+                # Create a temporary method to access this attribute
+                schedule.get_category_name = lambda: getattr(schedule, '_category').name
 
         # Calculate the next due date based on frequency
         if latest_expense:
@@ -750,33 +748,38 @@ def edit_recurring_expense(expense_id):
         schedule.interval = form.interval.data
         schedule.start_date = form.start_date.data
         schedule.end_date = form.end_date.data
+
+        # Properly update category and account
+        category_id = form.category_id.data if form.category_id.data != 0 else None
+        account_id = form.account_id.data if form.account_id.data != 0 else None
+
+        schedule.category_type = "expense"  # Since we're in the expense module
+        schedule.category_id = category_id
+        schedule.default_account_id = account_id
+
         if hasattr(schedule, "notes"):
             schedule.notes = form.notes.data
+
+        # Debug print (optional)
+        print(f"Updating schedule: category_id={category_id}, account_id={account_id}")
+
         db.session.commit()
+
+        # Debug verification (optional)
+        print(
+            f"Updated schedule: ID={schedule.id}, category_id={schedule.category_id}, account_id={schedule.default_account_id}"
+        )
+
         generate_recurring_expenses(
             user_id,
             schedule.id,
             auto_pay=form.auto_pay.data if hasattr(form, "auto_pay") else False,
-            category_id=form.category_id.data if form.category_id.data != 0 else None,
-            account_id=form.account_id.data if form.account_id.data != 0 else None,
+            category_id=category_id,
+            account_id=account_id,
         )
+
         flash("Recurring expense updated successfully", "success")
         return redirect(url_for("expense.recurring_expenses"))
-
-    if request.method == "GET":
-        form.description.data = schedule.description
-        form.amount.data = schedule.amount
-        form.frequency_id.data = schedule.frequency_id
-        form.interval.data = schedule.interval
-        form.start_date.data = schedule.start_date
-        form.end_date.data = schedule.end_date
-
-    return render_template(
-        "expenses/edit_recurring_expense.html",
-        form=form,
-        schedule=schedule,
-        is_edit=True,
-    )
 
 
 # Route to delete a recurring expense and optionally its associated expenses

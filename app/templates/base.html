@@ -100,16 +100,16 @@
                         <div class="dropdown-content">
                             <a href="{{ url_for('expense.overview') }}">Overview</a>
                             <a href="{{ url_for('expense.all_expenses') }}">All Expenses</a>
-                            <a href="{{ url_for('expense.add_expense') }}">Add Expense</a>
                             <a href="{{ url_for('expense.recurring_expenses') }}">Recurring Expenses</a>
+                            <a href="{{ url_for('expense.add_recurring_expense') }}">Add Recurring Expense</a>
+                            <a href="{{ url_for('expense.add_expense') }}">Add One-Time Expense</a>
                         </div>
                     </li>
-                    <li class="nav-item dropdown">
-                        <a href="{{ url_for('config.expense_categories') }}" class="nav-link dropbtn">
+                    <li class="nav-item dropdown"
+                        <a href="#" class="nav-link dropbtn">
                             Settings
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                stroke-linejoin="round" class="dropdown-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dropdown-icon">
                                 <path d="m6 9 6 6 6-6" />
                             </svg>
                         </a>
