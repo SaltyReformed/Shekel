@@ -278,8 +278,17 @@ def generate_recurring_expenses(
         start_date + delta if isinstance(delta, relativedelta) else start_date + delta
     )
 
-    for i in range(num_periods):
-        if schedule.end_date and current_date > schedule.end_date:
+    # If schedule has an end_date, we'll generate expenses until that date
+    # Otherwise, we'll generate num_periods expenses
+    has_end_date = schedule.end_date is not None
+
+    # Loop until we reach the end date or have created num_periods expenses
+    while (not has_end_date and expenses_created < num_periods) or (
+        has_end_date and current_date <= schedule.end_date
+    ):
+
+        # Skip if we've passed the end date
+        if has_end_date and current_date > schedule.end_date:
             break
 
         existing_expense = Expense.query.filter_by(
@@ -615,7 +624,7 @@ def mark_expense_paid(expense_id):
     else:
         flash(f"Error marking expense as paid: {message}", "danger")
 
-    return redirect(url_for("expense.overview"))
+    return redirect(url_for("expense.all_expenses"))
 
 
 @expense_bp.route("/batch/pay", methods=["POST"])

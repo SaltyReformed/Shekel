@@ -132,19 +132,38 @@
                                     <div class="action-buttons">
                                         <a href="{{ url_for('expense.edit_expense', expense_id=expense.id) }}"
                                             class="btn btn-sm btn-outline-primary">Edit</a>
-                                        {% if not expense.paid %}
-                                        <form method="POST" action="{{ url_for('expense.mark_expense_paid', expense_id=expense.id) }}"
+                                        {% if expense.recurring_schedule and
+                                        expense.recurring_schedule.default_account_id %}
+                                        <!-- If a default account is specified, use a button that triggers the confirmation modal -->
+                                        <form method="POST"
+                                            action="{{ url_for('expense.mark_expense_paid', expense_id=expense.id) }}"
+                                            class="mark-paid-form" id="markPaidForm_{{ expense.id }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="account_id"
+                                                value="{{ expense.recurring_schedule.default_account_id }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-success"
+                                                onclick="openMarkPaidModal({{ expense.id }}, '{{ expense.recurring_schedule.default_account.account_name }}')">
+                                                Mark Paid
+                                            </button>
+                                        </form>
+                                        {% else %}
+                                        <!-- When no default account is specified, use your existing button that triggers account selection (e.g., a modal to choose an account) -->
+                                        <form method="POST"
+                                            action="{{ url_for('expense.mark_expense_paid', expense_id=expense.id) }}"
                                             class="mark-paid-form">
                                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                            <!-- Add default account ID from recurring schedule if it exists -->
-                                            <input type="hidden" name="account_id" value="{{ accounts[0].id if accounts else '' }}">
-                                            <button type="button" class="btn btn-sm btn-outline-success mark-paid-btn"
-                                                data-default-account="{{ expense.recurring_schedule.default_account_id if expense.recurring_schedule and expense.recurring_schedule.default_account_id else '' }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-success mark-paid-btn"
+                                                data-expense-id="{{ expense.id }}"
+                                                data-expense-amount="{{ expense.amount }}">
                                                 Mark Paid
                                             </button>
                                         </form>
                                         {% endif %}
-                                        <form method="POST" action="{{ url_for('expense.delete_expense', expense_id=expense.id) }}"
+                                        
+
+
+                                        <form method="POST"
+                                            action="{{ url_for('expense.delete_expense', expense_id=expense.id) }}"
                                             class="d-inline delete-form"
                                             onsubmit="return confirm('Are you sure you want to delete this expense? This action cannot be undone.');">
                                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -207,8 +226,9 @@
                     </div>
                     <div class="alert alert-info">
                         <div class="alert-icon">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <line x1="12" y1="16" x2="12" y2="12"></line>
                                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
