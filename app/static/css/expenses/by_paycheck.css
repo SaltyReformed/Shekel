@@ -58,14 +58,39 @@
 }
 
 /* Specific styles for the paycheck-expenses table */
+/* Make tables fill available space */
 .table-responsive {
+  width: 100%;
   overflow-x: auto;
+  display: block;
+  margin-bottom: 1.5rem;
 }
-
+/* Add shadow to indicate there's more content */
+.table-responsive:not(.no-shadow)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 15px;
+  background: linear-gradient(to right, transparent, rgba(0,0,0,0.1));
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.table-responsive:not(.no-shadow).scrolling::after {
+  opacity: 1;
+}
+.table-expenses-summary {
+  width: 100%;
+  min-width: 100%;
+}
 .table-expenses-by-paycheck {
   width: 100%;
   border-collapse: collapse;
   border: 1px solid var(--border-color);
+  min-width: 100%;
+  table-layout: fixed;
 }
 
 .expense-info-column {
@@ -83,8 +108,13 @@
   min-width: 150px;
   text-align: center;
   border-left: 1px solid var(--border-color);
+  width: auto;
 }
-
+/* Allow the container to grow when many paychecks are present */
+.paycheck-expenses-container {
+  width: 100%;
+  overflow-x: auto;
+}
 .paycheck-header {
   display: flex;
   flex-direction: column;
@@ -236,7 +266,12 @@
   background-position: center;
   animation: spin 1s linear infinite;
 }
-
+/* Make the container adjust to screen size */
+@media (min-width: 1200px) {
+  .container {
+    max-width: 95%;
+  }
+}
 @keyframes spin {
   0% {
     transform: rotate(0deg);
@@ -470,6 +505,7 @@
   font-weight: 600;
   position: sticky;
   left: 0;
+  z-index: 10;
   background-color: var(--card-bg);
 }
 
@@ -477,6 +513,7 @@
   text-align: center;
   min-width: 140px;
   font-weight: 600;
+  width: auto;
 }
 
 .income-amount {

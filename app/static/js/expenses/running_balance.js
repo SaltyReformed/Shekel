@@ -78,3 +78,33 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 });
+// Add JavaScript to detect when tables need scrolling indicator
+document.addEventListener('DOMContentLoaded', function() {
+    const tableContainers = document.querySelectorAll('.table-responsive');
+    
+    tableContainers.forEach(container => {
+        // Check if scrolling is needed
+        function checkScroll() {
+            if (container.scrollWidth > container.clientWidth) {
+                container.classList.add('scrolling');
+            } else {
+                container.classList.remove('scrolling');
+            }
+        }
+        
+        // Run on load
+        checkScroll();
+        
+        // Run on resize
+        window.addEventListener('resize', checkScroll);
+        
+        // Add scroll event listener
+        container.addEventListener('scroll', function() {
+            if (container.scrollLeft + container.clientWidth >= container.scrollWidth - 15) {
+                container.classList.remove('scrolling');
+            } else {
+                container.classList.add('scrolling');
+            }
+        });
+    });
+});
