@@ -1,318 +1,258 @@
-// Initialize drag and drop functionality
+// Drag and drop functionality for expense items
 document.addEventListener('DOMContentLoaded', function() {
-    initDragAndDrop();
+    // Get all draggable expense items
+    const expenseItems = document.querySelectorAll('.expense-item');
+    const expenseCells = document.querySelectorAll('.expense-paycheck-cell');
     
-    // Also initialize the payment modal functionality
-    initPaymentModal();
-});
-
-function initDragAndDrop() {
-    // Get all expense rows
-    const expenseRows = document.querySelectorAll('.expense-row');
-    
-    expenseRows.forEach(row => {
-        // Make each row draggable
-        row.setAttribute('draggable', true);
+    // Setup draggable items
+    expenseItems.forEach(item => {
+        item.setAttribute('draggable', 'true');
         
-        // Add the expense ID as a data attribute for easy access
-        const expenseId = row.getAttribute('data-expense-id');
-        
-        // Add drag event listeners
-        row.addEventListener('dragstart', handleDragStart);
-        row.addEventListener('dragend', handleDragEnd);
-        
-        // Add visual indication that rows are draggable
-        row.classList.add('draggable');
-        
-        // Find all paycheck cells in this row
-        const paycheckCells = row.querySelectorAll('.expense-paycheck-cell');
-        
-        // Add drop targets
-        paycheckCells.forEach(cell => {
-            cell.addEventListener('dragover', handleDragOver);
-            cell.addEventListener('dragenter', handleDragEnter);
-            cell.addEventListener('dragleave', handleDragLeave);
-            cell.addEventListener('drop', handleDrop);
-        });
-    });
-}
-
-// Drag event handlers
-function handleDragStart(e) {
-    // Add a class to show the row is being dragged
-    this.classList.add('dragging');
-    
-    // Store the expense ID and row reference
-    e.dataTransfer.setData('text/plain', this.getAttribute('data-expense-id'));
-    e.dataTransfer.effectAllowed = 'move';
-    
-    // Add a custom drag image if needed
-    const dragImage = createDragImage(this);
-    if (dragImage) {
-        e.dataTransfer.setDragImage(dragImage, 20, 20);
-    }
-    
-    // Highlight valid drop targets
-    document.querySelectorAll('.expense-paycheck-cell').forEach(cell => {
-        if (!cell.classList.contains('active')) {
-            cell.classList.add('drop-target');
-        }
-    });
-}
-
-function handleDragEnd(e) {
-    // Remove the dragging class
-    this.classList.remove('dragging');
-    
-    // Remove drop target highlighting
-    document.querySelectorAll('.expense-paycheck-cell').forEach(cell => {
-        cell.classList.remove('drop-target');
-        cell.classList.remove('drag-over');
-    });
-}
-
-function handleDragOver(e) {
-    // Prevent default to allow drop
-    e.preventDefault();
-    return false;
-}
-
-function handleDragEnter(e) {
-    // Add hover effect
-    if (!this.classList.contains('active')) {
-        this.classList.add('drag-over');
-    }
-}
-
-function handleDragLeave(e) {
-    // Remove hover effect
-    this.classList.remove('drag-over');
-}
-
-function handleDrop(e) {
-    // Prevent default action
-    e.preventDefault();
-    
-    // Get the expense ID from the dragged item
-    const expenseId = e.dataTransfer.getData('text/plain');
-    
-    // Get the paycheck ID from the drop target
-    const paycheckId = this.getAttribute('data-paycheck-id');
-    
-    // Only proceed if we're not dropping on an already active cell
-    if (!this.classList.contains('active')) {
-        // Call the API to assign the expense to this paycheck
-        assignExpenseToPaycheck(expenseId, paycheckId, this);
-    }
-    
-    // Remove hover effect
-    this.classList.remove('drag-over');
-    
-    return false;
-}
-
-// Function to assign expense to paycheck via API
-function assignExpenseToPaycheck(expenseId, paycheckId, dropTarget) {
-    // Show loading state
-    showLoadingState(dropTarget);
-    
-    // Make API request
-    fetch('/expenses/assign-to-paycheck', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': document.querySelector('input[name="csrf_token"]').value
-        },
-        body: JSON.stringify({
-            expense_id: expenseId,
-            paycheck_id: paycheckId
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            // Update the UI to reflect the new assignment
-            updateExpenseAssignment(expenseId, paycheckId);
+        item.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', this.getAttribute('data-expense-id'));
+            this.classList.add('dragging');
             
-            // Update the expense date display if returned
-            if (data.expense_date) {
-                updateExpenseDate(expenseId, data.expense_date);
-            }
-            
-            // Show success message
-            showNotification('Expense reassigned successfully', 'success');
-        } else {
-            // Show error message
-            showNotification('Error: ' + data.message, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showNotification('An error occurred while reassigning the expense', 'error');
-    })
-    .finally(() => {
-        // Remove loading state
-        hideLoadingState(dropTarget);
-    });
-}
-
-// Update UI to reflect new expense assignment
-function updateExpenseAssignment(expenseId, paycheckId) {
-    // Find the expense row
-    const expenseRow = document.querySelector(`.expense-row[data-expense-id="${expenseId}"]`);
-    
-    // Remove 'active' class from all paycheck cells in this row
-    expenseRow.querySelectorAll('.expense-paycheck-cell').forEach(cell => {
-        cell.classList.remove('active');
-        // Also remove any expense markers
-        const marker = cell.querySelector('.expense-marker');
-        if (marker) {
-            cell.removeChild(marker);
-        }
-    });
-    
-    // Add 'active' class to the new paycheck cell
-    const newCell = expenseRow.querySelector(`.expense-paycheck-cell[data-paycheck-id="${paycheckId}"]`);
-    if (newCell) {
-        newCell.classList.add('active');
-        
-        // Add marker to the new cell
-        const marker = document.createElement('div');
-        marker.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" 
-            fill="none" stroke="currentColor" stroke-width="2" 
-            stroke-linecap="round" stroke-linejoin="round" class="expense-marker">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="16"></line>
-            <line x1="8" y1="12" x2="16" y2="12"></line>
-        </svg>`;
-        newCell.appendChild(marker.firstElementChild);
-        
-        // Update totals and remaining amounts
-        updatePaycheckTotals();
-    }
-}
-
-// Update the displayed date for an expense
-function updateExpenseDate(expenseId, dateString) {
-    const expenseRow = document.querySelector(`.expense-row[data-expense-id="${expenseId}"]`);
-    const dateElement = expenseRow.querySelector('.expense-date');
-    
-    if (dateElement) {
-        // Format the date for display
-        const date = new Date(dateString);
-        const options = { month: 'short', day: 'numeric', year: 'numeric' };
-        dateElement.textContent = date.toLocaleDateString('en-US', options);
-    }
-}
-
-// Update paycheck totals and remaining amounts
-function updatePaycheckTotals() {
-    // Get all paychecks
-    const paycheckColumns = document.querySelectorAll('.paycheck-column');
-    
-    paycheckColumns.forEach((column, index) => {
-        const paycheckId = column.getAttribute('data-paycheck-id');
-        
-        // Get all active expense cells for this paycheck
-        const expenseCells = document.querySelectorAll(`.expense-paycheck-cell[data-paycheck-id="${paycheckId}"].active`);
-        
-        // Sum up the expenses
-        let totalExpenses = 0;
-        expenseCells.forEach(cell => {
-            const expenseRow = cell.closest('.expense-row');
-            const amountText = expenseRow.querySelector('.expense-amount').textContent.replace('$', '').replace(',', '');
-            totalExpenses += parseFloat(amountText);
+            // Add drop target styling to all valid drop targets
+            expenseCells.forEach(cell => {
+                cell.classList.add('drop-target');
+            });
         });
         
-        // Get the paycheck amount
-        const paycheckAmountText = column.querySelector('.paycheck-amount').textContent.replace('$', '').replace(',', '');
-        const paycheckAmount = parseFloat(paycheckAmountText);
-        
-        // Update the total cell
-        const totalCell = document.querySelector(`.paycheck-total[data-paycheck-id="${paycheckId}"]`);
-        if (totalCell) {
-            totalCell.textContent = '$' + totalExpenses.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        }
-        
-        // Update the remaining cell
-        const remainingCell = document.querySelector(`.paycheck-remaining[data-paycheck-id="${paycheckId}"]`);
-        if (remainingCell) {
-            const remaining = paycheckAmount - totalExpenses;
-            remainingCell.textContent = '$' + remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        item.addEventListener('dragend', function() {
+            this.classList.remove('dragging');
             
-            // Update class for negative values
-            if (remaining < 0) {
-                remainingCell.classList.add('negative');
-            } else {
-                remainingCell.classList.remove('negative');
-            }
-        }
+            // Remove drop target styling
+            expenseCells.forEach(cell => {
+                cell.classList.remove('drop-target');
+                cell.classList.remove('drag-over');
+            });
+        });
     });
-}
-
-// Loading state functions
-function showLoadingState(element) {
-    element.classList.add('loading');
-}
-
-function hideLoadingState(element) {
-    element.classList.remove('loading');
-}
-
-// Create a custom drag image
-function createDragImage(row) {
-    // Get the expense description and amount
-    const description = row.querySelector('.expense-description').textContent.trim();
-    const amount = row.querySelector('.expense-amount').textContent.trim();
     
-    // Create a simple element for the drag image
-    const dragImage = document.createElement('div');
-    dragImage.className = 'drag-image';
-    dragImage.innerHTML = `<strong>${description}</strong> ${amount}`;
-    dragImage.style.backgroundColor = 'var(--primary-light)';
-    dragImage.style.color = 'var(--primary-color)';
-    dragImage.style.padding = '8px 12px';
-    dragImage.style.borderRadius = '4px';
-    dragImage.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-    dragImage.style.position = 'absolute';
-    dragImage.style.top = '-1000px';  // Position off-screen initially
+    // Setup drop targets
+    expenseCells.forEach(cell => {
+        cell.addEventListener('dragover', function(e) {
+            e.preventDefault(); // Allow drop
+            this.classList.add('drag-over');
+        });
+        
+        cell.addEventListener('dragleave', function() {
+            this.classList.remove('drag-over');
+        });
+        
+        cell.addEventListener('drop', function(e) {
+            e.preventDefault();
+            
+            // Get the expense ID and target paycheck ID
+            const expenseId = e.dataTransfer.getData('text/plain');
+            const paycheckId = this.getAttribute('data-paycheck-id');
+            
+            // Show loading state
+            this.classList.add('loading');
+            
+            // Send AJAX request to update the expense
+            fetch('/expenses/assign-to-paycheck', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken() // Function to get CSRF token
+                },
+                body: JSON.stringify({
+                    expense_id: expenseId,
+                    paycheck_id: paycheckId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Remove loading state
+                this.classList.remove('loading');
+                
+                if (data.success) {
+                    // Show success notification
+                    showNotification('Expense reassigned successfully', 'success');
+                    
+                    // Move the expense item to the new cell
+                    const expenseItem = document.querySelector(`.expense-item[data-expense-id="${expenseId}"]`);
+                    if (expenseItem) {
+                        // Update the expense date if provided in the response
+                        if (data.expense_date) {
+                            const dateEl = expenseItem.querySelector('.expense-date');
+                            if (dateEl) {
+                                // Format date as MM/DD
+                                const date = new Date(data.expense_date);
+                                const month = date.getMonth() + 1;
+                                const day = date.getDate();
+                                dateEl.textContent = `${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}`;
+                            }
+                        }
+                        
+                        // Check if the target cell already has a container for expenses
+                        let container = this.querySelector('.expense-in-paycheck');
+                        
+                        // If not, create one
+                        if (!container) {
+                            container = document.createElement('div');
+                            container.className = 'expense-in-paycheck';
+                            this.appendChild(container);
+                        }
+                        
+                        // Move the expense item to the container
+                        container.appendChild(expenseItem);
+                        
+                        // Update the totals (will be implemented in the next step)
+                        updatePaycheckTotals();
+                    }
+                } else {
+                    // Show error notification
+                    showNotification(data.message || 'Failed to reassign expense', 'error');
+                }
+            })
+            .catch(error => {
+                // Remove loading state and show error
+                this.classList.remove('loading');
+                console.error('Error:', error);
+                showNotification('An error occurred while reassigning the expense', 'error');
+            });
+        });
+    });
     
-    // Add to the document temporarily
-    document.body.appendChild(dragImage);
+    // Helper function to get CSRF token
+    function getCsrfToken() {
+        // First try to get it from the form
+        const tokenInput = document.querySelector('input[name="csrf_token"]');
+        if (tokenInput) return tokenInput.value;
+        
+        // If not found in form, try to get it from meta tag
+        const metaToken = document.querySelector('meta[name="csrf-token"]');
+        if (metaToken) return metaToken.getAttribute('content');
+        
+        return ''; // Return empty if not found
+    }
     
-    return dragImage;
-}
-
-// Notification functions
-function showNotification(message, type = 'info') {
-    // Create notification element if it doesn't exist
-    let notification = document.getElementById('notification');
-    if (!notification) {
-        notification = document.createElement('div');
-        notification.id = 'notification';
+    // Function to show notifications
+    function showNotification(message, type = 'info') {
+        const notification = document.getElementById('notification');
+        
+        // Clear any existing classes and add the new one
         notification.className = 'notification';
-        document.body.appendChild(notification);
+        notification.classList.add(type);
+        notification.classList.add('show');
+        
+        // Set message
+        notification.textContent = message;
+        
+        // Hide after 3 seconds
+        setTimeout(() => {
+            notification.classList.remove('show');
+        }, 3000);
     }
     
-    // Set content and class based on type
-    notification.textContent = message;
-    notification.className = `notification ${type}`;
+    // Function to update paycheck totals after drag and drop
+    function updatePaycheckTotals() {
+        // Calculate new expense totals for each paycheck
+        const paycheckColumns = document.querySelectorAll('.paycheck-column');
+        
+        paycheckColumns.forEach(column => {
+            const paycheckId = column.getAttribute('data-paycheck-id');
+            
+            // Find all expense items in this paycheck column
+            const expenseItems = document.querySelectorAll(`.expense-paycheck-cell[data-paycheck-id="${paycheckId}"] .expense-item`);
+            
+            // Calculate total expenses
+            let totalExpenses = 0;
+            expenseItems.forEach(item => {
+                // Extract amount from the expense item
+                const amountEl = item.querySelector('.expense-amount');
+                if (amountEl) {
+                    // Parse the amount text (remove $ and commas)
+                    const amountText = amountEl.textContent.replace('$', '').replace(/,/g, '');
+                    totalExpenses += parseFloat(amountText);
+                }
+            });
+            
+            // Update total expenses display
+            const totalEl = document.querySelector(`.paycheck-total[data-paycheck-id="${paycheckId}"]`);
+            if (totalEl) {
+                totalEl.textContent = `$${totalExpenses.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+            
+            // Get the paycheck amount
+            let paycheckAmount = 0;
+            const paycheckAmountEl = column.querySelector('.paycheck-amount');
+            if (paycheckAmountEl) {
+                // Parse the amount text (remove $ and commas)
+                const amountText = paycheckAmountEl.textContent.replace('$', '').replace(/,/g, '');
+                paycheckAmount = parseFloat(amountText);
+            }
+            
+            // Calculate remaining amount
+            const remaining = paycheckAmount - totalExpenses;
+            
+            // Update remaining display
+            const remainingEl = document.querySelector(`.paycheck-remaining[data-paycheck-id="${paycheckId}"]`);
+            if (remainingEl) {
+                remainingEl.textContent = `$${remaining.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                
+                // Update negative class
+                if (remaining < 0) {
+                    remainingEl.classList.add('negative');
+                } else {
+                    remainingEl.classList.remove('negative');
+                }
+            }
+            
+            // In the income-expenses view, also update the end balances
+            updateEndBalances();
+        });
+    }
     
-    // Show the notification
-    notification.classList.add('show');
+    // Function to update end balances in the income-expenses view
+    function updateEndBalances() {
+        // This function is specific to the income-expenses-by-paycheck view
+        const summaryTable = document.querySelector('.paycheck-summary-table');
+        if (!summaryTable) return; // Not on the income-expenses view
+        
+        // Get starting balance
+        let startingBalance = 0;
+        const startingBalanceInput = document.getElementById('starting_balance');
+        if (startingBalanceInput) {
+            startingBalance = parseFloat(startingBalanceInput.value || '0');
+        }
+        
+        // Get all net amounts and calculate running balance
+        const netAmounts = document.querySelectorAll('.net-amount');
+        const balanceAmounts = document.querySelectorAll('.balance-amount');
+        
+        let runningBalance = startingBalance;
+        
+        // Update each balance amount
+        for (let i = 0; i < netAmounts.length; i++) {
+            // Parse the net amount
+            const netText = netAmounts[i].textContent.replace('$', '').replace(/,/g, '');
+            const netAmount = parseFloat(netText);
+            
+            // Calculate new running balance
+            runningBalance += netAmount;
+            
+            // Update balance amount
+            balanceAmounts[i].textContent = `$${runningBalance.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            
+            // Update negative class
+            if (runningBalance < 0) {
+                balanceAmounts[i].classList.add('negative');
+            } else {
+                balanceAmounts[i].classList.remove('negative');
+            }
+        }
+    }
     
-    // Hide after a delay
-    setTimeout(() => {
-        notification.classList.remove('show');
-    }, 3000);
-}
-
-// Payment modal functionality
-function initPaymentModal() {
+    // Setup mark paid buttons
     const markPaidButtons = document.querySelectorAll('.mark-paid-btn');
     markPaidButtons.forEach(button => {
-        button.addEventListener('click', function() {
+        button.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
             const expenseId = this.getAttribute('data-expense-id');
             const expenseAmount = this.getAttribute('data-expense-amount');
             
@@ -320,21 +260,21 @@ function initPaymentModal() {
             const paymentForm = document.getElementById('paymentForm');
             paymentForm.action = "/expenses/" + expenseId + "/pay";
             
-            // Set the amount
+            // Set default amount
             document.getElementById('modal-payment-amount').value = expenseAmount;
             
             // Show the modal
             document.getElementById('paymentModal').classList.add('show');
-            document.body.style.overflow = 'hidden';
         });
     });
-}
-
-function closePaymentModal() {
-    document.getElementById('paymentModal').classList.remove('show');
-    document.body.style.overflow = '';
-}
-
-function submitPaymentForm() {
-    document.getElementById('paymentForm').submit();
-}
+    
+    // Close payment modal
+    window.closePaymentModal = function() {
+        document.getElementById('paymentModal').classList.remove('show');
+    };
+    
+    // Submit payment form
+    window.submitPaymentForm = function() {
+        document.getElementById('paymentForm').submit();
+    };
+});

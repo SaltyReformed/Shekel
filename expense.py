@@ -1024,6 +1024,130 @@ def expenses_by_paycheck():
     )
 
 
+@expense_bp.route("/income-expenses-by-paycheck")
+@login_required
+def income_expenses_by_paycheck():
+    """View income and expenses organized by paycheck with running balance"""
+    user_id = session.get("user_id")
+
+    # Get date range filter (default to next 60 days if not specified)
+    start_date, end_date = get_date_range_filter()
+    if not start_date:
+        start_date = date.today()
+    if not end_date:
+        end_date = start_date + timedelta(days=60)
+
+    # Get starting balance filter
+    starting_balance = request.args.get("starting_balance", type=float, default=0.0)
+    starting_balance = decimal.Decimal(str(starting_balance))
+
+    # Get optional account filter
+    account_id = request.args.get("account_id", type=int)
+
+    # Get all paychecks in the date range
+    paychecks = (
+        Paycheck.query.filter(
+            Paycheck.user_id == user_id,
+            Paycheck.scheduled_date >= start_date,
+            Paycheck.scheduled_date <= end_date,
+        )
+        .order_by(Paycheck.scheduled_date)
+        .all()
+    )
+
+    # Get all expenses in the date range
+    expense_query = Expense.query.filter(
+        Expense.user_id == user_id,
+        Expense.scheduled_date >= start_date,
+        Expense.scheduled_date <= end_date,
+    )
+
+    # Apply account filter if specified
+    if account_id:
+        # For expenses, filter those that have been paid from the specified account
+        paid_expense_ids = (
+            db.session.query(ExpensePayment.expense_id)
+            .filter(ExpensePayment.account_id == account_id)
+            .all()
+        )
+        paid_expense_ids = [id[0] for id in paid_expense_ids]
+
+        # Filter to only include expenses paid from this account or not yet paid
+        expense_query = expense_query.filter(
+            db.or_(Expense.id.in_(paid_expense_ids), Expense.paid == False)
+        )
+
+        # For paychecks, filter those that deposit to the specified account
+        paycheck_ids = (
+            db.session.query(IncomePayment.paycheck_id)
+            .filter(IncomePayment.account_id == account_id)
+            .all()
+        )
+        paycheck_ids = [id[0] for id in paycheck_ids]
+
+        # Update paychecks to only include those depositing to this account
+        paychecks = [p for p in paychecks if p.id in paycheck_ids]
+
+    expenses = expense_query.order_by(Expense.scheduled_date).all()
+
+    # Map expenses to paychecks (each expense goes to the next upcoming paycheck)
+    expenses_by_paycheck = {p.id: [] for p in paychecks}
+
+    for expense in expenses:
+        # Assign to the first paycheck that comes on or after the expense date
+        assigned = False
+        for paycheck in paychecks:
+            if paycheck.scheduled_date >= expense.scheduled_date:
+                expenses_by_paycheck[paycheck.id].append(expense)
+                assigned = True
+                break
+
+        # If no upcoming paycheck, assign to the last paycheck
+        if not assigned and paychecks:
+            expenses_by_paycheck[paychecks[-1].id].append(expense)
+
+    # Calculate totals
+    paycheck_totals = {}
+    paycheck_remaining = {}
+
+    for paycheck in paychecks:
+        total_expenses = sum(
+            expense.amount for expense in expenses_by_paycheck[paycheck.id]
+        )
+        paycheck_totals[paycheck.id] = total_expenses
+        paycheck_remaining[paycheck.id] = paycheck.net_salary - total_expenses
+
+    # Get all expense categories for filtering
+    categories = ExpenseCategory.query.all()
+
+    # Get accounts for filtering and payment modal
+    accounts = Account.query.filter_by(user_id=user_id).all()
+
+    # Dictionary for storing end balances
+    end_balances = {}
+
+    # Read the JavaScript for drag and drop functionality if needed
+    with open("app/static/js/drag-drop.js", "r") as js_file:
+        drag_drop_js = js_file.read()
+
+    return render_template(
+        "expenses/income_expenses_by_paycheck.html",
+        paychecks=paychecks,
+        expenses=expenses,
+        expenses_by_paycheck=expenses_by_paycheck,
+        paycheck_totals=paycheck_totals,
+        paycheck_remaining=paycheck_remaining,
+        categories=categories,
+        accounts=accounts,
+        start_date=start_date,
+        end_date=end_date,
+        starting_balance=starting_balance,
+        end_balances=end_balances,
+        today=date.today(),
+        include_drag_drop_js=drag_drop_js,
+    )
+
+
 @expense_bp.route("/assign-to-paycheck", methods=["POST"])
 @login_required
 def assign_expense_to_paycheck():
