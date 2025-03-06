@@ -11,8 +11,8 @@ from user_management import user_bp
 from account_manager import (
     account_bp,
     Transaction,
-)  # Import the new account management blueprint and Transaction model
-
+)
+from dashboard import dashboard_bp
 
 def create_app():
     # Get the absolute path to the app directory
@@ -37,6 +37,7 @@ def create_app():
     app.register_blueprint(user_bp)
     app.register_blueprint(account_bp)
     app.register_blueprint(expense_bp)
+    app.register_blueprint(dashboard_bp)
 
     # Helper function to check if user is logged in
     def is_logged_in():
