@@ -78,16 +78,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Find the expense item element by its data attribute
                     const expenseItem = document.querySelector(`.expense-item[data-expense-id="${expenseId}"]`);
                     if (expenseItem) {
-                        // If the server provided an updated expense date, update it in the UI
-                        if (data.expense_date) {
-                            const dateEl = expenseItem.querySelector('.expense-date');
-                            if (dateEl) {
-                                const dateObj = new Date(data.expense_date);
-                                const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
-                                const day = dateObj.getDate().toString().padStart(2, '0');
-                                dateEl.textContent = `${month}/${day}`;
-                            }
-                        }
+                        // IMPORTANT: Don't update the expense date display anymore
+                        // The server is sending back the original date with a flag that
+                        // indicates we should preserve the original date
                         
                         // Check if the target cell already contains a container for expenses;
                         // if not, create one.

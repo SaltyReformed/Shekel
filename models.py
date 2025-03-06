@@ -224,9 +224,11 @@ class Expense(db.Model):
     recurring_schedule_id = db.Column(
         db.Integer, db.ForeignKey("recurring_schedules.id")
     )
+    paycheck_id = db.Column(db.Integer, db.ForeignKey("paychecks.id"), nullable=True)
     user = db.relationship("User", backref="expenses")
     expense_category = db.relationship("ExpenseCategory", backref="expenses")
     recurring_schedule = db.relationship("RecurringSchedule", backref="expenses")
+    paycheck = db.relationship("Paycheck", backref="assigned_expenses")
     notes = db.Column(db.Text)  # For additional notes about the expense
 
 

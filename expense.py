@@ -501,6 +501,25 @@ def manage_expense(expense_id=None):
     if request.args.get("recurring") == "true" and request.method == "GET":
         return redirect(url_for("expense.manage_recurring_expense"))
 
+    # Get upcoming paychecks for the paycheck selection dropdown
+    # Default to next 60 days if we're adding a new expense
+    start_date = date.today()
+    if expense and expense.scheduled_date:
+        # If editing, include paychecks from a month before the expense date
+        start_date = expense.scheduled_date - timedelta(days=30)
+
+    end_date = start_date + timedelta(days=90)  # Show paychecks for the next 90 days
+
+    paychecks = (
+        Paycheck.query.filter(
+            Paycheck.user_id == user_id,
+            Paycheck.scheduled_date >= start_date,
+            Paycheck.scheduled_date <= end_date,
+        )
+        .order_by(Paycheck.scheduled_date)
+        .all()
+    )
+
     # Form handling logic
     if form.validate_on_submit():
         if not is_edit:
@@ -530,6 +549,13 @@ def manage_expense(expense_id=None):
                 form.category_id.data if form.category_id.data != 0 else None
             )
             expense.notes = form.notes.data
+
+        # Handle paycheck assignment
+        paycheck_id = request.form.get("paycheck_id")
+        if paycheck_id:
+            expense.paycheck_id = int(paycheck_id)
+        else:
+            expense.paycheck_id = None
 
         # Handle payment status change
         old_paid_status = expense.paid if is_edit else False
@@ -570,6 +596,7 @@ def manage_expense(expense_id=None):
         expense=expense,
         accounts=accounts,
         categories=categories,
+        paychecks=paychecks,
         is_edit=is_edit,
     )
 
@@ -972,21 +999,54 @@ def expenses_by_paycheck():
 
     expenses = expense_query.order_by(Expense.scheduled_date).all()
 
-    # Map expenses to paychecks (each expense goes to the next upcoming paycheck)
+    # Map expenses to paychecks
     expenses_by_paycheck = {p.id: [] for p in paychecks}
 
+    # First, populate with expenses that have a direct paycheck_id assignment
     for expense in expenses:
-        # Assign to the first paycheck that comes on or after the expense date
-        assigned = False
-        for paycheck in paychecks:
-            if paycheck.scheduled_date >= expense.scheduled_date:
-                expenses_by_paycheck[paycheck.id].append(expense)
-                assigned = True
-                break
+        if expense.paycheck_id and expense.paycheck_id in expenses_by_paycheck:
+            expenses_by_paycheck[expense.paycheck_id].append(expense)
 
-        # If no upcoming paycheck, assign to the last paycheck
-        if not assigned and paychecks:
-            expenses_by_paycheck[paychecks[-1].id].append(expense)
+    # Next, assign remaining expenses based on date logic
+    for expense in expenses:
+        if expense.paycheck_id is None:
+            # Find the last paycheck that comes before the expense date
+            assigned = False
+
+            # Sort paychecks by date (earliest to latest)
+            sorted_paychecks = sorted(paychecks, key=lambda p: p.scheduled_date)
+
+            # Find the last paycheck that comes before or on the expense date
+            for i, paycheck in enumerate(sorted_paychecks):
+                if paycheck.scheduled_date > expense.scheduled_date:
+                    # This paycheck is after the expense date
+                    if i > 0:
+                        # Assign to the previous paycheck (the last one before the expense)
+                        appropriate_paycheck = sorted_paychecks[i - 1]
+                        expenses_by_paycheck[appropriate_paycheck.id].append(expense)
+
+                        # Also update the paycheck_id in the database for future reference
+                        expense.paycheck_id = appropriate_paycheck.id
+                        assigned = True
+                    break
+
+            # If we went through all paychecks and none are after the expense date,
+            # assign to the last paycheck
+            if not assigned and sorted_paychecks:
+                appropriate_paycheck = sorted_paychecks[-1]
+                expenses_by_paycheck[appropriate_paycheck.id].append(expense)
+                expense.paycheck_id = appropriate_paycheck.id
+                assigned = True
+
+            # If there are no paychecks available or the expense is before all paychecks,
+            # assign to the first paycheck
+            if not assigned and paychecks:
+                appropriate_paycheck = sorted_paychecks[0]
+                expenses_by_paycheck[appropriate_paycheck.id].append(expense)
+                expense.paycheck_id = appropriate_paycheck.id
+
+    # Commit the changes to paycheck_id
+    db.session.commit()
 
     # Calculate totals
     paycheck_totals = {}
@@ -1091,21 +1151,40 @@ def income_expenses_by_paycheck():
 
     expenses = expense_query.order_by(Expense.scheduled_date).all()
 
-    # Map expenses to paychecks (each expense goes to the next upcoming paycheck)
+    # Map expenses to paychecks (each expense goes to the last paycheck before its due date)
     expenses_by_paycheck = {p.id: [] for p in paychecks}
 
     for expense in expenses:
-        # Assign to the first paycheck that comes on or after the expense date
+        # Find the last paycheck that comes before the expense date
         assigned = False
-        for paycheck in paychecks:
-            if paycheck.scheduled_date >= expense.scheduled_date:
-                expenses_by_paycheck[paycheck.id].append(expense)
-                assigned = True
+        appropriate_paycheck = None
+
+        # Sort paychecks by date (earliest to latest)
+        sorted_paychecks = sorted(paychecks, key=lambda p: p.scheduled_date)
+
+        # Find the last paycheck that comes before or on the expense date
+        for i, paycheck in enumerate(sorted_paychecks):
+            if paycheck.scheduled_date > expense.scheduled_date:
+                # This paycheck is after the expense date
+                if i > 0:
+                    # Assign to the previous paycheck (the last one before the expense)
+                    appropriate_paycheck = sorted_paychecks[i - 1]
+                    expenses_by_paycheck[appropriate_paycheck.id].append(expense)
+                    assigned = True
                 break
 
-        # If no upcoming paycheck, assign to the last paycheck
+        # If we went through all paychecks and none are after the expense date,
+        # assign to the last paycheck
+        if not assigned and sorted_paychecks:
+            appropriate_paycheck = sorted_paychecks[-1]
+            expenses_by_paycheck[appropriate_paycheck.id].append(expense)
+            assigned = True
+
+        # If there are no paychecks available or the expense is before all paychecks,
+        # assign to the first paycheck
         if not assigned and paychecks:
-            expenses_by_paycheck[paychecks[-1].id].append(expense)
+            appropriate_paycheck = sorted_paychecks[0]
+            expenses_by_paycheck[appropriate_paycheck.id].append(expense)
 
     # Calculate totals
     paycheck_totals = {}
@@ -1175,9 +1254,9 @@ def assign_expense_to_paycheck():
     if not paycheck:
         return jsonify({"success": False, "message": "Paycheck not found"}), 404
 
-    # Update the expense's scheduled date to match the paycheck date
     try:
-        expense.scheduled_date = paycheck.scheduled_date
+        # Update the expense's associated paycheck without changing the scheduled_date
+        expense.paycheck_id = paycheck_id
         db.session.commit()
 
         return jsonify(
@@ -1185,6 +1264,7 @@ def assign_expense_to_paycheck():
                 "success": True,
                 "message": "Expense assigned successfully",
                 "expense_date": expense.scheduled_date.isoformat(),
+                "original_date": True,  # Flag to tell frontend not to update the display date
             }
         )
     except Exception as e:

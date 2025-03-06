@@ -77,6 +77,23 @@
                                 </div>
                                 {% endif %}
                             </div>
+
+                            <!-- New Paycheck Selection Field -->
+                            <div class="form-group">
+                                <label for="paycheck_id">Pay From Paycheck</label>
+                                <select id="paycheck_id" name="paycheck_id" class="form-control">
+                                    <option value="">-- Select Paycheck --</option>
+                                    {% for paycheck in paychecks %}
+                                    <option value="{{ paycheck.id }}" {% if expense and expense.paycheck_id==paycheck.id
+                                        %}selected{% endif %}>
+                                        {{ paycheck.scheduled_date.strftime('%b %d, %Y') }} - ${{
+                                        "{:,.2f}".format(paycheck.net_salary) }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                <small class="form-text text-muted">Select which paycheck will be used to pay this
+                                    expense.</small>
+                            </div>
                         </div>
 
                         <div class="form-section">
@@ -151,6 +168,13 @@
                         <p>For recurring expenses like monthly bills, consider setting up a <a
                                 href="{{ url_for('expense.add_recurring_expense') }}">recurring expense</a> instead.</p>
                     </div>
+
+                    <!-- New section explaining paycheck assignment -->
+                    <div class="tip-box mt-3">
+                        <strong>Paycheck Assignment:</strong> The "Pay From Paycheck" option lets you choose which
+                        paycheck will cover this expense. This helps you plan your cash flow without changing the
+                        expense's due date.
+                    </div>
                 </div>
             </div>
 
@@ -170,6 +194,16 @@
                             {% endif %}
                         </div>
                     </div>
+
+                    <!-- Display assigned paycheck information -->
+                    {% if expense.paycheck %}
+                    <div class="info-item">
+                        <div class="info-label">Assigned Paycheck</div>
+                        <div class="info-value">
+                            <span class="badge info">{{ expense.paycheck.scheduled_date.strftime('%b %d, %Y') }}</span>
+                        </div>
+                    </div>
+                    {% endif %}
 
                     {% if expense.recurring_schedule_id %}
                     <div class="info-item">
