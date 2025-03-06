@@ -124,7 +124,6 @@
                             {% set _ = expense_in_paycheck.append(expense) %}
                             {% endif %}
                             {% endfor %}
-
                             {% if expense_in_paycheck %}
                             <div class="expense-in-paycheck">
                                 {% for expense in expense_in_paycheck %}
@@ -210,20 +209,20 @@
         {% endif %}
     </div>
 
-    <!-- Payment Modal -->
-    <div id="paymentModal" class="modal">
-        <div class="modal-dialog">
+    <!-- Payment Modal (no inline event handlers) -->
+    <div id="paymentModal" class="modal" style="display: none; z-index: 1050;">
+        <div class="modal-dialog" style="max-width: 500px; margin: 2rem auto;">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title">Mark Expense as Paid</h5>
-                    <button type="button" class="close" onclick="closePaymentModal()">
-                        <span>&times;</span>
+                    <!-- Removed inline onclick; using an ID for external binding -->
+                    <button type="button" class="close" id="modalCloseBtn" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
                     </button>
                 </div>
                 <div class="modal-body">
                     <form id="paymentForm" action="" method="POST">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
                         <div class="form-group">
                             <label for="modal-account-id">Pay from Account</label>
                             <select id="modal-account-id" name="account_id" class="form-control" required>
@@ -235,13 +234,11 @@
                                 {% endfor %}
                             </select>
                         </div>
-
                         <div class="form-group">
                             <label for="modal-payment-date">Payment Date</label>
                             <input type="date" id="modal-payment-date" name="payment_date" class="form-control"
                                 value="{{ today.isoformat() }}" required>
                         </div>
-
                         <div class="form-group">
                             <label for="modal-payment-amount">Amount</label>
                             <div class="input-with-icon">
@@ -250,7 +247,6 @@
                                     class="form-control" step="0.01" min="0.01" required>
                             </div>
                         </div>
-
                         <div class="form-group">
                             <label for="modal-notes">Notes (Optional)</label>
                             <input type="text" id="modal-notes" name="notes" class="form-control"
@@ -259,8 +255,9 @@
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closePaymentModal()">Cancel</button>
-                    <button type="button" class="btn btn-success" onclick="submitPaymentForm()">Mark as Paid</button>
+                    <!-- Removed inline onclick; IDs added for external binding -->
+                    <button type="button" class="btn btn-secondary" id="modalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-success" id="modalMarkPaidBtn">Mark as Paid</button>
                 </div>
             </div>
         </div>
@@ -271,17 +268,6 @@
 {% block additional_scripts %}
 <!-- Load drag-drop functionality from external JS file -->
 <script src="{{ url_for('static', filename='js/drag-drop.js') }}"></script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        // Ensure all expense items are draggable
-        var expenseItems = document.querySelectorAll('.expense-item');
-        expenseItems.forEach(function (item) {
-            item.setAttribute('draggable', 'true');
-        });
-        // Initialize drag and drop if your script defines an init function
-        if (typeof initDragDrop === 'function') {
-            initDragDrop();
-        }
-    });
-</script>
+<!-- Load external JS for modal binding (ensure this file binds click events to the modal buttons) -->
+<script src="{{ url_for('static', filename='js/modal-binding.js') }}"></script>
 {% endblock %}

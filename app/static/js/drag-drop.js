@@ -236,17 +236,26 @@ document.addEventListener('DOMContentLoaded', function() {
             paymentForm.action = "/expenses/" + expenseId + "/pay";
             document.getElementById('modal-payment-amount').value = expenseAmount;
             
-            // Show the payment modal
-            document.getElementById('paymentModal').classList.add('show');
+            // Show the payment modal by adding the "show" class and setting display to block
+            const modal = document.getElementById('paymentModal');
+            modal.classList.add('show');
+            modal.style.display = 'block';
         });
     });
     
-    // Functions to close the payment modal and submit the payment form
+    // Define global functions for closing the modal and submitting the payment form
     window.closePaymentModal = function() {
-        document.getElementById('paymentModal').classList.remove('show');
+        const modal = document.getElementById('paymentModal');
+        if (modal) {
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+        }
     };
     
     window.submitPaymentForm = function() {
-        document.getElementById('paymentForm').submit();
+        const form = document.getElementById('paymentForm');
+        if (form) {
+            form.submit();
+        }
     };
 });
