@@ -1,0 +1,15 @@
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .info-box {
+        background-color: var(--info-light);
+        padding: 1rem;
+        border-radius: var(--border-radius);
+        margin-top: 1rem;
+    }

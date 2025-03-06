@@ -1,0 +1,117 @@
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        margin-right: -0.75rem;
+        margin-left: -0.75rem;
+    }
+
+    .col-lg-8,
+    .col-lg-4 {
+        padding-right: 0.75rem;
+        padding-left: 0.75rem;
+        width: 100%;
+    }
+
+    @media (min-width: 992px) {
+        .col-lg-8 {
+            flex: 0 0 66.666667%;
+            max-width: 66.666667%;
+        }
+
+        .col-lg-4 {
+            flex: 0 0 33.333333%;
+            max-width: 33.333333%;
+        }
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+    }
+
+    .card {
+        background-color: var(--card-bg);
+        border-radius: var(--border-radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+
+    .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--text-color);
+        background-color: var(--input-bg);
+        background-clip: padding-box;
+        border: 1px solid var(--input-border);
+        border-radius: var(--border-radius);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+
+    .form-control:focus {
+        border-color: var(--primary-color);
+        outline: 0;
+        box-shadow: 0 0 0 0.2rem rgba(53, 99, 230, 0.25);
+    }
+
+    .error-message {
+        color: var(--danger-color);
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .text-muted {
+        color: var(--text-muted);
+    }
+
+    .help-card {
+        background-color: var(--info-light);
+    }
+
+    .help-list {
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-list li {
+        margin-bottom: 0.5rem;
+    }
+
+    .help-list li:last-child {
+        margin-bottom: 0;
+    }
+
+    .tip {
+        background-color: var(--warning-light);
+        border-left: 3px solid var(--warning-color);
+        padding: 0.75rem;
+        border-radius: var(--border-radius);
+        font-size: 0.9rem;
+    }

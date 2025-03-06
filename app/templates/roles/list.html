@@ -2,6 +2,11 @@
 
 {% block title %}Role Management - Shekel Budget App{% endblock %}
 
+{% block additional_styles %}
+<!-- Load external CSS for this page -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/roles/list.css') }}">
+{% endblock %}
+
 {% block content %}
 <div class="container">
     <div class="page-header">
@@ -74,47 +79,4 @@
         {% endif %}
     </div>
 </div>
-{% endblock %}
-
-{% block additional_styles %}
-<style>
-    /* Reuse styles from other management templates */
-    .card {
-        background-color: var(--card-bg);
-        border-radius: var(--border-radius-lg);
-        box-shadow: var(--shadow);
-        overflow: hidden;
-    }
-
-    .table-responsive {
-        overflow-x: auto;
-    }
-
-    .table {
-        width: 100%;
-        border-collapse: collapse;
-    }
-
-    .table th,
-    .table td {
-        padding: 0.75rem 1rem;
-        text-align: left;
-        border-bottom: 1px solid var(--border-color);
-    }
-
-    .action-buttons {
-        display: flex;
-        gap: 0.5rem;
-    }
-
-    .empty-state {
-        text-align: center;
-        padding: 3rem 1.5rem;
-    }
-
-    .empty-state-icon {
-        margin-bottom: 1.5rem;
-        color: var(--text-muted);
-    }
-</style>
 {% endblock %}
