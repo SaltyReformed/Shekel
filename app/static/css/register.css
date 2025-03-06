@@ -1,0 +1,102 @@
+.form-row {
+    display: flex;
+    flex-wrap: wrap;
+    margin-right: -0.5rem;
+    margin-left: -0.5rem;
+}
+
+.col-half {
+    flex: 0 0 50%;
+    max-width: 50%;
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+}
+
+@media (max-width: 576px) {
+    .col-half {
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+}
+
+.password-requirements {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background-color: var(--neutral-100);
+    border-radius: var(--border-radius);
+    font-size: 0.875rem;
+}
+
+.password-requirements p {
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+}
+
+.password-requirements ul {
+    list-style: none;
+    padding-left: 0.5rem;
+    margin-bottom: 0;
+}
+
+.password-requirements li {
+    margin-bottom: 0.25rem;
+    padding-left: 1.5rem;
+    position: relative;
+    color: var(--text-muted);
+}
+
+.password-requirements li::before {
+    content: "✕";
+    position: absolute;
+    left: 0;
+    color: var(--danger-color);
+}
+
+.password-requirements li.valid::before {
+    content: "✓";
+    color: var(--success-color);
+}
+
+.password-requirements li.valid {
+    color: var(--success-color);
+}
+
+.password-strength-meter {
+    height: 0.5rem;
+    background-color: var(--neutral-200);
+    border-radius: var(--border-radius);
+    margin: 0.5rem 0;
+    overflow: hidden;
+}
+
+.strength-bar {
+    height: 100%;
+    width: 0;
+    transition: width 0.3s, background-color 0.3s;
+}
+
+.strength-weak {
+    background-color: var(--danger-color);
+    width: 25%;
+}
+
+.strength-fair {
+    background-color: var(--warning-color);
+    width: 50%;
+}
+
+.strength-good {
+    background-color: var(--accent-color);
+    width: 75%;
+}
+
+.strength-strong {
+    background-color: var(--success-color);
+    width: 100%;
+}
+
+.password-feedback {
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+    min-height: 1.25rem;
+}

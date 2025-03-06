@@ -432,3 +432,11 @@
     .notification.info {
         background-color: var(--info-color);
     }
+    /* Additional inline styles if needed */
+    .draggable-expense {
+        cursor: grab;
+    }
+
+    .draggable-expense:active {
+        cursor: grabbing;
+    }

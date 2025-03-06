@@ -4,7 +4,7 @@
 
 {% block additional_styles %}
 <!-- Load external CSS for this page -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/by_paycheck.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/expenses/by_paycheck.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -127,7 +127,7 @@
                             {% if expense_in_paycheck %}
                             <div class="expense-in-paycheck">
                                 {% for expense in expense_in_paycheck %}
-                                <div class="expense-item" data-expense-id="{{ expense.id }}" draggable="true">
+                                <div class="expense-item draggable-expense" data-expense-id="{{ expense.id }}" draggable="true">
                                     <div class="expense-amount">${{ "{:,.2f}".format(expense.amount) }}</div>
                                     <div class="expense-date">{{ expense.scheduled_date.strftime('%m/%d') }}</div>
                                     <div class="expense-status">
@@ -267,7 +267,7 @@
 
 {% block additional_scripts %}
 <!-- Load drag-drop functionality from external JS file -->
-<script src="{{ url_for('static', filename='js/drag-drop.js') }}"></script>
+<script src="{{ url_for('static', filename='js/expenses/drag-drop.js') }}"></script>
 <!-- Load external JS for modal binding (ensure this file binds click events to the modal buttons) -->
-<script src="{{ url_for('static', filename='js/modal-binding.js') }}"></script>
+<script src="{{ url_for('static', filename='js/expenses/modal-binding.js') }}"></script>
 {% endblock %}

@@ -30,6 +30,7 @@ from models import (
     Transaction,
     Frequency,
     Paycheck,
+    IncomePayment,
 )
 
 expense_bp = Blueprint("expense", __name__, url_prefix="/expenses")
@@ -1005,7 +1006,7 @@ def expenses_by_paycheck():
     accounts = Account.query.filter_by(user_id=user_id).all()
 
     # Read the JavaScript for drag and drop functionality
-    with open("app/static/js/drag-drop.js", "r") as js_file:
+    with open("app/static/js/expenses/drag-drop.js", "r") as js_file:
         drag_drop_js = js_file.read()
 
     return render_template(
@@ -1127,7 +1128,7 @@ def income_expenses_by_paycheck():
     end_balances = {}
 
     # Read the JavaScript for drag and drop functionality if needed
-    with open("app/static/js/drag-drop.js", "r") as js_file:
+    with open("app/static/js/expenses/drag-drop.js", "r") as js_file:
         drag_drop_js = js_file.read()
 
     return render_template(
