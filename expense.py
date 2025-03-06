@@ -29,6 +29,7 @@ from models import (
     ScheduleType,
     Transaction,
     Frequency,
+    Paycheck,
 )
 
 expense_bp = Blueprint("expense", __name__, url_prefix="/expenses")
@@ -932,7 +933,7 @@ def delete_recurring_expense(expense_id):
     return redirect(url_for("expense.recurring_expenses"))
 
 
-@expense_bp.route("/by-paycheck")
+@expense_bp.route("/by_paycheck")
 @login_required
 def expenses_by_paycheck():
     """View expenses organized by which paycheck they'll be paid from"""
@@ -1008,7 +1009,7 @@ def expenses_by_paycheck():
         drag_drop_js = js_file.read()
 
     return render_template(
-        "expenses/expenses_by_paycheck.html",
+        "expenses/by_paycheck.html",
         paychecks=paychecks,
         expenses=expenses,
         expenses_by_paycheck=expenses_by_paycheck,
