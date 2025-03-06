@@ -660,7 +660,7 @@ def mark_expense_paid(expense_id):
     else:
         flash(f"Error marking expense as paid: {message}", "danger")
 
-    return redirect(url_for("expense.all_expenses"))
+    return redirect(url_for("expense.by_paycheck"))
 
 
 @expense_bp.route("/batch/pay", methods=["POST"])
@@ -974,6 +974,9 @@ def expenses_by_paycheck():
     if not end_date:
         end_date = start_date + timedelta(days=60)
 
+    # Get starting balance from request args (default to 0)
+    starting_balance = request.args.get("starting_balance", type=float, default=0.0)
+
     # Get all paychecks in the date range
     paychecks = (
         Paycheck.query.filter(
@@ -1065,10 +1068,6 @@ def expenses_by_paycheck():
     # Get accounts for payment modal
     accounts = Account.query.filter_by(user_id=user_id).all()
 
-    # Read the JavaScript for drag and drop functionality
-    with open("app/static/js/expenses/drag-drop.js", "r") as js_file:
-        drag_drop_js = js_file.read()
-
     return render_template(
         "expenses/by_paycheck.html",
         paychecks=paychecks,
@@ -1080,8 +1079,8 @@ def expenses_by_paycheck():
         accounts=accounts,
         start_date=start_date,
         end_date=end_date,
+        starting_balance=starting_balance,
         today=date.today(),
-        include_drag_drop_js=drag_drop_js,
     )
 
 

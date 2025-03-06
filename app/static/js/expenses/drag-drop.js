@@ -1,4 +1,4 @@
-// drag-drop.js
+// Complete drag-drop.js with running balance calculations
 
 document.addEventListener('DOMContentLoaded', function() {
     // Get all draggable expense items and all expense-paycheck cells (drop targets)
@@ -136,7 +136,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Function to update paycheck totals after an expense is moved
-    function updatePaycheckTotals() {
+    window.updatePaycheckTotals = function() {
         // Get all paycheck columns; each column should have a data-paycheck-id attribute
         const paycheckColumns = document.querySelectorAll('.paycheck-column');
         
@@ -181,35 +181,56 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }
             
-            // Also update any running balance if applicable (for income-expenses view)
-            updateEndBalances();
+            // Also update any summary table expense amounts
+            const expenseSummaryEl = document.querySelector(`.paycheck-expense[data-paycheck-id="${paycheckId}"] .expense-amount`);
+            if (expenseSummaryEl) {
+                expenseSummaryEl.textContent = `$${totalExpenses.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            }
         });
-    }
+        
+        // Update running balances after expenses are moved
+        calculateRunningBalance();
+        
+        // Dispatch custom event to notify that expenses have been updated
+        document.dispatchEvent(new CustomEvent('expensesUpdated'));
+    };
     
-    // Function to update running balances in the income-expenses-by-paycheck view
-    function updateEndBalances() {
-        const summaryTable = document.querySelector('.paycheck-summary-table');
-        if (!summaryTable) return;
-        
-        let startingBalance = 0;
+    // Function to update running balance
+    function calculateRunningBalance() {
         const startingBalanceInput = document.getElementById('starting_balance');
-        if (startingBalanceInput) {
-            startingBalance = parseFloat(startingBalanceInput.value || '0');
-        }
+        let startingBalance = parseFloat(startingBalanceInput ? startingBalanceInput.value : 0) || 0;
         
-        const netAmounts = document.querySelectorAll('.net-amount');
-        const balanceAmounts = document.querySelectorAll('.balance-amount');
+        const paycheckBalanceCells = document.querySelectorAll('.paycheck-balance');
+        const paycheckRemainingCells = document.querySelectorAll('.paycheck-remaining');
+        
         let runningBalance = startingBalance;
         
-        for (let i = 0; i < netAmounts.length; i++) {
-            const netText = netAmounts[i].textContent.replace('$', '').replace(/,/g, '');
-            const netAmount = parseFloat(netText);
-            runningBalance += netAmount;
-            balanceAmounts[i].textContent = `$${runningBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            if (runningBalance < 0) {
-                balanceAmounts[i].classList.add('negative');
-            } else {
-                balanceAmounts[i].classList.remove('negative');
+        // Update each balance cell based on the remaining amount of each paycheck
+        for (let i = 0; i < paycheckRemainingCells.length; i++) {
+            // Get the remaining amount text, strip the $ sign and commas
+            const remainingAmountText = paycheckRemainingCells[i].textContent.replace('$', '').replace(/,/g, '');
+            // Parse as float
+            const remainingAmount = parseFloat(remainingAmountText);
+            
+            // Add to running balance
+            runningBalance += remainingAmount;
+            
+            // Update the balance cell
+            if (paycheckBalanceCells[i]) {
+                paycheckBalanceCells[i].textContent = '$' + runningBalance.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
+                
+                // Update data-balance attribute
+                paycheckBalanceCells[i].setAttribute('data-balance', runningBalance);
+                
+                // Apply negative class if balance is negative
+                if (runningBalance < 0) {
+                    paycheckBalanceCells[i].classList.add('negative');
+                } else {
+                    paycheckBalanceCells[i].classList.remove('negative');
+                }
             }
         }
     }
@@ -251,4 +272,23 @@ document.addEventListener('DOMContentLoaded', function() {
             form.submit();
         }
     };
+    
+    // Initial calculation of running balance when page loads
+    calculateRunningBalance();
+    
+    // Add event listener to recalculate balance when starting balance changes
+    const startingBalanceInput = document.getElementById('starting_balance');
+    if (startingBalanceInput) {
+        startingBalanceInput.addEventListener('input', function() {
+            calculateRunningBalance();
+        });
+    }
+    
+    // Close modal when clicking outside of it
+    window.addEventListener('click', function (event) {
+        const modal = document.getElementById('paymentModal');
+        if (event.target === modal) {
+            closePaymentModal();
+        }
+    });
 });

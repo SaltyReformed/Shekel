@@ -64,6 +64,14 @@
                                 {% endfor %}
                             </select>
                         </div>
+                        <div class="filter-group">
+                            <label for="starting_balance">Starting Balance</label>
+                            <div class="input-with-icon">
+                                <span class="input-icon">$</span>
+                                <input type="number" id="starting_balance" name="starting_balance" class="form-control"
+                                    value="{{ request.args.get('starting_balance', '0.00') }}" step="0.01">
+                            </div>
+                        </div>
                         <div class="filter-actions">
                             <button type="submit" class="btn btn-secondary">Apply Filters</button>
                             <a href="{{ url_for('expense.expenses_by_paycheck') }}" class="btn btn-link">Clear</a>
@@ -76,6 +84,71 @@
 
     <div class="paycheck-expenses-container">
         {% if paychecks %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3 class="card-title">Paycheck Summary</h3>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-expenses-summary">
+                    <thead>
+                        <tr>
+                            <th class="summary-label-column">Paycheck</th>
+                            {% for paycheck in paychecks %}
+                            <th class="paycheck-summary-column" data-paycheck-id="{{ paycheck.id }}">
+                                {{ paycheck.scheduled_date.strftime('%b %d, %Y') }}
+                            </th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="income-row">
+                            <td class="summary-label">Income</td>
+                            {% for paycheck in paychecks %}
+                            <td class="paycheck-income" data-paycheck-id="{{ paycheck.id }}">
+                                <span class="income-amount">${{ "{:,.2f}".format(paycheck.net_salary) }}</span>
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        <tr class="expenses-row">
+                            <td class="summary-label">Expenses</td>
+                            {% for paycheck in paychecks %}
+                            <td class="paycheck-expense" data-paycheck-id="{{ paycheck.id }}">
+                                <span class="expense-amount">${{ "{:,.2f}".format(paycheck_totals[paycheck.id])
+                                    }}</span>
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        <tr class="remaining-row">
+                            <td class="summary-label">Remaining</td>
+                            {% for paycheck in paychecks %}
+                            <td class="paycheck-remaining {% if paycheck_remaining[paycheck.id] < 0 %}negative{% endif %}"
+                                data-paycheck-id="{{ paycheck.id }}">
+                                ${{ "{:,.2f}".format(paycheck_remaining[paycheck.id]) }}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        <!-- Running Balance - initial calculation done in template, but will be updated by JS -->
+                        <tr class="balance-row">
+                            <td class="summary-label">Running Balance</td>
+                            {% set running_balance = 0 %}
+                            {% for paycheck in paychecks %}
+                            {% if loop.first %}
+                            {% set running_balance = request.args.get('starting_balance', '0.00')|float +
+                            paycheck_remaining[paycheck.id]|float %}
+                            {% else %}
+                            {% set running_balance = running_balance + paycheck_remaining[paycheck.id]|float %}
+                            {% endif %}
+                            <td class="paycheck-balance {% if running_balance < 0 %}negative{% endif %}"
+                                data-paycheck-id="{{ paycheck.id }}" data-balance="{{ running_balance }}">
+                                ${{ "{:,.2f}".format(running_balance) }}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <div class="table-responsive">
             <table class="table table-expenses-by-paycheck">
                 <thead>
@@ -127,7 +200,8 @@
                             {% if expense_in_paycheck %}
                             <div class="expense-in-paycheck">
                                 {% for expense in expense_in_paycheck %}
-                                <div class="expense-item draggable-expense" data-expense-id="{{ expense.id }}" draggable="true">
+                                <div class="expense-item draggable-expense" data-expense-id="{{ expense.id }}"
+                                    draggable="true">
                                     <div class="expense-amount">${{ "{:,.2f}".format(expense.amount) }}</div>
                                     <div class="expense-date">{{ expense.scheduled_date.strftime('%m/%d') }}</div>
                                     <div class="expense-status">
@@ -167,25 +241,6 @@
                     </tr>
                     {% endfor %}
                 </tbody>
-                <tfoot>
-                    <tr class="totals-row">
-                        <td class="totals-label">Total Expenses:</td>
-                        {% for paycheck in paychecks %}
-                        <td class="paycheck-total" data-paycheck-id="{{ paycheck.id }}">
-                            ${{ "{:,.2f}".format(paycheck_totals[paycheck.id]) }}
-                        </td>
-                        {% endfor %}
-                    </tr>
-                    <tr class="remaining-row">
-                        <td class="totals-label">Remaining:</td>
-                        {% for paycheck in paychecks %}
-                        <td class="paycheck-remaining {% if paycheck_remaining[paycheck.id] < 0 %}negative{% endif %}"
-                            data-paycheck-id="{{ paycheck.id }}">
-                            ${{ "{:,.2f}".format(paycheck_remaining[paycheck.id]) }}
-                        </td>
-                        {% endfor %}
-                    </tr>
-                </tfoot>
             </table>
         </div>
         {% else %}
@@ -208,6 +263,9 @@
         </div>
         {% endif %}
     </div>
+
+    <!-- Notification element for JavaScript interactions -->
+    <div id="notification" class="notification"></div>
 
     <!-- Payment Modal (no inline event handlers) -->
     <div id="paymentModal" class="modal" style="display: none; z-index: 1050;">
@@ -268,6 +326,8 @@
 {% block additional_scripts %}
 <!-- Load drag-drop functionality from external JS file -->
 <script src="{{ url_for('static', filename='js/expenses/drag-drop.js') }}"></script>
-<!-- Load external JS for modal binding (ensure this file binds click events to the modal buttons) -->
+<!-- Load external JS for modal binding -->
 <script src="{{ url_for('static', filename='js/expenses/modal-binding.js') }}"></script>
+<!-- Load the running balance script -->
+<script src="{{ url_for('static', filename='js/expenses/running_balance.js') }}"></script>
 {% endblock %}
