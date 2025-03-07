@@ -165,22 +165,28 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {# Group expenses by description #}
+                    {# First, group expenses by category and description #}
                     {% set unique_expenses = {} %}
                     {% for expense in expenses %}
-                    {% if expense.description not in unique_expenses %}
-                    {% set _ = unique_expenses.update({expense.description: {'category': expense.expense_category,
+                    {% set category_name = expense.expense_category.name if expense.expense_category else "Uncategorized" %}
+                    {% set key = category_name ~ "___" ~ expense.description %}
+                    {% if key not in unique_expenses %}
+                    {% set _ = unique_expenses.update({key: {'category': expense.expense_category, 'description': expense.description,
                     'expenses': []}}) %}
                     {% endif %}
-                    {% set _ = unique_expenses[expense.description].expenses.append(expense) %}
+                    {% set _ = unique_expenses[key].expenses.append(expense) %}
                     {% endfor %}
-
-                    {# Create a row for each expense group #}
-                    {% for expense_description, data in unique_expenses.items() %}
+                    
+                    {# Sort the unique expenses by key (which combines category and description) #}
+                    {% set sorted_keys = unique_expenses.keys()|sort %}
+                    
+                    {# Create a row for each sorted expense group #}
+                    {% for key in sorted_keys %}
+                    {% set data = unique_expenses[key] %}
                     <tr class="expense-row">
                         <td class="expense-info-cell">
                             <div class="expense-details">
-                                <div class="expense-description">{{ expense_description }}</div>
+                                <div class="expense-description">{{ data.description }}</div>
                                 <div class="expense-meta">
                                     {% if data.category %}
                                     <span class="expense-category">{{ data.category.name }}</span>
