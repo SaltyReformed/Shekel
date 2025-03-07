@@ -189,7 +189,15 @@
                                 <div class="expense-description">{{ data.description }}</div>
                                 <div class="expense-meta">
                                     {% if data.category %}
-                                    <span class="expense-category">{{ data.category.name }}</span>
+                                    <span class="expense-category" style="background-color: {{ data.category.color }}; color: #fff;">
+                                        {% if data.category.icon %}
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="{{ data.category.icon }}"></path>
+                                        </svg>
+                                        {% endif %}
+                                        {{ data.category.name }}
+                                    </span>
                                     {% endif %}
                                 </div>
                             </div>

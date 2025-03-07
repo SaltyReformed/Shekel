@@ -135,7 +135,7 @@ class IncomeCategoryForm(FlaskForm):
     name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
     description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
     color = StringField("Category Color", default="#0a6901")
-    icon = StringField("Icon SVG Path", validators=[Optional(), Length(max=100)])
+    icon = StringField("Icon SVG Path", validators=[Optional(), Length(max=500)])
 
 
 class FrequencyForm(FlaskForm):
@@ -190,6 +190,8 @@ class ExpenseCategoryForm(FlaskForm):
 
     name = StringField("Category Name", validators=[DataRequired(), Length(max=50)])
     description = TextAreaField("Description", validators=[Optional(), Length(max=200)])
+    color = StringField("Category Color", default="#0a6901")
+    icon = StringField("Icon SVG Path", validators=[Optional(), Length(max=500)])
 
 
 class OneTimeExpenseForm(FlaskForm):

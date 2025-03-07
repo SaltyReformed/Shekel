@@ -67,12 +67,337 @@
                             </div>
                             <small class="form-text text-muted">Set a monthly spending limit for this category</small>
                         </div>
+                        <div class="form-group">
+                            <label for="icon">Category Icon <span class="text-muted">(Optional)</span></label>
+                            <div class="icon-selector">
+                                <input type="text" id="icon" name="icon" class="form-control"
+                                    value="{{ category.icon if is_edit and category.icon else '' }}" placeholder="SVG path data">
+                                <div class="icon-preview-wrapper">
+                                    <div class="icon-preview" id="iconPreview"
+                                        style="background-color: {{ category.color if is_edit and category.color else '#0a6901' }}">
+                                        {% if is_edit and category.icon %}
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="{{ category.icon }}"></path>
+                                        </svg>
+                                        {% else %}
+                                        <span>Icon</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <small class="form-text text-muted">Enter an SVG path for this category's icon</small>
+                        </div>                        
+                        <div class="form-group">
+                            <label>Select from common icons</label>
+                            <div class="common-icons">
+                                <div class="icon-grid">
+                                    <!-- Home -->
+                                    <div class="icon-option" data-path="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                                            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                                        </svg>
+                                        <span>Home</span>
+                                    </div>
+                        
+                                    <!-- Building -->
+                                    <div class="icon-option" data-path="M6 22V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16M2 14h20">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2" y="14" width="20" height="8" rx="2"></rect>
+                                            <path d="M6 14v-4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4"></path>
+                                            <path d="M6 10V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4"></path>
+                                        </svg>
+                                        <span>Rent</span>
+                                    </div>
+                        
+                                    <!-- Shopping Cart -->
+                                    <div class="icon-option"
+                                        data-path="M9 20a1 1 0 1 0 0 2 1 1 0 1 0 0-2z M20 20a1 1 0 1 0 0 2 1 1 0 1 0 0-2z M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="9" cy="21" r="1"></circle>
+                                            <circle cx="20" cy="21" r="1"></circle>
+                                            <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+                                        </svg>
+                                        <span>Shopping</span>
+                                    </div>
+                        
+                                    <!-- Groceries -->
+                                    <div class="icon-option"
+                                        data-path="M2 3h4l2.5 12h11l2.5-12h4M10 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0z M20 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0z">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 3h2l.5 5h15l.5-5h2"></path>
+                                            <path d="M7 8v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V8"></path>
+                                        </svg>
+                                        <span>Groceries</span>
+                                    </div>
+                        
+                                    <!-- Car -->
+                                    <div class="icon-option"
+                                        data-path="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path
+                                                d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2">
+                                            </path>
+                                            <circle cx="6.5" cy="16.5" r="2.5"></circle>
+                                            <circle cx="16.5" cy="16.5" r="2.5"></circle>
+                                        </svg>
+                                        <span>Car</span>
+                                    </div>
+                        
+                                    <!-- Bus -->
+                                    <div class="icon-option"
+                                        data-path="M4 17h16v-5H4v5zm0-9h16V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2zm10 7h2M7 12h10">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M19 17h2V9a7 7 0 0 0-7-7H10a7 7 0 0 0-7 7v8h2"></path>
+                                            <path d="M4 15h16"></path>
+                                            <path d="M9 9h6"></path>
+                                            <path d="M9 3v4"></path>
+                                            <path d="M15 3v4"></path>
+                                            <path d="M9 17v4"></path>
+                                            <path d="M15 17v4"></path>
+                                        </svg>
+                                        <span>Transit</span>
+                                    </div>
+                        
+                                    <!-- Utensils -->
+                                    <div class="icon-option" data-path="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2M7 2v20M19 2v20M19 13h-6M13 2h6">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"></path>
+                                            <path d="M7 2v20"></path>
+                                            <path d="M19 2v20"></path>
+                                            <path d="M19 13h-6"></path>
+                                            <path d="M13 2h6"></path>
+                                        </svg>
+                                        <span>Dining</span>
+                                    </div>
+                        
+                                    <!-- Coffee -->
+                                    <div class="icon-option"
+                                        data-path="M17 8h1a4 4 0 1 1 0 8h-1 M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z M6 2v4 M10 2v4 M14 2v4">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M17 8h1a4 4 0 1 1 0 8h-1"></path>
+                                            <path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z"></path>
+                                            <line x1="6" y1="2" x2="6" y2="4"></line>
+                                            <line x1="10" y1="2" x2="10" y2="4"></line>
+                                            <line x1="14" y1="2" x2="14" y2="4"></line>
+                                        </svg>
+                                        <span>Coffee</span>
+                                    </div>
+                        
+                                    <!-- Entertainment -->
+                                    <div class="icon-option" data-path="M6 2v6a6 6 0 0 0 6 6 6 6 0 0 0 6-6V2M6 2h12">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M6 2v6a6 6 0 0 0 6 6 6 6 0 0 0 6-6V2"></path>
+                                            <path d="M6 2h12"></path>
+                                        </svg>
+                                        <span>Entertainment</span>
+                                    </div>
+                        
+                                    <!-- TV -->
+                                    <div class="icon-option"
+                                        data-path="M16 3H8a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3z M10 7v10 M14 7v10">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect>
+                                            <polyline points="17 2 12 7 7 2"></polyline>
+                                        </svg>
+                                        <span>TV/Streaming</span>
+                                    </div>
+                        
+                                    <!-- Health -->
+                                    <div class="icon-option"
+                                        data-path="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path
+                                                d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3">
+                                            </path>
+                                            <path d="M8 15v1a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6v-4"></path>
+                                            <circle cx="20" cy="10" r="2"></circle>
+                                        </svg>
+                                        <span>Health</span>
+                                    </div>
+                        
+                                    <!-- Pill -->
+                                    <div class="icon-option" data-path="M10.5 20.5a7.5 7.5 0 1 0-7.5-7.5M13.5 13.5a7.5 7.5 0 1 0-7.5-7.5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"></path>
+                                            <path d="m8.5 8.5 7 7"></path>
+                                        </svg>
+                                        <span>Medication</span>
+                                    </div>
+                        
+                                    <!-- Utilities -->
+                                    <div class="icon-option" data-path="M22 12h-4l-3 9L9 3l-3 9H2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                                        </svg>
+                                        <span>Utilities</span>
+                                    </div>
+                        
+                                    <!-- Electricity -->
+                                    <div class="icon-option"
+                                        data-path="M5 12H3l9-9 9 9h-2 M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7 M13 10V5h4l-7-7-7 7h4v5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M13 3v18"></path>
+                                            <path d="m5 3 7 6"></path>
+                                            <path d="M5 13h12"></path>
+                                            <path d="m5 21 7-6"></path>
+                                        </svg>
+                                        <span>Electricity</span>
+                                    </div>
+                        
+                                    <!-- Water -->
+                                    <div class="icon-option"
+                                        data-path="M12 2v6 M12 22v-6 M4.93 10.93l1.41 1.41 M19.07 10.93l-1.41 1.41 M2 18h2c0 -4 4 -4 4 -8a4 4 0 0 0 -8 0 M16 18h2c0 -4 4 -4 4 -8a4 4 0 0 0 -8 0 M7.5 12h9">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M12 22a8 8 0 0 1-8-8c0-4.45 8-12 8-12s8 7.55 8 12a8 8 0 0 1-8 8"></path>
+                                        </svg>
+                                        <span>Water</span>
+                                    </div>
+                        
+                                    <!-- Phone -->
+                                    <div class="icon-option"
+                                        data-path="M5 4h4l2 5l-2.5 1.5a11 11 0 0 0 5 5l1.5 -2.5l5 2v4a2 2 0 0 1 -2 2a16 16 0 0 1 -15 -15a2 2 0 0 1 2 -2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path
+                                                d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z">
+                                            </path>
+                                        </svg>
+                                        <span>Phone</span>
+                                    </div>
+                        
+                                    <!-- Wifi -->
+                                    <div class="icon-option"
+                                        data-path="M5 12.55a11 11 0 0 1 14.08 0 M1.42 9a16 16 0 0 1 21.16 0 M8.53 16.11a6 6 0 0 1 6.95 0 M12 20h.01">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
+                                            <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
+                                            <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+                                            <line x1="12" y1="20" x2="12.01" y2="20"></line>
+                                        </svg>
+                                        <span>Internet</span>
+                                    </div>
+                        
+                                    <!-- Education -->
+                                    <div class="icon-option"
+                                        data-path="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                        </svg>
+                                        <span>Education</span>
+                                    </div>
+                        
+                                    <!-- Graduation Cap -->
+                                    <div class="icon-option" data-path="M22 10v6M2 10l10-5 10 5-10 5z M6 12v5c3 3 9 3 12 0v-5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
+                                            <path d="M6 12v5c3 3 9 3 12 0v-5"></path>
+                                        </svg>
+                                        <span>Tuition</span>
+                                    </div>
+                        
+                                    <!-- Credit Card -->
+                                    <div class="icon-option"
+                                        data-path="M21 4H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z M1 10h22">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
+                                            <line x1="1" y1="10" x2="23" y2="10"></line>
+                                        </svg>
+                                        <span>Credit Card</span>
+                                    </div>
+                        
+                                    <!-- Bank -->
+                                    <div class="icon-option" data-path="M3 21h18M3 10h18M3 7l9-4 9 4M4 10v11M20 10v11M8 14v7M12 14v7M16 14v7">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 21h18"></path>
+                                            <path d="M3 10h18"></path>
+                                            <path d="M3 7l9-4 9 4"></path>
+                                            <path d="M4 10v11"></path>
+                                            <path d="M20 10v11"></path>
+                                            <path d="M8 14v7"></path>
+                                            <path d="M12 14v7"></path>
+                                            <path d="M16 14v7"></path>
+                                        </svg>
+                                        <span>Bank Fees</span>
+                                    </div>
+                        
+                                    <!-- Clothes -->
+                                    <div class="icon-option"
+                                        data-path="M3 6l3 -3h12l3 3M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2z">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 6l3 -3h12l3 3"></path>
+                                            <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2z"></path>
+                                        </svg>
+                                        <span>Clothing</span>
+                                    </div>
+                        
+                                    <!-- Gift -->
+                                    <div class="icon-option"
+                                        data-path="M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M20 12v10H4V12"></path>
+                                            <path d="M2 7h20v5H2z"></path>
+                                            <path d="M12 22V7"></path>
+                                            <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path>
+                                            <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path>
+                                        </svg>
+                                        <span>Gifts</span>
+                                    </div>
+                        
+                                    <!-- Travel -->
+                                    <div class="icon-option"
+                                        data-path="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M16 16h6M2 16h6M2 8h20M4 4h1.5M19 4h1.5M12 5V3M8 20l2-8H6l2-8M16 20l2-8h-4l2-8"></path>
+                                        </svg>
+                                        <span>Travel</span>
+                                    </div>
+                        
+                                    <!-- Plane -->
+                                    <div class="icon-option"
+                                        data-path="M17.8 19.2L16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path
+                                                d="M17.8 19.2L16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z">
+                                            </path>
+                                        </svg>
+                                        <span>Flights</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
 
                         <div class="form-actions">
                             <button type="submit" class="btn btn-primary">{{ 'Update' if is_edit else 'Add' }}
                                 Category</button>
-                            <a href="{{ url_for('config.expense_categories') }}"
-                                class="btn btn-outline-secondary">Cancel</a>
+                            <a href="{{ url_for('config.expense_categories') }}" class="btn btn-outline-secondary">Cancel</a>
                         </div>
                     </form>
                 </div>

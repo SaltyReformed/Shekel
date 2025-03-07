@@ -760,3 +760,16 @@ input[type="date"] {
     flex: 1;
   }
 }
+.expense-category {
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--border-radius);
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.expense-category svg {
+    margin-right: 0.25rem;
+}
