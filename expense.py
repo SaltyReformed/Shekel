@@ -234,19 +234,26 @@ def calculate_next_due_date(schedule, last_date):
 
 def get_time_delta_for_frequency(frequency_name, interval=1):
     """Get appropriate time delta based on frequency name"""
-    if frequency_name.lower() == "weekly":
+    frequency_name = frequency_name.lower()
+
+    if frequency_name == "weekly":
         return relativedelta(weeks=interval)
-    elif frequency_name.lower() == "biweekly":
+    elif frequency_name == "biweekly":
         return relativedelta(weeks=2 * interval)
-    elif frequency_name.lower() == "semimonthly":
+    elif frequency_name == "semimonthly":
         return timedelta(days=15 * interval)
-    elif frequency_name.lower() == "monthly":
+    elif frequency_name == "monthly":
         return relativedelta(months=interval)
-    elif frequency_name.lower() == "quarterly":
+    elif frequency_name == "quarterly":
         return relativedelta(months=3 * interval)
-    elif frequency_name.lower() == ["annually", "annual"]:
+    elif frequency_name in [
+        "annually",
+        "annual",
+    ]:  # Accept both "annually" and "annual"
         return relativedelta(years=interval)
     else:
+        # Log unexpected frequency name for debugging
+        print(f"Warning: Unknown frequency '{frequency_name}', defaulting to biweekly")
         return relativedelta(weeks=2 * interval)  # Default to biweekly
 
 
