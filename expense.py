@@ -244,7 +244,7 @@ def get_time_delta_for_frequency(frequency_name, interval=1):
         return relativedelta(months=interval)
     elif frequency_name.lower() == "quarterly":
         return relativedelta(months=3 * interval)
-    elif frequency_name.lower() == "annually":
+    elif frequency_name.lower() == ["annually", "annual"]:
         return relativedelta(years=interval)
     else:
         return relativedelta(weeks=2 * interval)  # Default to biweekly
@@ -637,7 +637,7 @@ def mark_expense_paid(expense_id):
 
     if expense.paid:
         flash("Expense is already marked as paid.", "info")
-        return redirect(url_for("expense.overview"))
+        return redirect(url_for("expense.all"))
 
     # Get account_id from POST or use default
     account_id = request.form.get("account_id")
@@ -660,7 +660,7 @@ def mark_expense_paid(expense_id):
     else:
         flash(f"Error marking expense as paid: {message}", "danger")
 
-    return redirect(url_for("expense.by_paycheck"))
+    return redirect(url_for("expenses.by_paycheck"))
 
 
 @expense_bp.route("/batch/pay", methods=["POST"])

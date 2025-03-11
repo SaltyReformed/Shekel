@@ -86,11 +86,10 @@
   min-width: 100%;
 }
 .table-expenses-by-paycheck {
+  table-layout: fixed; /* Forces the browser to respect our column widths */
   width: 100%;
   border-collapse: collapse;
-  border: 1px solid var(--border-color);
   min-width: 100%;
-  table-layout: fixed;
 }
 
 .expense-info-column {
@@ -105,10 +104,10 @@
 }
 
 .paycheck-column {
-  min-width: 150px;
+  min-width: 180px;
+  width: 180px; /* Same fixed width as summary columns */
   text-align: center;
   border-left: 1px solid var(--border-color);
-  width: auto;
 }
 /* Allow the container to grow when many paychecks are present */
 .paycheck-expenses-container {
@@ -160,6 +159,7 @@
   z-index: 5;
   border-right: 2px solid var(--border-color);
   padding: 0.75rem;
+  min-width: 120px;
 }
 
 .expense-details {
@@ -194,6 +194,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  max-width: 160px; /* Slightly less than column width to account for padding */
+  margin: 0 auto; /* Center the expenses in the column */
 }
 
 .expense-item {
@@ -203,6 +205,9 @@
   background-color: var(--card-bg);
   transition: all 0.2s ease;
   position: relative;
+  width: 100%; /* Make sure expense items take full width of their container */
+  box-sizing: border-box; /* Include padding and border in the element's width */
+  overflow: hidden; /* Prevent content from spilling out */
 }
 
 .expense-item:hover {
@@ -477,9 +482,10 @@
 }
 /* Add these styles to your by_paycheck.css file */
 .table-expenses-summary {
+  table-layout: fixed; /* Forces the browser to respect our column widths */
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: 2rem;
+  min-width: 100%;
 }
 
 .table-expenses-summary th,
@@ -510,10 +516,12 @@
 }
 
 .paycheck-summary-column {
+  min-width: 180px;
+  width: 180px; /* Fixed width */
   text-align: center;
-  min-width: 140px;
   font-weight: 600;
-  width: auto;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color);
 }
 
 .income-amount {
