@@ -93,8 +93,8 @@
 }
 
 .expense-info-column {
-  width: 300px;
-  min-width: 300px;
+  width: 200px;
+  min-width: 180px;
   text-align: left;
   position: sticky;
   left: 0;

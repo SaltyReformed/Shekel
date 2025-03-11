@@ -192,6 +192,16 @@ class SalaryChange(db.Model):
     )  # When the new salary takes effect
     end_date = db.Column(db.Date)  # Optional end date for the salary period
     gross_annual_salary = db.Column(db.Numeric(10, 2), nullable=False)
+
+    # Additional fields for tax and deduction rates
+    federal_tax_rate = db.Column(db.Numeric(5, 2), default=22.0)
+    state_tax_rate = db.Column(db.Numeric(5, 2), default=5.0)
+    retirement_contribution_rate = db.Column(db.Numeric(5, 2), default=5.0)
+    health_insurance_amount = db.Column(db.Numeric(10, 2), default=249.0)
+    other_deductions_amount = db.Column(db.Numeric(10, 2), default=0.0)
+
+    notes = db.Column(db.Text)  # For additional notes about the salary
+
     user = db.relationship("User", backref="salary_changes")
 
 

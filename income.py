@@ -159,6 +159,7 @@ def overview():
 
 
 # Route to add or edit salary
+# Route to add or edit salary
 @income_bp.route("/salary", methods=["GET", "POST"])
 @login_required
 def manage_salary():
@@ -183,6 +184,20 @@ def manage_salary():
             form.effective_date.data = salary.effective_date
             form.end_date.data = salary.end_date
             form.notes.data = salary.notes if hasattr(salary, "notes") else ""
+
+            # Load tax and deduction rates if they exist
+            if hasattr(salary, "federal_tax_rate"):
+                form.federal_tax_rate.data = salary.federal_tax_rate
+            if hasattr(salary, "state_tax_rate"):
+                form.state_tax_rate.data = salary.state_tax_rate
+            if hasattr(salary, "retirement_contribution_rate"):
+                form.retirement_contribution_rate.data = (
+                    salary.retirement_contribution_rate
+                )
+            if hasattr(salary, "health_insurance_amount"):
+                form.health_insurance_amount.data = salary.health_insurance_amount
+            if hasattr(salary, "other_deductions_amount"):
+                form.other_deductions_amount.data = salary.other_deductions_amount
 
             # Load existing deposit allocations
             salary_allocations = SalaryDepositAllocation.query.filter_by(
@@ -265,8 +280,17 @@ def manage_salary():
             ) + health_other_annual
             salary.gross_annual_salary = estimated_annual
 
+        # Save the effective dates
         salary.effective_date = form.effective_date.data
         salary.end_date = form.end_date.data
+
+        # Save tax and deduction rates
+        salary.federal_tax_rate = form.federal_tax_rate.data
+        salary.state_tax_rate = form.state_tax_rate.data
+        salary.retirement_contribution_rate = form.retirement_contribution_rate.data
+        salary.health_insurance_amount = form.health_insurance_amount.data
+        salary.other_deductions_amount = form.other_deductions_amount.data
+
         if hasattr(form, "notes"):  # Make sure notes field exists
             salary.notes = form.notes.data
 
@@ -755,6 +779,13 @@ def generate_paychecks_from_salary(salary_id):
     # Get frequency from form
     frequency_name = request.form.get("frequency", "biweekly")
 
+    # Get tax and deduction rates from form or use defaults
+    tax_rate = decimal.Decimal(request.form.get("federal_tax_rate", "22")) / 100
+    state_tax_rate = decimal.Decimal(request.form.get("state_tax_rate", "5")) / 100
+    deduction_rate = decimal.Decimal(request.form.get("retirement_rate", "5")) / 100
+    health_insurance_amount = decimal.Decimal(request.form.get("health_insurance", "0"))
+    other_deductions_amount = decimal.Decimal(request.form.get("other_deductions", "0"))
+
     # Find or create appropriate frequency record
     frequency = Frequency.query.filter_by(name=frequency_name).first()
     if not frequency:
@@ -776,6 +807,19 @@ def generate_paychecks_from_salary(salary_id):
     periods = pay_periods.get(frequency_name, 26)  # Default to biweekly
     paycheck_amount = salary.gross_annual_salary / decimal.Decimal(periods)
 
+    # Determine the end date
+    start_date = salary.effective_date
+
+    # If no end date is provided, set a reasonable fallback
+    if not salary.end_date:
+        # Default to 1 year of paychecks (52 weeks)
+        fallback_end_date = start_date + timedelta(days=365)
+        # You could also cap it at a certain number of paychecks
+        max_paychecks = 26  # For example, 26 bi-weekly paychecks = 1 year
+    else:
+        fallback_end_date = salary.end_date
+        max_paychecks = 100  # Large number, effectively no limit if end date is set
+
     # Create recurring schedule for the salary
     schedule = RecurringSchedule(
         user_id=user_id,
@@ -783,17 +827,12 @@ def generate_paychecks_from_salary(salary_id):
         description=f"Salary - ${salary.gross_annual_salary:,.2f}/year",
         frequency_id=frequency.id,
         interval=1,  # 1 payment per frequency
-        start_date=salary.effective_date,
-        end_date=salary.end_date,
+        start_date=start_date,
+        end_date=fallback_end_date,  # Use the determined end date
         amount=paycheck_amount,
     )
     db.session.add(schedule)
     db.session.commit()
-
-    # Generate initial paychecks
-    start_date = salary.effective_date
-    tax_rate = decimal.Decimal("0.22")  # Default federal tax rate
-    deduction_rate = decimal.Decimal("0.05")  # Default retirement rate
 
     # Get custom allocations for this salary
     salary_allocations = SalaryDepositAllocation.query.filter_by(
@@ -803,9 +842,10 @@ def generate_paychecks_from_salary(salary_id):
     # List to store created paychecks
     paychecks = []
 
-    # Generate paychecks until the end_date is reached
+    # Generate paychecks until the end_date is reached or max_paychecks is hit
     i = 0
-    while True:
+    paycheck_count = 0
+    while paycheck_count < max_paychecks:
         # Calculate paycheck date based on frequency
         if frequency_name == "weekly":
             paycheck_date = start_date + timedelta(days=7 * i)
@@ -820,8 +860,8 @@ def generate_paychecks_from_salary(salary_id):
         else:
             paycheck_date = start_date + timedelta(days=14 * i)  # Default to biweekly
 
-        # Break the loop if we've passed the end_date (if one is set)
-        if salary.end_date and paycheck_date > salary.end_date:
+        # Break the loop if we've passed the fallback_end_date
+        if paycheck_date > fallback_end_date:
             break
 
         # Optionally, skip if the date is too far in the past
@@ -831,8 +871,10 @@ def generate_paychecks_from_salary(salary_id):
 
         # Calculate paycheck components
         gross = paycheck_amount
-        taxes = gross * tax_rate
-        deductions = gross * deduction_rate
+        taxes = (gross * tax_rate) + (gross * state_tax_rate)
+        deductions = (
+            (gross * deduction_rate) + health_insurance_amount + other_deductions_amount
+        )
         net = gross - taxes - deductions
 
         # Create the paycheck record
@@ -851,6 +893,7 @@ def generate_paychecks_from_salary(salary_id):
         db.session.commit()  # Commit to get the paycheck ID
 
         paychecks.append(paycheck)
+        paycheck_count += 1
 
         # Add income payment records based on allocations
         if salary_allocations:
@@ -898,7 +941,7 @@ def generate_paychecks_from_salary(salary_id):
         i += 1
 
     flash(
-        f"Successfully generated paycheck schedule from salary record. View your paychecks for details.",
+        f"Successfully generated {paycheck_count} paychecks based on your salary record. View your paychecks for details.",
         "success",
     )
     return redirect(url_for("income.manage_paychecks"))
