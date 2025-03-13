@@ -94,11 +94,11 @@
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-            0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
-               0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    0 4px 6px -2px rgba(0, 0, 0, 0.05);
   --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
-               0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    0 10px 10px -5px rgba(0, 0, 0, 0.04);
 }
 
 /* Dark theme overrides */
@@ -172,22 +172,28 @@
 
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
     --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
-              0 2px 4px -1px rgba(0, 0, 0, 0.18);
+      0 2px 4px -1px rgba(0, 0, 0, 0.18);
     --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.3),
-               0 4px 6px -2px rgba(0, 0, 0, 0.15);
+      0 4px 6px -2px rgba(0, 0, 0, 0.15);
     --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.3),
-               0 10px 10px -5px rgba(0, 0, 0, 0.15);
+      0 10px 10px -5px rgba(0, 0, 0, 0.15);
   }
 }
-/*:root {
-  --font-primary: 'Recursive', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Recursive',  serif;
+
+:root {
+  --font-primary: 'Atkinson Hyperlegible', sans-serif;
+  --font-display: 'Atkinson Hyperlegible', serif;
   --font-mono: 'Fira Code', monospace;
 }
-*/
 /* ==========================================================================
-   GLOBAL STYLES & TYPOGRAPHY
+   GLOBAL STYLES & TYPOGRAPHY Atkinson Hyperlegible Recursive Roboto Slab -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
    ========================================================================== */
+
+
+/* Font loading optimization */
+html {
+  font-display: swap;
+}
 
 * {
   box-sizing: border-box;
@@ -219,7 +225,12 @@ a:hover {
   color: var(--primary-hover);
 }
 
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   margin-bottom: var(--spacing-md);
   font-family: var(--font-display);
   font-weight: 600;
@@ -317,6 +328,7 @@ p {
 .dropdown {
   position: relative;
 }
+
 .dropdown-content {
   display: none;
   position: absolute;
@@ -334,6 +346,7 @@ p {
   transform: translateY(-10px);
   pointer-events: none;
 }
+
 .dropdown:hover .dropdown-content,
 .dropdown.open .dropdown-content {
   display: block;
@@ -341,6 +354,7 @@ p {
   transform: translateY(0);
   pointer-events: auto;
 }
+
 .dropdown .dropdown-content a {
   padding: var(--spacing-md);
   color: var(--text-color);
@@ -349,9 +363,11 @@ p {
   white-space: nowrap;
   transition: background-color 0.2s;
 }
+
 .dropdown .dropdown-content a:hover {
   background-color: rgba(0, 0, 0, 0.05);
 }
+
 @media (prefers-color-scheme: dark) {
   .dropdown .dropdown-content a:hover {
     background-color: rgba(255, 255, 255, 0.05);
@@ -595,6 +611,7 @@ p {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -873,6 +890,7 @@ p {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -997,6 +1015,7 @@ p {
     opacity: 0;
     transform: translateX(-10px);
   }
+
   to {
     opacity: 1;
     transform: translateX(0);
@@ -1038,6 +1057,7 @@ p {
   0% {
     transform: translateX(-100%);
   }
+
   100% {
     transform: translateX(100%);
   }
@@ -1157,6 +1177,7 @@ p {
    ========================================================================== */
 
 @media (max-width: 768px) {
+
   /* Mobile Navigation */
   .mobile-menu-toggle {
     display: block;
