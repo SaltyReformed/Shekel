@@ -110,7 +110,11 @@
                             <td class="summary-label">Income</td>
                             {% for paycheck in paychecks %}
                             <td class="paycheck-income" data-paycheck-id="{{ paycheck.id }}">
+                                {% if paycheck.paid %}
+                                <span class="income-amount paid">$0.00 <small>(Received)</small></span>
+                                {% else %}
                                 <span class="income-amount">${{ "{:,.2f}".format(paycheck.net_salary) }}</span>
+                                {% endif %}
                             </td>
                             {% endfor %}
                         </tr>
@@ -160,10 +164,13 @@
                     <tr>
                         <th class="expense-info-column">Expense Type</th>
                         {% for paycheck in paychecks %}
-                        <th class="paycheck-column" data-paycheck-id="{{ paycheck.id }}">
+                        <th class="paycheck-column {% if paycheck.paid %}paid-paycheck{% endif %}" data-paycheck-id="{{ paycheck.id }}">
                             <div class="paycheck-header">
                                 <div class="paycheck-date">{{ paycheck.scheduled_date.strftime('%b %d, %Y') }}</div>
-                                <div class="paycheck-amount">${{ "{:,.2f}".format(paycheck.net_salary) }}</div>
+                                <div class="paycheck-amount">
+                                    ${{ "{:,.2f}".format(paycheck.net_salary) }}
+                                    {% if paycheck.paid %}<span class="paid-indicator">(Received)</span>{% endif %}
+                                </div>
                             </div>
                         </th>
                         {% endfor %}

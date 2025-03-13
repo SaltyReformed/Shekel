@@ -1104,11 +1104,17 @@ def expenses_by_paycheck():
     paycheck_remaining = {}
 
     for paycheck in paychecks:
+        # 1. Only include unpaid expenses
         total_expenses = sum(
-            expense.amount for expense in expenses_by_paycheck[paycheck.id]
+            expense.amount
+            for expense in expenses_by_paycheck[paycheck.id]
+            if not expense.paid
         )
         paycheck_totals[paycheck.id] = total_expenses
-        paycheck_remaining[paycheck.id] = paycheck.net_salary - total_expenses
+
+        # 2. If paycheck is marked as paid/received, don't count its income
+        income_amount = 0 if paycheck.paid else paycheck.net_salary
+        paycheck_remaining[paycheck.id] = income_amount - total_expenses
 
     # Get all expense categories for filtering
     categories = ExpenseCategory.query.all()

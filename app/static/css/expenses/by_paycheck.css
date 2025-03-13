@@ -65,6 +65,7 @@
   display: block;
   margin-bottom: 1.5rem;
 }
+
 /* Add shadow to indicate there's more content */
 .table-responsive:not(.no-shadow)::after {
   content: "";
@@ -73,20 +74,24 @@
   right: 0;
   bottom: 0;
   width: 15px;
-  background: linear-gradient(to right, transparent, rgba(0,0,0,0.1));
+  background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.1));
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;
 }
+
 .table-responsive:not(.no-shadow).scrolling::after {
   opacity: 1;
 }
+
 .table-expenses-summary {
   width: 100%;
   min-width: 100%;
 }
+
 .table-expenses-by-paycheck {
-  table-layout: fixed; /* Forces the browser to respect our column widths */
+  table-layout: fixed;
+  /* Forces the browser to respect our column widths */
   width: 100%;
   border-collapse: collapse;
   min-width: 100%;
@@ -103,17 +108,32 @@
   border-right: 2px solid var(--border-color);
 }
 
+.paid-paycheck {
+  opacity: 0.7;
+  background-color: rgba(0, 200, 0, 0.05);
+}
+
+.paid-indicator {
+  font-size: 0.8em;
+  color: #28a745;
+  font-weight: normal;
+  margin-left: 0.3em;
+}
+
 .paycheck-column {
   min-width: 180px;
-  width: 180px; /* Same fixed width as summary columns */
+  width: 180px;
+  /* Same fixed width as summary columns */
   text-align: center;
   border-left: 1px solid var(--border-color);
 }
+
 /* Allow the container to grow when many paychecks are present */
 .paycheck-expenses-container {
   width: 100%;
   overflow-x: auto;
 }
+
 .paycheck-header {
   display: flex;
   flex-direction: column;
@@ -194,8 +214,10 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  max-width: 160px; /* Slightly less than column width to account for padding */
-  margin: 0 auto; /* Center the expenses in the column */
+  max-width: 160px;
+  /* Slightly less than column width to account for padding */
+  margin: 0 auto;
+  /* Center the expenses in the column */
 }
 
 .expense-item {
@@ -205,9 +227,12 @@
   background-color: var(--card-bg);
   transition: all 0.2s ease;
   position: relative;
-  width: 100%; /* Make sure expense items take full width of their container */
-  box-sizing: border-box; /* Include padding and border in the element's width */
-  overflow: hidden; /* Prevent content from spilling out */
+  width: 100%;
+  /* Make sure expense items take full width of their container */
+  box-sizing: border-box;
+  /* Include padding and border in the element's width */
+  overflow: hidden;
+  /* Prevent content from spilling out */
 }
 
 .expense-item:hover {
@@ -271,12 +296,14 @@
   background-position: center;
   animation: spin 1s linear infinite;
 }
+
 /* Make the container adjust to screen size */
 @media (min-width: 1200px) {
   .container {
     max-width: 95%;
   }
 }
+
 @keyframes spin {
   0% {
     transform: rotate(0deg);
@@ -472,6 +499,7 @@
 .notification.info {
   background-color: var(--info-color);
 }
+
 /* Additional inline styles if needed */
 .draggable-expense {
   cursor: grab;
@@ -480,9 +508,11 @@
 .draggable-expense:active {
   cursor: grabbing;
 }
+
 /* Add these styles to your by_paycheck.css file */
 .table-expenses-summary {
-  table-layout: fixed; /* Forces the browser to respect our column widths */
+  table-layout: fixed;
+  /* Forces the browser to respect our column widths */
   width: 100%;
   border-collapse: collapse;
   min-width: 100%;
@@ -517,7 +547,8 @@
 
 .paycheck-summary-column {
   min-width: 180px;
-  width: 180px; /* Fixed width */
+  width: 180px;
+  /* Fixed width */
   text-align: center;
   font-weight: 600;
   padding: 0.75rem 1rem;
@@ -562,6 +593,7 @@
 .mb-4 {
   margin-bottom: 1.5rem;
 }
+
 /* Add these styles to your by_paycheck.css file */
 .table-expenses-summary {
   width: 100%;
@@ -639,6 +671,7 @@
 .mb-4 {
   margin-bottom: 1.5rem;
 }
+
 /* Enhanced filter section styling */
 .filters-section {
   margin-bottom: 2rem;
@@ -763,21 +796,22 @@ input[type="date"] {
     width: 100%;
     justify-content: space-between;
   }
-  
+
   .filter-actions button {
     flex: 1;
   }
 }
+
 .expense-category {
-    padding: 0.25rem 0.5rem;
-    border-radius: var(--border-radius);
-    font-size: 0.75rem;
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--border-radius);
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 .expense-category svg {
-    margin-right: 0.25rem;
+  margin-right: 0.25rem;
 }
