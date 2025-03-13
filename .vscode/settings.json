@@ -1,0 +1,14 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5432,
+            "driver": "PostgreSQL",
+            "name": "localhost",
+            "database": "budgetapp",
+            "username": "grubb",
+            "password": "Unrelated7-Nimbly0-Whoever6-Trembling6-Refocus0"
+        }
+    ]
+}
