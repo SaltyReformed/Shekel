@@ -2,7 +2,7 @@
 -- PostgreSQL database cluster dump
 --
 
--- Started on 2025-03-12 20:39:11 EDT
+-- Started on 2025-03-12 23:20:21 EDT
 
 SET default_transaction_read_only = off;
 
@@ -44,7 +44,7 @@ ALTER ROLE grubb WITH SUPERUSER INHERIT CREATEROLE CREATEDB LOGIN REPLICATION BY
 -- Dumped from database version 17.4 (Debian 17.4-1.pgdg120+2)
 -- Dumped by pg_dump version 17.2
 
--- Started on 2025-03-12 20:39:11 EDT
+-- Started on 2025-03-12 23:20:21 EDT
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -58,7 +58,7 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
--- Completed on 2025-03-12 20:39:11 EDT
+-- Completed on 2025-03-12 23:20:21 EDT
 
 --
 -- PostgreSQL database dump complete
@@ -75,7 +75,7 @@ SET row_security = off;
 -- Dumped from database version 17.4 (Debian 17.4-1.pgdg120+2)
 -- Dumped by pg_dump version 17.2
 
--- Started on 2025-03-12 20:39:11 EDT
+-- Started on 2025-03-12 23:20:21 EDT
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -90,7 +90,7 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- TOC entry 3587 (class 1262 OID 16384)
+-- TOC entry 3600 (class 1262 OID 16384)
 -- Name: budgetapp; Type: DATABASE; Schema: -; Owner: grubb
 --
 
@@ -153,7 +153,7 @@ CREATE SEQUENCE public.account_interest_id_seq
 ALTER SEQUENCE public.account_interest_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3588 (class 0 OID 0)
+-- TOC entry 3601 (class 0 OID 0)
 -- Dependencies: 249
 -- Name: account_interest_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -192,7 +192,7 @@ CREATE SEQUENCE public.account_types_id_seq
 ALTER SEQUENCE public.account_types_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3589 (class 0 OID 0)
+-- TOC entry 3602 (class 0 OID 0)
 -- Dependencies: 219
 -- Name: account_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -233,7 +233,7 @@ CREATE SEQUENCE public.accounts_id_seq
 ALTER SEQUENCE public.accounts_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3590 (class 0 OID 0)
+-- TOC entry 3603 (class 0 OID 0)
 -- Dependencies: 231
 -- Name: accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -275,7 +275,7 @@ CREATE SEQUENCE public.expense_categories_id_seq
 ALTER SEQUENCE public.expense_categories_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3591 (class 0 OID 0)
+-- TOC entry 3604 (class 0 OID 0)
 -- Dependencies: 227
 -- Name: expense_categories_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -316,7 +316,7 @@ CREATE SEQUENCE public.expense_changes_id_seq
 ALTER SEQUENCE public.expense_changes_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3592 (class 0 OID 0)
+-- TOC entry 3605 (class 0 OID 0)
 -- Dependencies: 241
 -- Name: expense_changes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -357,7 +357,7 @@ CREATE SEQUENCE public.expense_payments_id_seq
 ALTER SEQUENCE public.expense_payments_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3593 (class 0 OID 0)
+-- TOC entry 3606 (class 0 OID 0)
 -- Dependencies: 245
 -- Name: expense_payments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -403,7 +403,7 @@ CREATE SEQUENCE public.expenses_id_seq
 ALTER SEQUENCE public.expenses_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3594 (class 0 OID 0)
+-- TOC entry 3607 (class 0 OID 0)
 -- Dependencies: 239
 -- Name: expenses_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -442,7 +442,7 @@ CREATE SEQUENCE public.frequencies_id_seq
 ALTER SEQUENCE public.frequencies_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3595 (class 0 OID 0)
+-- TOC entry 3608 (class 0 OID 0)
 -- Dependencies: 223
 -- Name: frequencies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -483,7 +483,7 @@ CREATE SEQUENCE public.income_categories_id_seq
 ALTER SEQUENCE public.income_categories_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3596 (class 0 OID 0)
+-- TOC entry 3609 (class 0 OID 0)
 -- Dependencies: 225
 -- Name: income_categories_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -526,7 +526,7 @@ CREATE SEQUENCE public.income_payments_id_seq
 ALTER SEQUENCE public.income_payments_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3597 (class 0 OID 0)
+-- TOC entry 3610 (class 0 OID 0)
 -- Dependencies: 243
 -- Name: income_payments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -573,7 +573,7 @@ CREATE SEQUENCE public.paychecks_id_seq
 ALTER SEQUENCE public.paychecks_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3598 (class 0 OID 0)
+-- TOC entry 3611 (class 0 OID 0)
 -- Dependencies: 237
 -- Name: paychecks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -605,7 +605,7 @@ CREATE TABLE public.recurring_schedules (
 ALTER TABLE public.recurring_schedules OWNER TO grubb;
 
 --
--- TOC entry 3599 (class 0 OID 0)
+-- TOC entry 3612 (class 0 OID 0)
 -- Dependencies: 234
 -- Name: COLUMN recurring_schedules.category_type; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -614,7 +614,7 @@ COMMENT ON COLUMN public.recurring_schedules.category_type IS 'Type of category 
 
 
 --
--- TOC entry 3600 (class 0 OID 0)
+-- TOC entry 3613 (class 0 OID 0)
 -- Dependencies: 234
 -- Name: COLUMN recurring_schedules.category_id; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -623,7 +623,7 @@ COMMENT ON COLUMN public.recurring_schedules.category_id IS 'ID of the category 
 
 
 --
--- TOC entry 3601 (class 0 OID 0)
+-- TOC entry 3614 (class 0 OID 0)
 -- Dependencies: 234
 -- Name: COLUMN recurring_schedules.default_account_id; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -648,7 +648,7 @@ CREATE SEQUENCE public.recurring_schedules_id_seq
 ALTER SEQUENCE public.recurring_schedules_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3602 (class 0 OID 0)
+-- TOC entry 3615 (class 0 OID 0)
 -- Dependencies: 233
 -- Name: recurring_schedules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -687,7 +687,7 @@ CREATE SEQUENCE public.roles_id_seq
 ALTER SEQUENCE public.roles_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3603 (class 0 OID 0)
+-- TOC entry 3616 (class 0 OID 0)
 -- Dependencies: 217
 -- Name: roles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -718,7 +718,7 @@ CREATE TABLE public.salary_changes (
 ALTER TABLE public.salary_changes OWNER TO grubb;
 
 --
--- TOC entry 3604 (class 0 OID 0)
+-- TOC entry 3617 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.federal_tax_rate; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -727,7 +727,7 @@ COMMENT ON COLUMN public.salary_changes.federal_tax_rate IS 'Federal tax rate as
 
 
 --
--- TOC entry 3605 (class 0 OID 0)
+-- TOC entry 3618 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.state_tax_rate; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -736,7 +736,7 @@ COMMENT ON COLUMN public.salary_changes.state_tax_rate IS 'State tax rate as a p
 
 
 --
--- TOC entry 3606 (class 0 OID 0)
+-- TOC entry 3619 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.retirement_contribution_rate; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -745,7 +745,7 @@ COMMENT ON COLUMN public.salary_changes.retirement_contribution_rate IS 'Retirem
 
 
 --
--- TOC entry 3607 (class 0 OID 0)
+-- TOC entry 3620 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.health_insurance_amount; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -754,7 +754,7 @@ COMMENT ON COLUMN public.salary_changes.health_insurance_amount IS 'Health insur
 
 
 --
--- TOC entry 3608 (class 0 OID 0)
+-- TOC entry 3621 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.other_deductions_amount; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -763,7 +763,7 @@ COMMENT ON COLUMN public.salary_changes.other_deductions_amount IS 'Other deduct
 
 
 --
--- TOC entry 3609 (class 0 OID 0)
+-- TOC entry 3622 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: COLUMN salary_changes.notes; Type: COMMENT; Schema: public; Owner: grubb
 --
@@ -788,7 +788,7 @@ CREATE SEQUENCE public.salary_changes_id_seq
 ALTER SEQUENCE public.salary_changes_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3610 (class 0 OID 0)
+-- TOC entry 3623 (class 0 OID 0)
 -- Dependencies: 235
 -- Name: salary_changes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -830,7 +830,7 @@ CREATE SEQUENCE public.salary_deposit_allocations_id_seq
 ALTER SEQUENCE public.salary_deposit_allocations_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3611 (class 0 OID 0)
+-- TOC entry 3624 (class 0 OID 0)
 -- Dependencies: 251
 -- Name: salary_deposit_allocations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -869,7 +869,7 @@ CREATE SEQUENCE public.schedule_types_id_seq
 ALTER SEQUENCE public.schedule_types_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3612 (class 0 OID 0)
+-- TOC entry 3625 (class 0 OID 0)
 -- Dependencies: 221
 -- Name: schedule_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -912,12 +912,52 @@ CREATE SEQUENCE public.transactions_id_seq
 ALTER SEQUENCE public.transactions_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3613 (class 0 OID 0)
+-- TOC entry 3626 (class 0 OID 0)
 -- Dependencies: 247
 -- Name: transactions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
 
 ALTER SEQUENCE public.transactions_id_seq OWNED BY public.transactions.id;
+
+
+--
+-- TOC entry 254 (class 1259 OID 16683)
+-- Name: user_preferences; Type: TABLE; Schema: public; Owner: grubb
+--
+
+CREATE TABLE public.user_preferences (
+    id integer NOT NULL,
+    user_id integer NOT NULL,
+    preference_key character varying(100) NOT NULL,
+    preference_value character varying(255)
+);
+
+
+ALTER TABLE public.user_preferences OWNER TO grubb;
+
+--
+-- TOC entry 253 (class 1259 OID 16682)
+-- Name: user_preferences_id_seq; Type: SEQUENCE; Schema: public; Owner: grubb
+--
+
+CREATE SEQUENCE public.user_preferences_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.user_preferences_id_seq OWNER TO grubb;
+
+--
+-- TOC entry 3627 (class 0 OID 0)
+-- Dependencies: 253
+-- Name: user_preferences_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
+--
+
+ALTER SEQUENCE public.user_preferences_id_seq OWNED BY public.user_preferences.id;
 
 
 --
@@ -955,7 +995,7 @@ CREATE SEQUENCE public.users_id_seq
 ALTER SEQUENCE public.users_id_seq OWNER TO grubb;
 
 --
--- TOC entry 3614 (class 0 OID 0)
+-- TOC entry 3628 (class 0 OID 0)
 -- Dependencies: 229
 -- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: grubb
 --
@@ -964,7 +1004,7 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
--- TOC entry 3322 (class 2604 OID 16623)
+-- TOC entry 3327 (class 2604 OID 16623)
 -- Name: account_interest id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -972,7 +1012,7 @@ ALTER TABLE ONLY public.account_interest ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
--- TOC entry 3296 (class 2604 OID 16404)
+-- TOC entry 3301 (class 2604 OID 16404)
 -- Name: account_types id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -980,7 +1020,7 @@ ALTER TABLE ONLY public.account_types ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
--- TOC entry 3307 (class 2604 OID 16467)
+-- TOC entry 3312 (class 2604 OID 16467)
 -- Name: accounts id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -988,7 +1028,7 @@ ALTER TABLE ONLY public.accounts ALTER COLUMN id SET DEFAULT nextval('public.acc
 
 
 --
--- TOC entry 3302 (class 2604 OID 16442)
+-- TOC entry 3307 (class 2604 OID 16442)
 -- Name: expense_categories id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -996,7 +1036,7 @@ ALTER TABLE ONLY public.expense_categories ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
--- TOC entry 3317 (class 2604 OID 16564)
+-- TOC entry 3322 (class 2604 OID 16564)
 -- Name: expense_changes id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1004,7 +1044,7 @@ ALTER TABLE ONLY public.expense_changes ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
--- TOC entry 3320 (class 2604 OID 16593)
+-- TOC entry 3325 (class 2604 OID 16593)
 -- Name: expense_payments id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1012,7 +1052,7 @@ ALTER TABLE ONLY public.expense_payments ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
--- TOC entry 3316 (class 2604 OID 16540)
+-- TOC entry 3321 (class 2604 OID 16540)
 -- Name: expenses id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1020,7 +1060,7 @@ ALTER TABLE ONLY public.expenses ALTER COLUMN id SET DEFAULT nextval('public.exp
 
 
 --
--- TOC entry 3298 (class 2604 OID 16422)
+-- TOC entry 3303 (class 2604 OID 16422)
 -- Name: frequencies id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1028,7 +1068,7 @@ ALTER TABLE ONLY public.frequencies ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
--- TOC entry 3299 (class 2604 OID 16433)
+-- TOC entry 3304 (class 2604 OID 16433)
 -- Name: income_categories id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1036,7 +1076,7 @@ ALTER TABLE ONLY public.income_categories ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
--- TOC entry 3318 (class 2604 OID 16576)
+-- TOC entry 3323 (class 2604 OID 16576)
 -- Name: income_payments id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1044,7 +1084,7 @@ ALTER TABLE ONLY public.income_payments ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
--- TOC entry 3315 (class 2604 OID 16518)
+-- TOC entry 3320 (class 2604 OID 16518)
 -- Name: paychecks id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1052,7 +1092,7 @@ ALTER TABLE ONLY public.paychecks ALTER COLUMN id SET DEFAULT nextval('public.pa
 
 
 --
--- TOC entry 3308 (class 2604 OID 16484)
+-- TOC entry 3313 (class 2604 OID 16484)
 -- Name: recurring_schedules id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1060,7 +1100,7 @@ ALTER TABLE ONLY public.recurring_schedules ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
--- TOC entry 3295 (class 2604 OID 16393)
+-- TOC entry 3300 (class 2604 OID 16393)
 -- Name: roles id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1068,7 +1108,7 @@ ALTER TABLE ONLY public.roles ALTER COLUMN id SET DEFAULT nextval('public.roles_
 
 
 --
--- TOC entry 3309 (class 2604 OID 16506)
+-- TOC entry 3314 (class 2604 OID 16506)
 -- Name: salary_changes id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1076,7 +1116,7 @@ ALTER TABLE ONLY public.salary_changes ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- TOC entry 3326 (class 2604 OID 16642)
+-- TOC entry 3331 (class 2604 OID 16642)
 -- Name: salary_deposit_allocations id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1084,7 +1124,7 @@ ALTER TABLE ONLY public.salary_deposit_allocations ALTER COLUMN id SET DEFAULT n
 
 
 --
--- TOC entry 3297 (class 2604 OID 16411)
+-- TOC entry 3302 (class 2604 OID 16411)
 -- Name: schedule_types id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1092,7 +1132,7 @@ ALTER TABLE ONLY public.schedule_types ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- TOC entry 3321 (class 2604 OID 16611)
+-- TOC entry 3326 (class 2604 OID 16611)
 -- Name: transactions id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1100,7 +1140,15 @@ ALTER TABLE ONLY public.transactions ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
--- TOC entry 3306 (class 2604 OID 16451)
+-- TOC entry 3332 (class 2604 OID 16686)
+-- Name: user_preferences id; Type: DEFAULT; Schema: public; Owner: grubb
+--
+
+ALTER TABLE ONLY public.user_preferences ALTER COLUMN id SET DEFAULT nextval('public.user_preferences_id_seq'::regclass);
+
+
+--
+-- TOC entry 3311 (class 2604 OID 16451)
 -- Name: users id; Type: DEFAULT; Schema: public; Owner: grubb
 --
 
@@ -1108,7 +1156,7 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
--- TOC entry 3579 (class 0 OID 16620)
+-- TOC entry 3590 (class 0 OID 16620)
 -- Dependencies: 250
 -- Data for Name: account_interest; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -1121,7 +1169,7 @@ COPY public.account_interest (id, account_id, rate, compound_frequency, accrual_
 
 
 --
--- TOC entry 3549 (class 0 OID 16401)
+-- TOC entry 3560 (class 0 OID 16401)
 -- Dependencies: 220
 -- Data for Name: account_types; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -1148,24 +1196,24 @@ COPY public.account_types (id, type_name, is_debt) FROM stdin;
 
 
 --
--- TOC entry 3561 (class 0 OID 16464)
+-- TOC entry 3572 (class 0 OID 16464)
 -- Dependencies: 232
 -- Data for Name: accounts; Type: TABLE DATA; Schema: public; Owner: grubb
 --
 
 COPY public.accounts (id, user_id, account_name, type_id, balance) FROM stdin;
-5	1	Fidelity Money Market	4	0.00
-1	1	SECU Checking	1	-4396.82
 3	1	Home Equity	9	340000.00
+5	1	Fidelity Money Market	4	500.00
+4	1	CapitalOne Credit Card	10	1551.78
+1	1	SECU Checking	1	-232.63
 2	1	Mortgage	11	181521.26
-4	1	CapitalOne Credit Card	10	1579.30
 6	1	SECU Savings	2	25.71
 7	1	Bank of America Van Loan	12	22726.35
 \.
 
 
 --
--- TOC entry 3557 (class 0 OID 16439)
+-- TOC entry 3568 (class 0 OID 16439)
 -- Dependencies: 228
 -- Data for Name: expense_categories; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -1183,7 +1231,7 @@ COPY public.expense_categories (id, name, description, color, monthly_budget, ic
 
 
 --
--- TOC entry 3571 (class 0 OID 16561)
+-- TOC entry 3582 (class 0 OID 16561)
 -- Dependencies: 242
 -- Data for Name: expense_changes; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -1193,17 +1241,19 @@ COPY public.expense_changes (id, recurring_schedule_id, effective_date, end_date
 
 
 --
--- TOC entry 3575 (class 0 OID 16590)
+-- TOC entry 3586 (class 0 OID 16590)
 -- Dependencies: 246
 -- Data for Name: expense_payments; Type: TABLE DATA; Schema: public; Owner: grubb
 --
 
 COPY public.expense_payments (id, expense_id, account_id, payment_date, amount) FROM stdin;
+5	2905	1	2025-03-13	100.00
+6	2945	1	2025-03-13	1551.78
 \.
 
 
 --
--- TOC entry 3569 (class 0 OID 16537)
+-- TOC entry 3580 (class 0 OID 16537)
 -- Dependencies: 240
 -- Data for Name: expenses; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -1218,21 +1268,25 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 99	1	2026-07-16	1	80.00	Gas	f	21	\N	\N
 2058	1	2026-03-13	1	100.00	Mower Maintenance	f	81	\N	\N
 2059	1	2027-03-13	1	100.00	Mower Maintenance	f	81	\N	\N
+2906	1	2026-03-24	4	100.00	Josh's Birthday	f	122	\N	\N
+2907	1	2027-03-24	4	100.00	Josh's Birthday	f	122	\N	\N
 2064	1	2026-10-11	1	30.00	RAV4 State Inspection	f	83	\N	\N
 2065	1	2027-10-11	1	30.00	RAV4 State Inspection	f	83	\N	\N
 100	1	2026-07-30	1	80.00	Gas	f	21	\N	\N
 101	1	2026-08-13	1	80.00	Gas	f	21	\N	\N
 102	1	2026-08-27	1	80.00	Gas	f	21	\N	\N
+2909	1	2026-06-08	4	100.00	Father's Day	f	123	\N	\N
+2910	1	2027-06-08	4	100.00	Father's Day	f	123	\N	\N
+2908	1	2025-06-08	4	100.00	Father's Day	f	123	\N	7110
+2905	1	2025-03-13	4	100.00	Josh's Birthday	t	122		7112
 37	1	2025-03-13	1	80.00	Gas	f	21	\N	7104
 38	1	2025-03-27	1	80.00	Gas	f	21	\N	7105
-2081	1	2025-10-31	4	100.00	New Baby Birthday	f	88	\N	\N
 2790	1	2025-08-14	8	500.00	Emergency Fund	f	108	\N	\N
 51	1	2025-03-13	5	400.00	Groceries	f	23	\N	7104
 52	1	2025-03-27	5	400.00	Groceries	f	23	\N	7105
 103	1	2026-09-10	1	80.00	Gas	f	21	\N	\N
 57	1	2025-03-15	3	18.14	Apple Music	f	24	\N	7104
 2777	1	2025-03-24	7	240.00	Kobo Libra Colour	f	\N		7112
-43	1	2025-06-01	6	1670.20	Mortgage	f	22	\N	7109
 104	1	2026-09-24	1	80.00	Gas	f	21	\N	\N
 105	1	2026-10-08	1	80.00	Gas	f	21	\N	\N
 59	1	2025-05-15	3	18.14	Apple Music	f	24	\N	7108
@@ -1240,12 +1294,7 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 602	1	2025-06-17	7	9.99	iCloud 2TB	f	36	\N	7110
 2784	1	2025-05-22	8	500.00	Emergency Fund	f	108	\N	7109
 2785	1	2025-06-05	8	500.00	Emergency Fund	f	108	\N	7110
-45	1	2025-08-01	6	1670.20	Mortgage	f	22	\N	\N
-46	1	2025-09-01	6	1670.20	Mortgage	f	22	\N	\N
-47	1	2025-10-01	6	1670.20	Mortgage	f	22	\N	\N
 106	1	2026-10-22	1	80.00	Gas	f	21	\N	\N
-48	1	2025-11-01	6	1670.20	Mortgage	f	22	\N	\N
-49	1	2025-12-01	6	1670.20	Mortgage	f	22	\N	\N
 107	1	2026-11-05	1	80.00	Gas	f	21	\N	\N
 108	1	2026-11-19	1	80.00	Gas	f	21	\N	\N
 36	1	2025-02-27	1	80.00	Gas	t	21		\N
@@ -1260,7 +1309,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 2786	1	2025-06-19	8	500.00	Emergency Fund	f	108	\N	7111
 2797	1	2025-11-20	8	500.00	Emergency Fund	f	108	\N	\N
 2798	1	2025-12-04	8	500.00	Emergency Fund	f	108	\N	\N
-44	1	2025-07-01	6	1670.20	Mortgage	f	22	\N	7111
 61	1	2025-07-15	3	18.14	Apple Music	f	24	\N	7111
 2787	1	2025-07-03	8	500.00	Emergency Fund	f	108	\N	7111
 2788	1	2025-07-17	8	500.00	Emergency Fund	f	108	\N	7111
@@ -1392,11 +1440,10 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 230	1	2029-01-20	1	531.94	Van Payment	f	25	\N	\N
 231	1	2029-02-20	1	531.94	Van Payment	f	25	\N	\N
 2067	1	2027-01-11	1	30.00	Van State Inspection	f	84	\N	\N
-2082	1	2025-11-14	4	100.00	New Baby Birthday	f	88	\N	\N
-2083	1	2025-11-28	4	100.00	New Baby Birthday	f	88	\N	\N
-2084	1	2025-12-12	4	100.00	New Baby Birthday	f	88	\N	\N
+2912	1	2026-05-04	4	100.00	Mother's Day	f	124	\N	\N
+2913	1	2027-05-04	4	100.00	Mother's Day	f	124	\N	\N
 2805	1	2026-03-12	8	500.00	Emergency Fund	f	108	\N	\N
-2296	1	2025-07-06	4	100.00	Mother's Day	f	92	\N	7111
+2926	1	2025-07-01	4	600.00	School Curriculum	f	129	\N	7111
 239	1	2025-11-01	1	183.49	Geico Car Insurance	f	26	\N	\N
 240	1	2025-12-01	1	183.49	Geico Car Insurance	f	26	\N	\N
 241	1	2026-01-01	1	183.49	Geico Car Insurance	f	26	\N	\N
@@ -1415,112 +1462,29 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 254	1	2027-02-01	1	183.49	Geico Car Insurance	f	26	\N	\N
 255	1	2027-03-01	1	183.49	Geico Car Insurance	f	26	\N	\N
 256	1	2027-04-01	1	183.49	Geico Car Insurance	f	26	\N	\N
-2297	1	2025-07-20	4	100.00	Mother's Day	f	92	\N	7111
 2069	1	2026-01-11	1	208.17	Van Property Tax	f	85	\N	\N
 2070	1	2027-01-11	1	208.17	Van Property Tax	f	85	\N	\N
-2085	1	2025-12-26	4	100.00	New Baby Birthday	f	88	\N	\N
-2086	1	2026-01-09	4	100.00	New Baby Birthday	f	88	\N	\N
-2087	1	2026-01-23	4	100.00	New Baby Birthday	f	88	\N	\N
-2088	1	2026-02-06	4	100.00	New Baby Birthday	f	88	\N	\N
-2089	1	2026-02-20	4	100.00	New Baby Birthday	f	88	\N	\N
-2090	1	2026-03-06	4	100.00	New Baby Birthday	f	88	\N	\N
-2091	1	2026-03-20	4	100.00	New Baby Birthday	f	88	\N	\N
-2092	1	2026-04-03	4	100.00	New Baby Birthday	f	88	\N	\N
-2093	1	2026-04-17	4	100.00	New Baby Birthday	f	88	\N	\N
-2094	1	2026-05-01	4	100.00	New Baby Birthday	f	88	\N	\N
-2095	1	2026-05-15	4	100.00	New Baby Birthday	f	88	\N	\N
-2096	1	2026-05-29	4	100.00	New Baby Birthday	f	88	\N	\N
-2097	1	2026-06-12	4	100.00	New Baby Birthday	f	88	\N	\N
-2098	1	2026-06-26	4	100.00	New Baby Birthday	f	88	\N	\N
-2099	1	2026-07-10	4	100.00	New Baby Birthday	f	88	\N	\N
-2100	1	2026-07-24	4	100.00	New Baby Birthday	f	88	\N	\N
-2101	1	2026-08-07	4	100.00	New Baby Birthday	f	88	\N	\N
-2102	1	2026-08-21	4	100.00	New Baby Birthday	f	88	\N	\N
-2103	1	2026-09-04	4	100.00	New Baby Birthday	f	88	\N	\N
-2104	1	2026-09-18	4	100.00	New Baby Birthday	f	88	\N	\N
-2105	1	2026-10-02	4	100.00	New Baby Birthday	f	88	\N	\N
-2106	1	2026-10-16	4	100.00	New Baby Birthday	f	88	\N	\N
-2107	1	2026-10-30	4	100.00	New Baby Birthday	f	88	\N	\N
-2108	1	2026-11-13	4	100.00	New Baby Birthday	f	88	\N	\N
-2109	1	2026-11-27	4	100.00	New Baby Birthday	f	88	\N	\N
-2110	1	2026-12-11	4	100.00	New Baby Birthday	f	88	\N	\N
-2111	1	2026-12-25	4	100.00	New Baby Birthday	f	88	\N	\N
-2112	1	2027-01-08	4	100.00	New Baby Birthday	f	88	\N	\N
-2113	1	2027-01-22	4	100.00	New Baby Birthday	f	88	\N	\N
-2114	1	2027-02-05	4	100.00	New Baby Birthday	f	88	\N	\N
-2115	1	2027-02-19	4	100.00	New Baby Birthday	f	88	\N	\N
-2116	1	2027-03-05	4	100.00	New Baby Birthday	f	88	\N	\N
-2117	1	2027-03-19	4	100.00	New Baby Birthday	f	88	\N	\N
-2118	1	2027-04-02	4	100.00	New Baby Birthday	f	88	\N	\N
-2119	1	2027-04-16	4	100.00	New Baby Birthday	f	88	\N	\N
-2120	1	2027-04-30	4	100.00	New Baby Birthday	f	88	\N	\N
-2121	1	2027-05-14	4	100.00	New Baby Birthday	f	88	\N	\N
-2122	1	2027-05-28	4	100.00	New Baby Birthday	f	88	\N	\N
-2123	1	2027-06-11	4	100.00	New Baby Birthday	f	88	\N	\N
-2124	1	2027-06-25	4	100.00	New Baby Birthday	f	88	\N	\N
-2125	1	2027-07-09	4	100.00	New Baby Birthday	f	88	\N	\N
-2126	1	2027-07-23	4	100.00	New Baby Birthday	f	88	\N	\N
-2127	1	2027-08-06	4	100.00	New Baby Birthday	f	88	\N	\N
-2128	1	2027-08-20	4	100.00	New Baby Birthday	f	88	\N	\N
+2915	1	2026-04-10	5	200.00	Strawberry Picking	f	125	\N	\N
+2916	1	2027-04-10	5	200.00	Strawberry Picking	f	125	\N	\N
+2929	1	2025-10-18	4	100.00	Wedding Anniversary	f	130	\N	\N
+2930	1	2026-10-18	4	100.00	Wedding Anniversary	f	130	\N	\N
+2931	1	2027-10-18	4	100.00	Wedding Anniversary	f	130	\N	\N
+2942	1	2026-02-22	4	100.00	Knox's Birthday	f	135	\N	\N
+2943	1	2027-02-22	4	100.00	Knox's Birthday	f	135	\N	\N
+2914	1	2025-04-10	5	200.00	Strawberry Picking	f	125	\N	7106
 2806	1	2026-03-26	8	500.00	Emergency Fund	f	108	\N	\N
-2130	1	2025-10-21	4	100.00	Ariella's Birthday	f	89	\N	\N
-2131	1	2025-11-04	4	100.00	Ariella's Birthday	f	89	\N	\N
-2132	1	2025-11-18	4	100.00	Ariella's Birthday	f	89	\N	\N
-2133	1	2025-12-02	4	100.00	Ariella's Birthday	f	89	\N	\N
-2134	1	2025-12-16	4	100.00	Ariella's Birthday	f	89	\N	\N
-2135	1	2025-12-30	4	100.00	Ariella's Birthday	f	89	\N	\N
-2136	1	2026-01-13	4	100.00	Ariella's Birthday	f	89	\N	\N
 2807	1	2026-04-09	8	500.00	Emergency Fund	f	108	\N	\N
 313	1	2026-04-11	1	175.00	Oil & Air Filters	f	28	\N	\N
 314	1	2026-10-11	1	175.00	Oil & Air Filters	f	28	\N	\N
 315	1	2027-04-11	1	175.00	Oil & Air Filters	f	28	\N	\N
-2137	1	2026-01-27	4	100.00	Ariella's Birthday	f	89	\N	\N
-2138	1	2026-02-10	4	100.00	Ariella's Birthday	f	89	\N	\N
-2139	1	2026-02-24	4	100.00	Ariella's Birthday	f	89	\N	\N
-2140	1	2026-03-10	4	100.00	Ariella's Birthday	f	89	\N	\N
-2141	1	2026-03-24	4	100.00	Ariella's Birthday	f	89	\N	\N
-2142	1	2026-04-07	4	100.00	Ariella's Birthday	f	89	\N	\N
-2143	1	2026-04-21	4	100.00	Ariella's Birthday	f	89	\N	\N
-2144	1	2026-05-05	4	100.00	Ariella's Birthday	f	89	\N	\N
-2145	1	2026-05-19	4	100.00	Ariella's Birthday	f	89	\N	\N
-2146	1	2026-06-02	4	100.00	Ariella's Birthday	f	89	\N	\N
-2147	1	2026-06-16	4	100.00	Ariella's Birthday	f	89	\N	\N
-2148	1	2026-06-30	4	100.00	Ariella's Birthday	f	89	\N	\N
-2149	1	2026-07-14	4	100.00	Ariella's Birthday	f	89	\N	\N
-2150	1	2026-07-28	4	100.00	Ariella's Birthday	f	89	\N	\N
-2151	1	2026-08-11	4	100.00	Ariella's Birthday	f	89	\N	\N
-2152	1	2026-08-25	4	100.00	Ariella's Birthday	f	89	\N	\N
-2153	1	2026-09-08	4	100.00	Ariella's Birthday	f	89	\N	\N
-2154	1	2026-09-22	4	100.00	Ariella's Birthday	f	89	\N	\N
-2155	1	2026-10-06	4	100.00	Ariella's Birthday	f	89	\N	\N
-2156	1	2026-10-20	4	100.00	Ariella's Birthday	f	89	\N	\N
-2157	1	2026-11-03	4	100.00	Ariella's Birthday	f	89	\N	\N
-2158	1	2026-11-17	4	100.00	Ariella's Birthday	f	89	\N	\N
-2159	1	2026-12-01	4	100.00	Ariella's Birthday	f	89	\N	\N
-2160	1	2026-12-15	4	100.00	Ariella's Birthday	f	89	\N	\N
-2161	1	2026-12-29	4	100.00	Ariella's Birthday	f	89	\N	\N
-2162	1	2027-01-12	4	100.00	Ariella's Birthday	f	89	\N	\N
-2163	1	2027-01-26	4	100.00	Ariella's Birthday	f	89	\N	\N
-2164	1	2027-02-09	4	100.00	Ariella's Birthday	f	89	\N	\N
-2165	1	2027-02-23	4	100.00	Ariella's Birthday	f	89	\N	\N
-2166	1	2027-03-09	4	100.00	Ariella's Birthday	f	89	\N	\N
-2167	1	2027-03-23	4	100.00	Ariella's Birthday	f	89	\N	\N
 2071	1	2026-01-08	4	100.00	Eliana's Birthday	f	86	\N	\N
 2072	1	2027-01-08	4	100.00	Eliana's Birthday	f	86	\N	\N
-2168	1	2027-04-06	4	100.00	Ariella's Birthday	f	89	\N	\N
-2169	1	2027-04-20	4	100.00	Ariella's Birthday	f	89	\N	\N
-2170	1	2027-05-04	4	100.00	Ariella's Birthday	f	89	\N	\N
-2171	1	2027-05-18	4	100.00	Ariella's Birthday	f	89	\N	\N
-2172	1	2027-06-01	4	100.00	Ariella's Birthday	f	89	\N	\N
-2173	1	2027-06-15	4	100.00	Ariella's Birthday	f	89	\N	\N
-2174	1	2027-06-29	4	100.00	Ariella's Birthday	f	89	\N	\N
-2175	1	2027-07-13	4	100.00	Ariella's Birthday	f	89	\N	\N
-2176	1	2027-07-27	4	100.00	Ariella's Birthday	f	89	\N	\N
-2177	1	2027-08-10	4	100.00	Ariella's Birthday	f	89	\N	\N
-2178	1	2027-08-24	4	100.00	Ariella's Birthday	f	89	\N	\N
-2179	1	2027-09-07	4	100.00	Ariella's Birthday	f	89	\N	\N
-2180	1	2027-09-21	4	100.00	Ariella's Birthday	f	89	\N	\N
-2181	1	2027-10-05	4	100.00	Ariella's Birthday	f	89	\N	\N
+2917	1	2025-08-21	4	100.00	New Baby Birthday	f	126	\N	\N
+2918	1	2026-08-21	4	100.00	New Baby Birthday	f	126	\N	\N
+2919	1	2027-08-21	4	100.00	New Baby Birthday	f	126	\N	\N
+2932	1	2025-11-13	7	1300.00	Josh's New Phone	f	131	\N	\N
+2933	1	2027-11-13	7	1300.00	Josh's New Phone	f	131	\N	\N
+2944	1	2026-02-14	4	100.00	Valentine's Day	f	136	\N	\N
 2808	1	2026-04-23	8	500.00	Emergency Fund	f	108	\N	\N
 2809	1	2026-05-07	8	500.00	Emergency Fund	f	108	\N	\N
 2810	1	2026-05-21	8	500.00	Emergency Fund	f	108	\N	\N
@@ -1547,7 +1511,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 2831	1	2027-03-11	8	500.00	Emergency Fund	f	108	\N	\N
 2832	1	2027-03-25	8	500.00	Emergency Fund	f	108	\N	\N
 39	1	2025-04-10	1	80.00	Gas	f	21	\N	7106
-42	1	2025-05-01	6	1670.20	Mortgage	f	22	\N	7107
 53	1	2025-04-10	5	400.00	Groceries	f	23	\N	7106
 54	1	2025-04-24	5	400.00	Groceries	f	23	\N	7107
 55	1	2025-05-08	5	400.00	Groceries	f	23	\N	7108
@@ -1558,84 +1521,15 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 2781	1	2025-04-10	8	500.00	Emergency Fund	f	108	\N	7106
 2782	1	2025-04-24	8	500.00	Emergency Fund	f	108	\N	7107
 2783	1	2025-05-08	8	500.00	Emergency Fund	f	108	\N	7108
-2348	1	2025-07-09	4	100.00	Father's Day	f	93	\N	7111
-2349	1	2025-07-23	4	100.00	Father's Day	f	93	\N	7111
-2837	1	2025-05-19	4	100.00	Josh's Birthday	f	114	\N	7108
+2920	1	2025-10-07	4	100.00	Ariella's Birthday	f	127	\N	\N
 2074	1	2026-05-01	4	100.00	Kayla's Birthday	f	87	\N	\N
 2075	1	2027-05-01	4	100.00	Kayla's Birthday	f	87	\N	\N
-2182	1	2025-11-01	4	400.00	Christmas	f	90	\N	\N
-2183	1	2025-11-15	4	400.00	Christmas	f	90	\N	\N
-2184	1	2025-11-29	4	400.00	Christmas	f	90	\N	\N
-2185	1	2025-12-13	4	400.00	Christmas	f	90	\N	\N
-2186	1	2025-12-27	4	400.00	Christmas	f	90	\N	\N
-2187	1	2026-01-10	4	400.00	Christmas	f	90	\N	\N
-2188	1	2026-01-24	4	400.00	Christmas	f	90	\N	\N
-2189	1	2026-02-07	4	400.00	Christmas	f	90	\N	\N
-2190	1	2026-02-21	4	400.00	Christmas	f	90	\N	\N
-2191	1	2026-03-07	4	400.00	Christmas	f	90	\N	\N
-2192	1	2026-03-21	4	400.00	Christmas	f	90	\N	\N
-2193	1	2026-04-04	4	400.00	Christmas	f	90	\N	\N
-2194	1	2026-04-18	4	400.00	Christmas	f	90	\N	\N
-2195	1	2026-05-02	4	400.00	Christmas	f	90	\N	\N
-2196	1	2026-05-16	4	400.00	Christmas	f	90	\N	\N
-2197	1	2026-05-30	4	400.00	Christmas	f	90	\N	\N
-2198	1	2026-06-13	4	400.00	Christmas	f	90	\N	\N
-2199	1	2026-06-27	4	400.00	Christmas	f	90	\N	\N
-2200	1	2026-07-11	4	400.00	Christmas	f	90	\N	\N
-2201	1	2026-07-25	4	400.00	Christmas	f	90	\N	\N
-2202	1	2026-08-08	4	400.00	Christmas	f	90	\N	\N
-2203	1	2026-08-22	4	400.00	Christmas	f	90	\N	\N
-2204	1	2026-09-05	4	400.00	Christmas	f	90	\N	\N
-2205	1	2026-09-19	4	400.00	Christmas	f	90	\N	\N
-2206	1	2026-10-03	4	400.00	Christmas	f	90	\N	\N
-2207	1	2026-10-17	4	400.00	Christmas	f	90	\N	\N
-2208	1	2026-10-31	4	400.00	Christmas	f	90	\N	\N
-2209	1	2026-11-14	4	400.00	Christmas	f	90	\N	\N
-2210	1	2026-11-28	4	400.00	Christmas	f	90	\N	\N
-2211	1	2026-12-12	4	400.00	Christmas	f	90	\N	\N
-2212	1	2026-12-26	4	400.00	Christmas	f	90	\N	\N
-2213	1	2027-01-09	4	400.00	Christmas	f	90	\N	\N
-2214	1	2027-01-23	4	400.00	Christmas	f	90	\N	\N
-2215	1	2027-02-06	4	400.00	Christmas	f	90	\N	\N
-2216	1	2027-02-20	4	400.00	Christmas	f	90	\N	\N
-2217	1	2027-03-06	4	400.00	Christmas	f	90	\N	\N
-2218	1	2027-03-20	4	400.00	Christmas	f	90	\N	\N
-2219	1	2027-04-03	4	400.00	Christmas	f	90	\N	\N
-2220	1	2027-04-17	4	400.00	Christmas	f	90	\N	\N
-2221	1	2027-05-01	4	400.00	Christmas	f	90	\N	\N
-2222	1	2027-05-15	4	400.00	Christmas	f	90	\N	\N
-2223	1	2027-05-29	4	400.00	Christmas	f	90	\N	\N
-2224	1	2027-06-12	4	400.00	Christmas	f	90	\N	\N
-2225	1	2027-06-26	4	400.00	Christmas	f	90	\N	\N
-2226	1	2027-07-10	4	400.00	Christmas	f	90	\N	\N
-2227	1	2027-07-24	4	400.00	Christmas	f	90	\N	\N
-2228	1	2027-08-07	4	400.00	Christmas	f	90	\N	\N
-2229	1	2027-08-21	4	400.00	Christmas	f	90	\N	\N
-2230	1	2027-09-04	4	400.00	Christmas	f	90	\N	\N
-2231	1	2027-09-18	4	400.00	Christmas	f	90	\N	\N
-2232	1	2027-10-02	4	400.00	Christmas	f	90	\N	\N
-2233	1	2027-10-16	4	400.00	Christmas	f	90	\N	\N
-2234	1	2027-10-30	4	400.00	Christmas	f	90	\N	\N
-2235	1	2027-11-13	4	400.00	Christmas	f	90	\N	\N
-2236	1	2027-11-27	4	400.00	Christmas	f	90	\N	\N
-2838	1	2025-06-02	4	100.00	Josh's Birthday	f	114	\N	7109
-2839	1	2025-06-16	4	100.00	Josh's Birthday	f	114	\N	7110
-2840	1	2025-06-30	4	100.00	Josh's Birthday	f	114	\N	7111
+2921	1	2026-10-07	4	100.00	Ariella's Birthday	f	127	\N	\N
+2922	1	2027-10-07	4	100.00	Ariella's Birthday	f	127	\N	\N
+2934	1	2025-08-13	7	288.00	Proton Family	f	132	\N	\N
+2935	1	2026-08-13	7	288.00	Proton Family	f	132	\N	\N
+2936	1	2027-08-13	7	288.00	Proton Family	f	132	\N	\N
 553	1	2025-07-26	3	15.96	Audible	f	34	\N	7111
-2245	1	2025-10-21	4	600.00	School Curriculum	f	91	\N	\N
-2246	1	2025-11-04	4	600.00	School Curriculum	f	91	\N	\N
-2247	1	2025-11-18	4	600.00	School Curriculum	f	91	\N	\N
-2248	1	2025-12-02	4	600.00	School Curriculum	f	91	\N	\N
-2249	1	2025-12-16	4	600.00	School Curriculum	f	91	\N	\N
-2250	1	2025-12-30	4	600.00	School Curriculum	f	91	\N	\N
-2251	1	2026-01-13	4	600.00	School Curriculum	f	91	\N	\N
-2252	1	2026-01-27	4	600.00	School Curriculum	f	91	\N	\N
-2253	1	2026-02-10	4	600.00	School Curriculum	f	91	\N	\N
-2843	1	2025-08-11	4	100.00	Josh's Birthday	f	114	\N	\N
-2844	1	2025-08-25	4	100.00	Josh's Birthday	f	114	\N	\N
-2845	1	2025-09-08	4	100.00	Josh's Birthday	f	114	\N	\N
-2841	1	2025-07-14	4	100.00	Josh's Birthday	f	114	\N	7111
-2842	1	2025-07-28	4	100.00	Josh's Birthday	f	114	\N	7111
 556	1	2025-10-26	3	15.96	Audible	f	34	\N	\N
 557	1	2025-11-26	3	15.96	Audible	f	34	\N	\N
 558	1	2025-12-26	3	15.96	Audible	f	34	\N	\N
@@ -1672,14 +1566,12 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 596	1	2027-01-26	3	17.15	Disney+	f	35	\N	\N
 597	1	2027-02-26	3	17.15	Disney+	f	35	\N	\N
 598	1	2027-03-26	3	17.15	Disney+	f	35	\N	\N
-2254	1	2026-02-24	4	600.00	School Curriculum	f	91	\N	\N
-2255	1	2026-03-10	4	600.00	School Curriculum	f	91	\N	\N
-2256	1	2026-03-24	4	600.00	School Curriculum	f	91	\N	\N
-2257	1	2026-04-07	4	600.00	School Curriculum	f	91	\N	\N
-2846	1	2025-09-22	4	100.00	Josh's Birthday	f	114	\N	\N
-2847	1	2025-10-06	4	100.00	Josh's Birthday	f	114	\N	\N
-2848	1	2025-10-20	4	100.00	Josh's Birthday	f	114	\N	\N
-2849	1	2025-11-03	4	100.00	Josh's Birthday	f	114	\N	\N
+2923	1	2025-11-01	4	400.00	Christmas	f	128	\N	\N
+2924	1	2026-11-01	4	400.00	Christmas	f	128	\N	\N
+2925	1	2027-11-01	4	400.00	Christmas	f	128	\N	\N
+2937	1	2026-03-01	5	55.00	BJ's Club Membership	f	133	\N	\N
+2938	1	2027-03-01	5	55.00	BJ's Club Membership	f	133	\N	\N
+2911	1	2025-05-04	4	100.00	Mother's Day	f	124	\N	7107
 607	1	2025-11-17	7	9.99	iCloud 2TB	f	36	\N	\N
 608	1	2025-12-17	7	9.99	iCloud 2TB	f	36	\N	\N
 609	1	2026-01-17	7	9.99	iCloud 2TB	f	36	\N	\N
@@ -1697,120 +1589,34 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 621	1	2027-01-17	7	9.99	iCloud 2TB	f	36	\N	\N
 622	1	2027-02-17	7	9.99	iCloud 2TB	f	36	\N	\N
 623	1	2027-03-17	7	9.99	iCloud 2TB	f	36	\N	\N
-2258	1	2026-04-21	4	600.00	School Curriculum	f	91	\N	\N
-2259	1	2026-05-05	4	600.00	School Curriculum	f	91	\N	\N
-2260	1	2026-05-19	4	600.00	School Curriculum	f	91	\N	\N
-2261	1	2026-06-02	4	600.00	School Curriculum	f	91	\N	\N
-2262	1	2026-06-16	4	600.00	School Curriculum	f	91	\N	\N
-2263	1	2026-06-30	4	600.00	School Curriculum	f	91	\N	\N
-2264	1	2026-07-14	4	600.00	School Curriculum	f	91	\N	\N
-2265	1	2026-07-28	4	600.00	School Curriculum	f	91	\N	\N
-2266	1	2026-08-11	4	600.00	School Curriculum	f	91	\N	\N
-2267	1	2026-08-25	4	600.00	School Curriculum	f	91	\N	\N
-2268	1	2026-09-08	4	600.00	School Curriculum	f	91	\N	\N
-2269	1	2026-09-22	4	600.00	School Curriculum	f	91	\N	\N
-2270	1	2026-10-06	4	600.00	School Curriculum	f	91	\N	\N
-2271	1	2026-10-20	4	600.00	School Curriculum	f	91	\N	\N
-2272	1	2026-11-03	4	600.00	School Curriculum	f	91	\N	\N
-2273	1	2026-11-17	4	600.00	School Curriculum	f	91	\N	\N
-2274	1	2026-12-01	4	600.00	School Curriculum	f	91	\N	\N
-2275	1	2026-12-15	4	600.00	School Curriculum	f	91	\N	\N
-2276	1	2026-12-29	4	600.00	School Curriculum	f	91	\N	\N
-2277	1	2027-01-12	4	600.00	School Curriculum	f	91	\N	\N
-2278	1	2027-01-26	4	600.00	School Curriculum	f	91	\N	\N
-2279	1	2027-02-09	4	600.00	School Curriculum	f	91	\N	\N
-2280	1	2027-02-23	4	600.00	School Curriculum	f	91	\N	\N
-2281	1	2027-03-09	4	600.00	School Curriculum	f	91	\N	\N
-2282	1	2027-03-23	4	600.00	School Curriculum	f	91	\N	\N
-2283	1	2027-04-06	4	600.00	School Curriculum	f	91	\N	\N
-2284	1	2027-04-20	4	600.00	School Curriculum	f	91	\N	\N
-2285	1	2027-05-04	4	600.00	School Curriculum	f	91	\N	\N
-2286	1	2027-05-18	4	600.00	School Curriculum	f	91	\N	\N
-2287	1	2027-06-01	4	600.00	School Curriculum	f	91	\N	\N
-2288	1	2027-06-15	4	600.00	School Curriculum	f	91	\N	\N
-2289	1	2027-06-29	4	600.00	School Curriculum	f	91	\N	\N
-2290	1	2027-07-13	4	600.00	School Curriculum	f	91	\N	\N
-2291	1	2027-07-27	4	600.00	School Curriculum	f	91	\N	\N
-2850	1	2025-11-17	4	100.00	Josh's Birthday	f	114	\N	\N
-2851	1	2025-12-01	4	100.00	Josh's Birthday	f	114	\N	\N
-2852	1	2025-12-15	4	100.00	Josh's Birthday	f	114	\N	\N
-2853	1	2025-12-29	4	100.00	Josh's Birthday	f	114	\N	\N
-2854	1	2026-01-12	4	100.00	Josh's Birthday	f	114	\N	\N
-2855	1	2026-01-26	4	100.00	Josh's Birthday	f	114	\N	\N
-2856	1	2026-02-09	4	100.00	Josh's Birthday	f	114	\N	\N
-2857	1	2026-02-23	4	100.00	Josh's Birthday	f	114	\N	\N
-2858	1	2026-03-09	4	100.00	Josh's Birthday	f	114	\N	\N
-2859	1	2026-03-23	4	100.00	Josh's Birthday	f	114	\N	\N
-2304	1	2025-10-26	4	100.00	Mother's Day	f	92	\N	\N
-2305	1	2025-11-09	4	100.00	Mother's Day	f	92	\N	\N
-2306	1	2025-11-23	4	100.00	Mother's Day	f	92	\N	\N
-2307	1	2025-12-07	4	100.00	Mother's Day	f	92	\N	\N
-2308	1	2025-12-21	4	100.00	Mother's Day	f	92	\N	\N
-2309	1	2026-01-04	4	100.00	Mother's Day	f	92	\N	\N
-2310	1	2026-01-18	4	100.00	Mother's Day	f	92	\N	\N
-2311	1	2026-02-01	4	100.00	Mother's Day	f	92	\N	\N
-2312	1	2026-02-15	4	100.00	Mother's Day	f	92	\N	\N
-2313	1	2026-03-01	4	100.00	Mother's Day	f	92	\N	\N
-2314	1	2026-03-15	4	100.00	Mother's Day	f	92	\N	\N
-2315	1	2026-03-29	4	100.00	Mother's Day	f	92	\N	\N
-2316	1	2026-04-12	4	100.00	Mother's Day	f	92	\N	\N
-2317	1	2026-04-26	4	100.00	Mother's Day	f	92	\N	\N
-2318	1	2026-05-10	4	100.00	Mother's Day	f	92	\N	\N
-2319	1	2026-05-24	4	100.00	Mother's Day	f	92	\N	\N
-2320	1	2026-06-07	4	100.00	Mother's Day	f	92	\N	\N
-2321	1	2026-06-21	4	100.00	Mother's Day	f	92	\N	\N
-2322	1	2026-07-05	4	100.00	Mother's Day	f	92	\N	\N
-2323	1	2026-07-19	4	100.00	Mother's Day	f	92	\N	\N
-2324	1	2026-08-02	4	100.00	Mother's Day	f	92	\N	\N
-2325	1	2026-08-16	4	100.00	Mother's Day	f	92	\N	\N
-2326	1	2026-08-30	4	100.00	Mother's Day	f	92	\N	\N
-2327	1	2026-09-13	4	100.00	Mother's Day	f	92	\N	\N
-2328	1	2026-09-27	4	100.00	Mother's Day	f	92	\N	\N
-2329	1	2026-10-11	4	100.00	Mother's Day	f	92	\N	\N
-2330	1	2026-10-25	4	100.00	Mother's Day	f	92	\N	\N
-2331	1	2026-11-08	4	100.00	Mother's Day	f	92	\N	\N
-2332	1	2026-11-22	4	100.00	Mother's Day	f	92	\N	\N
-2333	1	2026-12-06	4	100.00	Mother's Day	f	92	\N	\N
-2334	1	2026-12-20	4	100.00	Mother's Day	f	92	\N	\N
-2335	1	2027-01-03	4	100.00	Mother's Day	f	92	\N	\N
-2336	1	2027-01-17	4	100.00	Mother's Day	f	92	\N	\N
-2337	1	2027-01-31	4	100.00	Mother's Day	f	92	\N	\N
-2338	1	2027-02-14	4	100.00	Mother's Day	f	92	\N	\N
-2339	1	2027-02-28	4	100.00	Mother's Day	f	92	\N	\N
-2340	1	2027-03-14	4	100.00	Mother's Day	f	92	\N	\N
-2341	1	2027-03-28	4	100.00	Mother's Day	f	92	\N	\N
-2342	1	2027-04-11	4	100.00	Mother's Day	f	92	\N	\N
-2343	1	2027-04-25	4	100.00	Mother's Day	f	92	\N	\N
-2344	1	2027-05-09	4	100.00	Mother's Day	f	92	\N	\N
-2345	1	2027-05-23	4	100.00	Mother's Day	f	92	\N	\N
-2860	1	2026-04-06	4	100.00	Josh's Birthday	f	114	\N	\N
-2861	1	2026-04-20	4	100.00	Josh's Birthday	f	114	\N	\N
-2862	1	2026-05-04	4	100.00	Josh's Birthday	f	114	\N	\N
-2863	1	2026-05-18	4	100.00	Josh's Birthday	f	114	\N	\N
-2864	1	2026-06-01	4	100.00	Josh's Birthday	f	114	\N	\N
-2865	1	2026-06-15	4	100.00	Josh's Birthday	f	114	\N	\N
-2866	1	2026-06-29	4	100.00	Josh's Birthday	f	114	\N	\N
-2867	1	2026-07-13	4	100.00	Josh's Birthday	f	114	\N	\N
-2868	1	2026-07-27	4	100.00	Josh's Birthday	f	114	\N	\N
-2869	1	2026-08-10	4	100.00	Josh's Birthday	f	114	\N	\N
-2870	1	2026-08-24	4	100.00	Josh's Birthday	f	114	\N	\N
-2871	1	2026-09-07	4	100.00	Josh's Birthday	f	114	\N	\N
-2872	1	2026-09-21	4	100.00	Josh's Birthday	f	114	\N	\N
-2873	1	2026-10-05	4	100.00	Josh's Birthday	f	114	\N	\N
-2874	1	2026-10-19	4	100.00	Josh's Birthday	f	114	\N	\N
-2875	1	2026-11-02	4	100.00	Josh's Birthday	f	114	\N	\N
-2876	1	2026-11-16	4	100.00	Josh's Birthday	f	114	\N	\N
-2877	1	2026-11-30	4	100.00	Josh's Birthday	f	114	\N	\N
-2878	1	2026-12-14	4	100.00	Josh's Birthday	f	114	\N	\N
-2879	1	2026-12-28	4	100.00	Josh's Birthday	f	114	\N	\N
-2880	1	2027-01-11	4	100.00	Josh's Birthday	f	114	\N	\N
-2881	1	2027-01-25	4	100.00	Josh's Birthday	f	114	\N	\N
-2882	1	2027-02-08	4	100.00	Josh's Birthday	f	114	\N	\N
-2883	1	2027-02-22	4	100.00	Josh's Birthday	f	114	\N	\N
-2884	1	2027-03-08	4	100.00	Josh's Birthday	f	114	\N	\N
-2885	1	2027-03-22	4	100.00	Josh's Birthday	f	114	\N	\N
+2950	1	2025-08-01	6	1670.20	Mortgage	f	137	\N	\N
+2951	1	2025-09-01	6	1670.20	Mortgage	f	137	\N	\N
+2952	1	2025-10-01	6	1670.20	Mortgage	f	137	\N	\N
+2953	1	2025-11-01	6	1670.20	Mortgage	f	137	\N	\N
+2954	1	2025-12-01	6	1670.20	Mortgage	f	137	\N	\N
+2955	1	2026-01-01	6	1670.20	Mortgage	f	137	\N	\N
+2956	1	2026-02-01	6	1670.20	Mortgage	f	137	\N	\N
+2957	1	2026-03-01	6	1670.20	Mortgage	f	137	\N	\N
+2958	1	2026-04-01	6	1670.20	Mortgage	f	137	\N	\N
+2959	1	2026-05-01	6	1670.20	Mortgage	f	137	\N	\N
+2960	1	2026-06-01	6	1670.20	Mortgage	f	137	\N	\N
+2961	1	2026-07-01	6	1670.20	Mortgage	f	137	\N	\N
+2962	1	2026-08-01	6	1670.20	Mortgage	f	137	\N	\N
+2963	1	2026-09-01	6	1670.20	Mortgage	f	137	\N	\N
+2964	1	2026-10-01	6	1670.20	Mortgage	f	137	\N	\N
+2965	1	2026-11-01	6	1670.20	Mortgage	f	137	\N	\N
+2966	1	2026-12-01	6	1670.20	Mortgage	f	137	\N	\N
+2946	1	2025-04-01	6	1670.20	Mortgage	f	137	\N	7105
+2947	1	2025-05-01	6	1670.20	Mortgage	f	137	\N	7107
+2948	1	2025-06-01	6	1670.20	Mortgage	f	137	\N	7109
+2949	1	2025-07-01	6	1670.20	Mortgage	f	137	\N	7111
+2945	1	2025-03-13	2	1551.78	Credit Card	t	\N		7104
+2927	1	2026-07-01	4	600.00	School Curriculum	f	129	\N	\N
+2928	1	2027-07-01	4	600.00	School Curriculum	f	129	\N	\N
+2940	1	2026-03-20	5	55.00	Sam's Club Membership	f	134	\N	\N
+2941	1	2027-03-20	5	55.00	Sam's Club Membership	f	134	\N	\N
+2939	1	2025-03-20	5	55.00	Sam's Club Membership	f	134	\N	7112
 68	1	2025-05-08	1	80.00	Gas	f	21	\N	7108
-2833	1	2025-03-24	4	100.00	Josh's Birthday	f	114	\N	7104
 60	1	2025-06-15	3	18.14	Apple Music	f	24	\N	7110
 69	1	2025-05-22	1	80.00	Gas	f	21	\N	7109
 70	1	2025-06-05	1	80.00	Gas	f	21	\N	7110
@@ -1831,235 +1637,14 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 123	1	2025-07-03	5	400.00	Groceries	f	23	\N	7111
 235	1	2025-07-01	1	183.49	Geico Car Insurance	f	26	\N	7111
 1047	1	2025-07-03	4	40.00	Josh's Spending Money	f	46	\N	7111
-2356	1	2025-10-29	4	100.00	Father's Day	f	93	\N	\N
-2357	1	2025-11-12	4	100.00	Father's Day	f	93	\N	\N
-2358	1	2025-11-26	4	100.00	Father's Day	f	93	\N	\N
-2359	1	2025-12-10	4	100.00	Father's Day	f	93	\N	\N
-2360	1	2025-12-24	4	100.00	Father's Day	f	93	\N	\N
-2361	1	2026-01-07	4	100.00	Father's Day	f	93	\N	\N
-2362	1	2026-01-21	4	100.00	Father's Day	f	93	\N	\N
-2363	1	2026-02-04	4	100.00	Father's Day	f	93	\N	\N
-2364	1	2026-02-18	4	100.00	Father's Day	f	93	\N	\N
-2365	1	2026-03-04	4	100.00	Father's Day	f	93	\N	\N
-2366	1	2026-03-18	4	100.00	Father's Day	f	93	\N	\N
-2367	1	2026-04-01	4	100.00	Father's Day	f	93	\N	\N
-2368	1	2026-04-15	4	100.00	Father's Day	f	93	\N	\N
-2369	1	2026-04-29	4	100.00	Father's Day	f	93	\N	\N
-2370	1	2026-05-13	4	100.00	Father's Day	f	93	\N	\N
-2371	1	2026-05-27	4	100.00	Father's Day	f	93	\N	\N
-2372	1	2026-06-10	4	100.00	Father's Day	f	93	\N	\N
-2373	1	2026-06-24	4	100.00	Father's Day	f	93	\N	\N
-2374	1	2026-07-08	4	100.00	Father's Day	f	93	\N	\N
-2375	1	2026-07-22	4	100.00	Father's Day	f	93	\N	\N
-2376	1	2026-08-05	4	100.00	Father's Day	f	93	\N	\N
-2377	1	2026-08-19	4	100.00	Father's Day	f	93	\N	\N
-2378	1	2026-09-02	4	100.00	Father's Day	f	93	\N	\N
-2379	1	2026-09-16	4	100.00	Father's Day	f	93	\N	\N
-2380	1	2026-09-30	4	100.00	Father's Day	f	93	\N	\N
-2381	1	2026-10-14	4	100.00	Father's Day	f	93	\N	\N
-2382	1	2026-10-28	4	100.00	Father's Day	f	93	\N	\N
-2383	1	2026-11-11	4	100.00	Father's Day	f	93	\N	\N
-2384	1	2026-11-25	4	100.00	Father's Day	f	93	\N	\N
-2385	1	2026-12-09	4	100.00	Father's Day	f	93	\N	\N
-2386	1	2026-12-23	4	100.00	Father's Day	f	93	\N	\N
-2387	1	2027-01-06	4	100.00	Father's Day	f	93	\N	\N
-2388	1	2027-01-20	4	100.00	Father's Day	f	93	\N	\N
-2389	1	2027-02-03	4	100.00	Father's Day	f	93	\N	\N
-2390	1	2027-02-17	4	100.00	Father's Day	f	93	\N	\N
-2391	1	2027-03-03	4	100.00	Father's Day	f	93	\N	\N
-2392	1	2027-03-17	4	100.00	Father's Day	f	93	\N	\N
-2393	1	2027-03-31	4	100.00	Father's Day	f	93	\N	\N
-2394	1	2027-04-14	4	100.00	Father's Day	f	93	\N	\N
-2395	1	2027-04-28	4	100.00	Father's Day	f	93	\N	\N
-2396	1	2027-05-12	4	100.00	Father's Day	f	93	\N	\N
-2397	1	2027-05-26	4	100.00	Father's Day	f	93	\N	\N
-2398	1	2027-06-09	4	100.00	Father's Day	f	93	\N	\N
-2399	1	2027-06-23	4	100.00	Father's Day	f	93	\N	\N
-2401	1	2025-11-01	4	100.00	Wedding Anniversary	f	94	\N	\N
-2402	1	2025-11-15	4	100.00	Wedding Anniversary	f	94	\N	\N
-2403	1	2025-11-29	4	100.00	Wedding Anniversary	f	94	\N	\N
-2404	1	2025-12-13	4	100.00	Wedding Anniversary	f	94	\N	\N
-2405	1	2025-12-27	4	100.00	Wedding Anniversary	f	94	\N	\N
-2406	1	2026-01-10	4	100.00	Wedding Anniversary	f	94	\N	\N
-2407	1	2026-01-24	4	100.00	Wedding Anniversary	f	94	\N	\N
-2408	1	2026-02-07	4	100.00	Wedding Anniversary	f	94	\N	\N
-2409	1	2026-02-21	4	100.00	Wedding Anniversary	f	94	\N	\N
-2410	1	2026-03-07	4	100.00	Wedding Anniversary	f	94	\N	\N
-2411	1	2026-03-21	4	100.00	Wedding Anniversary	f	94	\N	\N
-2412	1	2026-04-04	4	100.00	Wedding Anniversary	f	94	\N	\N
-2413	1	2026-04-18	4	100.00	Wedding Anniversary	f	94	\N	\N
-2414	1	2026-05-02	4	100.00	Wedding Anniversary	f	94	\N	\N
-2415	1	2026-05-16	4	100.00	Wedding Anniversary	f	94	\N	\N
-2416	1	2026-05-30	4	100.00	Wedding Anniversary	f	94	\N	\N
-2417	1	2026-06-13	4	100.00	Wedding Anniversary	f	94	\N	\N
-2418	1	2026-06-27	4	100.00	Wedding Anniversary	f	94	\N	\N
-2419	1	2026-07-11	4	100.00	Wedding Anniversary	f	94	\N	\N
-2420	1	2026-07-25	4	100.00	Wedding Anniversary	f	94	\N	\N
-2421	1	2026-08-08	4	100.00	Wedding Anniversary	f	94	\N	\N
-2422	1	2026-08-22	4	100.00	Wedding Anniversary	f	94	\N	\N
-2423	1	2026-09-05	4	100.00	Wedding Anniversary	f	94	\N	\N
-2424	1	2026-09-19	4	100.00	Wedding Anniversary	f	94	\N	\N
-2425	1	2026-10-03	4	100.00	Wedding Anniversary	f	94	\N	\N
-2426	1	2026-10-17	4	100.00	Wedding Anniversary	f	94	\N	\N
-2427	1	2026-10-31	4	100.00	Wedding Anniversary	f	94	\N	\N
-2428	1	2026-11-14	4	100.00	Wedding Anniversary	f	94	\N	\N
-2429	1	2026-11-28	4	100.00	Wedding Anniversary	f	94	\N	\N
-2430	1	2026-12-12	4	100.00	Wedding Anniversary	f	94	\N	\N
-2431	1	2026-12-26	4	100.00	Wedding Anniversary	f	94	\N	\N
-2432	1	2027-01-09	4	100.00	Wedding Anniversary	f	94	\N	\N
-2433	1	2027-01-23	4	100.00	Wedding Anniversary	f	94	\N	\N
-2434	1	2027-02-06	4	100.00	Wedding Anniversary	f	94	\N	\N
-2435	1	2027-02-20	4	100.00	Wedding Anniversary	f	94	\N	\N
-2436	1	2027-03-06	4	100.00	Wedding Anniversary	f	94	\N	\N
-2437	1	2027-03-20	4	100.00	Wedding Anniversary	f	94	\N	\N
-2438	1	2027-04-03	4	100.00	Wedding Anniversary	f	94	\N	\N
-2439	1	2027-04-17	4	100.00	Wedding Anniversary	f	94	\N	\N
-2440	1	2027-05-01	4	100.00	Wedding Anniversary	f	94	\N	\N
-2441	1	2027-05-15	4	100.00	Wedding Anniversary	f	94	\N	\N
-2442	1	2027-05-29	4	100.00	Wedding Anniversary	f	94	\N	\N
-2443	1	2027-06-12	4	100.00	Wedding Anniversary	f	94	\N	\N
-2444	1	2027-06-26	4	100.00	Wedding Anniversary	f	94	\N	\N
-2445	1	2027-07-10	4	100.00	Wedding Anniversary	f	94	\N	\N
-2446	1	2027-07-24	4	100.00	Wedding Anniversary	f	94	\N	\N
-2447	1	2027-08-07	4	100.00	Wedding Anniversary	f	94	\N	\N
-2448	1	2027-08-21	4	100.00	Wedding Anniversary	f	94	\N	\N
-2449	1	2027-09-04	4	100.00	Wedding Anniversary	f	94	\N	\N
-2450	1	2027-09-18	4	100.00	Wedding Anniversary	f	94	\N	\N
-2451	1	2027-10-02	4	100.00	Wedding Anniversary	f	94	\N	\N
-2452	1	2027-10-16	4	100.00	Wedding Anniversary	f	94	\N	\N
-2453	1	2027-10-30	4	100.00	Wedding Anniversary	f	94	\N	\N
-2454	1	2025-11-11	7	1300.00	Josh's New Phone	f	95	\N	\N
-2455	1	2025-12-09	7	1300.00	Josh's New Phone	f	95	\N	\N
-2456	1	2026-01-06	7	1300.00	Josh's New Phone	f	95	\N	\N
-2457	1	2026-02-03	7	1300.00	Josh's New Phone	f	95	\N	\N
-2458	1	2026-03-03	7	1300.00	Josh's New Phone	f	95	\N	\N
-2459	1	2026-03-31	7	1300.00	Josh's New Phone	f	95	\N	\N
-2460	1	2026-04-28	7	1300.00	Josh's New Phone	f	95	\N	\N
-2461	1	2026-05-26	7	1300.00	Josh's New Phone	f	95	\N	\N
-2462	1	2026-06-23	7	1300.00	Josh's New Phone	f	95	\N	\N
-2463	1	2026-07-21	7	1300.00	Josh's New Phone	f	95	\N	\N
-2464	1	2026-08-18	7	1300.00	Josh's New Phone	f	95	\N	\N
-2465	1	2026-09-15	7	1300.00	Josh's New Phone	f	95	\N	\N
-2466	1	2026-10-13	7	1300.00	Josh's New Phone	f	95	\N	\N
-2467	1	2026-11-10	7	1300.00	Josh's New Phone	f	95	\N	\N
-2468	1	2026-12-08	7	1300.00	Josh's New Phone	f	95	\N	\N
-2469	1	2027-01-05	7	1300.00	Josh's New Phone	f	95	\N	\N
-2470	1	2027-02-02	7	1300.00	Josh's New Phone	f	95	\N	\N
-2471	1	2027-03-02	7	1300.00	Josh's New Phone	f	95	\N	\N
-2472	1	2027-03-30	7	1300.00	Josh's New Phone	f	95	\N	\N
-2473	1	2027-04-27	7	1300.00	Josh's New Phone	f	95	\N	\N
-2474	1	2027-05-25	7	1300.00	Josh's New Phone	f	95	\N	\N
-2475	1	2027-06-22	7	1300.00	Josh's New Phone	f	95	\N	\N
-2476	1	2027-07-20	7	1300.00	Josh's New Phone	f	95	\N	\N
-2477	1	2027-08-17	7	1300.00	Josh's New Phone	f	95	\N	\N
-2478	1	2027-09-14	7	1300.00	Josh's New Phone	f	95	\N	\N
-2479	1	2027-10-12	7	1300.00	Josh's New Phone	f	95	\N	\N
-2480	1	2027-11-09	7	1300.00	Josh's New Phone	f	95	\N	\N
-2487	1	2025-11-03	7	287.88	Proton Family	f	96	\N	\N
-2488	1	2025-11-17	7	287.88	Proton Family	f	96	\N	\N
-2489	1	2025-12-01	7	287.88	Proton Family	f	96	\N	\N
-2490	1	2025-12-15	7	287.88	Proton Family	f	96	\N	\N
-2491	1	2025-12-29	7	287.88	Proton Family	f	96	\N	\N
-2492	1	2026-01-12	7	287.88	Proton Family	f	96	\N	\N
-2493	1	2026-01-26	7	287.88	Proton Family	f	96	\N	\N
-2494	1	2026-02-09	7	287.88	Proton Family	f	96	\N	\N
-2495	1	2026-02-23	7	287.88	Proton Family	f	96	\N	\N
-2496	1	2026-03-09	7	287.88	Proton Family	f	96	\N	\N
-2497	1	2026-03-23	7	287.88	Proton Family	f	96	\N	\N
-2498	1	2026-04-06	7	287.88	Proton Family	f	96	\N	\N
-2499	1	2026-04-20	7	287.88	Proton Family	f	96	\N	\N
-2500	1	2026-05-04	7	287.88	Proton Family	f	96	\N	\N
-2501	1	2026-05-18	7	287.88	Proton Family	f	96	\N	\N
-2502	1	2026-06-01	7	287.88	Proton Family	f	96	\N	\N
-2503	1	2026-06-15	7	287.88	Proton Family	f	96	\N	\N
-2504	1	2026-06-29	7	287.88	Proton Family	f	96	\N	\N
-2505	1	2026-07-13	7	287.88	Proton Family	f	96	\N	\N
-2506	1	2026-07-27	7	287.88	Proton Family	f	96	\N	\N
-2507	1	2026-08-10	7	287.88	Proton Family	f	96	\N	\N
-2508	1	2026-08-24	7	287.88	Proton Family	f	96	\N	\N
-2509	1	2026-09-07	7	287.88	Proton Family	f	96	\N	\N
-2510	1	2026-09-21	7	287.88	Proton Family	f	96	\N	\N
-2511	1	2026-10-05	7	287.88	Proton Family	f	96	\N	\N
-2512	1	2026-10-19	7	287.88	Proton Family	f	96	\N	\N
-2513	1	2026-11-02	7	287.88	Proton Family	f	96	\N	\N
-2514	1	2026-11-16	7	287.88	Proton Family	f	96	\N	\N
-2515	1	2026-11-30	7	287.88	Proton Family	f	96	\N	\N
-2516	1	2026-12-14	7	287.88	Proton Family	f	96	\N	\N
-2517	1	2026-12-28	7	287.88	Proton Family	f	96	\N	\N
-2518	1	2027-01-11	7	287.88	Proton Family	f	96	\N	\N
-2519	1	2027-01-25	7	287.88	Proton Family	f	96	\N	\N
-2520	1	2027-02-08	7	287.88	Proton Family	f	96	\N	\N
-2521	1	2027-02-22	7	287.88	Proton Family	f	96	\N	\N
-2522	1	2027-03-08	7	287.88	Proton Family	f	96	\N	\N
-2523	1	2027-03-22	7	287.88	Proton Family	f	96	\N	\N
-2524	1	2027-04-05	7	287.88	Proton Family	f	96	\N	\N
-2525	1	2027-04-19	7	287.88	Proton Family	f	96	\N	\N
-2526	1	2027-05-03	7	287.88	Proton Family	f	96	\N	\N
-2527	1	2027-05-17	7	287.88	Proton Family	f	96	\N	\N
-2528	1	2027-05-31	7	287.88	Proton Family	f	96	\N	\N
-2529	1	2027-06-14	7	287.88	Proton Family	f	96	\N	\N
-2530	1	2027-06-28	7	287.88	Proton Family	f	96	\N	\N
-2531	1	2027-07-12	7	287.88	Proton Family	f	96	\N	\N
-2532	1	2027-07-26	7	287.88	Proton Family	f	96	\N	\N
-2533	1	2027-08-09	7	287.88	Proton Family	f	96	\N	\N
-2481	1	2025-08-11	7	287.88	Proton Family	f	96	\N	\N
-2482	1	2025-08-25	7	287.88	Proton Family	f	96	\N	\N
-2483	1	2025-09-08	7	287.88	Proton Family	f	96	\N	\N
-2484	1	2025-09-22	7	287.88	Proton Family	f	96	\N	\N
-2485	1	2025-10-06	7	287.88	Proton Family	f	96	\N	\N
-2486	1	2025-10-20	7	287.88	Proton Family	f	96	\N	\N
-2534	1	2026-03-01	4	55.00	BJ's Club Membership	f	97	\N	\N
 983	1	2026-03-01	4	400.00	Children's Clothes	f	44	\N	\N
 984	1	2026-09-01	4	400.00	Children's Clothes	f	44	\N	\N
 985	1	2027-03-01	4	400.00	Children's Clothes	f	44	\N	\N
 986	1	2027-09-01	4	400.00	Children's Clothes	f	44	\N	\N
-2535	1	2026-03-15	4	55.00	BJ's Club Membership	f	97	\N	\N
-2536	1	2026-03-29	4	55.00	BJ's Club Membership	f	97	\N	\N
-2537	1	2026-04-12	4	55.00	BJ's Club Membership	f	97	\N	\N
-2538	1	2026-04-26	4	55.00	BJ's Club Membership	f	97	\N	\N
-2539	1	2026-05-10	4	55.00	BJ's Club Membership	f	97	\N	\N
-2540	1	2026-05-24	4	55.00	BJ's Club Membership	f	97	\N	\N
-2541	1	2026-06-07	4	55.00	BJ's Club Membership	f	97	\N	\N
-2542	1	2026-06-21	4	55.00	BJ's Club Membership	f	97	\N	\N
-2543	1	2026-07-05	4	55.00	BJ's Club Membership	f	97	\N	\N
-2544	1	2026-07-19	4	55.00	BJ's Club Membership	f	97	\N	\N
-2545	1	2026-08-02	4	55.00	BJ's Club Membership	f	97	\N	\N
-2546	1	2026-08-16	4	55.00	BJ's Club Membership	f	97	\N	\N
-2547	1	2026-08-30	4	55.00	BJ's Club Membership	f	97	\N	\N
-2548	1	2026-09-13	4	55.00	BJ's Club Membership	f	97	\N	\N
-2549	1	2026-09-27	4	55.00	BJ's Club Membership	f	97	\N	\N
-2550	1	2026-10-11	4	55.00	BJ's Club Membership	f	97	\N	\N
-2551	1	2026-10-25	4	55.00	BJ's Club Membership	f	97	\N	\N
-2552	1	2026-11-08	4	55.00	BJ's Club Membership	f	97	\N	\N
-2553	1	2026-11-22	4	55.00	BJ's Club Membership	f	97	\N	\N
-2554	1	2026-12-06	4	55.00	BJ's Club Membership	f	97	\N	\N
-2555	1	2026-12-20	4	55.00	BJ's Club Membership	f	97	\N	\N
-2556	1	2027-01-03	4	55.00	BJ's Club Membership	f	97	\N	\N
-2557	1	2027-01-17	4	55.00	BJ's Club Membership	f	97	\N	\N
-2558	1	2027-01-31	4	55.00	BJ's Club Membership	f	97	\N	\N
-2559	1	2027-02-14	4	55.00	BJ's Club Membership	f	97	\N	\N
-2560	1	2027-02-28	4	55.00	BJ's Club Membership	f	97	\N	\N
 1043	1	2025-05-08	4	40.00	Josh's Spending Money	f	46	\N	7108
 1044	1	2025-05-22	4	40.00	Josh's Spending Money	f	46	\N	7109
 1048	1	2025-07-17	4	40.00	Josh's Spending Money	f	46	\N	7111
 1049	1	2025-07-31	4	40.00	Josh's Spending Money	f	46	\N	7111
-2577	1	2025-10-30	4	100.00	Sam's Club Membership	f	98	\N	\N
-2578	1	2025-11-13	4	100.00	Sam's Club Membership	f	98	\N	\N
-2579	1	2025-11-27	4	100.00	Sam's Club Membership	f	98	\N	\N
-2580	1	2025-12-11	4	100.00	Sam's Club Membership	f	98	\N	\N
-2581	1	2025-12-25	4	100.00	Sam's Club Membership	f	98	\N	\N
-2582	1	2026-01-08	4	100.00	Sam's Club Membership	f	98	\N	\N
-2583	1	2026-01-22	4	100.00	Sam's Club Membership	f	98	\N	\N
-2584	1	2026-02-05	4	100.00	Sam's Club Membership	f	98	\N	\N
-2585	1	2026-02-19	4	100.00	Sam's Club Membership	f	98	\N	\N
-2586	1	2026-03-05	4	100.00	Sam's Club Membership	f	98	\N	\N
-2587	1	2026-03-19	4	100.00	Sam's Club Membership	f	98	\N	\N
-2588	1	2026-04-02	4	100.00	Sam's Club Membership	f	98	\N	\N
-2589	1	2026-04-16	4	100.00	Sam's Club Membership	f	98	\N	\N
-2590	1	2026-04-30	4	100.00	Sam's Club Membership	f	98	\N	\N
-2591	1	2026-05-14	4	100.00	Sam's Club Membership	f	98	\N	\N
-2592	1	2026-05-28	4	100.00	Sam's Club Membership	f	98	\N	\N
-2593	1	2026-06-11	4	100.00	Sam's Club Membership	f	98	\N	\N
 1055	1	2025-10-23	4	40.00	Josh's Spending Money	f	46	\N	\N
 1056	1	2025-11-06	4	40.00	Josh's Spending Money	f	46	\N	\N
 1057	1	2025-11-20	4	40.00	Josh's Spending Money	f	46	\N	\N
@@ -2102,11 +1687,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1093	1	2027-04-08	4	40.00	Josh's Spending Money	f	46	\N	\N
 1098	1	2025-05-08	4	60.00	Kayla's Spending Money	f	47	\N	7108
 1099	1	2025-05-22	4	60.00	Kayla's Spending Money	f	47	\N	7109
-2594	1	2026-06-25	4	100.00	Sam's Club Membership	f	98	\N	\N
-2595	1	2026-07-09	4	100.00	Sam's Club Membership	f	98	\N	\N
-2596	1	2026-07-23	4	100.00	Sam's Club Membership	f	98	\N	\N
-2597	1	2026-08-06	4	100.00	Sam's Club Membership	f	98	\N	\N
-2598	1	2026-08-20	4	100.00	Sam's Club Membership	f	98	\N	\N
 1100	1	2025-06-05	4	60.00	Kayla's Spending Money	f	47	\N	7110
 1101	1	2025-06-19	4	60.00	Kayla's Spending Money	f	47	\N	7111
 1102	1	2025-07-03	4	60.00	Kayla's Spending Money	f	47	\N	7111
@@ -2151,122 +1731,8 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1146	1	2027-03-11	4	60.00	Kayla's Spending Money	f	47	\N	\N
 1147	1	2027-03-25	4	60.00	Kayla's Spending Money	f	47	\N	\N
 1148	1	2027-04-08	4	60.00	Kayla's Spending Money	f	47	\N	\N
-2599	1	2026-09-03	4	100.00	Sam's Club Membership	f	98	\N	\N
-2600	1	2026-09-17	4	100.00	Sam's Club Membership	f	98	\N	\N
-2601	1	2026-10-01	4	100.00	Sam's Club Membership	f	98	\N	\N
-2602	1	2026-10-15	4	100.00	Sam's Club Membership	f	98	\N	\N
-2603	1	2026-10-29	4	100.00	Sam's Club Membership	f	98	\N	\N
-2604	1	2026-11-12	4	100.00	Sam's Club Membership	f	98	\N	\N
-2605	1	2026-11-26	4	100.00	Sam's Club Membership	f	98	\N	\N
-2606	1	2026-12-10	4	100.00	Sam's Club Membership	f	98	\N	\N
-2607	1	2026-12-24	4	100.00	Sam's Club Membership	f	98	\N	\N
-2608	1	2027-01-07	4	100.00	Sam's Club Membership	f	98	\N	\N
-2609	1	2027-01-21	4	100.00	Sam's Club Membership	f	98	\N	\N
-2610	1	2027-02-04	4	100.00	Sam's Club Membership	f	98	\N	\N
-2611	1	2027-02-18	4	100.00	Sam's Club Membership	f	98	\N	\N
-2612	1	2027-03-04	4	100.00	Sam's Club Membership	f	98	\N	\N
-2613	1	2027-03-18	4	100.00	Sam's Club Membership	f	98	\N	\N
-2614	1	2027-04-01	4	100.00	Sam's Club Membership	f	98	\N	\N
 2615	1	2027-03-11	7	1300.00	Kayla's New Phone	f	99	\N	\N
-2669	1	2026-02-22	4	100.00	Knox's Birthday	f	101	\N	\N
-2670	1	2026-03-08	4	100.00	Knox's Birthday	f	101	\N	\N
-2671	1	2026-03-22	4	100.00	Knox's Birthday	f	101	\N	\N
-2672	1	2026-04-05	4	100.00	Knox's Birthday	f	101	\N	\N
-2673	1	2026-04-19	4	100.00	Knox's Birthday	f	101	\N	\N
-2674	1	2026-05-03	4	100.00	Knox's Birthday	f	101	\N	\N
-2675	1	2026-05-17	4	100.00	Knox's Birthday	f	101	\N	\N
-2676	1	2026-05-31	4	100.00	Knox's Birthday	f	101	\N	\N
-2677	1	2026-06-14	4	100.00	Knox's Birthday	f	101	\N	\N
-2678	1	2026-06-28	4	100.00	Knox's Birthday	f	101	\N	\N
-2679	1	2026-07-12	4	100.00	Knox's Birthday	f	101	\N	\N
-2680	1	2026-07-26	4	100.00	Knox's Birthday	f	101	\N	\N
-2681	1	2026-08-09	4	100.00	Knox's Birthday	f	101	\N	\N
-2682	1	2026-08-23	4	100.00	Knox's Birthday	f	101	\N	\N
-2683	1	2026-09-06	4	100.00	Knox's Birthday	f	101	\N	\N
-2684	1	2026-09-20	4	100.00	Knox's Birthday	f	101	\N	\N
-2685	1	2026-10-04	4	100.00	Knox's Birthday	f	101	\N	\N
-2686	1	2026-10-18	4	100.00	Knox's Birthday	f	101	\N	\N
-2687	1	2026-11-01	4	100.00	Knox's Birthday	f	101	\N	\N
-2688	1	2026-11-15	4	100.00	Knox's Birthday	f	101	\N	\N
-2689	1	2026-11-29	4	100.00	Knox's Birthday	f	101	\N	\N
-2690	1	2026-12-13	4	100.00	Knox's Birthday	f	101	\N	\N
-2691	1	2026-12-27	4	100.00	Knox's Birthday	f	101	\N	\N
-2692	1	2027-01-10	4	100.00	Knox's Birthday	f	101	\N	\N
-2693	1	2027-01-24	4	100.00	Knox's Birthday	f	101	\N	\N
-2694	1	2027-02-07	4	100.00	Knox's Birthday	f	101	\N	\N
-2695	1	2027-02-21	4	100.00	Knox's Birthday	f	101	\N	\N
-2696	1	2026-02-14	4	100.00	Valentine's Day	f	102	\N	\N
-2697	1	2026-02-28	4	100.00	Valentine's Day	f	102	\N	\N
-2698	1	2026-03-14	4	100.00	Valentine's Day	f	102	\N	\N
-2699	1	2026-03-28	4	100.00	Valentine's Day	f	102	\N	\N
-2700	1	2026-04-11	4	100.00	Valentine's Day	f	102	\N	\N
-2701	1	2026-04-25	4	100.00	Valentine's Day	f	102	\N	\N
-2702	1	2026-05-09	4	100.00	Valentine's Day	f	102	\N	\N
-2703	1	2026-05-23	4	100.00	Valentine's Day	f	102	\N	\N
-2704	1	2026-06-06	4	100.00	Valentine's Day	f	102	\N	\N
-2705	1	2026-06-20	4	100.00	Valentine's Day	f	102	\N	\N
-2706	1	2026-07-04	4	100.00	Valentine's Day	f	102	\N	\N
-2707	1	2026-07-18	4	100.00	Valentine's Day	f	102	\N	\N
-2708	1	2026-08-01	4	100.00	Valentine's Day	f	102	\N	\N
-2709	1	2026-08-15	4	100.00	Valentine's Day	f	102	\N	\N
-2710	1	2026-08-29	4	100.00	Valentine's Day	f	102	\N	\N
-2711	1	2026-09-12	4	100.00	Valentine's Day	f	102	\N	\N
-2712	1	2026-09-26	4	100.00	Valentine's Day	f	102	\N	\N
-2713	1	2026-10-10	4	100.00	Valentine's Day	f	102	\N	\N
-2714	1	2026-10-24	4	100.00	Valentine's Day	f	102	\N	\N
-2715	1	2026-11-07	4	100.00	Valentine's Day	f	102	\N	\N
-2716	1	2026-11-21	4	100.00	Valentine's Day	f	102	\N	\N
-2717	1	2026-12-05	4	100.00	Valentine's Day	f	102	\N	\N
-2718	1	2026-12-19	4	100.00	Valentine's Day	f	102	\N	\N
-2719	1	2027-01-02	4	100.00	Valentine's Day	f	102	\N	\N
-2720	1	2027-01-16	4	100.00	Valentine's Day	f	102	\N	\N
-2721	1	2027-01-30	4	100.00	Valentine's Day	f	102	\N	\N
-2722	1	2027-02-13	4	100.00	Valentine's Day	f	102	\N	\N
-2723	1	2027-02-27	4	100.00	Valentine's Day	f	102	\N	\N
-2738	1	2025-10-24	4	200.00	Strawberry Picking	f	103	\N	\N
-2739	1	2025-11-07	4	200.00	Strawberry Picking	f	103	\N	\N
-2740	1	2025-11-21	4	200.00	Strawberry Picking	f	103	\N	\N
-2741	1	2025-12-05	4	200.00	Strawberry Picking	f	103	\N	\N
-2742	1	2025-12-19	4	200.00	Strawberry Picking	f	103	\N	\N
-2743	1	2026-01-02	4	200.00	Strawberry Picking	f	103	\N	\N
-2744	1	2026-01-16	4	200.00	Strawberry Picking	f	103	\N	\N
-2745	1	2026-01-30	4	200.00	Strawberry Picking	f	103	\N	\N
-2746	1	2026-02-13	4	200.00	Strawberry Picking	f	103	\N	\N
-2747	1	2026-02-27	4	200.00	Strawberry Picking	f	103	\N	\N
-2748	1	2026-03-13	4	200.00	Strawberry Picking	f	103	\N	\N
-2749	1	2026-03-27	4	200.00	Strawberry Picking	f	103	\N	\N
-2750	1	2026-04-10	4	200.00	Strawberry Picking	f	103	\N	\N
-2751	1	2026-04-24	4	200.00	Strawberry Picking	f	103	\N	\N
-2752	1	2026-05-08	4	200.00	Strawberry Picking	f	103	\N	\N
-2753	1	2026-05-22	4	200.00	Strawberry Picking	f	103	\N	\N
-2754	1	2026-06-05	4	200.00	Strawberry Picking	f	103	\N	\N
-2755	1	2026-06-19	4	200.00	Strawberry Picking	f	103	\N	\N
-2756	1	2026-07-03	4	200.00	Strawberry Picking	f	103	\N	\N
-2757	1	2026-07-17	4	200.00	Strawberry Picking	f	103	\N	\N
-2758	1	2026-07-31	4	200.00	Strawberry Picking	f	103	\N	\N
-2759	1	2026-08-14	4	200.00	Strawberry Picking	f	103	\N	\N
-2760	1	2026-08-28	4	200.00	Strawberry Picking	f	103	\N	\N
-2761	1	2026-09-11	4	200.00	Strawberry Picking	f	103	\N	\N
-2762	1	2026-09-25	4	200.00	Strawberry Picking	f	103	\N	\N
-2763	1	2026-10-09	4	200.00	Strawberry Picking	f	103	\N	\N
-2764	1	2026-10-23	4	200.00	Strawberry Picking	f	103	\N	\N
-2765	1	2026-11-06	4	200.00	Strawberry Picking	f	103	\N	\N
-2766	1	2026-11-20	4	200.00	Strawberry Picking	f	103	\N	\N
-2767	1	2026-12-04	4	200.00	Strawberry Picking	f	103	\N	\N
-2768	1	2026-12-18	4	200.00	Strawberry Picking	f	103	\N	\N
-2769	1	2027-01-01	4	200.00	Strawberry Picking	f	103	\N	\N
-2770	1	2027-01-15	4	200.00	Strawberry Picking	f	103	\N	\N
-2771	1	2027-01-29	4	200.00	Strawberry Picking	f	103	\N	\N
-2772	1	2027-02-12	4	200.00	Strawberry Picking	f	103	\N	\N
-2773	1	2027-02-26	4	200.00	Strawberry Picking	f	103	\N	\N
-2774	1	2027-03-12	4	200.00	Strawberry Picking	f	103	\N	\N
-2775	1	2027-03-26	4	200.00	Strawberry Picking	f	103	\N	\N
-2776	1	2027-04-09	4	200.00	Strawberry Picking	f	103	\N	\N
 2073	1	2025-05-01	4	100.00	Kayla's Birthday	f	87	\N	7107
-2724	1	2025-04-11	4	200.00	Strawberry Picking	f	103	\N	7106
-2725	1	2025-04-25	4	200.00	Strawberry Picking	f	103	\N	7107
-2726	1	2025-05-09	4	200.00	Strawberry Picking	f	103	\N	7108
-2561	1	2025-03-11	4	55.00	Sam's Club Membership	f	98		7104
 2057	1	2025-03-13	1	100.00	Mower Maintenance	f	81	\N	7112
 62	1	2025-08-15	3	18.14	Apple Music	f	24	\N	\N
 63	1	2025-09-15	3	18.14	Apple Music	f	24	\N	\N
@@ -2328,15 +1794,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 78	1	2025-09-25	1	80.00	Gas	f	21	\N	\N
 79	1	2025-10-09	1	80.00	Gas	f	21	\N	\N
 126	1	2025-08-14	5	400.00	Groceries	f	23	\N	\N
-2292	1	2025-05-11	4	100.00	Mother's Day	f	92	\N	7108
-2293	1	2025-05-25	4	100.00	Mother's Day	f	92	\N	7109
-2294	1	2025-06-08	4	100.00	Mother's Day	f	92	\N	7110
-2346	1	2025-06-11	4	100.00	Father's Day	f	93	\N	7110
-2565	1	2025-05-15	4	100.00	Sam's Club Membership	f	98	\N	7108
-2566	1	2025-05-29	4	100.00	Sam's Club Membership	f	98	\N	7109
-2567	1	2025-06-12	4	100.00	Sam's Club Membership	f	98	\N	7110
-2727	1	2025-05-23	4	200.00	Strawberry Picking	f	103	\N	7109
-2728	1	2025-06-06	4	200.00	Strawberry Picking	f	103	\N	7110
 1429	1	2025-07-15	6	234.30	Electricity	f	54	\N	7111
 1459	1	2025-07-22	6	83.00	Spectrum Internet	f	56	\N	7111
 1481	1	2025-07-15	7	138.58	Mint Mobile	f	57	\N	7111
@@ -2353,8 +1810,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1458	1	2025-06-22	6	83.00	Spectrum Internet	f	56	\N	7111
 1660	1	2025-05-22	6	30.00	Toilet Paper	f	63	\N	7109
 1661	1	2025-06-19	6	30.00	Toilet Paper	f	63	\N	7111
-2295	1	2025-06-22	4	100.00	Mother's Day	f	92	\N	7111
-2347	1	2025-06-25	4	100.00	Father's Day	f	93	\N	7111
 73	1	2025-07-17	1	80.00	Gas	f	21	\N	7111
 64	1	2025-10-15	3	18.14	Apple Music	f	24	\N	\N
 75	1	2025-08-14	1	80.00	Gas	f	21	\N	\N
@@ -2392,23 +1847,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1665	1	2025-10-09	6	30.00	Toilet Paper	f	63	\N	\N
 2060	1	2025-10-11	1	122.98	RAV4 Property Tax	f	82	\N	\N
 2063	1	2025-10-11	1	30.00	RAV4 State Inspection	f	83	\N	\N
-2076	1	2025-08-22	4	100.00	New Baby Birthday	f	88	\N	\N
-2077	1	2025-09-05	4	100.00	New Baby Birthday	f	88	\N	\N
-2078	1	2025-09-19	4	100.00	New Baby Birthday	f	88	\N	\N
-2079	1	2025-10-03	4	100.00	New Baby Birthday	f	88	\N	\N
-2080	1	2025-10-17	4	100.00	New Baby Birthday	f	88	\N	\N
-2129	1	2025-10-07	4	100.00	Ariella's Birthday	f	89	\N	\N
-2240	1	2025-08-12	4	600.00	School Curriculum	f	91	\N	\N
-2241	1	2025-08-26	4	600.00	School Curriculum	f	91	\N	\N
-2242	1	2025-09-09	4	600.00	School Curriculum	f	91	\N	\N
-2243	1	2025-09-23	4	600.00	School Curriculum	f	91	\N	\N
-2244	1	2025-10-07	4	600.00	School Curriculum	f	91	\N	\N
-2298	1	2025-08-03	4	100.00	Mother's Day	f	92	\N	\N
-2299	1	2025-08-17	4	100.00	Mother's Day	f	92	\N	\N
-2300	1	2025-08-31	4	100.00	Mother's Day	f	92	\N	\N
-2301	1	2025-09-14	4	100.00	Mother's Day	f	92	\N	\N
-2302	1	2025-09-28	4	100.00	Mother's Day	f	92	\N	\N
-2303	1	2025-10-12	4	100.00	Mother's Day	f	92	\N	\N
 74	1	2025-07-31	1	80.00	Gas	f	21	\N	7111
 188	1	2025-07-20	1	531.94	Van Payment	f	25	\N	7111
 578	1	2025-07-26	3	17.15	Disney+	f	35	\N	7111
@@ -2432,15 +1870,8 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1682	1	2027-01-28	6	30.00	Toilet Paper	f	63	\N	\N
 1683	1	2027-02-25	6	30.00	Toilet Paper	f	63	\N	\N
 1684	1	2027-03-25	6	30.00	Toilet Paper	f	63	\N	\N
-2350	1	2025-08-06	4	100.00	Father's Day	f	93	\N	\N
-2351	1	2025-08-20	4	100.00	Father's Day	f	93	\N	\N
-2352	1	2025-09-03	4	100.00	Father's Day	f	93	\N	\N
 1662	1	2025-07-17	6	30.00	Toilet Paper	f	63	\N	7111
-2237	1	2025-07-01	4	600.00	School Curriculum	f	91	\N	7111
-2238	1	2025-07-15	4	600.00	School Curriculum	f	91	\N	7111
-2239	1	2025-07-29	4	600.00	School Curriculum	f	91	\N	7111
 1685	1	2025-06-01	6	61.50	Anchor Trash Pickup	f	64	\N	7109
-2568	1	2025-06-26	4	100.00	Sam's Club Membership	f	98	\N	7111
 1687	1	2025-12-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
 1688	1	2026-03-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
 1689	1	2026-06-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
@@ -2449,27 +1880,6 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 1692	1	2027-03-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
 1693	1	2027-06-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
 1686	1	2025-09-01	6	61.50	Anchor Trash Pickup	f	64	\N	\N
-2353	1	2025-09-17	4	100.00	Father's Day	f	93	\N	\N
-2354	1	2025-10-01	4	100.00	Father's Day	f	93	\N	\N
-2355	1	2025-10-15	4	100.00	Father's Day	f	93	\N	\N
-2400	1	2025-10-18	4	100.00	Wedding Anniversary	f	94	\N	\N
-2571	1	2025-08-07	4	100.00	Sam's Club Membership	f	98	\N	\N
-2572	1	2025-08-21	4	100.00	Sam's Club Membership	f	98	\N	\N
-2573	1	2025-09-04	4	100.00	Sam's Club Membership	f	98	\N	\N
-2574	1	2025-09-18	4	100.00	Sam's Club Membership	f	98	\N	\N
-2575	1	2025-10-02	4	100.00	Sam's Club Membership	f	98	\N	\N
-2576	1	2025-10-16	4	100.00	Sam's Club Membership	f	98	\N	\N
-2732	1	2025-08-01	4	200.00	Strawberry Picking	f	103	\N	\N
-2733	1	2025-08-15	4	200.00	Strawberry Picking	f	103	\N	\N
-2734	1	2025-08-29	4	200.00	Strawberry Picking	f	103	\N	\N
-2735	1	2025-09-12	4	200.00	Strawberry Picking	f	103	\N	\N
-2736	1	2025-09-26	4	200.00	Strawberry Picking	f	103	\N	\N
-2737	1	2025-10-10	4	200.00	Strawberry Picking	f	103	\N	\N
-2729	1	2025-06-20	4	200.00	Strawberry Picking	f	103	\N	7111
-2569	1	2025-07-10	4	100.00	Sam's Club Membership	f	98	\N	7111
-2570	1	2025-07-24	4	100.00	Sam's Club Membership	f	98	\N	7111
-2730	1	2025-07-04	4	200.00	Strawberry Picking	f	103	\N	7111
-2731	1	2025-07-18	4	200.00	Strawberry Picking	f	103	\N	7111
 67	1	2025-04-24	1	80.00	Gas	f	21	\N	7107
 184	1	2025-03-20	1	531.94	Van Payment	f	25	\N	7104
 185	1	2025-04-20	1	531.94	Van Payment	f	25	\N	7106
@@ -2502,7 +1912,7 @@ COPY public.expenses (id, user_id, scheduled_date, category_id, amount, descript
 
 
 --
--- TOC entry 3553 (class 0 OID 16419)
+-- TOC entry 3564 (class 0 OID 16419)
 -- Dependencies: 224
 -- Data for Name: frequencies; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2518,7 +1928,7 @@ COPY public.frequencies (id, name, description) FROM stdin;
 
 
 --
--- TOC entry 3555 (class 0 OID 16430)
+-- TOC entry 3566 (class 0 OID 16430)
 -- Dependencies: 226
 -- Data for Name: income_categories; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2534,7 +1944,7 @@ COPY public.income_categories (id, name, description, color, icon) FROM stdin;
 
 
 --
--- TOC entry 3573 (class 0 OID 16573)
+-- TOC entry 3584 (class 0 OID 16573)
 -- Dependencies: 244
 -- Data for Name: income_payments; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2553,7 +1963,7 @@ COPY public.income_payments (id, paycheck_id, account_id, payment_date, amount, 
 
 
 --
--- TOC entry 3567 (class 0 OID 16515)
+-- TOC entry 3578 (class 0 OID 16515)
 -- Dependencies: 238
 -- Data for Name: paychecks; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2572,7 +1982,7 @@ COPY public.paychecks (id, user_id, scheduled_date, gross_salary, taxes, deducti
 
 
 --
--- TOC entry 3563 (class 0 OID 16481)
+-- TOC entry 3574 (class 0 OID 16481)
 -- Dependencies: 234
 -- Data for Name: recurring_schedules; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2581,21 +1991,35 @@ COPY public.recurring_schedules (id, user_id, type_id, description, frequency_id
 108	1	2	Emergency Fund	1	1	2025-03-13	2027-04-01	500.00	expense	8	1
 117	1	1	State Tax Return	\N	1	2025-03-13	2025-03-13	895.00	\N	\N	\N
 113	1	1	Salary - $87,685.00/year (Combined) (Combined) (Combined) (Combined) (Combined)	\N	1	2025-03-13	2025-06-30	3372.50	\N	\N	\N
-114	1	2	Josh's Birthday	3	1	2025-03-24	2027-03-31	100.00	expense	4	1
 116	1	1	Salary - $87,685.00/year	\N	1	2025-03-13	2025-06-30	3372.50	\N	\N	\N
 67	1	1	State Tax Return (Combined) (Combined) (Combined) (Combined)	\N	1	2025-03-14	2025-03-14	895.00	\N	\N	\N
+132	1	2	Proton Family	3	1	2025-08-13	2027-08-31	288.00	expense	7	1
 13	1	1	Salary - 87685.00/year	1	1	2025-02-27	2025-06-30	3372.50	income	\N	\N
-22	1	2	Mortgage	2	1	2025-03-01	2025-12-31	1670.20	expense	6	1
+122	1	2	Josh's Birthday	3	1	2025-03-24	2027-03-27	100.00	expense	4	1
+123	1	2	Father's Day	3	1	2025-06-08	2027-06-30	100.00	expense	4	1
+124	1	2	Mother's Day	3	1	2025-05-04	2027-05-30	100.00	expense	4	1
+125	1	2	Strawberry Picking	3	1	2025-04-10	2027-04-11	200.00	expense	5	1
+126	1	2	New Baby Birthday	3	1	2025-08-21	2027-08-30	100.00	expense	4	1
+127	1	2	Ariella's Birthday	3	1	2025-10-07	2027-11-30	100.00	expense	4	1
+128	1	2	Christmas	3	1	2025-11-01	2027-12-31	400.00	expense	4	1
 21	1	2	Gas	1	1	2025-03-13	2027-05-01	80.00	expense	1	1
 23	1	2	Groceries	1	1	2025-03-13	2027-03-31	400.00	expense	5	1
 24	1	2	Apple Music	2	1	2025-03-15	2027-03-31	18.14	expense	3	1
 25	1	2	Van Payment	2	1	2025-03-20	2029-03-01	531.94	expense	1	1
 26	1	2	Geico Car Insurance	2	1	2025-04-01	2027-04-01	183.49	expense	1	1
+129	1	2	School Curriculum	3	1	2025-07-01	2027-09-01	600.00	expense	4	1
 28	1	2	Oil & Air Filters	2	6	2025-04-11	2027-04-20	175.00	expense	1	1
+130	1	2	Wedding Anniversary	3	1	2025-10-18	2027-11-30	100.00	expense	4	1
+131	1	2	Josh's New Phone	3	2	2025-11-13	2027-11-30	1300.00	expense	7	1
+133	1	2	BJ's Club Membership	3	1	2026-03-01	2027-04-01	55.00	expense	5	1
+134	1	2	Sam's Club Membership	3	1	2025-03-20	2027-04-01	55.00	expense	5	1
 68	1	1	Federal Tax Return	\N	1	2026-03-08	2026-03-08	3142.00	\N	\N	\N
+135	1	2	Knox's Birthday	3	1	2026-02-22	2027-03-01	100.00	expense	4	1
 34	1	2	Audible	2	1	2025-03-26	2027-04-08	15.96	expense	3	1
 35	1	2	Disney+	2	1	2025-03-26	2027-04-08	17.15	expense	3	1
 36	1	2	iCloud 2TB	2	1	2025-03-17	2027-04-08	9.99	expense	7	1
+136	1	2	Valentine's Day	3	1	2026-02-14	2026-03-01	100.00	expense	4	1
+137	1	2	Mortgage	2	1	2025-04-01	2026-12-31	1670.20	expense	6	1
 44	1	2	Children's Clothes	2	6	2025-09-01	2027-10-01	400.00	expense	4	1
 46	1	2	Josh's Spending Money	1	1	2025-04-10	2027-04-11	40.00	expense	4	1
 47	1	2	Kayla's Spending Money	1	1	2025-03-13	2027-04-08	60.00	expense	4	1
@@ -2619,26 +2043,12 @@ COPY public.recurring_schedules (id, user_id, type_id, description, frequency_id
 85	1	2	Van Property Tax	3	1	2025-01-11	2027-03-31	208.17	expense	1	1
 86	1	2	Eliana's Birthday	3	1	2026-01-08	2027-02-01	100.00	expense	4	1
 87	1	2	Kayla's Birthday	3	1	2025-05-01	2027-05-02	100.00	expense	4	1
-88	1	2	New Baby Birthday	3	1	2025-08-22	2027-08-24	100.00	expense	4	1
-89	1	2	Ariella's Birthday	3	1	2025-10-07	2027-10-08	100.00	expense	4	1
-90	1	2	Christmas	3	1	2025-11-01	2027-12-01	400.00	expense	4	1
-91	1	2	School Curriculum	3	1	2025-07-01	2027-08-01	600.00	expense	4	1
-92	1	2	Mother's Day	3	1	2025-05-11	2027-06-01	100.00	expense	4	1
-93	1	2	Father's Day	3	1	2025-06-11	2027-07-01	100.00	expense	4	1
-94	1	2	Wedding Anniversary	3	1	2025-10-18	2027-11-01	100.00	expense	4	1
-95	1	2	Josh's New Phone	3	2	2025-11-11	2027-12-01	1300.00	expense	7	1
-96	1	2	Proton Family	3	1	2025-08-11	2027-08-12	287.88	expense	7	1
-97	1	2	BJ's Club Membership	3	1	2026-03-01	2027-03-02	55.00	expense	4	1
-98	1	2	Sam's Club Membership	3	1	2025-03-20	2027-04-01	100.00	expense	4	1
 99	1	2	Kayla's New Phone	3	2	2027-03-11	2027-04-01	1300.00	expense	7	1
-101	1	2	Knox's Birthday	3	1	2026-02-22	2027-03-01	100.00	expense	4	1
-102	1	2	Valentine's Day	3	1	2026-02-14	2027-03-01	100.00	expense	4	1
-103	1	2	Strawberry Picking	3	1	2025-04-11	2027-04-12	200.00	expense	4	1
 \.
 
 
 --
--- TOC entry 3547 (class 0 OID 16390)
+-- TOC entry 3558 (class 0 OID 16390)
 -- Dependencies: 218
 -- Data for Name: roles; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2649,7 +2059,7 @@ COPY public.roles (id, name, description) FROM stdin;
 
 
 --
--- TOC entry 3565 (class 0 OID 16503)
+-- TOC entry 3576 (class 0 OID 16503)
 -- Dependencies: 236
 -- Data for Name: salary_changes; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2660,7 +2070,7 @@ COPY public.salary_changes (id, user_id, effective_date, end_date, gross_annual_
 
 
 --
--- TOC entry 3581 (class 0 OID 16639)
+-- TOC entry 3592 (class 0 OID 16639)
 -- Dependencies: 252
 -- Data for Name: salary_deposit_allocations; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2671,7 +2081,7 @@ COPY public.salary_deposit_allocations (id, salary_id, account_id, is_percentage
 
 
 --
--- TOC entry 3551 (class 0 OID 16408)
+-- TOC entry 3562 (class 0 OID 16408)
 -- Dependencies: 222
 -- Data for Name: schedule_types; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2683,18 +2093,30 @@ COPY public.schedule_types (id, name, description) FROM stdin;
 
 
 --
--- TOC entry 3577 (class 0 OID 16608)
+-- TOC entry 3588 (class 0 OID 16608)
 -- Dependencies: 248
 -- Data for Name: transactions; Type: TABLE DATA; Schema: public; Owner: grubb
 --
 
 COPY public.transactions (id, account_id, transaction_date, amount, description, transaction_type, related_transaction_id) FROM stdin;
 6	4	2025-03-01	0.13	Interest accrual (20.00% daily)	deposit	\N
+14	1	2025-03-13	1551.78	Expense 2945: Credit Card	withdrawal	\N
 \.
 
 
 --
--- TOC entry 3559 (class 0 OID 16448)
+-- TOC entry 3594 (class 0 OID 16683)
+-- Dependencies: 254
+-- Data for Name: user_preferences; Type: TABLE DATA; Schema: public; Owner: grubb
+--
+
+COPY public.user_preferences (id, user_id, preference_key, preference_value) FROM stdin;
+1	1	default_expense_account	1
+\.
+
+
+--
+-- TOC entry 3570 (class 0 OID 16448)
 -- Dependencies: 230
 -- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: grubb
 --
@@ -2705,7 +2127,7 @@ COPY public.users (id, username, password_hash, email, role_id, first_name, last
 
 
 --
--- TOC entry 3615 (class 0 OID 0)
+-- TOC entry 3629 (class 0 OID 0)
 -- Dependencies: 249
 -- Name: account_interest_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2714,7 +2136,7 @@ SELECT pg_catalog.setval('public.account_interest_id_seq', 3, true);
 
 
 --
--- TOC entry 3616 (class 0 OID 0)
+-- TOC entry 3630 (class 0 OID 0)
 -- Dependencies: 219
 -- Name: account_types_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2723,7 +2145,7 @@ SELECT pg_catalog.setval('public.account_types_id_seq', 17, true);
 
 
 --
--- TOC entry 3617 (class 0 OID 0)
+-- TOC entry 3631 (class 0 OID 0)
 -- Dependencies: 231
 -- Name: accounts_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2732,7 +2154,7 @@ SELECT pg_catalog.setval('public.accounts_id_seq', 7, true);
 
 
 --
--- TOC entry 3618 (class 0 OID 0)
+-- TOC entry 3632 (class 0 OID 0)
 -- Dependencies: 227
 -- Name: expense_categories_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2741,7 +2163,7 @@ SELECT pg_catalog.setval('public.expense_categories_id_seq', 8, true);
 
 
 --
--- TOC entry 3619 (class 0 OID 0)
+-- TOC entry 3633 (class 0 OID 0)
 -- Dependencies: 241
 -- Name: expense_changes_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2750,25 +2172,25 @@ SELECT pg_catalog.setval('public.expense_changes_id_seq', 1, false);
 
 
 --
--- TOC entry 3620 (class 0 OID 0)
+-- TOC entry 3634 (class 0 OID 0)
 -- Dependencies: 245
 -- Name: expense_payments_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
 
-SELECT pg_catalog.setval('public.expense_payments_id_seq', 4, true);
+SELECT pg_catalog.setval('public.expense_payments_id_seq', 6, true);
 
 
 --
--- TOC entry 3621 (class 0 OID 0)
+-- TOC entry 3635 (class 0 OID 0)
 -- Dependencies: 239
 -- Name: expenses_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
 
-SELECT pg_catalog.setval('public.expenses_id_seq', 2904, true);
+SELECT pg_catalog.setval('public.expenses_id_seq', 2966, true);
 
 
 --
--- TOC entry 3622 (class 0 OID 0)
+-- TOC entry 3636 (class 0 OID 0)
 -- Dependencies: 223
 -- Name: frequencies_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2777,7 +2199,7 @@ SELECT pg_catalog.setval('public.frequencies_id_seq', 7, true);
 
 
 --
--- TOC entry 3623 (class 0 OID 0)
+-- TOC entry 3637 (class 0 OID 0)
 -- Dependencies: 225
 -- Name: income_categories_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2786,7 +2208,7 @@ SELECT pg_catalog.setval('public.income_categories_id_seq', 6, true);
 
 
 --
--- TOC entry 3624 (class 0 OID 0)
+-- TOC entry 3638 (class 0 OID 0)
 -- Dependencies: 243
 -- Name: income_payments_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2795,7 +2217,7 @@ SELECT pg_catalog.setval('public.income_payments_id_seq', 7093, true);
 
 
 --
--- TOC entry 3625 (class 0 OID 0)
+-- TOC entry 3639 (class 0 OID 0)
 -- Dependencies: 237
 -- Name: paychecks_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2804,16 +2226,16 @@ SELECT pg_catalog.setval('public.paychecks_id_seq', 7112, true);
 
 
 --
--- TOC entry 3626 (class 0 OID 0)
+-- TOC entry 3640 (class 0 OID 0)
 -- Dependencies: 233
 -- Name: recurring_schedules_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
 
-SELECT pg_catalog.setval('public.recurring_schedules_id_seq', 121, true);
+SELECT pg_catalog.setval('public.recurring_schedules_id_seq', 137, true);
 
 
 --
--- TOC entry 3627 (class 0 OID 0)
+-- TOC entry 3641 (class 0 OID 0)
 -- Dependencies: 217
 -- Name: roles_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2822,7 +2244,7 @@ SELECT pg_catalog.setval('public.roles_id_seq', 1, true);
 
 
 --
--- TOC entry 3628 (class 0 OID 0)
+-- TOC entry 3642 (class 0 OID 0)
 -- Dependencies: 235
 -- Name: salary_changes_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2831,7 +2253,7 @@ SELECT pg_catalog.setval('public.salary_changes_id_seq', 17, true);
 
 
 --
--- TOC entry 3629 (class 0 OID 0)
+-- TOC entry 3643 (class 0 OID 0)
 -- Dependencies: 251
 -- Name: salary_deposit_allocations_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2840,7 +2262,7 @@ SELECT pg_catalog.setval('public.salary_deposit_allocations_id_seq', 16, true);
 
 
 --
--- TOC entry 3630 (class 0 OID 0)
+-- TOC entry 3644 (class 0 OID 0)
 -- Dependencies: 221
 -- Name: schedule_types_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2849,16 +2271,25 @@ SELECT pg_catalog.setval('public.schedule_types_id_seq', 2, true);
 
 
 --
--- TOC entry 3631 (class 0 OID 0)
+-- TOC entry 3645 (class 0 OID 0)
 -- Dependencies: 247
 -- Name: transactions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
 
-SELECT pg_catalog.setval('public.transactions_id_seq', 12, true);
+SELECT pg_catalog.setval('public.transactions_id_seq', 14, true);
 
 
 --
--- TOC entry 3632 (class 0 OID 0)
+-- TOC entry 3646 (class 0 OID 0)
+-- Dependencies: 253
+-- Name: user_preferences_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
+--
+
+SELECT pg_catalog.setval('public.user_preferences_id_seq', 1, true);
+
+
+--
+-- TOC entry 3647 (class 0 OID 0)
 -- Dependencies: 229
 -- Name: users_id_seq; Type: SEQUENCE SET; Schema: public; Owner: grubb
 --
@@ -2867,7 +2298,7 @@ SELECT pg_catalog.setval('public.users_id_seq', 1, true);
 
 
 --
--- TOC entry 3371 (class 2606 OID 16630)
+-- TOC entry 3377 (class 2606 OID 16630)
 -- Name: account_interest account_interest_account_id_key; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2876,7 +2307,7 @@ ALTER TABLE ONLY public.account_interest
 
 
 --
--- TOC entry 3373 (class 2606 OID 16628)
+-- TOC entry 3379 (class 2606 OID 16628)
 -- Name: account_interest account_interest_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2885,7 +2316,7 @@ ALTER TABLE ONLY public.account_interest
 
 
 --
--- TOC entry 3332 (class 2606 OID 16406)
+-- TOC entry 3338 (class 2606 OID 16406)
 -- Name: account_types account_types_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2894,7 +2325,7 @@ ALTER TABLE ONLY public.account_types
 
 
 --
--- TOC entry 3350 (class 2606 OID 16469)
+-- TOC entry 3356 (class 2606 OID 16469)
 -- Name: accounts accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2903,7 +2334,7 @@ ALTER TABLE ONLY public.accounts
 
 
 --
--- TOC entry 3344 (class 2606 OID 16446)
+-- TOC entry 3350 (class 2606 OID 16446)
 -- Name: expense_categories expense_categories_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2912,7 +2343,7 @@ ALTER TABLE ONLY public.expense_categories
 
 
 --
--- TOC entry 3363 (class 2606 OID 16566)
+-- TOC entry 3369 (class 2606 OID 16566)
 -- Name: expense_changes expense_changes_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2921,7 +2352,7 @@ ALTER TABLE ONLY public.expense_changes
 
 
 --
--- TOC entry 3367 (class 2606 OID 16595)
+-- TOC entry 3373 (class 2606 OID 16595)
 -- Name: expense_payments expense_payments_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2930,7 +2361,7 @@ ALTER TABLE ONLY public.expense_payments
 
 
 --
--- TOC entry 3360 (class 2606 OID 16544)
+-- TOC entry 3366 (class 2606 OID 16544)
 -- Name: expenses expenses_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2939,7 +2370,7 @@ ALTER TABLE ONLY public.expenses
 
 
 --
--- TOC entry 3338 (class 2606 OID 16428)
+-- TOC entry 3344 (class 2606 OID 16428)
 -- Name: frequencies frequencies_name_key; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2948,7 +2379,7 @@ ALTER TABLE ONLY public.frequencies
 
 
 --
--- TOC entry 3340 (class 2606 OID 16426)
+-- TOC entry 3346 (class 2606 OID 16426)
 -- Name: frequencies frequencies_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2957,7 +2388,7 @@ ALTER TABLE ONLY public.frequencies
 
 
 --
--- TOC entry 3342 (class 2606 OID 16437)
+-- TOC entry 3348 (class 2606 OID 16437)
 -- Name: income_categories income_categories_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2966,7 +2397,7 @@ ALTER TABLE ONLY public.income_categories
 
 
 --
--- TOC entry 3365 (class 2606 OID 16578)
+-- TOC entry 3371 (class 2606 OID 16578)
 -- Name: income_payments income_payments_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2975,7 +2406,7 @@ ALTER TABLE ONLY public.income_payments
 
 
 --
--- TOC entry 3358 (class 2606 OID 16520)
+-- TOC entry 3364 (class 2606 OID 16520)
 -- Name: paychecks paychecks_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2984,7 +2415,7 @@ ALTER TABLE ONLY public.paychecks
 
 
 --
--- TOC entry 3354 (class 2606 OID 16486)
+-- TOC entry 3360 (class 2606 OID 16486)
 -- Name: recurring_schedules recurring_schedules_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -2993,7 +2424,7 @@ ALTER TABLE ONLY public.recurring_schedules
 
 
 --
--- TOC entry 3328 (class 2606 OID 16399)
+-- TOC entry 3334 (class 2606 OID 16399)
 -- Name: roles roles_name_key; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3002,7 +2433,7 @@ ALTER TABLE ONLY public.roles
 
 
 --
--- TOC entry 3330 (class 2606 OID 16397)
+-- TOC entry 3336 (class 2606 OID 16397)
 -- Name: roles roles_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3011,7 +2442,7 @@ ALTER TABLE ONLY public.roles
 
 
 --
--- TOC entry 3356 (class 2606 OID 16508)
+-- TOC entry 3362 (class 2606 OID 16508)
 -- Name: salary_changes salary_changes_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3020,7 +2451,7 @@ ALTER TABLE ONLY public.salary_changes
 
 
 --
--- TOC entry 3376 (class 2606 OID 16644)
+-- TOC entry 3382 (class 2606 OID 16644)
 -- Name: salary_deposit_allocations salary_deposit_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3029,7 +2460,7 @@ ALTER TABLE ONLY public.salary_deposit_allocations
 
 
 --
--- TOC entry 3334 (class 2606 OID 16417)
+-- TOC entry 3340 (class 2606 OID 16417)
 -- Name: schedule_types schedule_types_name_key; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3038,7 +2469,7 @@ ALTER TABLE ONLY public.schedule_types
 
 
 --
--- TOC entry 3336 (class 2606 OID 16415)
+-- TOC entry 3342 (class 2606 OID 16415)
 -- Name: schedule_types schedule_types_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3047,7 +2478,7 @@ ALTER TABLE ONLY public.schedule_types
 
 
 --
--- TOC entry 3369 (class 2606 OID 16613)
+-- TOC entry 3375 (class 2606 OID 16613)
 -- Name: transactions transactions_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3056,7 +2487,25 @@ ALTER TABLE ONLY public.transactions
 
 
 --
--- TOC entry 3346 (class 2606 OID 16455)
+-- TOC entry 3384 (class 2606 OID 16690)
+-- Name: user_preferences uix_user_preference; Type: CONSTRAINT; Schema: public; Owner: grubb
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT uix_user_preference UNIQUE (user_id, preference_key);
+
+
+--
+-- TOC entry 3386 (class 2606 OID 16688)
+-- Name: user_preferences user_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT user_preferences_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3352 (class 2606 OID 16455)
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3065,7 +2514,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 3348 (class 2606 OID 16457)
+-- TOC entry 3354 (class 2606 OID 16457)
 -- Name: users users_username_key; Type: CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3074,7 +2523,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 3374 (class 1259 OID 16636)
+-- TOC entry 3380 (class 1259 OID 16636)
 -- Name: idx_account_interest_account_id; Type: INDEX; Schema: public; Owner: grubb
 --
 
@@ -3082,7 +2531,7 @@ CREATE INDEX idx_account_interest_account_id ON public.account_interest USING bt
 
 
 --
--- TOC entry 3361 (class 1259 OID 16672)
+-- TOC entry 3367 (class 1259 OID 16672)
 -- Name: idx_expenses_paycheck_id; Type: INDEX; Schema: public; Owner: grubb
 --
 
@@ -3090,7 +2539,7 @@ CREATE INDEX idx_expenses_paycheck_id ON public.expenses USING btree (paycheck_i
 
 
 --
--- TOC entry 3351 (class 1259 OID 16661)
+-- TOC entry 3357 (class 1259 OID 16661)
 -- Name: idx_recurring_schedules_account; Type: INDEX; Schema: public; Owner: grubb
 --
 
@@ -3098,7 +2547,7 @@ CREATE INDEX idx_recurring_schedules_account ON public.recurring_schedules USING
 
 
 --
--- TOC entry 3352 (class 1259 OID 16660)
+-- TOC entry 3358 (class 1259 OID 16660)
 -- Name: idx_recurring_schedules_category; Type: INDEX; Schema: public; Owner: grubb
 --
 
@@ -3106,7 +2555,7 @@ CREATE INDEX idx_recurring_schedules_category ON public.recurring_schedules USIN
 
 
 --
--- TOC entry 3398 (class 2606 OID 16631)
+-- TOC entry 3408 (class 2606 OID 16631)
 -- Name: account_interest account_interest_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3115,7 +2564,7 @@ ALTER TABLE ONLY public.account_interest
 
 
 --
--- TOC entry 3378 (class 2606 OID 16475)
+-- TOC entry 3388 (class 2606 OID 16475)
 -- Name: accounts accounts_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3124,7 +2573,7 @@ ALTER TABLE ONLY public.accounts
 
 
 --
--- TOC entry 3379 (class 2606 OID 16470)
+-- TOC entry 3389 (class 2606 OID 16470)
 -- Name: accounts accounts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3133,7 +2582,7 @@ ALTER TABLE ONLY public.accounts
 
 
 --
--- TOC entry 3392 (class 2606 OID 16567)
+-- TOC entry 3402 (class 2606 OID 16567)
 -- Name: expense_changes expense_changes_recurring_schedule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3142,7 +2591,7 @@ ALTER TABLE ONLY public.expense_changes
 
 
 --
--- TOC entry 3395 (class 2606 OID 16601)
+-- TOC entry 3405 (class 2606 OID 16601)
 -- Name: expense_payments expense_payments_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3151,7 +2600,7 @@ ALTER TABLE ONLY public.expense_payments
 
 
 --
--- TOC entry 3396 (class 2606 OID 16596)
+-- TOC entry 3406 (class 2606 OID 16596)
 -- Name: expense_payments expense_payments_expense_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3160,7 +2609,7 @@ ALTER TABLE ONLY public.expense_payments
 
 
 --
--- TOC entry 3388 (class 2606 OID 16550)
+-- TOC entry 3398 (class 2606 OID 16550)
 -- Name: expenses expenses_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3169,7 +2618,7 @@ ALTER TABLE ONLY public.expenses
 
 
 --
--- TOC entry 3389 (class 2606 OID 16555)
+-- TOC entry 3399 (class 2606 OID 16555)
 -- Name: expenses expenses_recurring_schedule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3178,7 +2627,7 @@ ALTER TABLE ONLY public.expenses
 
 
 --
--- TOC entry 3390 (class 2606 OID 16545)
+-- TOC entry 3400 (class 2606 OID 16545)
 -- Name: expenses expenses_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3187,7 +2636,7 @@ ALTER TABLE ONLY public.expenses
 
 
 --
--- TOC entry 3391 (class 2606 OID 16667)
+-- TOC entry 3401 (class 2606 OID 16667)
 -- Name: expenses fk_expenses_paycheck; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3196,7 +2645,7 @@ ALTER TABLE ONLY public.expenses
 
 
 --
--- TOC entry 3393 (class 2606 OID 16584)
+-- TOC entry 3403 (class 2606 OID 16584)
 -- Name: income_payments income_payments_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3205,7 +2654,7 @@ ALTER TABLE ONLY public.income_payments
 
 
 --
--- TOC entry 3394 (class 2606 OID 16579)
+-- TOC entry 3404 (class 2606 OID 16579)
 -- Name: income_payments income_payments_paycheck_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3214,7 +2663,7 @@ ALTER TABLE ONLY public.income_payments
 
 
 --
--- TOC entry 3385 (class 2606 OID 16526)
+-- TOC entry 3395 (class 2606 OID 16526)
 -- Name: paychecks paychecks_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3223,7 +2672,7 @@ ALTER TABLE ONLY public.paychecks
 
 
 --
--- TOC entry 3386 (class 2606 OID 16531)
+-- TOC entry 3396 (class 2606 OID 16531)
 -- Name: paychecks paychecks_recurring_schedule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3232,7 +2681,7 @@ ALTER TABLE ONLY public.paychecks
 
 
 --
--- TOC entry 3387 (class 2606 OID 16521)
+-- TOC entry 3397 (class 2606 OID 16521)
 -- Name: paychecks paychecks_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3241,7 +2690,7 @@ ALTER TABLE ONLY public.paychecks
 
 
 --
--- TOC entry 3380 (class 2606 OID 16655)
+-- TOC entry 3390 (class 2606 OID 16655)
 -- Name: recurring_schedules recurring_schedules_default_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3250,7 +2699,7 @@ ALTER TABLE ONLY public.recurring_schedules
 
 
 --
--- TOC entry 3381 (class 2606 OID 16497)
+-- TOC entry 3391 (class 2606 OID 16497)
 -- Name: recurring_schedules recurring_schedules_frequency_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3259,7 +2708,7 @@ ALTER TABLE ONLY public.recurring_schedules
 
 
 --
--- TOC entry 3382 (class 2606 OID 16492)
+-- TOC entry 3392 (class 2606 OID 16492)
 -- Name: recurring_schedules recurring_schedules_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3268,7 +2717,7 @@ ALTER TABLE ONLY public.recurring_schedules
 
 
 --
--- TOC entry 3383 (class 2606 OID 16487)
+-- TOC entry 3393 (class 2606 OID 16487)
 -- Name: recurring_schedules recurring_schedules_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3277,7 +2726,7 @@ ALTER TABLE ONLY public.recurring_schedules
 
 
 --
--- TOC entry 3384 (class 2606 OID 16509)
+-- TOC entry 3394 (class 2606 OID 16509)
 -- Name: salary_changes salary_changes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3286,7 +2735,7 @@ ALTER TABLE ONLY public.salary_changes
 
 
 --
--- TOC entry 3399 (class 2606 OID 16650)
+-- TOC entry 3409 (class 2606 OID 16650)
 -- Name: salary_deposit_allocations salary_deposit_allocations_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3295,7 +2744,7 @@ ALTER TABLE ONLY public.salary_deposit_allocations
 
 
 --
--- TOC entry 3400 (class 2606 OID 16645)
+-- TOC entry 3410 (class 2606 OID 16645)
 -- Name: salary_deposit_allocations salary_deposit_allocations_salary_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3304,7 +2753,7 @@ ALTER TABLE ONLY public.salary_deposit_allocations
 
 
 --
--- TOC entry 3397 (class 2606 OID 16614)
+-- TOC entry 3407 (class 2606 OID 16614)
 -- Name: transactions transactions_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3313,7 +2762,16 @@ ALTER TABLE ONLY public.transactions
 
 
 --
--- TOC entry 3377 (class 2606 OID 16458)
+-- TOC entry 3411 (class 2606 OID 16691)
+-- Name: user_preferences user_preferences_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT user_preferences_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 3387 (class 2606 OID 16458)
 -- Name: users users_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: grubb
 --
 
@@ -3321,13 +2779,13 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.roles(id);
 
 
--- Completed on 2025-03-12 20:39:11 EDT
+-- Completed on 2025-03-12 23:20:22 EDT
 
 --
 -- PostgreSQL database dump complete
 --
 
--- Completed on 2025-03-12 20:39:11 EDT
+-- Completed on 2025-03-12 23:20:22 EDT
 
 --
 -- PostgreSQL database cluster dump complete

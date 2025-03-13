@@ -31,6 +31,7 @@ from models import (
     Frequency,
     Paycheck,
     IncomePayment,
+    UserPreference,
 )
 
 expense_bp = Blueprint("expense", __name__, url_prefix="/expenses")
@@ -981,8 +982,48 @@ def expenses_by_paycheck():
     if not end_date:
         end_date = start_date + timedelta(days=60)
 
-    # Get starting balance from request args (default to 0)
-    starting_balance = request.args.get("starting_balance", type=float, default=0.0)
+    # Get account ID from request or user preference
+    account_id = request.args.get("account_id", type=int)
+
+    # If save_preference is set, update the user's preferred account
+    if "save_preference" in request.args and account_id:
+        # Check if preference already exists
+        pref = UserPreference.query.filter_by(
+            user_id=user_id, preference_key="default_expense_account"
+        ).first()
+
+        if pref:
+            pref.preference_value = str(account_id)
+        else:
+            # Create new preference
+            pref = UserPreference(
+                user_id=user_id,
+                preference_key="default_expense_account",
+                preference_value=str(account_id),
+            )
+            db.session.add(pref)
+
+        db.session.commit()
+
+    # If no account_id specified in the request, check for a saved preference
+    if not account_id:
+        pref = UserPreference.query.filter_by(
+            user_id=user_id, preference_key="default_expense_account"
+        ).first()
+
+        if pref and pref.preference_value:
+            try:
+                account_id = int(pref.preference_value)
+            except (ValueError, TypeError):
+                account_id = None
+
+    # Get the account and its balance
+    starting_balance = 0.0
+    account = None
+    if account_id:
+        account = Account.query.filter_by(id=account_id, user_id=user_id).first()
+        if account:
+            starting_balance = float(account.balance)
 
     # Get all paychecks in the date range
     paychecks = (
@@ -1075,6 +1116,20 @@ def expenses_by_paycheck():
     # Get accounts for payment modal
     accounts = Account.query.filter_by(user_id=user_id).all()
 
+    # Check if this is a primary account
+    primary_account = None
+    if accounts:
+        # Try to find an account with "checking" or "primary" in the name
+        for acct in accounts:
+            acct_name = acct.account_name.lower()
+            if "checking" in acct_name or "primary" in acct_name:
+                primary_account = acct
+                break
+
+        # If no primary account found, use the first account
+        if primary_account is None and accounts:
+            primary_account = accounts[0]
+
     return render_template(
         "expenses/by_paycheck.html",
         paychecks=paychecks,
@@ -1086,7 +1141,10 @@ def expenses_by_paycheck():
         accounts=accounts,
         start_date=start_date,
         end_date=end_date,
-        starting_balance=starting_balance,
+        starting_balance=starting_balance,  # Still include this for the running_balance.js script
+        selected_account_id=account_id,
+        selected_account=account,  # Include the selected account object
+        primary_account=primary_account,
         today=date.today(),
     )
 

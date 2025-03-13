@@ -311,3 +311,18 @@ class AccountInterest(db.Model):
     last_accrual_date = db.Column(db.Date, default=None)
 
     account = db.relationship("Account", backref="interest_settings")
+
+
+class UserPreference(db.Model):
+    __tablename__ = "user_preferences"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    preference_key = db.Column(db.String(100), nullable=False)
+    preference_value = db.Column(db.String(255))
+
+    user = db.relationship("User", backref="preferences")
+
+    # Composite unique constraint to ensure each user has unique preferences
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "preference_key", name="uix_user_preference"),
+    )

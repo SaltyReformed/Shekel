@@ -1,13 +1,14 @@
 // running_balance.js - Script for calculating and updating running balances
+// Simplified version that uses account balance directly
 
 document.addEventListener('DOMContentLoaded', function() {
     // Calculate running balance when page loads
     calculateRunningBalance();
     
-    // Add event listener to recalculate balance when starting balance changes
-    const startingBalanceInput = document.getElementById('starting_balance');
-    if (startingBalanceInput) {
-        startingBalanceInput.addEventListener('input', function() {
+    // Add account change event listener to recalculate balances
+    const accountSelect = document.getElementById('account_id');
+    if (accountSelect) {
+        accountSelect.addEventListener('change', function() {
             calculateRunningBalance();
         });
     }
@@ -17,10 +18,35 @@ document.addEventListener('DOMContentLoaded', function() {
         calculateRunningBalance();
     });
     
+    // Function to get the starting balance from the selected account
+    function getStartingBalance() {
+        // Default starting balance is 0
+        let startingBalance = 0;
+        
+        // Get the account select element
+        const accountSelect = document.getElementById('account_id');
+        if (accountSelect && accountSelect.selectedIndex > 0) {
+            // Get the selected option
+            const selectedOption = accountSelect.options[accountSelect.selectedIndex];
+            
+            // Attempt to parse the balance from the option text
+            const balanceMatch = selectedOption.text.match(/Balance: \$([\d,]+\.\d{2})/);
+            if (balanceMatch && balanceMatch[1]) {
+                // Parse the balance, removing commas
+                startingBalance = parseFloat(balanceMatch[1].replace(/,/g, ''));
+                if (isNaN(startingBalance)) {
+                    startingBalance = 0;
+                }
+            }
+        }
+        
+        return startingBalance;
+    }
+    
     // Function to calculate and update running balance
     function calculateRunningBalance() {
-        const startingBalanceInput = document.getElementById('starting_balance');
-        let startingBalance = parseFloat(startingBalanceInput ? startingBalanceInput.value : 0) || 0;
+        // Get starting balance from selected account
+        const startingBalance = getStartingBalance();
         
         const paycheckBalanceCells = document.querySelectorAll('.paycheck-balance');
         const paycheckRemainingCells = document.querySelectorAll('.paycheck-remaining');
@@ -77,8 +103,12 @@ document.addEventListener('DOMContentLoaded', function() {
             document.dispatchEvent(new CustomEvent('balanceUpdated'));
         };
     }
+    
+    // Expose the calculate function to the global scope so other scripts can trigger it
+    window.recalculateRunningBalance = calculateRunningBalance;
 });
-// Add JavaScript to detect when tables need scrolling indicator
+
+// Add scrolling indicator for tables
 document.addEventListener('DOMContentLoaded', function() {
     const tableContainers = document.querySelectorAll('.table-responsive');
     

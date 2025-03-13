@@ -36,6 +36,7 @@
         </div>
     </div>
 
+    <!-- Update the filter section in expenses/by_paycheck.html -->
     <div class="filters-section">
         <div class="card">
             <div class="card-body">
@@ -57,20 +58,24 @@
                             <select id="category_id" name="category_id" class="form-control">
                                 <option value="">All Categories</option>
                                 {% for category in categories %}
-                                <option value="{{ category.id }}" {% if
-                                    request.args.get('category_id')==category.id|string %}selected{% endif %}>
+                                <option value="{{ category.id }}" {% if request.args.get('category_id')==category.id|string
+                                    %}selected{% endif %}>
                                     {{ category.name }}
                                 </option>
                                 {% endfor %}
                             </select>
                         </div>
                         <div class="filter-group">
-                            <label for="starting_balance">Starting Balance</label>
-                            <div class="input-with-icon">
-                                <span class="input-icon">$</span>
-                                <input type="number" id="starting_balance" name="starting_balance" class="form-control"
-                                    value="{{ request.args.get('starting_balance', '0.00') }}" step="0.01">
-                            </div>
+                            <label for="account_id">Account</label>
+                            <select id="account_id" name="account_id" class="form-control">
+                                <option value="">-- Select Account --</option>
+                                {% for account in accounts %}
+                                <option value="{{ account.id }}" {% if selected_account_id==account.id %}selected{% endif
+                                    %}>
+                                    {{ account.account_name }} (Balance: ${{ "{:,.2f}".format(account.balance) }})
+                                </option>
+                                {% endfor %}
+                            </select>                            
                         </div>
                         <div class="filter-actions">
                             <button type="submit" class="btn btn-secondary">Apply Filters</button>
@@ -168,18 +173,20 @@
                     {# First, group expenses by category and description #}
                     {% set unique_expenses = {} %}
                     {% for expense in expenses %}
-                    {% set category_name = expense.expense_category.name if expense.expense_category else "Uncategorized" %}
+                    {% set category_name = expense.expense_category.name if expense.expense_category else
+                    "Uncategorized" %}
                     {% set key = category_name ~ "___" ~ expense.description %}
                     {% if key not in unique_expenses %}
-                    {% set _ = unique_expenses.update({key: {'category': expense.expense_category, 'description': expense.description,
+                    {% set _ = unique_expenses.update({key: {'category': expense.expense_category, 'description':
+                    expense.description,
                     'expenses': []}}) %}
                     {% endif %}
                     {% set _ = unique_expenses[key].expenses.append(expense) %}
                     {% endfor %}
-                    
+
                     {# Sort the unique expenses by key (which combines category and description) #}
                     {% set sorted_keys = unique_expenses.keys()|sort %}
-                    
+
                     {# Create a row for each sorted expense group #}
                     {% for key in sorted_keys %}
                     {% set data = unique_expenses[key] %}
@@ -189,10 +196,12 @@
                                 <div class="expense-description">{{ data.description }}</div>
                                 <div class="expense-meta">
                                     {% if data.category %}
-                                    <span class="expense-category" style="background-color: {{ data.category.color }}; color: #fff;">
+                                    <span class="expense-category"
+                                        style="background-color: {{ data.category.color }}; color: #fff;">
                                         {% if data.category.icon %}
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
+                                            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
                                             <path d="{{ data.category.icon }}"></path>
                                         </svg>
                                         {% endif %}
@@ -338,10 +347,31 @@
 {% endblock %}
 
 {% block additional_scripts %}
-<!-- Load drag-drop functionality from external JS file -->
-<script src="{{ url_for('static', filename='js/expenses/drag-drop.js') }}"></script>
-<!-- Load external JS for modal binding -->
-<script src="{{ url_for('static', filename='js/expenses/modal-binding.js') }}"></script>
-<!-- Load the running balance script -->
+<!-- Simple script to select primary account by default -->
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const accountSelect = document.getElementById('account_id');
+
+        // If no account is selected, select the primary account
+        if (accountSelect && accountSelect.value === "" && {% if primary_account %}{{ primary_account.id }}{% else %}null{% endif %}) {
+        const primaryAccountId = {% if primary_account %} { { primary_account.id } } {% else %} null{% endif %};
+
+    // Find and select the option for the primary account
+    for (let i = 0; i < accountSelect.options.length; i++) {
+        if (accountSelect.options[i].value == primaryAccountId) {
+            accountSelect.selectedIndex = i;
+
+            // Trigger a change event to recalculate balances
+            accountSelect.dispatchEvent(new Event('change'));
+            break;
+        }
+    }
+        }
+    });
+</script>
+
+<!-- Load scripts for running balance and drag-drop functionality -->
 <script src="{{ url_for('static', filename='js/expenses/running_balance.js') }}"></script>
+<script src="{{ url_for('static', filename='js/expenses/drag-drop.js') }}"></script>
+<script src="{{ url_for('static', filename='js/expenses/modal-binding.js') }}"></script>
 {% endblock %}
