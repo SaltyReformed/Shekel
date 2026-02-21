@@ -5,7 +5,7 @@ Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
 """
 
-from marshmallow import Schema, fields, validate, validates_schema, ValidationError
+from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError
 
 
 class TransactionUpdateSchema(Schema):
@@ -36,6 +36,16 @@ class TransactionCreateSchema(Schema):
 
 class TemplateCreateSchema(Schema):
     """Validates POST data for creating a transaction template."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so Marshmallow treats them as missing.
+
+        HTML forms always submit every <input> element, even hidden ones,
+        as empty strings.  Without this hook, those empty strings fail
+        OneOf / Integer validation on optional fields.
+        """
+        return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(required=True, places=2, as_string=True)
