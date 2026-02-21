@@ -4,7 +4,7 @@
 {% if editing %}
 {# Edit mode: input field with save on Enter #}
 <form hx-patch="{{ url_for('accounts.true_up', account_id=account.id) }}"
-      hx-target="#anchor-display"
+      hx-target="this"
       hx-swap="outerHTML"
       class="d-inline-flex align-items-center gap-2">
   <div class="input-group input-group-sm" style="max-width: 200px;">

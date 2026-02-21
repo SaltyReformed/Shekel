@@ -45,7 +45,7 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
         .filter_by(user_id=user_id)
         .scalar()
     )
-    next_index = (max_index or -1) + 1
+    next_index = 0 if max_index is None else max_index + 1
 
     # Check if any existing periods overlap with the requested range.
     existing_starts = set(
