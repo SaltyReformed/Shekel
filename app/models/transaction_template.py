@@ -1,0 +1,60 @@
+"""
+Shekel Budget App — Transaction Template Model (budget schema)
+
+A template defines a recurring income or expense (e.g. "Car Payment")
+along with its recurrence rule and default amount.  The recurrence
+engine uses templates to auto-generate Transaction rows into future
+pay periods.
+"""
+
+from app.extensions import db
+
+
+class TransactionTemplate(db.Model):
+    """Blueprint for a recurring income or expense line item."""
+
+    __tablename__ = "transaction_templates"
+    __table_args__ = (
+        db.Index("idx_templates_user_type", "user_id", "transaction_type_id"),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+    )
+    category_id = db.Column(
+        db.Integer, db.ForeignKey("budget.categories.id"), nullable=False
+    )
+    recurrence_rule_id = db.Column(
+        db.Integer, db.ForeignKey("budget.recurrence_rules.id")
+    )
+    transaction_type_id = db.Column(
+        db.Integer, db.ForeignKey("ref.transaction_types.id"), nullable=False
+    )
+    name = db.Column(db.String(200), nullable=False)
+    default_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships
+    account = db.relationship("Account", lazy="joined")
+    category = db.relationship("Category", lazy="joined")
+    recurrence_rule = db.relationship("RecurrenceRule", lazy="joined")
+    transaction_type = db.relationship("TransactionType", lazy="joined")
+    transactions = db.relationship(
+        "Transaction", back_populates="template", lazy="dynamic"
+    )
+
+    def __repr__(self):
+        return f"<TransactionTemplate '{self.name}' ${self.default_amount}>"

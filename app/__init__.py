@@ -1,0 +1,105 @@
+"""
+Shekel Budget App — Application Factory
+
+Creates and configures the Flask application.  Call create_app()
+with an optional config_name ('development', 'testing', 'production')
+to get a fully wired Flask instance.
+"""
+
+import logging
+import os
+
+from flask import Flask
+
+from app.config import CONFIG_MAP
+from app.extensions import db, login_manager, migrate
+
+
+def create_app(config_name=None):
+    """Build and return the configured Flask application.
+
+    Args:
+        config_name: One of 'development', 'testing', 'production'.
+                     Defaults to the FLASK_ENV environment variable
+                     or 'development' if unset.
+
+    Returns:
+        A fully configured Flask app instance.
+    """
+    app = Flask(__name__)
+
+    # --- Configuration ---------------------------------------------------
+    if config_name is None:
+        config_name = os.getenv("FLASK_ENV", "development")
+    config_class = CONFIG_MAP.get(config_name)
+    if config_class is None:
+        raise ValueError(f"Unknown config_name: {config_name!r}")
+    app.config.from_object(config_class)
+
+    # --- Logging ---------------------------------------------------------
+    _configure_logging(app)
+
+    # --- Extensions ------------------------------------------------------
+    db.init_app(app)
+    migrate.init_app(app, db)
+    login_manager.init_app(app)
+
+    # Flask-Login user loader callback.
+    from app.models.user import User  # pylint: disable=import-outside-toplevel
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        """Load a user by ID for Flask-Login session hydration."""
+        return db.session.get(User, int(user_id))
+
+    # --- Blueprints ------------------------------------------------------
+    _register_blueprints(app)
+
+    # --- Create schemas (development convenience) ------------------------
+    # In production, schemas are managed by Alembic migrations.
+    if config_name in ("development", "testing"):
+        with app.app_context():
+            _ensure_schemas()
+
+    app.logger.info("Shekel app created with config=%s", config_name)
+    return app
+
+
+def _configure_logging(app):
+    """Set up basic console logging for Phase 1."""
+    log_level = logging.DEBUG if app.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+
+def _register_blueprints(app):
+    """Import and register all route blueprints."""
+    # pylint: disable=import-outside-toplevel
+    from app.routes.auth import auth_bp
+    from app.routes.grid import grid_bp
+    from app.routes.transactions import transactions_bp
+    from app.routes.templates import templates_bp
+    from app.routes.pay_periods import pay_periods_bp
+    from app.routes.accounts import accounts_bp
+    from app.routes.categories import categories_bp
+    from app.routes.settings import settings_bp
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(grid_bp)
+    app.register_blueprint(transactions_bp)
+    app.register_blueprint(templates_bp)
+    app.register_blueprint(pay_periods_bp)
+    app.register_blueprint(accounts_bp)
+    app.register_blueprint(categories_bp)
+    app.register_blueprint(settings_bp)
+
+
+def _ensure_schemas():
+    """Create PostgreSQL schemas if they don't exist (dev/test only)."""
+    for schema_name in ("ref", "auth", "budget", "salary", "system"):
+        db.session.execute(
+            db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+        )
+    db.session.commit()

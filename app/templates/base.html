@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Shekel{% endblock %}</title>
+
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet"
+    integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+
+  <!-- Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+
+  <!-- App CSS -->
+  <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
+</head>
+
+<body>
+  {# --- Navigation Bar --- #}
+  {% if current_user.is_authenticated %}
+  <nav class="navbar navbar-expand-md bg-dark navbar-dark sticky-top">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="{{ url_for('grid.index') }}">
+        <i class="bi bi-coin"></i> Shekel
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navMain">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('grid.index') }}">
+              <i class="bi bi-grid-3x3"></i> Budget
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('templates.list_templates') }}">
+              <i class="bi bi-file-earmark-ruled"></i> Templates
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('categories.list_categories') }}">
+              <i class="bi bi-tags"></i> Categories
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('pay_periods.generate_form') }}">
+              <i class="bi bi-calendar-range"></i> Pay Periods
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('settings.show') }}">
+              <i class="bi bi-gear"></i> Settings
+            </a>
+          </li>
+        </ul>
+        <ul class="navbar-nav">
+          <li class="nav-item">
+            <span class="nav-link text-light-emphasis">
+              {{ current_user.display_name or current_user.email }}
+            </span>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('auth.logout') }}">
+              <i class="bi bi-box-arrow-right"></i> Logout
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+  {% endif %}
+
+  {# --- Flash Messages --- #}
+  <div class="container-fluid mt-2">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for category, message in messages %}
+    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+      {{ message }}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+  </div>
+
+  {# --- Page Content --- #}
+  <main class="container-fluid py-2">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Bootstrap 5 JS Bundle (includes Popper) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"
+    crossorigin="anonymous"></script>
+    
+  <!-- HTMX for dynamic server-rendered interactions -->
+  <script src="https://unpkg.com/htmx.org@2.0.4"
+    integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
+    crossorigin="anonymous"></script>
+
+  <!-- App JS -->
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+  {% block scripts %}{% endblock %}
+</body>
+
+</html>

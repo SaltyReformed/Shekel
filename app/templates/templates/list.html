@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Transaction Templates — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-file-earmark-ruled"></i> Transaction Templates</h4>
+  <a href="{{ url_for('templates.new_template') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-circle"></i> New Template
+  </a>
+</div>
+
+{% if templates %}
+<table class="table table-hover table-sm">
+  <thead class="table-light">
+    <tr>
+      <th>Name</th>
+      <th>Category</th>
+      <th>Type</th>
+      <th class="text-end">Default Amount</th>
+      <th>Recurrence</th>
+      <th>Active</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in templates %}
+    <tr class="{{ 'text-muted' if not t.is_active else '' }}">
+      <td>{{ t.name }}</td>
+      <td>{{ t.category.display_name if t.category else '—' }}</td>
+      <td>
+        {% if t.transaction_type.name == 'income' %}
+          <span class="badge bg-success">Income</span>
+        {% else %}
+          <span class="badge bg-danger">Expense</span>
+        {% endif %}
+      </td>
+      <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+      <td>
+        {% if t.recurrence_rule %}
+          {{ t.recurrence_rule.pattern.name|replace('_', ' ')|title }}
+          {% if t.recurrence_rule.interval_n and t.recurrence_rule.interval_n > 1 %}
+            (every {{ t.recurrence_rule.interval_n }})
+          {% endif %}
+          {% if t.recurrence_rule.day_of_month %}
+            (day {{ t.recurrence_rule.day_of_month }})
+          {% endif %}
+        {% else %}
+          <span class="text-muted">One-time</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if t.is_active %}
+          <i class="bi bi-check-circle text-success"></i>
+        {% else %}
+          <i class="bi bi-x-circle text-muted"></i>
+        {% endif %}
+      </td>
+      <td>
+        <a href="{{ url_for('templates.edit_template', template_id=t.id) }}"
+           class="btn btn-sm btn-outline-secondary me-1">
+          <i class="bi bi-pencil"></i>
+        </a>
+        {% if t.is_active %}
+        <form method="POST" action="{{ url_for('templates.delete_template', template_id=t.id) }}"
+              class="d-inline"
+              onsubmit="return confirm('Deactivate this template?')">
+          <button type="submit" class="btn btn-sm btn-outline-danger">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  No templates yet. Create one to start auto-generating transactions.
+</div>
+{% endif %}
+{% endblock %}

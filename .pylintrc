@@ -1,0 +1,22 @@
+[MAIN]
+# Load Flask/SQLAlchemy-aware plugins if installed.
+load-plugins=pylint.extensions.docparams
+
+[FORMAT]
+# Max line length. 99 is a reasonable compromise.
+max-line-length=99
+
+[MESSAGES CONTROL]
+# Disable warnings that conflict with Flask/SQLAlchemy patterns.
+disable=
+    missing-module-docstring,
+    too-few-public-methods,
+    import-error
+
+[DESIGN]
+# SQLAlchemy models often have many attributes.
+max-attributes=15
+
+[BASIC]
+# Allow short variable names common in Flask (db, bp, app, etc.)
+good-names=id,db,bp,app,fs,e,f,i,j,k,n,v

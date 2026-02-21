@@ -1,0 +1,154 @@
+/* Shekel Budget App — Custom Styles
+   Minimal overrides — Bootstrap 5 handles most layout. */
+
+/* --- Grid Table --- */
+.grid-table {
+  font-size: 0.85rem;
+  table-layout: fixed;
+}
+
+.grid-table th,
+.grid-table td {
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sticky first column (row labels) */
+.sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background-color: #fff;
+}
+
+thead .sticky-col {
+  z-index: 3;
+  background-color: var(--bs-dark);
+  color: #fff;
+}
+
+.row-label-col {
+  min-width: 160px;
+  max-width: 200px;
+}
+
+.row-label {
+  font-size: 0.8rem;
+}
+
+/* Column sizing variants */
+.grid-wide th:not(.row-label-col),
+.grid-wide td:not(.sticky-col) {
+  min-width: 150px;
+}
+
+.grid-medium th:not(.row-label-col),
+.grid-medium td:not(.sticky-col) {
+  min-width: 110px;
+}
+
+.grid-compact th:not(.row-label-col),
+.grid-compact td:not(.sticky-col) {
+  min-width: 80px;
+  font-size: 0.75rem;
+}
+
+/* Period header */
+.period-header {
+  font-size: 0.8rem;
+}
+
+.current-period {
+  background-color: rgba(13, 110, 253, 0.15) !important;
+  border-bottom: 3px solid var(--bs-primary);
+}
+
+/* --- Transaction Status Cells --- */
+.status-projected {
+  /* Default — no special styling */
+}
+
+.status-done,
+.status-received {
+  background-color: rgba(25, 135, 84, 0.08);
+}
+
+.status-credit {
+  background-color: rgba(255, 193, 7, 0.12);
+}
+
+/* --- Section Headers --- */
+.section-header td {
+  font-size: 0.9rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.group-header-row td {
+  background-color: rgba(0, 0, 0, 0.03);
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
+
+/* --- Totals Row --- */
+.totals-row td {
+  border-top: 2px solid rgba(0, 0, 0, 0.2);
+}
+
+/* --- Anchor Balance --- */
+.anchor-balance-display {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--bs-primary);
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  transition: background-color 0.15s;
+}
+
+.anchor-balance-display:hover {
+  background-color: rgba(13, 110, 253, 0.1);
+}
+
+/* --- Transaction Cell --- */
+.txn-cell {
+  cursor: pointer;
+  padding: 0.15rem 0.25rem;
+  border-radius: 0.25rem;
+  transition: background-color 0.1s;
+}
+
+.txn-cell:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* --- Inline Edit Form --- */
+.txn-edit-form {
+  min-width: 180px;
+}
+
+.txn-edit-form .form-control-sm,
+.txn-edit-form .form-select-sm {
+  font-size: 0.78rem;
+  padding: 0.15rem 0.35rem;
+}
+
+/* --- Extra Small Buttons --- */
+.btn-xs {
+  padding: 0.1rem 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  border-radius: 0.2rem;
+}
+
+/* --- Negative Balance Warning --- */
+.text-danger.fw-bold {
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}

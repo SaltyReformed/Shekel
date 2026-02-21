@@ -1,0 +1,36 @@
+"""
+Shekel Budget App — Savings Goal Model (budget schema)
+
+Tracks savings targets with auto-calculated contribution amounts.
+Schema created in Phase 1; feature implementation in Phase 4.
+"""
+
+from app.extensions import db
+
+
+class SavingsGoal(db.Model):
+    """A savings goal with target amount, target date, and contribution plan."""
+
+    __tablename__ = "savings_goals"
+    __table_args__ = {"schema": "budget"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name = db.Column(db.String(100), nullable=False)
+    target_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    target_date = db.Column(db.Date)
+    contribution_per_period = db.Column(db.Numeric(12, 2))
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    def __repr__(self):
+        return f"<SavingsGoal '{self.name}' target=${self.target_amount}>"

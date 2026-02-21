@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Generate Pay Periods — Shekel{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-body text-center">
+        <h3><i class="bi bi-calendar-x text-warning"></i> No Pay Periods</h3>
+        <p class="mt-3">
+          No pay periods have been generated yet, or there is no period
+          covering today's date.
+        </p>
+        <a href="{{ url_for('pay_periods.generate_form') }}" class="btn btn-primary">
+          <i class="bi bi-calendar-plus"></i> Generate Pay Periods
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

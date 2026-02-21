@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title %}Budget Grid — Shekel{% endblock %}
+
+{% block content %}
+{# --- Anchor Balance Display --- #}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div class="d-flex align-items-center gap-3">
+    <h5 class="mb-0">Checking Balance:</h5>
+    {% if account %}
+    <div id="anchor-display"
+         hx-get="{{ url_for('accounts.anchor_form', account_id=account.id) }}"
+         hx-trigger="click"
+         hx-swap="outerHTML"
+         class="anchor-balance-display"
+         role="button"
+         title="Click to update balance">
+      ${{ "%.2f"|format(anchor_balance|float) }}
+      <i class="bi bi-pencil-square text-muted ms-1 small"></i>
+    </div>
+    {% else %}
+    <span class="text-muted">No account configured</span>
+    {% endif %}
+  </div>
+
+  {# --- Date Range Controls --- #}
+  <div class="d-flex align-items-center gap-2">
+    {# Left arrow — shift window back #}
+    <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset - 1) }}"
+       class="btn btn-sm btn-outline-secondary" title="Earlier">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+
+    {# Quick-select buttons #}
+    {% set range_options = [
+      ("3", 3), ("6", 6), ("13", 13), ("26", 26), ("52", 52)
+    ] %}
+    {% for label, count in range_options %}
+    <a href="{{ url_for('grid.index', periods=count, offset=0) }}"
+       class="btn btn-sm {{ 'btn-primary' if num_periods == count else 'btn-outline-secondary' }}">
+      {{ label }}
+    </a>
+    {% endfor %}
+
+    {# Right arrow — shift window forward #}
+    <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset + 1) }}"
+       class="btn btn-sm btn-outline-secondary" title="Later">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+  </div>
+</div>
+
+{# --- Budget Grid Table --- #}
+<div class="table-responsive">
+  <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
+    <thead class="table-dark">
+      <tr>
+        <th class="row-label-col sticky-col">Item</th>
+        {% for period in periods %}
+        <th class="text-center period-header
+            {{ 'current-period' if period.id == current_period.id else '' }}">
+          <div class="fw-bold">{{ period.start_date.strftime('%m/%d') }}</div>
+          <div class="small text-light-emphasis">{{ period.end_date.strftime('%m/%d/%y') }}</div>
+          {% if period.start_date < today and period.id != current_period.id %}
+          <form hx-post="{{ url_for('transactions.carry_forward', period_id=period.id) }}"
+                hx-swap="none" class="mt-1">
+            <button type="submit" class="btn btn-warning btn-xs"
+                    title="Carry forward unpaid items to current period">
+              <i class="bi bi-arrow-right-circle"></i> Carry Fwd
+            </button>
+          </form>
+          {% endif %}
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+
+    <tbody>
+      {# --- Income Section --- #}
+      <tr class="table-success section-header">
+        <td class="sticky-col fw-bold" colspan="{{ periods|length + 1 }}">
+          <i class="bi bi-arrow-down-circle"></i> Income
+        </td>
+      </tr>
+      {% set income_type_name = "income" %}
+      {% for period in periods %}{% endfor %}{# Preload #}
+
+      {# Render income rows grouped by category #}
+      {% set ns = namespace(current_group='') %}
+      {% for category in categories %}
+        {# Check if any transaction in visible periods uses this category as income #}
+        {% set has_income = [] %}
+        {% for period in periods %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.category_id == category.id and txn.is_income %}
+              {% if has_income.append(1) %}{% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+
+        {% if has_income %}
+          {% if category.group_name != ns.current_group %}
+            {% set ns.current_group = category.group_name %}
+            <tr class="group-header-row">
+              <td class="sticky-col text-muted small fw-semibold"
+                  colspan="{{ periods|length + 1 }}">
+                {{ category.group_name }}
+              </td>
+            </tr>
+          {% endif %}
+
+          <tr>
+            <td class="sticky-col row-label" title="{{ category.display_name }}">
+              {{ category.item_name }}
+            </td>
+            {% for period in periods %}
+              {% set period_txns = txn_by_period.get(period.id, []) %}
+              {% set found = namespace(txn=None) %}
+              {% for txn in period_txns %}
+                {% if txn.category_id == category.id and txn.is_income and not txn.is_deleted %}
+                  {% set found.txn = txn %}
+                {% endif %}
+              {% endfor %}
+              <td class="text-end cell
+                  {{ 'status-' + found.txn.status.name if found.txn and found.txn.status else '' }}">
+                {% if found.txn %}
+                  {% include "grid/_transaction_cell.html" with context %}
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endif %}
+      {% endfor %}
+
+      {# --- Income Totals --- #}
+      <tr class="table-success fw-bold totals-row">
+        <td class="sticky-col">Total Income</td>
+        {% for period in periods %}
+          {% set total = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.is_income and not txn.is_deleted and txn.status.name != 'credit' %}
+              {% set total.val = total.val + (txn.effective_amount|float) %}
+            {% endif %}
+          {% endfor %}
+          <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
+        {% endfor %}
+      </tr>
+
+      {# --- Expense Section --- #}
+      <tr class="table-danger section-header">
+        <td class="sticky-col fw-bold" colspan="{{ periods|length + 1 }}">
+          <i class="bi bi-arrow-up-circle"></i> Expenses
+        </td>
+      </tr>
+
+      {% set ns2 = namespace(current_group='') %}
+      {% for category in categories %}
+        {% set has_expense = [] %}
+        {% for period in periods %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.category_id == category.id and txn.is_expense %}
+              {% if has_expense.append(1) %}{% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+
+        {% if has_expense %}
+          {% if category.group_name != ns2.current_group %}
+            {% set ns2.current_group = category.group_name %}
+            <tr class="group-header-row">
+              <td class="sticky-col text-muted small fw-semibold"
+                  colspan="{{ periods|length + 1 }}">
+                {{ category.group_name }}
+              </td>
+            </tr>
+          {% endif %}
+
+          <tr>
+            <td class="sticky-col row-label" title="{{ category.display_name }}">
+              {{ category.item_name }}
+            </td>
+            {% for period in periods %}
+              {% set period_txns = txn_by_period.get(period.id, []) %}
+              {% set found = namespace(txn=None) %}
+              {% for txn in period_txns %}
+                {% if txn.category_id == category.id and txn.is_expense and not txn.is_deleted %}
+                  {% set found.txn = txn %}
+                {% endif %}
+              {% endfor %}
+              <td class="text-end cell
+                  {{ 'status-' + found.txn.status.name if found.txn and found.txn.status else '' }}">
+                {% if found.txn %}
+                  {% include "grid/_transaction_cell.html" with context %}
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endif %}
+      {% endfor %}
+
+      {# --- Expense Totals --- #}
+      <tr class="table-danger fw-bold totals-row">
+        <td class="sticky-col">Total Expenses</td>
+        {% for period in periods %}
+          {% set total = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.is_expense and not txn.is_deleted and txn.status.name != 'credit' %}
+              {% set total.val = total.val + (txn.effective_amount|float) %}
+            {% endif %}
+          {% endfor %}
+          <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
+        {% endfor %}
+      </tr>
+
+      {# --- Net & Balance Summary --- #}
+      <tr class="table-light fw-bold">
+        <td class="sticky-col">Net (Income − Expenses)</td>
+        {% for period in periods %}
+          {% set inc = namespace(val=0) %}
+          {% set exp = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if not txn.is_deleted and txn.status.name != 'credit' %}
+              {% if txn.is_income %}
+                {% set inc.val = inc.val + (txn.effective_amount|float) %}
+              {% elif txn.is_expense %}
+                {% set exp.val = exp.val + (txn.effective_amount|float) %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {% set net = inc.val - exp.val %}
+          <td class="text-end {{ 'text-success' if net >= 0 else 'text-danger' }}">
+            ${{ "%.2f"|format(net) }}
+          </td>
+        {% endfor %}
+      </tr>
+
+      <tr class="table-info fw-bold" id="balance-row"
+          hx-get="{{ url_for('grid.balance_row', periods=num_periods, offset=start_offset) }}"
+          hx-trigger="balanceChanged from:body"
+          hx-swap="outerHTML">
+        <td class="sticky-col">
+          <i class="bi bi-bank"></i> Projected End Balance
+        </td>
+        {% for period in periods %}
+          {% set bal = balances.get(period.id) %}
+          <td class="text-end {{ 'text-danger fw-bold' if bal is not none and bal < 0 else '' }}">
+            {% if bal is not none %}
+              ${{ "%.2f"|format(bal|float) }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{# --- Add Transaction Button --- #}
+<div class="mt-3">
+  <a href="#" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
+     data-bs-target="#addTransactionModal">
+    <i class="bi bi-plus-circle"></i> Add Transaction
+  </a>
+</div>
+
+{# --- Add Transaction Modal --- #}
+<div class="modal fade" id="addTransactionModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Add Transaction</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form hx-post="{{ url_for('transactions.create_transaction') }}"
+            hx-swap="none" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide(); location.reload();">
+        <div class="modal-body">
+          <input type="hidden" name="scenario_id" value="{{ scenario.id }}">
+
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Amount</label>
+            <input type="number" step="0.01" name="estimated_amount"
+                   class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Type</label>
+            <select name="transaction_type_id" class="form-select" required>
+              {% for tt in transaction_types %}
+              <option value="{{ tt.id }}">{{ tt.name|capitalize }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Category</label>
+            <select name="category_id" class="form-select" required>
+              {% for cat in categories %}
+              <option value="{{ cat.id }}">{{ cat.display_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Pay Period</label>
+            <select name="pay_period_id" class="form-select" required>
+              {% for p in periods %}
+              <option value="{{ p.id }}"
+                {{ 'selected' if p.id == current_period.id else '' }}>
+                {{ p.label }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

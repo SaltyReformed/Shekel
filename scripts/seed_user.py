@@ -1,0 +1,127 @@
+"""
+Shekel Budget App — Seed User & Default Data
+
+Creates the single Phase 1 user plus their default checking account,
+baseline scenario, user settings, and starter categories.
+
+Usage:
+    python scripts/seed_user.py
+
+Environment variables (or .env file):
+    SEED_USER_EMAIL       — default: admin@shekel.local
+    SEED_USER_PASSWORD    — default: changeme
+    SEED_USER_DISPLAY_NAME — default: Budget Admin
+"""
+
+import os
+import sys
+
+# Add project root to path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app import create_app
+from app.extensions import db
+from app.models.user import User, UserSettings
+from app.models.account import Account
+from app.models.scenario import Scenario
+from app.models.category import Category
+from app.models.ref import AccountType
+from app.services.auth_service import hash_password
+
+
+# Default categories to bootstrap the budget.
+DEFAULT_CATEGORIES = [
+    ("Income", "Salary"),
+    ("Income", "Other Income"),
+    ("Home", "Mortgage/Rent"),
+    ("Home", "Electricity"),
+    ("Home", "Gas"),
+    ("Home", "Water"),
+    ("Home", "Internet"),
+    ("Home", "Phone"),
+    ("Home", "Home Insurance"),
+    ("Auto", "Car Payment"),
+    ("Auto", "Car Insurance"),
+    ("Auto", "Fuel"),
+    ("Auto", "Maintenance"),
+    ("Family", "Groceries"),
+    ("Family", "Dining Out"),
+    ("Family", "Spending Money"),
+    ("Family", "Subscriptions"),
+    ("Health", "Medical"),
+    ("Health", "Dental"),
+    ("Financial", "Savings Transfer"),
+    ("Financial", "Extra Debt Payment"),
+    ("Credit Card", "Payback"),
+]
+
+
+def seed_user():
+    """Create the seeded user and all associated default data."""
+    email = os.getenv("SEED_USER_EMAIL", "josh@saltyreformed.com")
+    password = os.getenv("SEED_USER_PASSWORD", "Tit4nnc4twaiCJ")
+    display_name = os.getenv("SEED_USER_DISPLAY_NAME", "Josh Grubb")
+
+    # Check if user already exists.
+    existing = db.session.query(User).filter_by(email=email).first()
+    if existing:
+        print(f"User '{email}' already exists (id={existing.id}).  Skipping.")
+        return existing
+
+    # Create the user.
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        display_name=display_name,
+    )
+    db.session.add(user)
+    db.session.flush()  # Get user.id
+    print(f"Created user: {email} (id={user.id})")
+
+    # Create user settings.
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+    print("  + User settings created.")
+
+    # Create checking account.
+    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    account = Account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Checking",
+        current_anchor_balance=0,
+    )
+    db.session.add(account)
+    print("  + Checking account created.")
+
+    # Create baseline scenario.
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    print("  + Baseline scenario created.")
+
+    # Create default categories.
+    for sort_idx, (group, item) in enumerate(DEFAULT_CATEGORIES):
+        cat = Category(
+            user_id=user.id,
+            group_name=group,
+            item_name=item,
+            sort_order=sort_idx,
+        )
+        db.session.add(cat)
+    print(f"  + {len(DEFAULT_CATEGORIES)} default categories created.")
+
+    db.session.commit()
+    print("\nSeed complete.  You can now log in with:")
+    print(f"  Email:    {email}")
+    print(f"  Password: {password}")
+    return user
+
+
+if __name__ == "__main__":
+    app = create_app()
+    with app.app_context():
+        seed_user()

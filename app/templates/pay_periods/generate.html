@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Generate Pay Periods — Shekel{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-lg-4">
+    <h4><i class="bi bi-calendar-range"></i> Generate Pay Periods</h4>
+    <p class="text-muted">
+      Enter your next (or first) payday and the app will generate biweekly
+      pay periods forward.
+    </p>
+
+    <form method="POST" action="{{ url_for('pay_periods.generate') }}">
+      <div class="mb-3">
+        <label for="start_date" class="form-label">First Payday</label>
+        <input type="date" id="start_date" name="start_date" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label for="num_periods" class="form-label">Number of Periods</label>
+        <input type="number" id="num_periods" name="num_periods" class="form-control"
+               value="52" min="1" max="260">
+        <div class="form-text">52 periods ≈ 2 years of biweekly pay.</div>
+      </div>
+      <div class="mb-3">
+        <label for="cadence_days" class="form-label">Days Between Paydays</label>
+        <input type="number" id="cadence_days" name="cadence_days" class="form-control"
+               value="14" min="1" max="365">
+        <div class="form-text">14 = biweekly (most common).</div>
+      </div>
+      <button type="submit" class="btn btn-primary w-100">
+        <i class="bi bi-calendar-plus"></i> Generate
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

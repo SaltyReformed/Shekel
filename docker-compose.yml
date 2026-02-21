@@ -1,0 +1,46 @@
+# Shekel Budget App — Docker Compose
+# Usage:
+#   Development (PostgreSQL only):  docker compose up db
+#   Full stack:                     docker compose up
+#
+# The 'db' service provides PostgreSQL for both dev and prod.
+# The 'app' service runs the Flask application (production).
+# For development, run Flask natively: flask run
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: shekel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shekel_user
+      POSTGRES_PASSWORD: shekel_pass
+      POSTGRES_DB: shekel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init script to create the test database.
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: shekel-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/shekel
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+    ports:
+      - "5000:5000"
+
+volumes:
+  pgdata:
