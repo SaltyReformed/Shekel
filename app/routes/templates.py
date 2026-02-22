@@ -19,7 +19,8 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.scenario import Scenario
-from app.models.ref import RecurrencePattern, TransactionType
+from app.models.transaction import Transaction
+from app.models.ref import RecurrencePattern, Status, TransactionType
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.exceptions import RecurrenceConflict
@@ -282,9 +283,64 @@ def delete_template(template_id):
         return redirect(url_for("templates.list_templates"))
 
     template.is_active = False
+
+    # Soft-delete projected transactions for this template.
+    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    deleted_count = db.session.query(Transaction).filter(
+        Transaction.template_id == template.id,
+        Transaction.status_id == projected_status.id,
+        Transaction.is_deleted.is_(False),
+    ).update({"is_deleted": True}, synchronize_session="fetch")
+
     db.session.commit()
 
-    flash(f"Template '{template.name}' deactivated.", "info")
+    flash(
+        f"Template '{template.name}' deactivated. "
+        f"{deleted_count} projected transaction(s) removed.",
+        "info",
+    )
+    return redirect(url_for("templates.list_templates"))
+
+
+@templates_bp.route("/templates/<int:template_id>/reactivate", methods=["POST"])
+@login_required
+def reactivate_template(template_id):
+    """Reactivate a deactivated template and restore projected transactions."""
+    template = db.session.get(TransactionTemplate, template_id)
+    if template is None or template.user_id != current_user.id:
+        flash("Template not found.", "danger")
+        return redirect(url_for("templates.list_templates"))
+
+    template.is_active = True
+
+    # Restore soft-deleted projected transactions.
+    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    restored_count = db.session.query(Transaction).filter(
+        Transaction.template_id == template.id,
+        Transaction.status_id == projected_status.id,
+        Transaction.is_deleted.is_(True),
+    ).update({"is_deleted": False}, synchronize_session="fetch")
+
+    # Regenerate to fill in any missing future periods.
+    if template.recurrence_rule:
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            periods = pay_period_service.get_all_periods(current_user.id)
+            recurrence_engine.generate_for_template(
+                template, periods, scenario.id, effective_from=date.today(),
+            )
+
+    db.session.commit()
+
+    flash(
+        f"Template '{template.name}' reactivated. "
+        f"{restored_count} projected transaction(s) restored.",
+        "success",
+    )
     return redirect(url_for("templates.list_templates"))
 
 

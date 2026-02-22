@@ -94,9 +94,16 @@
         {% if t.is_active %}
         <form method="POST" action="{{ url_for('templates.delete_template', template_id=t.id) }}"
               class="d-inline"
-              onsubmit="return confirm('Deactivate this template?')">
+              onsubmit="return confirm('Deactivate this template? All projected transactions will be removed.')">
           <button type="submit" class="btn btn-sm btn-outline-danger">
             <i class="bi bi-x-circle"></i>
+          </button>
+        </form>
+        {% else %}
+        <form method="POST" action="{{ url_for('templates.reactivate_template', template_id=t.id) }}"
+              class="d-inline">
+          <button type="submit" class="btn btn-sm btn-outline-success">
+            <i class="bi bi-arrow-counterclockwise"></i>
           </button>
         </form>
         {% endif %}
