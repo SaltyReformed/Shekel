@@ -113,7 +113,7 @@ def mark_done(txn_id):
     logger.info("Marked transaction %d as %s", txn_id, status.name)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])
@@ -128,7 +128,7 @@ def mark_credit(txn_id):
 
     txn = db.session.get(Transaction, txn_id)
     response = render_template("grid/_transaction_cell.html", txn=txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/unmark-credit", methods=["DELETE"])
@@ -143,7 +143,7 @@ def unmark_credit(txn_id):
 
     txn = db.session.get(Transaction, txn_id)
     response = render_template("grid/_transaction_cell.html", txn=txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions", methods=["POST"])

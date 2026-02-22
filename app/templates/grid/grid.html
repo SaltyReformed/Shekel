@@ -137,10 +137,13 @@
       <tr class="table-success fw-bold totals-row">
         <td class="sticky-col">Total Income</td>
         {% for period in periods %}
+          {% set is_anchor = account and period.id == account.current_anchor_period_id %}
           {% set total = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
             {% if txn.is_income and not txn.is_deleted and txn.status.name != 'credit' %}
-              {% set total.val = total.val + (txn.effective_amount|float) %}
+              {% if not is_anchor or txn.status.name not in ('done', 'received') %}
+                {% set total.val = total.val + (txn.effective_amount|float) %}
+              {% endif %}
             {% endif %}
           {% endfor %}
           <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
@@ -205,10 +208,13 @@
       <tr class="table-danger fw-bold totals-row">
         <td class="sticky-col">Total Expenses</td>
         {% for period in periods %}
+          {% set is_anchor = account and period.id == account.current_anchor_period_id %}
           {% set total = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
             {% if txn.is_expense and not txn.is_deleted and txn.status.name != 'credit' %}
-              {% set total.val = total.val + (txn.effective_amount|float) %}
+              {% if not is_anchor or txn.status.name not in ('done', 'received') %}
+                {% set total.val = total.val + (txn.effective_amount|float) %}
+              {% endif %}
             {% endif %}
           {% endfor %}
           <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
@@ -219,14 +225,17 @@
       <tr class="table-light fw-bold">
         <td class="sticky-col">Net (Income − Expenses)</td>
         {% for period in periods %}
+          {% set is_anchor = account and period.id == account.current_anchor_period_id %}
           {% set inc = namespace(val=0) %}
           {% set exp = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
             {% if not txn.is_deleted and txn.status.name != 'credit' %}
-              {% if txn.is_income %}
-                {% set inc.val = inc.val + (txn.effective_amount|float) %}
-              {% elif txn.is_expense %}
-                {% set exp.val = exp.val + (txn.effective_amount|float) %}
+              {% if not is_anchor or txn.status.name not in ('done', 'received') %}
+                {% if txn.is_income %}
+                  {% set inc.val = inc.val + (txn.effective_amount|float) %}
+                {% elif txn.is_expense %}
+                  {% set exp.val = exp.val + (txn.effective_amount|float) %}
+                {% endif %}
               {% endif %}
             {% endif %}
           {% endfor %}
