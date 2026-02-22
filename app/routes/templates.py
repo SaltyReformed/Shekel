@@ -10,10 +10,12 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from markupsafe import Markup
 
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -60,6 +62,8 @@ def new_template():
     )
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
+    periods = pay_period_service.get_all_periods(current_user.id)
+    current_period = pay_period_service.get_current_period(current_user.id)
 
     return render_template(
         "templates/form.html",
@@ -68,6 +72,8 @@ def new_template():
         accounts=accounts,
         patterns=patterns,
         txn_types=txn_types,
+        periods=periods,
+        current_period=current_period,
     )
 
 
@@ -82,6 +88,9 @@ def create_template():
 
     data = _create_schema.load(request.form)
 
+    # Extract start_period_id before creating the rule.
+    start_period_id = data.pop("start_period_id", None)
+
     # Create the recurrence rule if a pattern was specified.
     rule = None
     pattern_name = data.pop("recurrence_pattern", None)
@@ -91,13 +100,24 @@ def create_template():
             .filter_by(name=pattern_name)
             .one()
         )
+
+        interval_n = data.pop("interval_n", 1)
+        offset_periods = data.pop("offset_periods", 0)
+
+        # Auto-derive offset from start period for every_n_periods.
+        if pattern_name == "every_n_periods" and start_period_id and interval_n:
+            start_period = db.session.get(PayPeriod, start_period_id)
+            if start_period:
+                offset_periods = start_period.period_index % interval_n
+
         rule = RecurrenceRule(
             user_id=current_user.id,
             pattern_id=pattern.id,
-            interval_n=data.pop("interval_n", 1),
-            offset_periods=data.pop("offset_periods", 0),
+            interval_n=interval_n,
+            offset_periods=offset_periods,
             day_of_month=data.pop("day_of_month", None),
             month_of_year=data.pop("month_of_year", None),
+            start_period_id=start_period_id,
         )
         db.session.add(rule)
         db.session.flush()
@@ -126,7 +146,6 @@ def create_template():
             periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
                 template, periods, scenario.id,
-                effective_from=date.today(),
             )
 
     db.session.commit()
@@ -164,6 +183,8 @@ def edit_template(template_id):
         accounts=accounts,
         patterns=patterns,
         txn_types=txn_types,
+        periods=[],
+        current_period=None,
     )
 
 
@@ -186,6 +207,9 @@ def update_template(template_id):
 
     data = _update_schema.load(request.form)
     effective_from = data.pop("effective_from", date.today())
+
+    # Remove start_period_id from update data (set once at creation).
+    data.pop("start_period_id", None)
 
     # Update recurrence rule if pattern changed.
     pattern_name = data.pop("recurrence_pattern", None)
@@ -262,3 +286,69 @@ def delete_template(template_id):
 
     flash(f"Template '{template.name}' deactivated.", "info")
     return redirect(url_for("templates.list_templates"))
+
+
+@templates_bp.route("/templates/preview-recurrence", methods=["GET"])
+@login_required
+def preview_recurrence():
+    """HTMX partial: show next 5 occurrences for a recurrence pattern."""
+    pattern_name = request.args.get("recurrence_pattern")
+    if not pattern_name or pattern_name == "once":
+        return "<small class='text-muted'>No preview for this pattern</small>"
+
+    interval_n = request.args.get("interval_n", type=int, default=1)
+    day_of_month = request.args.get("day_of_month", type=int)
+    month_of_year = request.args.get("month_of_year", type=int)
+    start_period_id = request.args.get("start_period_id", type=int)
+
+    # Build a temporary rule object (not saved).
+    pattern = (
+        db.session.query(RecurrencePattern)
+        .filter_by(name=pattern_name)
+        .first()
+    )
+    if not pattern:
+        return "<small class='text-muted'>Unknown pattern</small>"
+
+    rule = RecurrenceRule(
+        pattern_id=pattern.id,
+        interval_n=interval_n,
+        day_of_month=day_of_month,
+        month_of_year=month_of_year,
+        start_period_id=start_period_id,
+    )
+    # Attach the pattern relationship manually for the matcher.
+    rule.pattern = pattern
+
+    periods = pay_period_service.get_all_periods(current_user.id)
+    if not periods:
+        return "<small class='text-muted'>No pay periods generated yet</small>"
+
+    # Determine effective_from.
+    effective_from = None
+    if start_period_id:
+        start_period = db.session.get(PayPeriod, start_period_id)
+        if start_period:
+            effective_from = start_period.start_date
+            # Auto-derive offset for every_n_periods.
+            if pattern_name == "every_n_periods" and interval_n:
+                rule.offset_periods = start_period.period_index % interval_n
+    if effective_from is None:
+        current_period = pay_period_service.get_current_period(current_user.id)
+        effective_from = current_period.start_date if current_period else periods[0].start_date
+
+    matching = recurrence_engine._match_periods(rule, pattern_name, periods, effective_from)
+    preview_periods = matching[:5]
+
+    if not preview_periods:
+        return "<small class='text-muted'>No matching periods found</small>"
+
+    items = "".join(
+        f"<li>{p.start_date.strftime('%b %d, %Y')} – {p.end_date.strftime('%b %d, %Y')}</li>"
+        for p in preview_periods
+    )
+    html = (
+        f"<small class='text-muted'>Next {len(preview_periods)} occurrences:</small>"
+        f"<ul class='list-unstyled mb-0 ms-2'><small>{items}</small></ul>"
+    )
+    return Markup(html)

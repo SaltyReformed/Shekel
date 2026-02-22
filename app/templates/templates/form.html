@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% block title %}{{ 'Edit' if template else 'New' }} Template — Shekel{% endblock %}
 
+{% set pattern_labels = {
+  'every_period': 'Every paycheck',
+  'every_n_periods': 'Every N paychecks',
+  'monthly': 'Monthly (specific day)',
+  'monthly_first': 'Monthly (first paycheck of month)',
+  'quarterly': 'Quarterly',
+  'semi_annual': 'Every 6 months',
+  'annual': 'Yearly',
+  'once': 'One-time',
+} %}
+
+{% set month_names = {
+  1: 'January', 2: 'February', 3: 'March', 4: 'April',
+  5: 'May', 6: 'June', 7: 'July', 8: 'August',
+  9: 'September', 10: 'October', 11: 'November', 12: 'December',
+} %}
+
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
@@ -78,40 +95,56 @@
           {% for p in patterns %}
           <option value="{{ p.name }}"
             {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern.name == p.name else '' }}>
-            {{ p.name|replace('_', ' ')|title }}
+            {{ pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
           </option>
           {% endfor %}
         </select>
       </div>
 
       <div id="recurrence-fields" class="d-none">
-        <div class="row mb-3">
-          <div class="col" id="field-interval">
-            <label for="interval_n" class="form-label">Interval (every N periods)</label>
-            <input type="number" id="interval_n" name="interval_n"
-                   class="form-control" min="1"
-                   value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
-          </div>
-          <div class="col" id="field-offset">
-            <label for="offset_periods" class="form-label">Offset</label>
-            <input type="number" id="offset_periods" name="offset_periods"
-                   class="form-control" min="0"
-                   value="{{ template.recurrence_rule.offset_periods if template and template.recurrence_rule else 0 }}">
-          </div>
+        <div class="mb-3 d-none" id="field-interval">
+          <label for="interval_n" class="form-label">Repeat every N paychecks</label>
+          <input type="number" id="interval_n" name="interval_n"
+                 class="form-control" min="1"
+                 value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
         </div>
         <div class="row mb-3">
-          <div class="col" id="field-dom">
+          <div class="col d-none" id="field-dom">
             <label for="day_of_month" class="form-label">Day of Month</label>
             <input type="number" id="day_of_month" name="day_of_month"
                    class="form-control" min="1" max="31"
                    value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
           </div>
-          <div class="col" id="field-moy">
-            <label for="month_of_year" class="form-label">Month of Year</label>
-            <input type="number" id="month_of_year" name="month_of_year"
-                   class="form-control" min="1" max="12"
-                   value="{{ template.recurrence_rule.month_of_year if template and template.recurrence_rule and template.recurrence_rule.month_of_year else '' }}">
+          <div class="col d-none" id="field-moy">
+            <label for="month_of_year" class="form-label">Month</label>
+            <select id="month_of_year" name="month_of_year" class="form-select">
+              <option value="">—</option>
+              {% for num, name in month_names.items() %}
+              <option value="{{ num }}"
+                {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
+                {{ name }}
+              </option>
+              {% endfor %}
+            </select>
           </div>
+        </div>
+
+        {% if not template %}
+        <div class="mb-3 d-none" id="field-start-period">
+          <label class="form-label">First paycheck</label>
+          <select name="start_period_id" class="form-select">
+            {% for p in periods %}
+            <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
+              {{ p.label }}
+            </option>
+            {% endfor %}
+          </select>
+          <div class="form-text">When should this first appear on the grid?</div>
+        </div>
+        {% endif %}
+
+        <div id="recurrence-preview" class="mt-2 mb-3">
+          <small class="text-muted">Select a pattern to see upcoming dates</small>
         </div>
       </div>
 
@@ -142,9 +175,10 @@
 function toggleRecurrenceFields(pattern) {
   const container = document.getElementById('recurrence-fields');
   const interval = document.getElementById('field-interval');
-  const offset = document.getElementById('field-offset');
   const dom = document.getElementById('field-dom');
   const moy = document.getElementById('field-moy');
+  const startPeriod = document.getElementById('field-start-period');
+  const preview = document.getElementById('recurrence-preview');
 
   if (!pattern) {
     container.classList.add('d-none');
@@ -153,14 +187,63 @@ function toggleRecurrenceFields(pattern) {
   container.classList.remove('d-none');
 
   // Show/hide based on pattern type.
-  interval.classList.toggle('d-none', !['every_n_periods'].includes(pattern));
-  offset.classList.toggle('d-none', !['every_n_periods'].includes(pattern));
-  dom.classList.toggle('d-none', !['monthly', 'annual'].includes(pattern));
-  moy.classList.toggle('d-none', !['annual'].includes(pattern));
+  interval.classList.toggle('d-none', pattern !== 'every_n_periods');
+  dom.classList.toggle('d-none', !['monthly', 'quarterly', 'semi_annual', 'annual'].includes(pattern));
+  moy.classList.toggle('d-none', !['quarterly', 'semi_annual', 'annual'].includes(pattern));
+
+  if (startPeriod) {
+    startPeriod.classList.toggle('d-none', pattern === 'once');
+  }
+
+  // Refresh preview.
+  fetchPreview();
+}
+
+// HTMX-style preview using fetch.
+function fetchPreview() {
+  const preview = document.getElementById('recurrence-preview');
+  if (!preview) return;
+
+  const pattern = document.getElementById('recurrence_pattern').value;
+  if (!pattern || pattern === 'once') {
+    preview.innerHTML = '<small class="text-muted">Select a pattern to see upcoming dates</small>';
+    return;
+  }
+
+  const params = new URLSearchParams();
+  params.set('recurrence_pattern', pattern);
+
+  const intervalEl = document.getElementById('interval_n');
+  if (intervalEl && intervalEl.value) params.set('interval_n', intervalEl.value);
+
+  const domEl = document.getElementById('day_of_month');
+  if (domEl && domEl.value) params.set('day_of_month', domEl.value);
+
+  const moyEl = document.getElementById('month_of_year');
+  if (moyEl && moyEl.value) params.set('month_of_year', moyEl.value);
+
+  const spEl = document.querySelector('[name="start_period_id"]');
+  if (spEl && spEl.value) params.set('start_period_id', spEl.value);
+
+  fetch('{{ url_for("templates.preview_recurrence") }}?' + params.toString())
+    .then(r => r.text())
+    .then(html => { preview.innerHTML = html; })
+    .catch(() => { preview.innerHTML = '<small class="text-muted">Could not load preview</small>'; });
 }
 
 // Initialize on page load.
-const select = document.getElementById('recurrence_pattern');
-if (select) toggleRecurrenceFields(select.value);
+const patternSelect = document.getElementById('recurrence_pattern');
+if (patternSelect) {
+  toggleRecurrenceFields(patternSelect.value);
+
+  // Listen for changes on all recurrence sub-fields.
+  patternSelect.addEventListener('change', function() { toggleRecurrenceFields(this.value); });
+  for (const id of ['interval_n', 'day_of_month', 'month_of_year']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', fetchPreview);
+  }
+  const spEl = document.querySelector('[name="start_period_id"]');
+  if (spEl) spEl.addEventListener('change', fetchPreview);
+}
 </script>
 {% endblock %}

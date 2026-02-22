@@ -16,6 +16,8 @@ Supported patterns (§4.7):
   - every_n_periods:   Every Nth period with an offset.
   - monthly:           Assigned to the period containing day_of_month.
   - monthly_first:     First pay period whose start_date falls in each month.
+  - quarterly:         Every 3 months starting from month_of_year.
+  - semi_annual:       Every 6 months starting from month_of_year.
   - annual:            Once per year on month/day.
   - once:              Single occurrence (no auto-generation — user assigns manually).
 """
@@ -63,6 +65,10 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # 'once' items are manually placed; no auto-generation.
         return []
 
+    # If the rule has a start_period_id and no explicit effective_from was
+    # passed, use the start period's start_date as the boundary.
+    if effective_from is None and rule.start_period_id and rule.start_period:
+        effective_from = rule.start_period.start_date
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
@@ -259,6 +265,16 @@ def _match_periods(rule, pattern_name, periods, effective_from):
     if pattern_name == "monthly_first":
         return _match_monthly_first(candidates)
 
+    if pattern_name == "quarterly":
+        start_month = rule.month_of_year or 1
+        day = rule.day_of_month or 1
+        return _match_quarterly(candidates, start_month, day)
+
+    if pattern_name == "semi_annual":
+        start_month = rule.month_of_year or 1
+        day = rule.day_of_month or 1
+        return _match_semi_annual(candidates, start_month, day)
+
     if pattern_name == "annual":
         month = rule.month_of_year or 1
         day = rule.day_of_month or 1
@@ -309,6 +325,48 @@ def _match_monthly_first(periods):
         if year_month not in seen_months:
             matched.append(period)
             seen_months.add(year_month)
+
+    return matched
+
+
+def _match_quarterly(periods, start_month, day_of_month):
+    """Find pay periods containing specific day in quarterly months.
+
+    Matches months: start_month, start_month+3, start_month+6, start_month+9.
+    """
+    target_months = set(((start_month - 1 + i * 3) % 12) + 1 for i in range(4))
+    return _match_specific_months(periods, target_months, day_of_month)
+
+
+def _match_semi_annual(periods, start_month, day_of_month):
+    """Find pay periods containing specific day in semi-annual months.
+
+    Matches months: start_month and start_month+6.
+    """
+    target_months = set(((start_month - 1 + i * 6) % 12) + 1 for i in range(2))
+    return _match_specific_months(periods, target_months, day_of_month)
+
+
+def _match_specific_months(periods, target_months, day_of_month):
+    """Find pay periods that contain a target day in any of the specified months."""
+    import calendar  # pylint: disable=import-outside-toplevel
+
+    matched = []
+    seen = set()
+
+    for period in periods:
+        for dt in (period.start_date, period.end_date):
+            key = (dt.year, dt.month)
+            if key in seen or dt.month not in target_months:
+                continue
+
+            last_day = calendar.monthrange(dt.year, dt.month)[1]
+            target_day = min(day_of_month, last_day)
+            target_date = date(dt.year, dt.month, target_day)
+
+            if period.start_date <= target_date <= period.end_date:
+                matched.append(period)
+                seen.add(key)
 
     return matched
 

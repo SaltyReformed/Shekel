@@ -238,7 +238,8 @@ def _seed_ref_tables():
         (Status, ["projected", "done", "received", "credit", "cancelled"]),
         (RecurrencePattern, [
             "every_period", "every_n_periods", "monthly",
-            "monthly_first", "annual", "once",
+            "monthly_first", "quarterly", "semi_annual",
+            "annual", "once",
         ]),
     ]
     for model_class, names in ref_data:

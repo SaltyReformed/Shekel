@@ -42,10 +42,17 @@ class RecurrenceRule(db.Model):
             name="ck_recurrence_rules_moy",
         ),
     )
+    # Optional: the pay period where recurrence should begin.
+    start_period_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # Relationships
     pattern = db.relationship("RecurrencePattern", lazy="joined")
+    start_period = db.relationship("PayPeriod", lazy="joined")
 
     def __repr__(self):
         return f"<RecurrenceRule id={self.id} pattern={self.pattern_id}>"

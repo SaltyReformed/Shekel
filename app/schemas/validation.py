@@ -57,13 +57,15 @@ class TemplateCreateSchema(Schema):
     recurrence_pattern = fields.String(
         validate=validate.OneOf([
             "every_period", "every_n_periods", "monthly",
-            "monthly_first", "annual", "once",
+            "monthly_first", "quarterly", "semi_annual",
+            "annual", "once",
         ])
     )
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
+    start_period_id = fields.Integer()
 
 
 class TemplateUpdateSchema(TemplateCreateSchema):
