@@ -5,12 +5,12 @@ A pure function that computes projected balances across pay periods.
 No database writes, no side effects — given an anchor and transactions,
 it returns balances.  Called on every grid load.
 
-Calculation rules (from §4.9):
+Calculation rules:
   - Anchor period: end_balance = anchor_balance + remaining_income - remaining_expenses
     where "remaining" means projected items not yet reflected in the anchor.
-  - Subsequent periods: end_balance[n] = end_balance[n-1] + income[n] - expenses[n]
-  - Amount selection:
-      done / received → actual_amount (fallback to estimated_amount)
+  - Subsequent periods: end_balance[n] = end_balance[n-1] + remaining_income[n] - remaining_expenses[n]
+  - All periods use only projected (unsettled) items:
+      done / received → excluded (already settled)
       projected       → estimated_amount
       credit          → excluded (does not affect checking balance)
 """
@@ -108,10 +108,11 @@ def _sum_remaining(transactions):
 
 
 def _sum_all(transactions):
-    """Sum ALL transactions for a non-anchor period.
+    """Sum remaining (projected) transactions for a non-anchor period.
 
-    Uses the effective amount: actual for done/received, estimated for projected.
-    Credit items are excluded.
+    Done/received and credit items are excluded — they are either already
+    reflected in the anchor balance or represent settled items that should
+    not change the projected balance.  Only projected items contribute.
 
     Returns:
         (total_income, total_expenses) as Decimal tuple.
@@ -122,11 +123,11 @@ def _sum_all(transactions):
     for txn in transactions:
         status_name = txn.status.name if txn.status else "projected"
 
-        # Credit transactions excluded from checking balance.
-        if status_name == "credit":
+        # Credit and settled transactions excluded from projected balance.
+        if status_name in ("credit", "done", "received"):
             continue
 
-        amount = Decimal(str(txn.effective_amount))
+        amount = Decimal(str(txn.estimated_amount))
         if txn.is_income:
             income += amount
         elif txn.is_expense:
