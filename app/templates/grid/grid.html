@@ -114,16 +114,19 @@
             </td>
             {% for period in periods %}
               {% set period_txns = txn_by_period.get(period.id, []) %}
-              {% set found = namespace(txn=None) %}
+              {% set matched = [] %}
               {% for txn in period_txns %}
                 {% if txn.category_id == category.id and txn.is_income and not txn.is_deleted %}
-                  {% set found.txn = txn %}
+                  {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
               <td class="text-end cell
-                  {{ 'status-' + found.txn.status.name if found.txn and found.txn.status else '' }}">
-                {% if found.txn %}
-                  {% include "grid/_transaction_cell.html" with context %}
+                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}">
+                {% if matched %}
+                  {% for txn in matched %}
+                    {% set found = namespace(txn=txn) %}
+                    {% include "grid/_transaction_cell.html" with context %}
+                  {% endfor %}
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}
@@ -185,16 +188,19 @@
             </td>
             {% for period in periods %}
               {% set period_txns = txn_by_period.get(period.id, []) %}
-              {% set found = namespace(txn=None) %}
+              {% set matched = [] %}
               {% for txn in period_txns %}
                 {% if txn.category_id == category.id and txn.is_expense and not txn.is_deleted %}
-                  {% set found.txn = txn %}
+                  {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
               <td class="text-end cell
-                  {{ 'status-' + found.txn.status.name if found.txn and found.txn.status else '' }}">
-                {% if found.txn %}
-                  {% include "grid/_transaction_cell.html" with context %}
+                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}">
+                {% if matched %}
+                  {% for txn in matched %}
+                    {% set found = namespace(txn=txn) %}
+                    {% include "grid/_transaction_cell.html" with context %}
+                  {% endfor %}
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}
