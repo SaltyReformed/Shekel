@@ -121,7 +121,8 @@
                 {% endif %}
               {% endfor %}
               <td class="text-end cell
-                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}">
+                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}
+                  {{ 'current-period-col' if period.id == current_period.id else '' }}">
                 {% if matched %}
                   {% for txn in matched %}
                     {% set found = namespace(txn=txn) %}
@@ -192,7 +193,8 @@
                 {% endif %}
               {% endfor %}
               <td class="text-end cell
-                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}">
+                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}
+                  {{ 'current-period-col' if period.id == current_period.id else '' }}">
                 {% if matched %}
                   {% for txn in matched %}
                     {% set found = namespace(txn=txn) %}

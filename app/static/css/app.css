@@ -1,7 +1,150 @@
 /* Shekel Budget App — Custom Styles
-   Minimal overrides — Bootstrap 5 handles most layout. */
+   Bootstrap 5 handles most layout. Slate & Copper theme with dark/light toggle. */
 
-/* --- Grid Table --- */
+/* =============================================
+   1. SLATE + COPPER COLOR SYSTEM (Dark Mode)
+   ============================================= */
+[data-bs-theme="dark"] {
+  --bs-body-bg: #1a1d23;
+  --bs-body-color: #c8ccd4;
+  --bs-primary: #c9884b;
+  --bs-primary-rgb: 201, 136, 75;
+  --bs-link-color: #c9884b;
+  --bs-link-hover-color: #daa06d;
+  --bs-border-color: #2d3340;
+  --bs-tertiary-bg: #22262e;
+  --bs-secondary-bg: #272b34;
+  --shekel-surface: #22262e;
+  --shekel-surface-raised: #272b34;
+  --shekel-copper: #c9884b;
+  --shekel-copper-rgb: 201, 136, 75;
+  --shekel-text-muted: #7a8194;
+  --shekel-sticky-bg: #1a1d23;
+  --shekel-col-tint: rgba(255, 255, 255, 0.02);
+  --shekel-current-col: rgba(201, 136, 75, 0.10);
+  --shekel-current-header: rgba(201, 136, 75, 0.25);
+}
+
+[data-bs-theme="dark"] .navbar {
+  background-color: #1a1d23 !important;
+  border-bottom: 1px solid #2d3340;
+}
+
+[data-bs-theme="dark"] .navbar-brand {
+  color: #c9884b !important;
+}
+
+[data-bs-theme="dark"] .card {
+  background-color: var(--shekel-surface);
+  border-color: #2d3340;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-bs-theme="dark"] .card-header {
+  background-color: var(--shekel-surface-raised);
+  border-bottom-color: #2d3340;
+}
+
+[data-bs-theme="dark"] .table {
+  --bs-table-bg: var(--shekel-surface);
+  --bs-table-border-color: #2d3340;
+}
+
+[data-bs-theme="dark"] .table-dark {
+  --bs-table-bg: #22262e;
+  --bs-table-border-color: #2d3340;
+  --bs-table-color: #c8ccd4;
+}
+
+[data-bs-theme="dark"] .table-success {
+  --bs-table-bg: rgba(25, 135, 84, 0.12);
+  --bs-table-color: #7dd3a8;
+}
+
+[data-bs-theme="dark"] .table-danger {
+  --bs-table-bg: rgba(220, 53, 69, 0.12);
+  --bs-table-color: #f0868f;
+}
+
+[data-bs-theme="dark"] .table-info {
+  --bs-table-bg: rgba(13, 202, 240, 0.08);
+  --bs-table-color: #6edff6;
+}
+
+[data-bs-theme="dark"] .table-light {
+  --bs-table-bg: #272b34;
+  --bs-table-color: #c8ccd4;
+}
+
+[data-bs-theme="dark"] .modal-content {
+  background-color: var(--shekel-surface);
+  border-color: #2d3340;
+}
+
+[data-bs-theme="dark"] .modal-header {
+  border-bottom-color: #2d3340;
+}
+
+[data-bs-theme="dark"] .modal-footer {
+  border-top-color: #2d3340;
+}
+
+[data-bs-theme="dark"] .form-control,
+[data-bs-theme="dark"] .form-select {
+  background-color: #1a1d23;
+  border-color: #2d3340;
+  color: #c8ccd4;
+}
+
+[data-bs-theme="dark"] .btn-outline-primary {
+  --bs-btn-color: #c9884b;
+  --bs-btn-border-color: #c9884b;
+  --bs-btn-hover-bg: #c9884b;
+  --bs-btn-hover-border-color: #c9884b;
+  --bs-btn-hover-color: #fff;
+}
+
+[data-bs-theme="dark"] .btn-primary {
+  --bs-btn-bg: #c9884b;
+  --bs-btn-border-color: #c9884b;
+  --bs-btn-hover-bg: #b57a42;
+  --bs-btn-hover-border-color: #b57a42;
+  --bs-btn-color: #fff;
+}
+
+/* Light mode variables */
+[data-bs-theme="light"] {
+  --bs-primary: #b07a3e;
+  --bs-primary-rgb: 176, 122, 62;
+  --shekel-surface: #fff;
+  --shekel-surface-raised: #f8f9fa;
+  --shekel-copper: #b07a3e;
+  --shekel-copper-rgb: 176, 122, 62;
+  --shekel-text-muted: #6c757d;
+  --shekel-sticky-bg: #fff;
+  --shekel-col-tint: rgba(0, 0, 0, 0.015);
+  --shekel-current-col: rgba(176, 122, 62, 0.08);
+  --shekel-current-header: rgba(176, 122, 62, 0.20);
+}
+
+[data-bs-theme="light"] .btn-primary {
+  --bs-btn-bg: #b07a3e;
+  --bs-btn-border-color: #b07a3e;
+  --bs-btn-hover-bg: #9a6b36;
+  --bs-btn-hover-border-color: #9a6b36;
+}
+
+[data-bs-theme="light"] .btn-outline-primary {
+  --bs-btn-color: #b07a3e;
+  --bs-btn-border-color: #b07a3e;
+  --bs-btn-hover-bg: #b07a3e;
+  --bs-btn-hover-border-color: #b07a3e;
+  --bs-btn-hover-color: #fff;
+}
+
+/* =============================================
+   2. GRID TABLE
+   ============================================= */
 .grid-table {
   font-size: 0.85rem;
   table-layout: fixed;
@@ -15,18 +158,28 @@
   text-overflow: ellipsis;
 }
 
+/* Tabular numerals for digit alignment */
+.grid-table .text-end {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Sticky first column (row labels) */
 .sticky-col {
   position: sticky;
   left: 0;
   z-index: 2;
-  background-color: #fff;
+  background-color: var(--shekel-sticky-bg);
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.3);
 }
 
 thead .sticky-col {
   z-index: 3;
-  background-color: var(--bs-dark);
+  background-color: var(--bs-dark, #22262e);
   color: #fff;
+}
+
+[data-bs-theme="dark"] thead .sticky-col {
+  background-color: #22262e;
 }
 
 .row-label-col {
@@ -55,53 +208,82 @@ thead .sticky-col {
   font-size: 0.75rem;
 }
 
+/* Alternating column tints */
+.grid-table td:nth-child(even):not(.sticky-col) {
+  background-color: var(--shekel-col-tint);
+}
+
+/* Current period column highlight */
+.current-period {
+  background-color: var(--shekel-current-header) !important;
+  border-bottom: 3px solid var(--shekel-copper);
+}
+
+.current-period-col {
+  background-color: var(--shekel-current-col) !important;
+}
+
 /* Period header */
 .period-header {
   font-size: 0.8rem;
 }
 
-.current-period {
-  background-color: rgba(13, 110, 253, 0.15) !important;
-  border-bottom: 3px solid var(--bs-primary);
+/* =============================================
+   3. SECTION & GROUP HEADERS
+   ============================================= */
+.section-header td {
+  font-size: 0.9rem;
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+  border-left: 4px solid var(--shekel-copper);
 }
 
-/* --- Transaction Status Cells --- */
+.group-header-row td {
+  background-color: rgba(var(--shekel-copper-rgb), 0.06);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid rgba(var(--shekel-copper-rgb), 0.4);
+}
+
+/* =============================================
+   4. TOTALS ROW
+   ============================================= */
+.totals-row td {
+  border-top: 2px solid rgba(var(--shekel-copper-rgb), 0.5);
+}
+
+/* =============================================
+   5. TRANSACTION STATUS CELLS
+   ============================================= */
 .status-projected {
   /* Default — no special styling */
 }
 
-.status-done,
-.status-received {
+[data-bs-theme="dark"] .status-done,
+[data-bs-theme="dark"] .status-received {
+  background-color: rgba(25, 135, 84, 0.15);
+}
+
+[data-bs-theme="dark"] .status-credit {
+  background-color: rgba(255, 183, 77, 0.15);
+}
+
+[data-bs-theme="light"] .status-done,
+[data-bs-theme="light"] .status-received {
   background-color: rgba(25, 135, 84, 0.08);
 }
 
-.status-credit {
+[data-bs-theme="light"] .status-credit {
   background-color: rgba(255, 193, 7, 0.12);
 }
 
-/* --- Section Headers --- */
-.section-header td {
-  font-size: 0.9rem;
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-}
-
-.group-header-row td {
-  background-color: rgba(0, 0, 0, 0.03);
-  font-size: 0.75rem;
-  padding: 0.2rem 0.5rem;
-}
-
-/* --- Totals Row --- */
-.totals-row td {
-  border-top: 2px solid rgba(0, 0, 0, 0.2);
-}
-
-/* --- Anchor Balance --- */
+/* =============================================
+   6. ANCHOR BALANCE
+   ============================================= */
 .anchor-balance-display {
   font-size: 1.4rem;
   font-weight: 700;
-  color: var(--bs-primary);
+  color: var(--shekel-copper);
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   border-radius: 0.375rem;
@@ -109,10 +291,12 @@ thead .sticky-col {
 }
 
 .anchor-balance-display:hover {
-  background-color: rgba(13, 110, 253, 0.1);
+  background-color: rgba(var(--shekel-copper-rgb), 0.12);
 }
 
-/* --- Transaction Cell --- */
+/* =============================================
+   7. TRANSACTION CELL & INLINE EDIT
+   ============================================= */
 .txn-cell {
   cursor: pointer;
   padding: 0.15rem 0.25rem;
@@ -121,10 +305,9 @@ thead .sticky-col {
 }
 
 .txn-cell:hover {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: rgba(var(--shekel-copper-rgb), 0.10);
 }
 
-/* --- Inline Edit Form --- */
 .txn-edit-form {
   min-width: 180px;
 }
@@ -135,7 +318,9 @@ thead .sticky-col {
   padding: 0.15rem 0.35rem;
 }
 
-/* --- Extra Small Buttons --- */
+/* =============================================
+   8. EXTRA SMALL BUTTONS
+   ============================================= */
 .btn-xs {
   padding: 0.1rem 0.35rem;
   font-size: 0.7rem;
@@ -143,7 +328,35 @@ thead .sticky-col {
   border-radius: 0.2rem;
 }
 
-/* --- Negative Balance Warning --- */
+/* =============================================
+   9. CATEGORIES PAGE
+   ============================================= */
+.category-group-header {
+  font-size: 1.05rem;
+  border-left: 4px solid var(--shekel-copper);
+}
+
+[data-bs-theme="dark"] .category-group-header {
+  background-color: #272b34 !important;
+}
+
+.category-group-header + .list-group .list-group-item {
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+}
+
+/* =============================================
+   10. THEME TOGGLE
+   ============================================= */
+#theme-toggle {
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+}
+
+/* =============================================
+   11. NEGATIVE BALANCE WARNING
+   ============================================= */
 .text-danger.fw-bold {
   animation: pulse-warning 2s ease-in-out infinite;
 }
@@ -151,4 +364,31 @@ thead .sticky-col {
 @keyframes pulse-warning {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+/* =============================================
+   12. GLOBAL POLISH
+   ============================================= */
+[data-bs-theme="dark"] .card {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .list-group-item {
+  background-color: var(--shekel-surface);
+  border-color: #2d3340;
+  color: #c8ccd4;
+}
+
+/* Sticky col background for summary rows */
+[data-bs-theme="dark"] .table-success .sticky-col {
+  background-color: rgba(25, 135, 84, 0.12);
+}
+[data-bs-theme="dark"] .table-danger .sticky-col {
+  background-color: rgba(220, 53, 69, 0.12);
+}
+[data-bs-theme="dark"] .table-light .sticky-col {
+  background-color: #272b34;
+}
+[data-bs-theme="dark"] .table-info .sticky-col {
+  background-color: rgba(13, 202, 240, 0.08);
 }

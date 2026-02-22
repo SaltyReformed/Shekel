@@ -2,8 +2,39 @@
  * Shekel Budget App — Client-Side JavaScript
  *
  * Minimal JS: HTMX handles most interactivity server-side.
- * This file provides event listeners and small UX helpers.
+ * This file provides the theme toggle and small UX helpers.
  */
+
+// --- Theme Toggle ---
+(function() {
+  var saved = localStorage.getItem('shekel-theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-bs-theme', saved);
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    var icon = btn.querySelector('i');
+
+    function updateIcon() {
+      var current = document.documentElement.getAttribute('data-bs-theme');
+      if (icon) {
+        icon.className = current === 'dark' ? 'bi bi-sun-fill' : 'bi bi-moon-fill';
+      }
+    }
+
+    updateIcon();
+
+    btn.addEventListener('click', function() {
+      var current = document.documentElement.getAttribute('data-bs-theme');
+      var next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-bs-theme', next);
+      localStorage.setItem('shekel-theme', next);
+      updateIcon();
+    });
+  });
+})();
 
 // Listen for HTMX gridRefresh events to reload the full page.
 document.body.addEventListener("gridRefresh", function() {

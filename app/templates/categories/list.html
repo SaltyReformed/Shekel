@@ -8,7 +8,7 @@
 
     {% for group_name, cats in grouped.items() %}
     <div class="card mb-3">
-      <div class="card-header fw-semibold">{{ group_name }}</div>
+      <div class="card-header fw-semibold category-group-header">{{ group_name }}</div>
       <ul class="list-group list-group-flush">
         {% for cat in cats %}
         <li class="list-group-item d-flex justify-content-between align-items-center">
