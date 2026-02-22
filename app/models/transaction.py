@@ -92,7 +92,7 @@ class Transaction(db.Model):
         - projected: estimated_amount
         - credit: 0 (excluded from checking balance)
         """
-        if self.status and self.status.name == "credit":
+        if self.status and self.status.name in ("credit", "cancelled"):
             return 0
         if self.status and self.status.name in ("done", "received"):
             return self.actual_amount if self.actual_amount is not None else self.estimated_amount

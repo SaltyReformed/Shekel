@@ -235,7 +235,7 @@ def _seed_ref_tables():
     ref_data = [
         (AccountType, ["checking", "savings"]),
         (TransactionType, ["income", "expense"]),
-        (Status, ["projected", "done", "received", "credit"]),
+        (Status, ["projected", "done", "received", "credit", "cancelled"]),
         (RecurrencePattern, [
             "every_period", "every_n_periods", "monthly",
             "monthly_first", "annual", "once",

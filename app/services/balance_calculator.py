@@ -90,7 +90,7 @@ def _sum_remaining(transactions):
         status_name = txn.status.name if txn.status else "projected"
 
         # Credit transactions never affect checking balance.
-        if status_name == "credit":
+        if status_name in ("credit", "cancelled"):
             continue
 
         # Settled items are already in the anchor — skip.
@@ -124,7 +124,7 @@ def _sum_all(transactions):
         status_name = txn.status.name if txn.status else "projected"
 
         # Credit and settled transactions excluded from projected balance.
-        if status_name in ("credit", "done", "received"):
+        if status_name in ("credit", "cancelled", "done", "received"):
             continue
 
         amount = Decimal(str(txn.estimated_amount))

@@ -116,7 +116,7 @@
               {% set period_txns = txn_by_period.get(period.id, []) %}
               {% set matched = [] %}
               {% for txn in period_txns %}
-                {% if txn.category_id == category.id and txn.is_income and not txn.is_deleted %}
+                {% if txn.category_id == category.id and txn.is_income and not txn.is_deleted and txn.status.name != 'cancelled' %}
                   {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
@@ -142,7 +142,7 @@
         {% for period in periods %}
           {% set total = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'done', 'received') %}
+            {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
               {% set total.val = total.val + (txn.effective_amount|float) %}
             {% endif %}
           {% endfor %}
@@ -187,7 +187,7 @@
               {% set period_txns = txn_by_period.get(period.id, []) %}
               {% set matched = [] %}
               {% for txn in period_txns %}
-                {% if txn.category_id == category.id and txn.is_expense and not txn.is_deleted %}
+                {% if txn.category_id == category.id and txn.is_expense and not txn.is_deleted and txn.status.name != 'cancelled' %}
                   {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
@@ -213,7 +213,7 @@
         {% for period in periods %}
           {% set total = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.is_expense and not txn.is_deleted and txn.status.name not in ('credit', 'done', 'received') %}
+            {% if txn.is_expense and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
               {% set total.val = total.val + (txn.effective_amount|float) %}
             {% endif %}
           {% endfor %}
@@ -228,7 +228,7 @@
           {% set inc = namespace(val=0) %}
           {% set exp = namespace(val=0) %}
           {% for txn in txn_by_period.get(period.id, []) %}
-            {% if not txn.is_deleted and txn.status.name not in ('credit', 'done', 'received') %}
+            {% if not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
               {% if txn.is_income %}
                 {% set inc.val = inc.val + (txn.effective_amount|float) %}
               {% elif txn.is_expense %}

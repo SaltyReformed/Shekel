@@ -146,6 +146,24 @@ def unmark_credit(txn_id):
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
+@transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
+@login_required
+def cancel_transaction(txn_id):
+    """Set a transaction's status to 'cancelled'."""
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return "Not found", 404
+
+    status = db.session.query(Status).filter_by(name="cancelled").one()
+    txn.status_id = status.id
+
+    db.session.commit()
+    logger.info("Cancelled transaction %d", txn_id)
+
+    response = render_template("grid/_transaction_cell.html", txn=txn)
+    return response, 200, {"HX-Trigger": "gridRefresh"}
+
+
 @transactions_bp.route("/transactions", methods=["POST"])
 @login_required
 def create_transaction():

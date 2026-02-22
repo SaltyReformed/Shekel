@@ -32,7 +32,7 @@ from app.exceptions import RecurrenceConflict
 logger = logging.getLogger(__name__)
 
 # Statuses that are historical — never modified by the recurrence engine.
-IMMUTABLE_STATUSES = frozenset({"done", "received", "credit"})
+IMMUTABLE_STATUSES = frozenset({"done", "received", "credit", "cancelled"})
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):

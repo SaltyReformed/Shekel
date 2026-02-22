@@ -80,6 +80,14 @@
       </button>
       {% endif %}
 
+      {% if txn.status.name == 'projected' %}
+      <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
+              hx-post="{{ url_for('transactions.cancel_transaction', txn_id=txn.id) }}"
+              hx-target="closest td" hx-swap="innerHTML">
+        <i class="bi bi-x-octagon"></i> Cancel
+      </button>
+      {% endif %}
+
       {% if txn.is_income and txn.status.name == 'projected' %}
       <button type="button" class="btn btn-xs btn-success flex-grow-1"
               hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
