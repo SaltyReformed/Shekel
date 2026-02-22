@@ -111,7 +111,7 @@ def index():
     categories = (
         db.session.query(Category)
         .filter_by(user_id=user_id)
-        .order_by(Category.sort_order, Category.group_name, Category.item_name)
+        .order_by(Category.group_name, Category.item_name)
         .all()
     )
 

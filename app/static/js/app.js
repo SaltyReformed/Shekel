@@ -10,6 +10,15 @@ document.body.addEventListener("gridRefresh", function() {
   window.location.reload();
 });
 
+// Reset the Add Transaction form whenever its modal opens.
+var addModal = document.getElementById("addTransactionModal");
+if (addModal) {
+  addModal.addEventListener("show.bs.modal", function() {
+    var form = addModal.querySelector("form");
+    if (form) form.reset();
+  });
+}
+
 // Configure HTMX to include CSRF token if we add it later.
 document.body.addEventListener("htmx:configRequest", function(event) {
   // Future: event.detail.headers["X-CSRFToken"] = getCsrfToken();
