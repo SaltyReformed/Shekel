@@ -1,0 +1,78 @@
+{# Full create popover — renders inside #txn-popover container.
+   Contains all editable fields for creating a new transaction.
+   Form submits via HTMX POST to the inline create endpoint.
+
+   Expected context:
+     category            — Category object
+     period              — PayPeriod object
+     scenario_id         — baseline scenario ID
+     transaction_type_id — income or expense type ID
+     statuses            — list of Status objects
+#}
+<div class="txn-full-edit-content" onclick="event.stopPropagation()">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <small class="fw-semibold text-truncate" style="max-width: 200px;"
+           title="{{ category.display_name }}">
+      New: {{ category.item_name }}
+    </small>
+    <button type="button" class="btn-close btn-close-sm" aria-label="Close"
+            onclick="closeFullEdit()"></button>
+  </div>
+
+  <form hx-post="{{ url_for('transactions.create_inline') }}"
+        hx-target="closest td"
+        hx-swap="innerHTML"
+        hx-on::after-request="if(event.detail.successful) closeFullEdit()">
+    <input type="hidden" name="category_id" value="{{ category.id }}">
+    <input type="hidden" name="pay_period_id" value="{{ period.id }}">
+    <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
+    <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
+
+    {# Estimated amount #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Estimated</label>
+      <input type="number" step="0.01" name="estimated_amount"
+             class="form-control form-control-sm"
+             placeholder="Estimated amount">
+    </div>
+
+    {# Actual amount #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Actual</label>
+      <input type="number" step="0.01" name="actual_amount"
+             class="form-control form-control-sm"
+             placeholder="Actual amount">
+    </div>
+
+    {# Status selector — defaults to projected #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Status</label>
+      <select name="status_id" class="form-select form-select-sm">
+        {% for s in statuses %}
+        <option value="{{ s.id }}" {{ 'selected' if s.name == 'projected' else '' }}>
+          {{ s.name|capitalize }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Notes #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Notes</label>
+      <input type="text" name="notes"
+             class="form-control form-control-sm"
+             placeholder="Notes">
+    </div>
+
+    {# Save / Cancel buttons #}
+    <div class="d-flex gap-1 mb-2">
+      <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
+        <i class="bi bi-plus"></i> Create
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary"
+              onclick="closeFullEdit()">
+        <i class="bi bi-x"></i> Cancel
+      </button>
+    </div>
+  </form>
+</div>

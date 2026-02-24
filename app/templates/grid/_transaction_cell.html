@@ -2,9 +2,11 @@
    Clicking opens the inline edit form via HTMX.
 
    Expected context: found.txn (or txn) — a Transaction object.
+   Optional: wrap_div — if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
+{% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
 <div class="txn-cell"
      hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
      hx-trigger="click"
@@ -44,4 +46,5 @@
     <span class="badge-credit ms-1" title="CC Payback" aria-label="Credit card payback">CC</span>
   {% endif %}
 </div>
+{% if wrap_div is defined and wrap_div %}</div>{% endif %}
 {% endif %}

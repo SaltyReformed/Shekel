@@ -136,7 +136,8 @@
                     </div>
                   {% endfor %}
                 {% else %}
-                  <span class="text-muted">—</span>
+                  {% set txn_type_name = "income" %}
+                  {% include "grid/_transaction_empty_cell.html" with context %}
                 {% endif %}
               </td>
             {% endfor %}
@@ -199,7 +200,8 @@
                     </div>
                   {% endfor %}
                 {% else %}
-                  <span class="text-muted">—</span>
+                  {% set txn_type_name = "expense" %}
+                  {% include "grid/_transaction_empty_cell.html" with context %}
                 {% endif %}
               </td>
             {% endfor %}

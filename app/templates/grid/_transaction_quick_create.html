@@ -1,0 +1,37 @@
+{# Quick create — single amount input for creating a transaction in an empty cell.
+   Replaces the empty dash on click. Enter saves (POST), Escape reverts to dash.
+   Expand button or F2 opens the full create popover.
+
+   Expected context:
+     category          — Category object
+     period            — PayPeriod object
+     scenario_id       — baseline scenario ID
+     transaction_type_id — income or expense type ID
+#}
+<form class="txn-quick-edit d-flex align-items-center gap-1"
+      data-mode="create"
+      hx-post="{{ url_for('transactions.create_inline') }}"
+      hx-target="closest td"
+      hx-swap="innerHTML"
+      onclick="event.stopPropagation()">
+  <input type="hidden" name="category_id" value="{{ category.id }}">
+  <input type="hidden" name="pay_period_id" value="{{ period.id }}">
+  <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
+  <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
+  <input type="number"
+         step="0.01"
+         name="estimated_amount"
+         placeholder="0.00"
+         class="form-control form-control-sm txn-quick-input"
+         autofocus
+         style="min-width: 0; flex: 1;">
+  <button type="button"
+          class="btn btn-sm btn-link p-0 txn-expand-btn"
+          title="More options (F2)"
+          data-category-id="{{ category.id }}"
+          data-period-id="{{ period.id }}"
+          data-txn-type-name="{{ txn_type_name }}"
+          onclick="event.stopPropagation(); openFullCreate({{ category.id }}, {{ period.id }}, '{{ txn_type_name }}', this);">
+    <i class="bi bi-three-dots"></i>
+  </button>
+</form>

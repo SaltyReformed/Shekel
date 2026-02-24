@@ -34,6 +34,28 @@ class TransactionCreateSchema(Schema):
     notes = fields.String(allow_none=True)
 
 
+class InlineTransactionCreateSchema(Schema):
+    """Validates POST data for inline transaction creation from the grid.
+
+    Unlike TransactionCreateSchema, the name field is auto-derived from
+    the category so it is not required from the user.
+    """
+
+    estimated_amount = fields.Decimal(required=True, places=2, as_string=True)
+    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True)
+    category_id = fields.Integer(required=True)
+    pay_period_id = fields.Integer(required=True)
+    transaction_type_id = fields.Integer(required=True)
+    scenario_id = fields.Integer(required=True)
+    status_id = fields.Integer()
+    notes = fields.String(allow_none=True)
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
+        return {k: v for k, v in data.items() if v != ""}
+
+
 class TemplateCreateSchema(Schema):
     """Validates POST data for creating a transaction template."""
 

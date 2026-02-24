@@ -16,8 +16,13 @@ from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.account import Account
+from app.models.category import Category
 from app.models.ref import Status, TransactionType
-from app.schemas.validation import TransactionUpdateSchema, TransactionCreateSchema
+from app.schemas.validation import (
+    TransactionUpdateSchema,
+    TransactionCreateSchema,
+    InlineTransactionCreateSchema,
+)
 from app.services import credit_workflow, carry_forward_service, pay_period_service
 from app.exceptions import NotFoundError, ValidationError
 
@@ -28,6 +33,7 @@ transactions_bp = Blueprint("transactions", __name__)
 # Marshmallow schema instances.
 _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
+_inline_create_schema = InlineTransactionCreateSchema()
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["GET"])
@@ -193,6 +199,147 @@ def cancel_transaction(txn_id):
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
+
+
+@transactions_bp.route("/transactions/new/quick", methods=["GET"])
+@login_required
+def get_quick_create():
+    """HTMX partial: return a quick-create input for an empty cell.
+
+    Query params: category_id, period_id, txn_type_name.
+    """
+    category_id = request.args.get("category_id", type=int)
+    period_id = request.args.get("period_id", type=int)
+    txn_type_name = request.args.get("txn_type_name", "expense")
+
+    category = db.session.get(Category, category_id)
+    period = db.session.get(PayPeriod, period_id)
+    if not category or not period:
+        return "Not found", 404
+
+    # Look up the transaction type and baseline scenario for hidden fields.
+    txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if not scenario:
+        return "No baseline scenario", 400
+
+    return render_template(
+        "grid/_transaction_quick_create.html",
+        category=category,
+        period=period,
+        scenario_id=scenario.id,
+        transaction_type_id=txn_type.id,
+        txn_type_name=txn_type_name,
+    )
+
+
+@transactions_bp.route("/transactions/new/full", methods=["GET"])
+@login_required
+def get_full_create():
+    """HTMX partial: return the full create popover form.
+
+    Query params: category_id, period_id, txn_type_name.
+    """
+    category_id = request.args.get("category_id", type=int)
+    period_id = request.args.get("period_id", type=int)
+    txn_type_name = request.args.get("txn_type_name", "expense")
+
+    category = db.session.get(Category, category_id)
+    period = db.session.get(PayPeriod, period_id)
+    if not category or not period:
+        return "Not found", 404
+
+    txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if not scenario:
+        return "No baseline scenario", 400
+
+    statuses = db.session.query(Status).all()
+
+    return render_template(
+        "grid/_transaction_full_create.html",
+        category=category,
+        period=period,
+        scenario_id=scenario.id,
+        transaction_type_id=txn_type.id,
+        statuses=statuses,
+    )
+
+
+@transactions_bp.route("/transactions/empty-cell", methods=["GET"])
+@login_required
+def get_empty_cell():
+    """HTMX partial: return the empty cell placeholder.
+
+    Used by Escape key to revert a quick-create form back to the dash.
+    Query params: category_id, period_id, txn_type_name.
+    """
+    category_id = request.args.get("category_id", type=int)
+    period_id = request.args.get("period_id", type=int)
+    txn_type_name = request.args.get("txn_type_name", "expense")
+
+    category = db.session.get(Category, category_id)
+    period = db.session.get(PayPeriod, period_id)
+    if not category or not period:
+        return "Not found", 404
+
+    return render_template(
+        "grid/_transaction_empty_cell.html",
+        category=category,
+        period=period,
+        txn_type_name=txn_type_name,
+    )
+
+
+@transactions_bp.route("/transactions/inline", methods=["POST"])
+@login_required
+def create_inline():
+    """Create a transaction from inline grid interaction.
+
+    Auto-derives the name from the category.  Returns the new
+    transaction cell wrapped in a div with a unique ID for HTMX
+    targeting.
+    """
+    errors = _inline_create_schema.validate(request.form)
+    if errors:
+        return jsonify(errors=errors), 400
+
+    data = _inline_create_schema.load(request.form)
+
+    # Look up the category to derive the transaction name.
+    category = db.session.get(Category, data["category_id"])
+    if not category:
+        return "Category not found", 404
+
+    # Default to projected status if not specified.
+    if "status_id" not in data or data["status_id"] is None:
+        projected = db.session.query(Status).filter_by(name="projected").one()
+        data["status_id"] = projected.id
+
+    # Set the name from the category display name.
+    data["name"] = category.display_name
+
+    txn = Transaction(**data)
+    db.session.add(txn)
+    db.session.commit()
+    logger.info("Created inline transaction: %s (id=%d)", txn.name, txn.id)
+
+    # Return the cell wrapped in a div with a unique ID, matching
+    # the pattern used in grid.html for existing transactions.
+    response = render_template(
+        "grid/_transaction_cell.html",
+        txn=txn,
+        wrap_div=True,
+    )
+    return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
 @transactions_bp.route("/transactions", methods=["POST"])
