@@ -43,10 +43,10 @@
 
     {# Action buttons #}
     <div class="d-flex gap-1">
-      <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
+      <button type="submit" class="btn btn-sm btn-primary flex-grow-1" aria-label="Save transaction">
         <i class="bi bi-check"></i> Save
       </button>
-      <button type="button" class="btn btn-sm btn-outline-secondary"
+      <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Cancel edit"
               hx-get="{{ url_for('transactions.get_edit_form', txn_id=txn.id) }}"
               hx-target="closest td"
               hx-swap="innerHTML"
@@ -61,7 +61,8 @@
       <button type="button" class="btn btn-xs btn-success flex-grow-1"
               hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
               hx-target="closest td" hx-swap="innerHTML"
-              hx-include="[name='actual_amount']">
+              hx-include="[name='actual_amount']"
+              aria-label="Mark as done">
         <i class="bi bi-check-circle"></i> Done
       </button>
       {% endif %}
@@ -69,13 +70,15 @@
       {% if txn.is_expense and txn.status.name == 'projected' %}
       <button type="button" class="btn btn-xs btn-warning flex-grow-1"
               hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
-              hx-target="closest td" hx-swap="innerHTML">
+              hx-target="closest td" hx-swap="innerHTML"
+              aria-label="Mark as credit card">
         <i class="bi bi-credit-card"></i> Credit
       </button>
       {% elif txn.status.name == 'credit' %}
       <button type="button" class="btn btn-xs btn-outline-warning flex-grow-1"
               hx-delete="{{ url_for('transactions.unmark_credit', txn_id=txn.id) }}"
-              hx-target="closest td" hx-swap="innerHTML">
+              hx-target="closest td" hx-swap="innerHTML"
+              aria-label="Undo credit card">
         <i class="bi bi-x-circle"></i> Undo CC
       </button>
       {% endif %}
@@ -83,7 +86,8 @@
       {% if txn.status.name == 'projected' %}
       <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
               hx-post="{{ url_for('transactions.cancel_transaction', txn_id=txn.id) }}"
-              hx-target="closest td" hx-swap="innerHTML">
+              hx-target="closest td" hx-swap="innerHTML"
+              aria-label="Cancel transaction">
         <i class="bi bi-x-octagon"></i> Cancel
       </button>
       {% endif %}
@@ -92,7 +96,8 @@
       <button type="button" class="btn btn-xs btn-success flex-grow-1"
               hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
               hx-target="closest td" hx-swap="innerHTML"
-              hx-include="[name='actual_amount']">
+              hx-include="[name='actual_amount']"
+              aria-label="Mark as received">
         <i class="bi bi-check-circle"></i> Received
       </button>
       {% endif %}

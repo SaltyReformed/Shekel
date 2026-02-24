@@ -3,7 +3,7 @@
 
    Expected context: periods, balances, txn_by_period.
 #}
-<tr class="table-info fw-bold" id="balance-row"
+<tr class="balance-row-summary fw-bold" id="balance-row"
     hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
     hx-trigger="balanceChanged from:body"
     hx-swap="outerHTML">
@@ -12,9 +12,9 @@
   </td>
   {% for period in periods %}
     {% set bal = balances.get(period.id) %}
-    <td class="text-end {{ 'text-danger fw-bold' if bal is not none and bal < 0 else '' }}">
+    <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < 500 %}balance-low{% endif %}">
       {% if bal is not none %}
-        ${{ "%.2f"|format(bal|float) }}
+        ${{ "{:,.0f}".format(bal|int) }}
       {% else %}
         —
       {% endif %}

@@ -5,16 +5,21 @@
 {# --- Anchor Balance Display --- #}
 <div class="d-flex align-items-center justify-content-between mb-3">
   <div class="d-flex align-items-center gap-3">
-    <h5 class="mb-0">Checking Balance:</h5>
+    <div>
+      <h5 class="mb-0">Checking Balance</h5>
+      {% if account and account.anchor_period %}
+      <small class="text-muted">as of {{ account.anchor_period.start_date.strftime('%b %-d, %Y') }}</small>
+      {% endif %}
+    </div>
     {% if account %}
     <div id="anchor-display"
          hx-get="{{ url_for('accounts.anchor_form', account_id=account.id) }}"
          hx-trigger="click"
          hx-swap="outerHTML"
-         class="anchor-balance-display"
+         class="anchor-balance-display font-mono"
          role="button"
          title="Click to update balance">
-      ${{ "%.2f"|format(anchor_balance|float) }}
+      ${{ "{:,.0f}".format(anchor_balance|int) }}
       <i class="bi bi-pencil-square text-muted ms-1 small"></i>
     </div>
     {% else %}
@@ -32,14 +37,16 @@
 
     {# Quick-select buttons #}
     {% set range_options = [
-      ("3", 3), ("6", 6), ("13", 13), ("26", 26), ("52", 52)
+      ("3P", 3), ("6P", 6), ("10P", 13), ("6M", 26), ("1Y", 52), ("2Y", 104)
     ] %}
+    <div class="btn-group period-btn-group">
     {% for label, count in range_options %}
     <a href="{{ url_for('grid.index', periods=count, offset=0) }}"
        class="btn btn-sm {{ 'btn-primary' if num_periods == count else 'btn-outline-secondary' }}">
       {{ label }}
     </a>
     {% endfor %}
+    </div>
 
     {# Right arrow — shift window forward #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset + 1) }}"
@@ -50,13 +57,13 @@
 </div>
 
 {# --- Budget Grid Table --- #}
-<div class="table-responsive">
+<div class="table-responsive grid-wrapper grid-scroll-wrapper" style="position: relative;">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <thead class="table-dark">
       <tr>
-        <th class="row-label-col sticky-col">Item</th>
+        <th scope="col" class="row-label-col sticky-col">Item</th>
         {% for period in periods %}
-        <th class="text-center period-header
+        <th scope="col" class="text-center period-header
             {{ 'current-period' if period.id == current_period.id else '' }}">
           <div class="fw-bold">{{ period.start_date.strftime('%m/%d') }}</div>
           <div class="small text-light-emphasis">{{ period.end_date.strftime('%m/%d/%y') }}</div>
@@ -76,9 +83,9 @@
 
     <tbody>
       {# --- Income Section --- #}
-      <tr class="table-success section-header">
-        <td class="sticky-col fw-bold" colspan="{{ periods|length + 1 }}">
-          <i class="bi bi-arrow-down-circle"></i> Income
+      <tr class="section-banner-income">
+        <td class="sticky-col" colspan="{{ periods|length + 1 }}">
+          INCOME
         </td>
       </tr>
       {% set income_type_name = "income" %}
@@ -120,13 +127,13 @@
                   {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
-              <td class="text-end cell
-                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}
-                  {{ 'current-period-col' if period.id == current_period.id else '' }}">
+              <td class="text-end cell">
                 {% if matched %}
                   {% for txn in matched %}
-                    {% set found = namespace(txn=txn) %}
-                    {% include "grid/_transaction_cell.html" with context %}
+                    <div id="txn-cell-{{ txn.id }}">
+                      {% set found = namespace(txn=txn) %}
+                      {% include "grid/_transaction_cell.html" with context %}
+                    </div>
                   {% endfor %}
                 {% else %}
                   <span class="text-muted">—</span>
@@ -137,24 +144,15 @@
         {% endif %}
       {% endfor %}
 
-      {# --- Income Totals --- #}
-      <tr class="table-success fw-bold totals-row">
-        <td class="sticky-col">Total Income</td>
-        {% for period in periods %}
-          {% set total = namespace(val=0) %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
-              {% set total.val = total.val + (txn.effective_amount|float) %}
-            {% endif %}
-          {% endfor %}
-          <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
-        {% endfor %}
+      {# --- Spacer between Income and Expenses --- #}
+      <tr class="spacer-row">
+        <td colspan="{{ periods|length + 1 }}"></td>
       </tr>
 
       {# --- Expense Section --- #}
-      <tr class="table-danger section-header">
-        <td class="sticky-col fw-bold" colspan="{{ periods|length + 1 }}">
-          <i class="bi bi-arrow-up-circle"></i> Expenses
+      <tr class="section-banner-expense">
+        <td class="sticky-col" colspan="{{ periods|length + 1 }}">
+          EXPENSES
         </td>
       </tr>
 
@@ -192,13 +190,13 @@
                   {% if matched.append(txn) %}{% endif %}
                 {% endif %}
               {% endfor %}
-              <td class="text-end cell
-                  {{ 'status-' + matched[0].status.name if matched and matched[0].status else '' }}
-                  {{ 'current-period-col' if period.id == current_period.id else '' }}">
+              <td class="text-end cell">
                 {% if matched %}
                   {% for txn in matched %}
-                    {% set found = namespace(txn=txn) %}
-                    {% include "grid/_transaction_cell.html" with context %}
+                    <div id="txn-cell-{{ txn.id }}">
+                      {% set found = namespace(txn=txn) %}
+                      {% include "grid/_transaction_cell.html" with context %}
+                    </div>
                   {% endfor %}
                 {% else %}
                   <span class="text-muted">—</span>
@@ -209,8 +207,27 @@
         {% endif %}
       {% endfor %}
 
+    </tbody>
+
+    <tfoot>
+      {# --- Income Totals --- #}
+      <tr class="summary-row fw-bold">
+        <td class="sticky-col">Total Income</td>
+        {% for period in periods %}
+          {% set total = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+              {% set total.val = total.val + (txn.effective_amount|float) %}
+            {% endif %}
+          {% endfor %}
+          <td class="text-end font-mono">
+            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+
       {# --- Expense Totals --- #}
-      <tr class="table-danger fw-bold totals-row">
+      <tr class="summary-row fw-bold">
         <td class="sticky-col">Total Expenses</td>
         {% for period in periods %}
           {% set total = namespace(val=0) %}
@@ -219,12 +236,14 @@
               {% set total.val = total.val + (txn.effective_amount|float) %}
             {% endif %}
           {% endfor %}
-          <td class="text-end">${{ "%.2f"|format(total.val) }}</td>
+          <td class="text-end font-mono">
+            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+          </td>
         {% endfor %}
       </tr>
 
-      {# --- Net & Balance Summary --- #}
-      <tr class="table-light fw-bold">
+      {# --- Net --- #}
+      <tr class="summary-row fw-bold">
         <td class="sticky-col">Net (Income − Expenses)</td>
         {% for period in periods %}
           {% set inc = namespace(val=0) %}
@@ -239,13 +258,14 @@
             {% endif %}
           {% endfor %}
           {% set net = inc.val - exp.val %}
-          <td class="text-end {{ 'text-success' if net >= 0 else 'text-danger' }}">
-            ${{ "%.2f"|format(net) }}
+          <td class="text-end font-mono {{ 'balance-negative' if net < 0 else '' }}">
+            {% if net != 0 %}${{ "{:,.0f}".format(net|int) }}{% endif %}
           </td>
         {% endfor %}
       </tr>
 
-      <tr class="table-info fw-bold" id="balance-row"
+      {# --- Projected End Balance --- #}
+      <tr class="balance-row-summary fw-bold" id="balance-row"
           hx-get="{{ url_for('grid.balance_row', periods=num_periods, offset=start_offset) }}"
           hx-trigger="balanceChanged from:body"
           hx-swap="outerHTML">
@@ -254,17 +274,20 @@
         </td>
         {% for period in periods %}
           {% set bal = balances.get(period.id) %}
-          <td class="text-end {{ 'text-danger fw-bold' if bal is not none and bal < 0 else '' }}">
+          <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < 500 %}balance-low{% endif %}">
             {% if bal is not none %}
-              ${{ "%.2f"|format(bal|float) }}
+              ${{ "{:,.0f}".format(bal|int) }}
             {% else %}
               —
             {% endif %}
           </td>
         {% endfor %}
       </tr>
-    </tbody>
+    </tfoot>
   </table>
+
+  {# Popover container for the full edit form — positioned absolutely within the grid wrapper #}
+  <div id="txn-popover" class="txn-full-edit-popover d-none"></div>
 </div>
 
 {# --- Add Transaction Button --- #}

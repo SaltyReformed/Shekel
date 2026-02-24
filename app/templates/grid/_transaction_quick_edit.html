@@ -1,0 +1,27 @@
+{# Quick edit — single amount input that fits inside the <td>.
+   Replaces cell content on click for fast estimated_amount edits.
+   Expand button (⋯) or F2 opens the full edit popover.
+
+   Expected context: txn — a Transaction object.
+#}
+<form class="txn-quick-edit d-flex align-items-center gap-1"
+      hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"
+      hx-target="#txn-cell-{{ txn.id }}"
+      hx-swap="innerHTML"
+      onclick="event.stopPropagation()">
+  <input type="number"
+         step="0.01"
+         name="estimated_amount"
+         value="{{ txn.estimated_amount }}"
+         class="form-control form-control-sm txn-quick-input"
+         autofocus
+         onfocus="this.select()"
+         style="min-width: 0; flex: 1;">
+  <button type="button"
+          class="btn btn-sm btn-link p-0 txn-expand-btn"
+          title="More options (F2)"
+          data-txn-id="{{ txn.id }}"
+          onclick="event.stopPropagation(); openFullEdit({{ txn.id }}, this);">
+    <i class="bi bi-three-dots"></i>
+  </button>
+</form>

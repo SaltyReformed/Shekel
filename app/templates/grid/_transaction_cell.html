@@ -1,4 +1,4 @@
-{# Transaction cell — displays amount with status indicator.
+{# Transaction cell — displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
    Expected context: found.txn (or txn) — a Transaction object.
@@ -6,31 +6,31 @@
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
 <div class="txn-cell"
-     hx-get="{{ url_for('transactions.get_edit_form', txn_id=t.id) }}"
+     hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
      hx-trigger="click"
-     hx-target="closest td"
+     hx-target="#txn-cell-{{ t.id }}"
      hx-swap="innerHTML"
      role="button"
      title="{{ t.name }}{% if t.notes %} — {{ t.notes }}{% endif %}">
 
   {# Show crossed-out estimate + actual when they differ #}
   {% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
-    <span class="text-decoration-line-through text-muted small">
-      ${{ "%.2f"|format(t.estimated_amount|float) }}
+    <span class="text-decoration-line-through small" style="color: var(--shekel-text-muted);">
+      {{ "{:,.0f}".format(t.estimated_amount|int) }}
     </span>
-    <span class="fw-semibold">${{ "%.2f"|format(t.actual_amount|float) }}</span>
+    <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount|int) }}</span>
   {% else %}
-    <span>${{ "%.2f"|format(t.estimated_amount|float) }}</span>
+    {% if t.estimated_amount|float != 0 %}
+      <span class="font-mono">{{ "{:,.0f}".format(t.estimated_amount|int) }}</span>
+    {% endif %}
   {% endif %}
 
-  {# Status icon #}
+  {# Status badge #}
   {% if t.status %}
-    {% if t.status.name == 'done' %}
-      <i class="bi bi-check-circle-fill text-success ms-1" title="Done"></i>
-    {% elif t.status.name == 'received' %}
-      <i class="bi bi-check-circle-fill text-success ms-1" title="Received"></i>
+    {% if t.status.name in ('done', 'received') %}
+      <span class="badge-done ms-1" title="{{ t.status.name|capitalize }}" aria-label="{{ t.status.name|capitalize }}">✓</span>
     {% elif t.status.name == 'credit' %}
-      <i class="bi bi-credit-card text-warning ms-1" title="Credit card"></i>
+      <span class="badge-credit ms-1" title="Credit card" aria-label="Credit card">CC</span>
     {% endif %}
   {% endif %}
 
@@ -41,7 +41,7 @@
 
   {# Credit payback indicator #}
   {% if t.credit_payback_for_id %}
-    <span class="badge bg-warning text-dark ms-1 small" title="CC Payback">CC</span>
+    <span class="badge-credit ms-1" title="CC Payback" aria-label="Credit card payback">CC</span>
   {% endif %}
 </div>
 {% endif %}

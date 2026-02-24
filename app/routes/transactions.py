@@ -49,6 +49,37 @@ def get_edit_form(txn_id):
     )
 
 
+@transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
+@login_required
+def get_cell(txn_id):
+    """HTMX partial: return the display-mode cell content for a transaction."""
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return "Not found", 404
+    return render_template("grid/_transaction_cell.html", txn=txn)
+
+
+@transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])
+@login_required
+def get_quick_edit(txn_id):
+    """HTMX partial: return the minimal inline amount input."""
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return "Not found", 404
+    return render_template("grid/_transaction_quick_edit.html", txn=txn)
+
+
+@transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
+@login_required
+def get_full_edit(txn_id):
+    """HTMX partial: return the full edit popover form."""
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return "Not found", 404
+    statuses = db.session.query(Status).all()
+    return render_template("grid/_transaction_full_edit.html", txn=txn, statuses=statuses)
+
+
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
 @login_required
 def update_transaction(txn_id):

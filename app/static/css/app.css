@@ -1,150 +1,179 @@
 /* Shekel Budget App — Custom Styles
-   Bootstrap 5 handles most layout. Slate & Copper theme with dark/light toggle. */
+   Bootstrap 5 handles most layout. Steel Blue theme with dark/light toggle. */
 
 /* =============================================
-   1. SLATE + COPPER COLOR SYSTEM (Dark Mode)
+   1. STEEL BLUE COLOR SYSTEM (Dark Mode)
    ============================================= */
 [data-bs-theme="dark"] {
-  --bs-body-bg: #1a1d23;
-  --bs-body-color: #c8ccd4;
-  --bs-primary: #c9884b;
-  --bs-primary-rgb: 201, 136, 75;
-  --bs-link-color: #c9884b;
-  --bs-link-hover-color: #daa06d;
-  --bs-border-color: #2d3340;
-  --bs-tertiary-bg: #22262e;
-  --bs-secondary-bg: #272b34;
-  --shekel-surface: #22262e;
-  --shekel-surface-raised: #272b34;
-  --shekel-copper: #c9884b;
-  --shekel-copper-rgb: 201, 136, 75;
-  --shekel-text-muted: #7a8194;
-  --shekel-sticky-bg: #1a1d23;
-  --shekel-col-tint: rgba(255, 255, 255, 0.02);
-  --shekel-current-col: rgba(201, 136, 75, 0.10);
-  --shekel-current-header: rgba(201, 136, 75, 0.25);
+  --bs-body-bg: #1E2228;
+  --bs-body-color: #E2E6EB;
+  --bs-primary: #4A9ECC;
+  --bs-primary-rgb: 74, 158, 204;
+  --bs-link-color: #4A9ECC;
+  --bs-link-hover-color: #6BB8E0;
+  --bs-border-color: #3A4250;
+  --bs-tertiary-bg: #262B33;
+  --bs-secondary-bg: #2A3040;
+  --shekel-surface: #262B33;
+  --shekel-surface-raised: #2A3040;
+  --shekel-accent: #4A9ECC;
+  --shekel-accent-hover: #2878A8;
+  --shekel-accent-light: #6BB8E0;
+  --shekel-accent-rgb: 74, 158, 204;
+  --shekel-text-primary: #E2E6EB;
+  --shekel-text-secondary: #B0B9C6;
+  --shekel-text-muted: #8892A0;
+  --shekel-border-strong: #4A5568;
+  --shekel-border-subtle: #3A4250;
+  --shekel-sticky-bg: #1E2228;
+  --shekel-header-bg: #343B47;
+  --shekel-row-hover: #333B4A;
+  --shekel-done: #2ECC71;
+  --shekel-credit: #E67E22;
+  --shekel-danger: #E74C3C;
+  --shekel-section-income-bg: #1A3D2E;
+  --shekel-section-income-text: #5ED9A0;
+  --shekel-section-expense-bg: #3D1A2E;
+  --shekel-section-expense-text: #D97BA0;
+  --shekel-group-header-bg: #2A2F38;
+  --shekel-summary-bg: #1E2228;
 }
 
 [data-bs-theme="dark"] .navbar {
-  background-color: #1a1d23 !important;
-  border-bottom: 1px solid #2d3340;
+  background-color: #1E2228 !important;
+  border-bottom: 1px solid #3A4250;
 }
 
 [data-bs-theme="dark"] .navbar-brand {
-  color: #c9884b !important;
+  color: #4A9ECC !important;
 }
 
 [data-bs-theme="dark"] .card {
   background-color: var(--shekel-surface);
-  border-color: #2d3340;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  border-color: #3A4250;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 [data-bs-theme="dark"] .card-header {
   background-color: var(--shekel-surface-raised);
-  border-bottom-color: #2d3340;
+  border-bottom-color: #3A4250;
 }
 
 [data-bs-theme="dark"] .table {
   --bs-table-bg: var(--shekel-surface);
-  --bs-table-border-color: #2d3340;
+  --bs-table-border-color: #3A4250;
 }
 
 [data-bs-theme="dark"] .table-dark {
-  --bs-table-bg: #22262e;
-  --bs-table-border-color: #2d3340;
-  --bs-table-color: #c8ccd4;
-}
-
-[data-bs-theme="dark"] .table-success {
-  --bs-table-bg: rgba(25, 135, 84, 0.12);
-  --bs-table-color: #7dd3a8;
-}
-
-[data-bs-theme="dark"] .table-danger {
-  --bs-table-bg: rgba(220, 53, 69, 0.12);
-  --bs-table-color: #f0868f;
-}
-
-[data-bs-theme="dark"] .table-info {
-  --bs-table-bg: rgba(13, 202, 240, 0.08);
-  --bs-table-color: #6edff6;
-}
-
-[data-bs-theme="dark"] .table-light {
-  --bs-table-bg: #272b34;
-  --bs-table-color: #c8ccd4;
+  --bs-table-bg: var(--shekel-header-bg);
+  --bs-table-border-color: #4A5568;
+  --bs-table-color: #E2E6EB;
 }
 
 [data-bs-theme="dark"] .modal-content {
   background-color: var(--shekel-surface);
-  border-color: #2d3340;
+  border-color: #3A4250;
 }
 
 [data-bs-theme="dark"] .modal-header {
-  border-bottom-color: #2d3340;
+  border-bottom-color: #3A4250;
 }
 
 [data-bs-theme="dark"] .modal-footer {
-  border-top-color: #2d3340;
+  border-top-color: #3A4250;
 }
 
 [data-bs-theme="dark"] .form-control,
 [data-bs-theme="dark"] .form-select {
-  background-color: #1a1d23;
-  border-color: #2d3340;
-  color: #c8ccd4;
+  background-color: #1E2228;
+  border-color: #3A4250;
+  color: #E2E6EB;
 }
 
 [data-bs-theme="dark"] .btn-outline-primary {
-  --bs-btn-color: #c9884b;
-  --bs-btn-border-color: #c9884b;
-  --bs-btn-hover-bg: #c9884b;
-  --bs-btn-hover-border-color: #c9884b;
+  --bs-btn-color: #4A9ECC;
+  --bs-btn-border-color: #4A9ECC;
+  --bs-btn-hover-bg: #4A9ECC;
+  --bs-btn-hover-border-color: #4A9ECC;
   --bs-btn-hover-color: #fff;
 }
 
 [data-bs-theme="dark"] .btn-primary {
-  --bs-btn-bg: #c9884b;
-  --bs-btn-border-color: #c9884b;
-  --bs-btn-hover-bg: #b57a42;
-  --bs-btn-hover-border-color: #b57a42;
+  --bs-btn-bg: #4A9ECC;
+  --bs-btn-border-color: #4A9ECC;
+  --bs-btn-hover-bg: #2878A8;
+  --bs-btn-hover-border-color: #2878A8;
   --bs-btn-color: #fff;
+}
+
+[data-bs-theme="dark"] .list-group-item {
+  background-color: var(--shekel-surface);
+  border-color: #3A4250;
+  color: #E2E6EB;
 }
 
 /* Light mode variables */
 [data-bs-theme="light"] {
-  --bs-primary: #b07a3e;
-  --bs-primary-rgb: 176, 122, 62;
-  --shekel-surface: #fff;
-  --shekel-surface-raised: #f8f9fa;
-  --shekel-copper: #b07a3e;
-  --shekel-copper-rgb: 176, 122, 62;
-  --shekel-text-muted: #6c757d;
-  --shekel-sticky-bg: #fff;
-  --shekel-col-tint: rgba(0, 0, 0, 0.015);
-  --shekel-current-col: rgba(176, 122, 62, 0.08);
-  --shekel-current-header: rgba(176, 122, 62, 0.20);
+  --bs-primary: #4A9ECC;
+  --bs-primary-rgb: 74, 158, 204;
+  --shekel-surface: #FFFFFF;
+  --shekel-surface-raised: #F0F3F7;
+  --shekel-accent: #4A9ECC;
+  --shekel-accent-hover: #2878A8;
+  --shekel-accent-light: #6BB8E0;
+  --shekel-accent-rgb: 74, 158, 204;
+  --shekel-text-primary: #1E2228;
+  --shekel-text-secondary: #3E4A5C;
+  --shekel-text-muted: #5A6577;
+  --shekel-border-strong: #B0BCCC;
+  --shekel-border-subtle: #D0D8E2;
+  --shekel-sticky-bg: #EAEFF4;
+  --shekel-header-bg: #343B47;
+  --shekel-row-hover: #E8EDF3;
+  --shekel-done: #2ECC71;
+  --shekel-credit: #E67E22;
+  --shekel-danger: #E74C3C;
+  --shekel-section-income-bg: #D0EDDF;
+  --shekel-section-income-text: #1A6B40;
+  --shekel-section-expense-bg: #EDCFDE;
+  --shekel-section-expense-text: #6B1A40;
+  --shekel-group-header-bg: #F0F3F7;
+  --shekel-summary-bg: #F0F4F8;
+}
+
+[data-bs-theme="light"] .navbar {
+  background-color: #343B47 !important;
+  border-bottom: 1px solid #B0BCCC;
+}
+
+[data-bs-theme="light"] .navbar-brand {
+  color: #4A9ECC !important;
 }
 
 [data-bs-theme="light"] .btn-primary {
-  --bs-btn-bg: #b07a3e;
-  --bs-btn-border-color: #b07a3e;
-  --bs-btn-hover-bg: #9a6b36;
-  --bs-btn-hover-border-color: #9a6b36;
+  --bs-btn-bg: #4A9ECC;
+  --bs-btn-border-color: #4A9ECC;
+  --bs-btn-hover-bg: #2878A8;
+  --bs-btn-hover-border-color: #2878A8;
 }
 
 [data-bs-theme="light"] .btn-outline-primary {
-  --bs-btn-color: #b07a3e;
-  --bs-btn-border-color: #b07a3e;
-  --bs-btn-hover-bg: #b07a3e;
-  --bs-btn-hover-border-color: #b07a3e;
+  --bs-btn-color: #4A9ECC;
+  --bs-btn-border-color: #4A9ECC;
+  --bs-btn-hover-bg: #4A9ECC;
+  --bs-btn-hover-border-color: #4A9ECC;
   --bs-btn-hover-color: #fff;
 }
 
 /* =============================================
    2. GRID TABLE
    ============================================= */
+/* Grid scrollable container — max-height enables sticky tfoot */
+.grid-wrapper {
+  max-height: calc(100vh - 160px);
+  overflow: auto;
+}
+
 .grid-table {
   font-size: 0.85rem;
   table-layout: fixed;
@@ -163,23 +192,46 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Row hover */
+.grid-table tbody tr:hover td {
+  background-color: var(--shekel-row-hover);
+}
+
+/* Don't override section banners, spacers, or summary rows on hover */
+.grid-table tbody tr.section-banner-income:hover td,
+.grid-table tbody tr.section-banner-expense:hover td,
+.grid-table tbody tr.spacer-row:hover td {
+  background-color: transparent;
+}
+
+.grid-table tfoot tr:hover td {
+  background-color: var(--shekel-summary-bg) !important;
+}
+
 /* Sticky first column (row labels) */
 .sticky-col {
   position: sticky;
   left: 0;
   z-index: 2;
   background-color: var(--shekel-sticky-bg);
-  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.3);
+  border-right: 1px solid var(--shekel-border-strong) !important;
+}
+
+/* Sticky thead for vertical scrolling */
+.grid-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.grid-table thead th {
+  background-color: var(--shekel-header-bg);
 }
 
 thead .sticky-col {
-  z-index: 3;
-  background-color: var(--bs-dark, #22262e);
+  z-index: 4;
+  background-color: var(--shekel-header-bg);
   color: #fff;
-}
-
-[data-bs-theme="dark"] thead .sticky-col {
-  background-color: #22262e;
 }
 
 .row-label-col {
@@ -208,82 +260,140 @@ thead .sticky-col {
   font-size: 0.75rem;
 }
 
-/* Alternating column tints */
-.grid-table td:nth-child(even):not(.sticky-col) {
-  background-color: var(--shekel-col-tint);
-}
-
-/* Current period column highlight */
-.current-period {
-  background-color: var(--shekel-current-header) !important;
-  border-bottom: 3px solid var(--shekel-copper);
-}
-
-.current-period-col {
-  background-color: var(--shekel-current-col) !important;
-}
-
 /* Period header */
 .period-header {
   font-size: 0.8rem;
 }
 
 /* =============================================
-   3. SECTION & GROUP HEADERS
+   3. SECTION BANNERS
    ============================================= */
-.section-header td {
-  font-size: 0.9rem;
-  padding-top: 0.6rem;
-  padding-bottom: 0.6rem;
-  border-left: 4px solid var(--shekel-copper);
+.section-banner-income td {
+  background-color: var(--shekel-section-income-bg) !important;
+  color: var(--shekel-section-income-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
 }
 
+.section-banner-expense td {
+  background-color: var(--shekel-section-expense-bg) !important;
+  color: var(--shekel-section-expense-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* Category sub-headers */
 .group-header-row td {
-  background-color: rgba(var(--shekel-copper-rgb), 0.06);
-  font-size: 0.75rem;
+  background-color: var(--shekel-group-header-bg);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
   padding: 0.25rem 0.5rem;
-  border-left: 3px solid rgba(var(--shekel-copper-rgb), 0.4);
+  color: var(--shekel-text-muted);
+}
+
+/* Spacer row between sections */
+.spacer-row td {
+  background-color: var(--bs-body-bg) !important;
+  height: 16px;
+  border: none !important;
+  padding: 0;
 }
 
 /* =============================================
-   4. TOTALS ROW
+   4. SUMMARY ROWS
    ============================================= */
+/* Summary tfoot: sticky to bottom of scrollable area */
+.grid-table tfoot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+
+.summary-row td {
+  border-top: 2px solid var(--shekel-accent);
+  background-color: var(--shekel-summary-bg) !important;
+}
+
+.summary-row .sticky-col {
+  background-color: var(--shekel-summary-bg) !important;
+  z-index: 3;
+}
+
+.balance-row-summary td {
+  background-color: var(--shekel-summary-bg) !important;
+  border-top: 2px solid var(--shekel-accent);
+  font-size: 15px;
+  color: var(--shekel-accent);
+}
+
+.balance-row-summary .sticky-col {
+  background-color: var(--shekel-summary-bg) !important;
+  z-index: 3;
+}
+
+[data-bs-theme="dark"] .balance-negative {
+  color: var(--shekel-danger) !important;
+  background-color: #3A1A1A;
+}
+
+[data-bs-theme="light"] .balance-negative {
+  color: var(--shekel-danger) !important;
+  background-color: #FDE8E6;
+}
+
+.balance-low {
+  color: #E6A817 !important;
+}
+
+/* Totals row (kept for non-summary usage) */
 .totals-row td {
-  border-top: 2px solid rgba(var(--shekel-copper-rgb), 0.5);
+  border-top: 2px solid rgba(var(--shekel-accent-rgb), 0.5);
 }
 
 /* =============================================
-   5. TRANSACTION STATUS CELLS
+   5. STATUS BADGES
    ============================================= */
-.status-projected {
-  /* Default — no special styling */
+.badge-done,
+.badge-received {
+  display: inline-block;
+  background-color: var(--shekel-done);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 10px;
+  vertical-align: middle;
+  line-height: 1.3;
 }
 
-[data-bs-theme="dark"] .status-done,
-[data-bs-theme="dark"] .status-received {
-  background-color: rgba(25, 135, 84, 0.15);
-}
-
-[data-bs-theme="dark"] .status-credit {
-  background-color: rgba(255, 183, 77, 0.15);
-}
-
-[data-bs-theme="light"] .status-done,
-[data-bs-theme="light"] .status-received {
-  background-color: rgba(25, 135, 84, 0.08);
-}
-
-[data-bs-theme="light"] .status-credit {
-  background-color: rgba(255, 193, 7, 0.12);
+.badge-credit {
+  display: inline-block;
+  background-color: var(--shekel-credit);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 10px;
+  vertical-align: middle;
+  line-height: 1.3;
 }
 
 /* =============================================
    6. ANCHOR BALANCE
    ============================================= */
 .anchor-balance-display {
-  font-size: 1.4rem;
+  font-size: 28px;
   font-weight: 700;
-  color: var(--shekel-copper);
+  color: var(--shekel-accent);
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   border-radius: 0.375rem;
@@ -291,12 +401,18 @@ thead .sticky-col {
 }
 
 .anchor-balance-display:hover {
-  background-color: rgba(var(--shekel-copper-rgb), 0.12);
+  background-color: rgba(var(--shekel-accent-rgb), 0.12);
 }
 
 /* =============================================
    7. TRANSACTION CELL & INLINE EDIT
    ============================================= */
+/* Cell focus ring */
+.grid-table td.cell-focused {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: -2px;
+}
+
 .txn-cell {
   cursor: pointer;
   padding: 0.15rem 0.25rem;
@@ -305,7 +421,7 @@ thead .sticky-col {
 }
 
 .txn-cell:hover {
-  background-color: rgba(var(--shekel-copper-rgb), 0.10);
+  background-color: rgba(var(--shekel-accent-rgb), 0.10);
 }
 
 .txn-edit-form {
@@ -333,11 +449,11 @@ thead .sticky-col {
    ============================================= */
 .category-group-header {
   font-size: 1.05rem;
-  border-left: 4px solid var(--shekel-copper);
+  border-left: 4px solid var(--shekel-accent);
 }
 
 [data-bs-theme="dark"] .category-group-header {
-  background-color: #272b34 !important;
+  background-color: #2A3040 !important;
 }
 
 .category-group-header + .list-group .list-group-item {
@@ -355,7 +471,32 @@ thead .sticky-col {
 }
 
 /* =============================================
-   11. NEGATIVE BALANCE WARNING
+   11. TYPOGRAPHY
+   ============================================= */
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.font-sans {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* =============================================
+   12. SAVE FLASH ANIMATION
+   ============================================= */
+@keyframes save-flash {
+  0% { background-color: transparent; }
+  30% { background-color: rgba(var(--shekel-accent-rgb), 0.25); }
+  100% { background-color: transparent; }
+}
+
+.save-flash {
+  animation: save-flash 0.4s ease-out;
+}
+
+/* =============================================
+   13. NEGATIVE BALANCE WARNING
    ============================================= */
 .text-danger.fw-bold {
   animation: pulse-warning 2s ease-in-out infinite;
@@ -367,28 +508,72 @@ thead .sticky-col {
 }
 
 /* =============================================
-   12. GLOBAL POLISH
+   14. QUICK-SELECT BUTTON GROUP
    ============================================= */
-[data-bs-theme="dark"] .card {
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+.period-btn-group .btn {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
-[data-bs-theme="dark"] .list-group-item {
-  background-color: var(--shekel-surface);
-  border-color: #2d3340;
-  color: #c8ccd4;
+/* =============================================
+   15. LOGIN WORDMARK
+   ============================================= */
+.login-wordmark {
+  color: var(--shekel-accent);
 }
 
-/* Sticky col background for summary rows */
-[data-bs-theme="dark"] .table-success .sticky-col {
-  background-color: rgba(25, 135, 84, 0.12);
+/* =============================================
+   16. QUICK EDIT (TIER 1)
+   ============================================= */
+.txn-quick-edit {
+  width: 100%;
 }
-[data-bs-theme="dark"] .table-danger .sticky-col {
-  background-color: rgba(220, 53, 69, 0.12);
+
+.txn-quick-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  text-align: right;
+  padding: 2px 4px;
+  height: 28px;
 }
-[data-bs-theme="dark"] .table-light .sticky-col {
-  background-color: #272b34;
+
+.txn-expand-btn {
+  color: var(--shekel-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 20px;
 }
-[data-bs-theme="dark"] .table-info .sticky-col {
-  background-color: rgba(13, 202, 240, 0.08);
+
+.txn-expand-btn:hover {
+  color: var(--shekel-accent);
+}
+
+/* =============================================
+   17. FULL EDIT POPOVER (TIER 2)
+   ============================================= */
+.txn-full-edit-popover {
+  width: 280px;
+  background: var(--shekel-surface, var(--bs-body-bg));
+  border: 1px solid var(--shekel-border-subtle, var(--bs-border-color));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  padding: 12px;
+  position: absolute;
+  z-index: 100;
+}
+
+.txn-full-edit-popover .form-control-sm,
+.txn-full-edit-popover .form-select-sm {
+  font-size: 13px;
+}
+
+.txn-full-edit-popover .form-label {
+  color: var(--shekel-text-muted);
+}
+
+.btn-close-sm {
+  font-size: 0.6rem;
 }
