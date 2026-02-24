@@ -86,3 +86,18 @@ def anchor_form(account_id):
         account=account,
         editing=True,
     )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/anchor-display", methods=["GET"])
+@login_required
+def anchor_display(account_id):
+    """HTMX partial: return the anchor balance display (non-editing)."""
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        return "Not found", 404
+
+    return render_template(
+        "grid/_anchor_edit.html",
+        account=account,
+        editing=False,
+    )

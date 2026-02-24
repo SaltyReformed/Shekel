@@ -53,7 +53,7 @@ class TransactionTemplate(db.Model):
     recurrence_rule = db.relationship("RecurrenceRule", lazy="joined")
     transaction_type = db.relationship("TransactionType", lazy="joined")
     transactions = db.relationship(
-        "Transaction", back_populates="template", lazy="dynamic"
+        "Transaction", back_populates="template", lazy="select"
     )
 
     def __repr__(self):

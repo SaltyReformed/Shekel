@@ -341,7 +341,7 @@
           <div class="mb-3">
             <label class="form-label">Pay Period</label>
             <select name="pay_period_id" class="form-select" required>
-              {% for p in periods %}
+              {% for p in all_periods %}
               <option value="{{ p.id }}"
                 {{ 'selected' if p.id == current_period.id else '' }}>
                 {{ p.label }}

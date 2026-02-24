@@ -15,22 +15,21 @@ var activePopover = null;
  * Returns the popover element for further setup.
  */
 function positionPopover(cell) {
-    var popover = document.getElementById('txn-popover');
-    var gridWrapper = cell.closest('.grid-scroll-wrapper');
+    const popover = document.getElementById('txn-popover');
+    const gridWrapper = cell.closest('.grid-scroll-wrapper');
     if (!popover || !gridWrapper) return null;
 
     // Close any existing popover first.
     closeFullEdit();
 
     // Calculate position relative to the grid wrapper.
-    var cellRect = cell.getBoundingClientRect();
-    var wrapperRect = gridWrapper.getBoundingClientRect();
-    var topPos = (cellRect.bottom - wrapperRect.top + gridWrapper.scrollTop);
-    var leftPos = (cellRect.left - wrapperRect.left + gridWrapper.scrollLeft);
+    const cellRect = cell.getBoundingClientRect();
+    const wrapperRect = gridWrapper.getBoundingClientRect();
+    let topPos = (cellRect.bottom - wrapperRect.top + gridWrapper.scrollTop);
+    const leftPos = (cellRect.left - wrapperRect.left + gridWrapper.scrollLeft);
 
     // If the popover would go below the viewport, position above the cell.
-    var viewportBottom = window.innerHeight;
-    if (cellRect.bottom + 300 > viewportBottom) {
+    if (cellRect.bottom + 300 > window.innerHeight) {
         topPos = (cellRect.top - wrapperRect.top + gridWrapper.scrollTop) - 300;
         if (topPos < 0) topPos = 0;
     }
@@ -53,7 +52,7 @@ function showPopover(popover, html) {
     htmx.process(popover);
 
     // Focus the first visible input.
-    var firstInput = popover.querySelector('input[type="number"], input[type="text"], select');
+    const firstInput = popover.querySelector('input[type="number"], input[type="text"], select');
     if (firstInput) firstInput.focus();
 
     // Add click-outside listener after a tick to avoid catching the trigger click.
@@ -67,8 +66,8 @@ function showPopover(popover, html) {
  * Loads the form HTML via fetch and positions the popover below the cell.
  */
 function openFullEdit(txnId, triggerEl) {
-    var cell = triggerEl.closest('td');
-    var popover = positionPopover(cell);
+    const cell = triggerEl.closest('td');
+    const popover = positionPopover(cell);
     if (!popover) return;
 
     // Load the full edit form via fetch.
@@ -78,6 +77,9 @@ function openFullEdit(txnId, triggerEl) {
     .then(function(r) { return r.text(); })
     .then(function(html) {
         showPopover(popover, html);
+    })
+    .catch(function() {
+        closeFullEdit();
     });
 }
 
@@ -86,8 +88,8 @@ function openFullEdit(txnId, triggerEl) {
  * Loads the create form via fetch, anchored to the cell.
  */
 function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
-    var cell = triggerEl.closest('td');
-    var popover = positionPopover(cell);
+    const cell = triggerEl.closest('td');
+    const popover = positionPopover(cell);
     if (!popover) return;
 
     // Give the cell a stable id so the popover form can target it.
@@ -109,7 +111,7 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
 
         // Override the form's hx-target before HTMX processes it.
         // The popover is outside the td, so "closest td" won't work.
-        var form = popover.querySelector('form');
+        const form = popover.querySelector('form');
         if (form) {
             form.setAttribute('hx-target', '#' + cell.id);
         }
@@ -118,13 +120,16 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
         htmx.process(popover);
 
         // Focus the first number input.
-        var firstInput = popover.querySelector('input[type="number"]');
+        const firstInput = popover.querySelector('input[type="number"]');
         if (firstInput) firstInput.focus();
 
         // Add click-outside listener after a tick.
         setTimeout(function() {
             document.addEventListener('click', handleClickOutside);
         }, 0);
+    })
+    .catch(function() {
+        closeFullEdit();
     });
 }
 
@@ -132,7 +137,7 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
  * Close the full edit popover and clean up listeners.
  */
 function closeFullEdit() {
-    var popover = document.getElementById('txn-popover');
+    const popover = document.getElementById('txn-popover');
     if (popover) {
         popover.classList.add('d-none');
         popover.innerHTML = '';
@@ -145,7 +150,7 @@ function closeFullEdit() {
  * Click-outside handler — closes the popover when clicking anywhere else.
  */
 function handleClickOutside(event) {
-    var popover = document.getElementById('txn-popover');
+    const popover = document.getElementById('txn-popover');
     if (popover && !popover.contains(event.target)) {
         closeFullEdit();
     }
@@ -155,27 +160,23 @@ function handleClickOutside(event) {
 document.addEventListener('keydown', function(e) {
     // F2 in quick edit/create → open full edit/create popover.
     if (e.key === 'F2') {
-        var quickInput = document.activeElement;
+        const quickInput = document.activeElement;
         if (quickInput && quickInput.closest('.txn-quick-edit')) {
             e.preventDefault();
-            var quickForm = quickInput.closest('.txn-quick-edit');
-            var expandBtn = quickForm.querySelector('.txn-expand-btn');
+            const quickForm = quickInput.closest('.txn-quick-edit');
+            const expandBtn = quickForm.querySelector('.txn-expand-btn');
 
             if (quickForm.dataset.mode === 'create') {
                 // Create mode — open full create popover.
-                var categoryId = expandBtn.dataset.categoryId;
-                var periodId = expandBtn.dataset.periodId;
-                var txnTypeName = expandBtn.dataset.txnTypeName;
                 openFullCreate(
-                    parseInt(categoryId),
-                    parseInt(periodId),
-                    txnTypeName,
+                    parseInt(expandBtn.dataset.categoryId),
+                    parseInt(expandBtn.dataset.periodId),
+                    expandBtn.dataset.txnTypeName,
                     quickInput
                 );
             } else {
                 // Edit mode — open full edit popover.
-                var txnId = expandBtn.dataset.txnId;
-                openFullEdit(parseInt(txnId), quickInput);
+                openFullEdit(parseInt(expandBtn.dataset.txnId), quickInput);
             }
             return;
         }
@@ -191,33 +192,28 @@ document.addEventListener('keydown', function(e) {
         }
 
         // Cancel quick edit or quick create.
-        var quickInput = document.activeElement;
+        const quickInput = document.activeElement;
         if (quickInput && quickInput.closest('.txn-quick-edit')) {
             e.preventDefault();
-            var quickForm = quickInput.closest('.txn-quick-edit');
+            const quickForm = quickInput.closest('.txn-quick-edit');
+            const expandBtn = quickForm.querySelector('.txn-expand-btn');
 
             if (quickForm.dataset.mode === 'create') {
                 // Create mode — revert to empty cell via server.
-                var expandBtn = quickForm.querySelector('.txn-expand-btn');
-                var categoryId = expandBtn.dataset.categoryId;
-                var periodId = expandBtn.dataset.periodId;
-                var txnTypeName = expandBtn.dataset.txnTypeName;
-                var td = quickForm.closest('td');
+                const td = quickForm.closest('td');
                 if (td) {
                     htmx.ajax('GET',
-                        '/transactions/empty-cell?category_id=' + categoryId +
-                        '&period_id=' + periodId +
-                        '&txn_type_name=' + encodeURIComponent(txnTypeName),
+                        '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
+                        '&period_id=' + expandBtn.dataset.periodId +
+                        '&txn_type_name=' + encodeURIComponent(expandBtn.dataset.txnTypeName),
                         { target: td, swap: 'innerHTML' }
                     );
                 }
             } else {
                 // Edit mode — revert cell to display mode.
-                var expandBtn = quickForm.querySelector('.txn-expand-btn');
-                var txnId = expandBtn.dataset.txnId;
-                var targetDiv = document.getElementById('txn-cell-' + txnId);
+                const targetDiv = document.getElementById('txn-cell-' + expandBtn.dataset.txnId);
                 if (targetDiv) {
-                    htmx.ajax('GET', '/transactions/' + txnId + '/cell', {
+                    htmx.ajax('GET', '/transactions/' + expandBtn.dataset.txnId + '/cell', {
                         target: targetDiv,
                         swap: 'innerHTML'
                     });
@@ -227,11 +223,4 @@ document.addEventListener('keydown', function(e) {
         }
     }
 
-});
-
-// Close popover after a successful HTMX swap targeting a cell.
-document.addEventListener('htmx:afterSwap', function(e) {
-    if (activePopover && !activePopover.contains(e.detail.elt)) {
-        closeFullEdit();
-    }
 });

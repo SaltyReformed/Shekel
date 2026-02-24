@@ -143,6 +143,7 @@ def index():
         col_size=col_size,
         anchor_balance=anchor_balance,
         today=date.today(),
+        all_periods=all_periods,
     )
 
 

@@ -36,24 +36,6 @@ _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
 
 
-@transactions_bp.route("/transactions/<int:txn_id>", methods=["GET"])
-@login_required
-def get_edit_form(txn_id):
-    """HTMX partial: return the inline edit form for a transaction cell."""
-    txn = db.session.get(Transaction, txn_id)
-    if txn is None:
-        return "Not found", 404
-
-    statuses = db.session.query(Status).all()
-    periods = pay_period_service.get_all_periods(current_user.id)
-
-    return render_template(
-        "grid/_transaction_edit.html",
-        txn=txn,
-        statuses=statuses,
-        periods=periods,
-    )
-
 
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
 @login_required

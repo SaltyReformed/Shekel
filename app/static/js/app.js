@@ -70,14 +70,21 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
   }
 });
 
-// Save flash animation on HTMX swap
+// Consolidated htmx:afterSwap handler — save flash, popover close, focus restore.
 document.body.addEventListener("htmx:afterSwap", function(event) {
   const el = event.detail.elt;
-  if (el) {
+
+  // Save flash animation — only for transaction cell saves.
+  if (el && el.closest && el.closest('td.cell')) {
     el.classList.add("save-flash");
     el.addEventListener("animationend", function() {
       el.classList.remove("save-flash");
     }, { once: true });
+  }
+
+  // Close the full-edit popover if the swap target is outside it.
+  if (typeof activePopover !== 'undefined' && activePopover && !activePopover.contains(el)) {
+    closeFullEdit();
   }
 });
 
@@ -142,12 +149,6 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     }
   }
 
-  function isEditing() {
-    var table = getGridTable();
-    if (!table) return false;
-    return !!table.querySelector('.txn-edit-form, .txn-quick-edit');
-  }
-
   function getFocusedCell() {
     var rows = getDataRows();
     if (focusedRow < 0 || focusedRow >= rows.length) return null;
@@ -165,8 +166,9 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
       return;
     }
 
-    // Don't interfere with modal interactions
+    // Don't interfere with modal or popover interactions
     if (document.querySelector('.modal.show')) return;
+    if (typeof activePopover !== 'undefined' && activePopover) return;
 
     var rows = getDataRows();
     var colCount = getColCount();

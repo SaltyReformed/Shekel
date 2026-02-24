@@ -30,7 +30,7 @@ class PayPeriod(db.Model):
 
     # Relationships — transactions loaded via back_populates on Transaction
     transactions = db.relationship(
-        "Transaction", back_populates="pay_period", lazy="dynamic"
+        "Transaction", back_populates="pay_period", lazy="select"
     )
 
     @property
