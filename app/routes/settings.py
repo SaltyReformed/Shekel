@@ -51,6 +51,11 @@ def update():
         from decimal import Decimal
         settings.default_inflation_rate = Decimal(inflation)
 
+    # Update low balance threshold.
+    low_bal = request.form.get("low_balance_threshold")
+    if low_bal:
+        settings.low_balance_threshold = int(low_bal)
+
     db.session.commit()
     flash("Settings updated.", "success")
     return redirect(url_for("settings.show"))

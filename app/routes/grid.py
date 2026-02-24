@@ -127,6 +127,12 @@ def index():
     else:
         col_size = "compact"
 
+    low_balance_threshold = (
+        current_user.settings.low_balance_threshold
+        if current_user.settings and current_user.settings.low_balance_threshold is not None
+        else 500
+    )
+
     return render_template(
         "grid/grid.html",
         scenario=scenario,
@@ -144,6 +150,7 @@ def index():
         anchor_balance=anchor_balance,
         today=date.today(),
         all_periods=all_periods,
+        low_balance_threshold=low_balance_threshold,
     )
 
 
@@ -201,6 +208,12 @@ def balance_row():
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
+    low_balance_threshold = (
+        current_user.settings.low_balance_threshold
+        if current_user.settings and current_user.settings.low_balance_threshold is not None
+        else 500
+    )
+
     return render_template(
         "grid/_balance_row.html",
         periods=periods,
@@ -208,4 +221,5 @@ def balance_row():
         txn_by_period=txn_by_period,
         num_periods=num_periods,
         start_offset=start_offset,
+        low_balance_threshold=low_balance_threshold,
     )

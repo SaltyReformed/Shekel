@@ -318,6 +318,10 @@ thead .sticky-col {
   z-index: 2;
 }
 
+.summary-row {
+  background-color: var(--shekel-summary-bg);
+}
+
 .summary-row td {
   border-top: 2px solid var(--shekel-accent);
   background-color: var(--shekel-summary-bg) !important;
@@ -326,6 +330,10 @@ thead .sticky-col {
 .summary-row .sticky-col {
   background-color: var(--shekel-summary-bg) !important;
   z-index: 3;
+}
+
+.balance-row-summary {
+  background-color: var(--shekel-summary-bg);
 }
 
 .balance-row-summary td {

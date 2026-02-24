@@ -50,6 +50,7 @@ class UserSettings(db.Model):
     )
     default_inflation_rate = db.Column(db.Numeric(5, 4), default=0.0300)
     grid_default_periods = db.Column(db.Integer, default=6)
+    low_balance_threshold = db.Column(db.Integer, default=500)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),

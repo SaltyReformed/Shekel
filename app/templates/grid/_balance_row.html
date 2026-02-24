@@ -12,7 +12,7 @@
   </td>
   {% for period in periods %}
     {% set bal = balances.get(period.id) %}
-    <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < 500 %}balance-low{% endif %}">
+    <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
       {% if bal is not none %}
         ${{ "{:,.0f}".format(bal|int) }}
       {% else %}

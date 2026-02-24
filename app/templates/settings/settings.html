@@ -24,6 +24,16 @@
         </div>
         <div class="form-text">Used for Phase 7 expense inflation adjustments.</div>
       </div>
+      <div class="mb-3">
+        <label for="low_balance_threshold" class="form-label">Low Balance Threshold</label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" id="low_balance_threshold" name="low_balance_threshold"
+                 class="form-control" min="0"
+                 value="{{ settings.low_balance_threshold or 500 }}">
+        </div>
+        <div class="form-text">Balance cells turn yellow when projected balance falls below this amount.</div>
+      </div>
       <button type="submit" class="btn btn-primary w-100">
         <i class="bi bi-check-circle"></i> Save Settings
       </button>
