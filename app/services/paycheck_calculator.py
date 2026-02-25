@@ -95,24 +95,39 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
     )
     total_pre_tax = sum((d.amount for d in pre_tax_deductions), ZERO)
 
-    # Step 5: Taxable income
+    # Step 5: Taxable income (for display — taxes computed via Pub 15-T)
     taxable_biweekly = gross_biweekly - total_pre_tax
     if taxable_biweekly < ZERO:
         taxable_biweekly = ZERO
 
-    # Step 6: Calculate taxes (annualize, then divide back)
-    taxable_annual = taxable_biweekly * pay_periods_per_year
+    # Step 6: Federal withholding (IRS Pub 15-T Percentage Method)
+    # Annualized pre-tax deductions for the withholding calculation
+    annual_pre_tax = total_pre_tax * pay_periods_per_year
 
-    federal_annual = ZERO
+    additional_income = Decimal(str(getattr(profile, "additional_income", 0) or 0))
+    additional_deductions = Decimal(str(getattr(profile, "additional_deductions", 0) or 0))
+    extra_withholding = Decimal(str(getattr(profile, "extra_withholding", 0) or 0))
+    qualifying_children = int(getattr(profile, "qualifying_children", 0) or 0)
+    other_dependents = int(getattr(profile, "other_dependents", 0) or 0)
+
     if bracket_set:
-        federal_annual = tax_calculator.calculate_federal_tax(
-            taxable_annual, bracket_set
+        federal_biweekly = tax_calculator.calculate_federal_withholding(
+            gross_pay=gross_biweekly,
+            pay_periods=pay_periods_per_year,
+            bracket_set=bracket_set,
+            additional_income=additional_income,
+            pre_tax_deductions=annual_pre_tax,
+            additional_deductions=additional_deductions,
+            qualifying_children=qualifying_children,
+            other_dependents=other_dependents,
+            extra_withholding=extra_withholding,
         )
-    federal_biweekly = (federal_annual / pay_periods_per_year).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+    else:
+        federal_biweekly = ZERO
 
-    state_annual = tax_calculator.calculate_state_tax(taxable_annual, state_config)
+    state_annual = tax_calculator.calculate_state_tax(
+        taxable_biweekly * pay_periods_per_year, state_config
+    )
     state_biweekly = (state_annual / pay_periods_per_year).quantize(
         TWO_PLACES, rounding=ROUND_HALF_UP
     )

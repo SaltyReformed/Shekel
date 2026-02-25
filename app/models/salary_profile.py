@@ -40,6 +40,20 @@ class SalaryProfile(db.Model):
     annual_salary = db.Column(db.Numeric(12, 2), nullable=False)
     state_code = db.Column(db.String(2), nullable=False, default="NC")
     pay_periods_per_year = db.Column(db.Integer, default=26, nullable=False)
+
+    # W-4 fields (IRS Pub 15-T Percentage Method inputs)
+    qualifying_children = db.Column(db.Integer, default=0, nullable=False)
+    other_dependents = db.Column(db.Integer, default=0, nullable=False)
+    additional_income = db.Column(
+        db.Numeric(12, 2), default=0, nullable=False
+    )  # W-4 Step 4(a): other income
+    additional_deductions = db.Column(
+        db.Numeric(12, 2), default=0, nullable=False
+    )  # W-4 Step 4(b): extra deductions
+    extra_withholding = db.Column(
+        db.Numeric(12, 2), default=0, nullable=False
+    )  # W-4 Step 4(c): extra withholding per period
+
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())

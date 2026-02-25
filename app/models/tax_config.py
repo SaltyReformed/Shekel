@@ -30,6 +30,12 @@ class TaxBracketSet(db.Model):
     )
     tax_year = db.Column(db.Integer, nullable=False)
     standard_deduction = db.Column(db.Numeric(12, 2), nullable=False)
+    child_credit_amount = db.Column(
+        db.Numeric(12, 2), nullable=False, default=0
+    )  # Per qualifying child under 17
+    other_dependent_credit_amount = db.Column(
+        db.Numeric(12, 2), nullable=False, default=0
+    )  # Per other dependent
     description = db.Column(db.String(200))
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 

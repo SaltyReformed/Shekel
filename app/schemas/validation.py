@@ -154,6 +154,23 @@ class SalaryProfileCreateSchema(Schema):
         load_default=26, validate=validate.OneOf([12, 24, 26, 52])
     )
 
+    # W-4 fields (IRS Pub 15-T)
+    qualifying_children = fields.Integer(
+        load_default=0, validate=validate.Range(min=0)
+    )
+    other_dependents = fields.Integer(
+        load_default=0, validate=validate.Range(min=0)
+    )
+    additional_income = fields.Decimal(
+        load_default="0", places=2, as_string=True
+    )
+    additional_deductions = fields.Decimal(
+        load_default="0", places=2, as_string=True
+    )
+    extra_withholding = fields.Decimal(
+        load_default="0", places=2, as_string=True
+    )
+
 
 class SalaryProfileUpdateSchema(Schema):
     """Validates POST data for updating a salary profile."""
@@ -169,6 +186,13 @@ class SalaryProfileUpdateSchema(Schema):
     pay_periods_per_year = fields.Integer(
         validate=validate.OneOf([12, 24, 26, 52])
     )
+
+    # W-4 fields (IRS Pub 15-T)
+    qualifying_children = fields.Integer(validate=validate.Range(min=0))
+    other_dependents = fields.Integer(validate=validate.Range(min=0))
+    additional_income = fields.Decimal(places=2, as_string=True)
+    additional_deductions = fields.Decimal(places=2, as_string=True)
+    extra_withholding = fields.Decimal(places=2, as_string=True)
 
 
 class RaiseCreateSchema(Schema):
@@ -230,6 +254,12 @@ class TaxBracketSetSchema(Schema):
     filing_status_id = fields.Integer(required=True)
     tax_year = fields.Integer(required=True)
     standard_deduction = fields.Decimal(required=True, places=2, as_string=True)
+    child_credit_amount = fields.Decimal(
+        load_default="0", places=2, as_string=True
+    )
+    other_dependent_credit_amount = fields.Decimal(
+        load_default="0", places=2, as_string=True
+    )
 
 
 class FicaConfigSchema(Schema):

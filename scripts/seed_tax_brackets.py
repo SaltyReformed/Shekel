@@ -35,6 +35,8 @@ from app.models.user import User
 BRACKETS_2025 = {
     "single": {
         "standard_deduction": Decimal("15000"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      11925,   Decimal("0.1000")),
             (11925,  48475,   Decimal("0.1200")),
@@ -47,6 +49,8 @@ BRACKETS_2025 = {
     },
     "married_jointly": {
         "standard_deduction": Decimal("30000"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      23850,   Decimal("0.1000")),
             (23850,  96950,   Decimal("0.1200")),
@@ -59,6 +63,8 @@ BRACKETS_2025 = {
     },
     "married_separately": {
         "standard_deduction": Decimal("15000"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      11925,   Decimal("0.1000")),
             (11925,  48475,   Decimal("0.1200")),
@@ -71,6 +77,8 @@ BRACKETS_2025 = {
     },
     "head_of_household": {
         "standard_deduction": Decimal("22500"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      17000,   Decimal("0.1000")),
             (17000,  64850,   Decimal("0.1200")),
@@ -87,6 +95,8 @@ BRACKETS_2025 = {
 BRACKETS_2026 = {
     "single": {
         "standard_deduction": Decimal("15350"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      12150,   Decimal("0.1000")),
             (12150,  49475,   Decimal("0.1200")),
@@ -99,6 +109,8 @@ BRACKETS_2026 = {
     },
     "married_jointly": {
         "standard_deduction": Decimal("30700"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      24300,   Decimal("0.1000")),
             (24300,  98950,   Decimal("0.1200")),
@@ -111,6 +123,8 @@ BRACKETS_2026 = {
     },
     "married_separately": {
         "standard_deduction": Decimal("15350"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      12150,   Decimal("0.1000")),
             (12150,  49475,   Decimal("0.1200")),
@@ -123,6 +137,8 @@ BRACKETS_2026 = {
     },
     "head_of_household": {
         "standard_deduction": Decimal("23000"),
+        "child_credit_amount": Decimal("2000"),
+        "other_dependent_credit_amount": Decimal("500"),
         "brackets": [
             (0,      17350,   Decimal("0.1000")),
             (17350,  66200,   Decimal("0.1200")),
@@ -210,6 +226,10 @@ def _seed_brackets_for_user(user, filing_statuses, tax_year, bracket_data):
             filing_status_id=fs.id,
             tax_year=tax_year,
             standard_deduction=data["standard_deduction"],
+            child_credit_amount=data.get("child_credit_amount", Decimal("0")),
+            other_dependent_credit_amount=data.get(
+                "other_dependent_credit_amount", Decimal("0")
+            ),
             description=f"{tax_year} Federal - {status_name.replace('_', ' ').title()}",
         )
         db.session.add(bracket_set)
