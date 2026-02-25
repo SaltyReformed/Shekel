@@ -14,15 +14,21 @@
 
     <div class="mb-3">
       <label for="period-select" class="form-label fw-bold">{{ profile.name }}</label>
-      <select id="period-select" class="form-select form-select-sm"
-              onchange="window.location.href=this.value">
-        {% for p in periods %}
-        <option value="{{ url_for('salary.breakdown', profile_id=profile.id, period_id=p.id) }}"
-                {{ 'selected' if p.id == period.id }}>
-          {{ p.label }} ({{ p.start_date.strftime('%Y') }})
-        </option>
-        {% endfor %}
-      </select>
+      <div class="d-flex gap-2">
+        <select id="period-select" class="form-select form-select-sm">
+          {% for p in periods %}
+          <option value="{{ url_for('salary.breakdown', profile_id=profile.id, period_id=p.id) }}"
+                  {{ 'selected' if p.id == period.id }}>
+            {{ p.label }} ({{ p.start_date.strftime('%Y') }})
+          </option>
+          {% endfor %}
+        </select>
+        <button type="button" class="btn btn-sm btn-primary"
+                onclick="window.location.href=document.getElementById('period-select').value"
+                aria-label="Go to selected period">
+          Go
+        </button>
+      </div>
     </div>
 
     {% if breakdown.is_third_paycheck %}

@@ -34,8 +34,7 @@ def generate():
     """Generate pay periods from the submitted form data."""
     errors = _generate_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("pay_periods.generate_form"))
+        return render_template("pay_periods/generate.html", errors=errors), 422
 
     data = _generate_schema.load(request.form)
 

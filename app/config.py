@@ -18,7 +18,7 @@ class BaseConfig:
     """Shared configuration defaults across all environments."""
 
     # Flask core
-    SECRET_KEY = os.getenv("SECRET_KEY", "a63702064d109ba057be77ae58d1c0d381af1b890d667066af002b5a19d89f2e")
+    SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me-in-production")
 
     # SQLAlchemy
     SQLALCHEMY_TRACK_MODIFICATIONS = False
@@ -37,20 +37,14 @@ class DevConfig(BaseConfig):
     """Development configuration — debug mode, local PostgreSQL."""
 
     DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "DATABASE_URL",
-        "postgresql://josh:Tit4nnc4twaiCJ@localhost:5432/shekel",
-    )
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
 
 
 class TestConfig(BaseConfig):
     """Test configuration — separate database, no CSRF, WTF disabled."""
 
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "TEST_DATABASE_URL",
-        "postgresql://josh:Tit4nnc4twaiCJ@localhost:5432/shekel_test",
-    )
+    SQLALCHEMY_DATABASE_URI = os.getenv("TEST_DATABASE_URL")
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = False
 
@@ -63,7 +57,7 @@ class ProdConfig(BaseConfig):
 
     def __init__(self):
         """Validate production-critical settings on instantiation."""
-        if self.SECRET_KEY == "change-me":
+        if not self.SECRET_KEY or self.SECRET_KEY.startswith("dev-only"):
             raise ValueError(
                 "SECRET_KEY must be set to a secure random value in production."
             )

@@ -68,7 +68,8 @@
         {% if p.is_active %}
         <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
               class="d-inline"
-              onsubmit="return confirm('Deactivate this salary profile?')">
+              data-confirm="Deactivate this salary profile?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
             <i class="bi bi-x-circle"></i>
           </button>

@@ -1,0 +1,128 @@
+{# Reusable form field macros with built-in validation error display.
+
+   Usage:
+     {% from "_form_macros.html" import render_field, render_select, render_input_group %}
+
+   All macros accept an optional `errors` dict (field_name → [error_messages]).
+   Pass it from the route when Marshmallow validation fails:
+     return render_template("myform.html", errors=schema_errors)
+#}
+
+
+{# --- Text / Number / Date Input --- #}
+{% macro render_field(name, label, type="text", value="", required=false, placeholder="",
+                      help_text="", errors=none, input_attrs="", classes="") %}
+{% set field_errors = errors.get(name, []) if errors else [] %}
+{% set err_id = name ~ "-error" if field_errors else "" %}
+{% set help_id = name ~ "-help" if help_text else "" %}
+{% set described_by = ((err_id ~ " " ~ help_id) if err_id and help_id else (err_id or help_id))|trim %}
+<div class="mb-3 {{ classes }}">
+  <label for="{{ name }}" class="form-label">{{ label }}</label>
+  <input type="{{ type }}" id="{{ name }}" name="{{ name }}"
+         class="form-control {{ 'is-invalid' if field_errors else '' }}"
+         value="{{ value }}"
+         {{ 'required' if required else '' }}
+         {{ ('placeholder="' ~ placeholder ~ '"') if placeholder else '' }}
+         {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
+         {{ ('aria-invalid="true"') if field_errors else '' }}
+         {{ input_attrs }}>
+  {% if field_errors %}
+  <div id="{{ err_id }}" class="invalid-feedback" role="alert">
+    {{ field_errors|join('. ') }}
+  </div>
+  {% endif %}
+  {% if help_text %}
+  <div id="{{ help_id }}" class="form-text">{{ help_text }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# --- Select Dropdown --- #}
+{% macro render_select(name, label, options, selected_value="", required=false,
+                       help_text="", errors=none, classes="") %}
+{% set field_errors = errors.get(name, []) if errors else [] %}
+{% set err_id = name ~ "-error" if field_errors else "" %}
+{% set help_id = name ~ "-help" if help_text else "" %}
+{% set described_by = ((err_id ~ " " ~ help_id) if err_id and help_id else (err_id or help_id))|trim %}
+<div class="mb-3 {{ classes }}">
+  <label for="{{ name }}" class="form-label">{{ label }}</label>
+  <select id="{{ name }}" name="{{ name }}"
+          class="form-select {{ 'is-invalid' if field_errors else '' }}"
+          {{ 'required' if required else '' }}
+          {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
+          {{ ('aria-invalid="true"') if field_errors else '' }}>
+    {% for opt_value, opt_label in options %}
+    <option value="{{ opt_value }}"
+            {{ 'selected' if opt_value|string == selected_value|string else '' }}>
+      {{ opt_label }}
+    </option>
+    {% endfor %}
+  </select>
+  {% if field_errors %}
+  <div id="{{ err_id }}" class="invalid-feedback" role="alert">
+    {{ field_errors|join('. ') }}
+  </div>
+  {% endif %}
+  {% if help_text %}
+  <div id="{{ help_id }}" class="form-text">{{ help_text }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# --- Input Group (with prefix/suffix like $ or %) --- #}
+{% macro render_input_group(name, label, type="number", value="", prefix="", suffix="",
+                            required=false, placeholder="", help_text="", errors=none,
+                            step="", classes="", input_attrs="") %}
+{% set field_errors = errors.get(name, []) if errors else [] %}
+{% set err_id = name ~ "-error" if field_errors else "" %}
+{% set help_id = name ~ "-help" if help_text else "" %}
+{% set described_by = ((err_id ~ " " ~ help_id) if err_id and help_id else (err_id or help_id))|trim %}
+<div class="mb-3 {{ classes }}">
+  <label for="{{ name }}" class="form-label">{{ label }}</label>
+  <div class="input-group {{ 'has-validation' if field_errors else '' }}">
+    {% if prefix %}
+    <span class="input-group-text">{{ prefix }}</span>
+    {% endif %}
+    <input type="{{ type }}" id="{{ name }}" name="{{ name }}"
+           class="form-control {{ 'is-invalid' if field_errors else '' }}"
+           value="{{ value }}"
+           {{ 'required' if required else '' }}
+           {{ ('placeholder="' ~ placeholder ~ '"') if placeholder else '' }}
+           {{ ('step="' ~ step ~ '"') if step else '' }}
+           {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
+           {{ ('aria-invalid="true"') if field_errors else '' }}
+           {{ input_attrs }}>
+    {% if suffix %}
+    <span class="input-group-text">{{ suffix }}</span>
+    {% endif %}
+    {% if field_errors %}
+    <div id="{{ err_id }}" class="invalid-feedback" role="alert">
+      {{ field_errors|join('. ') }}
+    </div>
+    {% endif %}
+  </div>
+  {% if help_text %}
+  <div id="{{ help_id }}" class="form-text">{{ help_text }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# --- Inline Error Summary (for forms that don't use per-field macros) --- #}
+{% macro render_errors(errors) %}
+{% if errors %}
+<div class="alert alert-danger py-2" role="alert">
+  <i class="bi bi-exclamation-triangle"></i>
+  <strong>Please fix the following errors:</strong>
+  <ul class="mb-0 mt-1">
+    {% for field, messages in errors.items() %}
+      {% for msg in messages %}
+      <li>{{ field|replace('_', ' ')|title }}: {{ msg }}</li>
+      {% endfor %}
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endmacro %}

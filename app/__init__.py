@@ -12,7 +12,7 @@ import os
 from flask import Flask, render_template
 
 from app.config import CONFIG_MAP
-from app.extensions import db, login_manager, migrate
+from app.extensions import csrf, db, login_manager, migrate
 
 
 def create_app(config_name=None):
@@ -43,6 +43,7 @@ def create_app(config_name=None):
     db.init_app(app)
     migrate.init_app(app, db)
     login_manager.init_app(app)
+    csrf.init_app(app)
 
     # Flask-Login user loader callback.
     from app.models.user import User  # pylint: disable=import-outside-toplevel

@@ -9,6 +9,7 @@ imports: models can import `db` from here without importing the app.
 from flask_login import LoginManager
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
+from flask_wtf.csrf import CSRFProtect
 
 # Database ORM
 db = SQLAlchemy()
@@ -20,3 +21,6 @@ migrate = Migrate()
 login_manager = LoginManager()
 login_manager.login_view = "auth.login"  # Redirect target for @login_required
 login_manager.login_message_category = "warning"
+
+# CSRF protection
+csrf = CSRFProtect()

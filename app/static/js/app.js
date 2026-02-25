@@ -50,9 +50,12 @@ if (addModal) {
   });
 }
 
-// Configure HTMX to include CSRF token if we add it later.
+// Inject CSRF token into all HTMX requests.
 document.body.addEventListener("htmx:configRequest", function(event) {
-  // Future: event.detail.headers["X-CSRFToken"] = getCsrfToken();
+  var token = document.querySelector('meta[name="csrf-token"]');
+  if (token) {
+    event.detail.headers["X-CSRFToken"] = token.getAttribute("content");
+  }
 });
 
 // Show a brief loading indicator during HTMX requests.
@@ -85,6 +88,51 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
   // Close the full-edit popover if the swap target is outside it.
   if (typeof activePopover !== 'undefined' && activePopover && !activePopover.contains(el)) {
     closeFullEdit();
+  }
+});
+
+// --- Confirmation Modal (replaces browser confirm()) ---
+// Forms with data-confirm="message" show a Bootstrap modal instead of confirm().
+(function() {
+  var pendingForm = null;
+
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    var message = form.getAttribute('data-confirm');
+    if (!message) return;
+
+    e.preventDefault();
+    pendingForm = form;
+
+    var modal = document.getElementById('confirmModal');
+    if (!modal) { if (confirm(message)) form.submit(); return; }
+
+    document.getElementById('confirmModalBody').textContent = message;
+    new bootstrap.Modal(modal).show();
+  });
+
+  document.addEventListener('click', function(e) {
+    if (e.target.id === 'confirmModalYes' && pendingForm) {
+      bootstrap.Modal.getInstance(document.getElementById('confirmModal')).hide();
+      // Remove the data-confirm to avoid re-triggering on submit.
+      pendingForm.removeAttribute('data-confirm');
+      pendingForm.submit();
+      pendingForm = null;
+    }
+  });
+})();
+
+// --- Keyboard Help Modal (? key) ---
+document.addEventListener('keydown', function(e) {
+  if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+    var tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (document.querySelector('.modal.show')) return;
+    var modal = document.getElementById('keyboardHelpModal');
+    if (modal) {
+      e.preventDefault();
+      new bootstrap.Modal(modal).show();
+    }
   }
 });
 

@@ -28,6 +28,7 @@
 
     <form method="POST"
           action="{{ url_for('templates.update_template', template_id=template.id) if template else url_for('templates.create_template') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {# Basic fields #}
       <div class="mb-3">
         <label for="name" class="form-label">Name</label>

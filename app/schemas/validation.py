@@ -5,10 +5,17 @@ Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
 """
 
-from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError
+from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
 
 
-class TransactionUpdateSchema(Schema):
+class BaseSchema(Schema):
+    """Base schema that strips CSRF tokens from form submissions."""
+
+    class Meta:
+        unknown = EXCLUDE
+
+
+class TransactionUpdateSchema(BaseSchema):
     """Validates PATCH data for updating a transaction."""
 
     name = fields.String(validate=validate.Length(min=1, max=200))
@@ -20,7 +27,7 @@ class TransactionUpdateSchema(Schema):
     notes = fields.String(allow_none=True)
 
 
-class TransactionCreateSchema(Schema):
+class TransactionCreateSchema(BaseSchema):
     """Validates POST data for creating an ad-hoc transaction."""
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
@@ -34,7 +41,7 @@ class TransactionCreateSchema(Schema):
     notes = fields.String(allow_none=True)
 
 
-class InlineTransactionCreateSchema(Schema):
+class InlineTransactionCreateSchema(BaseSchema):
     """Validates POST data for inline transaction creation from the grid.
 
     Unlike TransactionCreateSchema, the name field is auto-derived from
@@ -56,7 +63,7 @@ class InlineTransactionCreateSchema(Schema):
         return {k: v for k, v in data.items() if v != ""}
 
 
-class TemplateCreateSchema(Schema):
+class TemplateCreateSchema(BaseSchema):
     """Validates POST data for creating a transaction template."""
 
     @pre_load
@@ -108,13 +115,13 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     effective_from = fields.Date()
 
 
-class AnchorUpdateSchema(Schema):
+class AnchorUpdateSchema(BaseSchema):
     """Validates PATCH data for updating the account anchor balance."""
 
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
 
 
-class PayPeriodGenerateSchema(Schema):
+class PayPeriodGenerateSchema(BaseSchema):
     """Validates POST data for generating pay periods."""
 
     start_date = fields.Date(required=True)
@@ -126,7 +133,7 @@ class PayPeriodGenerateSchema(Schema):
     )
 
 
-class CategoryCreateSchema(Schema):
+class CategoryCreateSchema(BaseSchema):
     """Validates POST data for creating a category."""
 
     group_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
@@ -137,7 +144,7 @@ class CategoryCreateSchema(Schema):
 # ── Salary / Paycheck Schemas (Phase 2) ───────────────────────────
 
 
-class SalaryProfileCreateSchema(Schema):
+class SalaryProfileCreateSchema(BaseSchema):
     """Validates POST data for creating a salary profile."""
 
     @pre_load
@@ -172,7 +179,7 @@ class SalaryProfileCreateSchema(Schema):
     )
 
 
-class SalaryProfileUpdateSchema(Schema):
+class SalaryProfileUpdateSchema(BaseSchema):
     """Validates POST data for updating a salary profile."""
 
     @pre_load
@@ -195,7 +202,7 @@ class SalaryProfileUpdateSchema(Schema):
     extra_withholding = fields.Decimal(places=2, as_string=True)
 
 
-class RaiseCreateSchema(Schema):
+class RaiseCreateSchema(BaseSchema):
     """Validates POST data for adding a salary raise."""
 
     @pre_load
@@ -222,7 +229,7 @@ class RaiseCreateSchema(Schema):
             )
 
 
-class DeductionCreateSchema(Schema):
+class DeductionCreateSchema(BaseSchema):
     """Validates POST data for adding a paycheck deduction."""
 
     @pre_load
@@ -244,7 +251,7 @@ class DeductionCreateSchema(Schema):
     )
 
 
-class TaxBracketSetSchema(Schema):
+class TaxBracketSetSchema(BaseSchema):
     """Validates POST data for updating a tax bracket set."""
 
     @pre_load
@@ -262,7 +269,7 @@ class TaxBracketSetSchema(Schema):
     )
 
 
-class FicaConfigSchema(Schema):
+class FicaConfigSchema(BaseSchema):
     """Validates POST data for updating FICA configuration."""
 
     @pre_load
