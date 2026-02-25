@@ -19,29 +19,28 @@ from app.exceptions import NotFoundError, ValidationError
 class TestCreditWorkflow:
     """Tests for the credit card status + auto-payback mechanism."""
 
-    def _create_expense(self, app, seed_user, seed_periods, amount="100.00"):
+    def _create_expense(self, seed_user, seed_periods, amount="100.00"):
         """Helper: create a projected expense in the first period."""
-        with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        projected = db.session.query(Status).filter_by(name="projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
-            txn = Transaction(
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
-                name="Test Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                estimated_amount=Decimal(amount),
-            )
-            db.session.add(txn)
-            db.session.flush()
-            return txn
+        txn = Transaction(
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=projected.id,
+            name="Test Expense",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal(amount),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
 
     def test_mark_as_credit_creates_payback(self, app, db, seed_user, seed_periods):
         """Marking an expense as credit creates a payback in the next period."""
         with app.app_context():
-            txn = self._create_expense(app, seed_user, seed_periods)
+            txn = self._create_expense(seed_user, seed_periods)
 
             payback = credit_workflow.mark_as_credit(txn.id)
             db.session.flush()
@@ -58,7 +57,7 @@ class TestCreditWorkflow:
     def test_unmark_credit_deletes_payback(self, app, db, seed_user, seed_periods):
         """Reverting credit status deletes the auto-generated payback."""
         with app.app_context():
-            txn = self._create_expense(app, seed_user, seed_periods)
+            txn = self._create_expense(seed_user, seed_periods)
             payback = credit_workflow.mark_as_credit(txn.id)
             db.session.flush()
             payback_id = payback.id

@@ -19,52 +19,51 @@ from app.services import recurrence_engine
 class TestRecurrenceGeneration:
     """Tests for generate_for_template()."""
 
-    def _make_template_with_rule(self, app, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a template + recurrence rule."""
-        with app.app_context():
-            pattern = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name=pattern_name)
-                .one()
-            )
-            expense_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="expense")
-                .one()
-            )
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="expense")
+            .one()
+        )
 
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=pattern.id,
-                interval_n=rule_kwargs.get("interval_n", 1),
-                offset_periods=rule_kwargs.get("offset_periods", 0),
-                day_of_month=rule_kwargs.get("day_of_month"),
-                month_of_year=rule_kwargs.get("month_of_year"),
-            )
-            db.session.add(rule)
-            db.session.flush()
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+        )
+        db.session.add(rule)
+        db.session.flush()
 
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Car Payment"].id,
-                recurrence_rule_id=rule.id,
-                transaction_type_id=expense_type.id,
-                name="Test Recurring",
-                default_amount=Decimal("100.00"),
-            )
-            db.session.add(template)
-            db.session.flush()
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Test Recurring",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
 
-            # Load the relationships for the recurrence engine.
-            db.session.refresh(template)
-            return template
+        # Load the relationships for the recurrence engine.
+        db.session.refresh(template)
+        return template
 
     def test_every_period_generates_for_all(self, app, db, seed_user, seed_periods):
         """every_period creates a transaction in every pay period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "every_period"
+                seed_user, "every_period"
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -79,7 +78,7 @@ class TestRecurrenceGeneration:
         """every_n_periods with n=2, offset=1 generates every other period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "every_n_periods",
+                seed_user, "every_n_periods",
                 interval_n=2, offset_periods=1,
             )
             created = recurrence_engine.generate_for_template(
@@ -99,7 +98,7 @@ class TestRecurrenceGeneration:
         """'once' pattern does not auto-generate — user places it manually."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "once",
+                seed_user, "once",
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -111,7 +110,7 @@ class TestRecurrenceGeneration:
         """Does not create duplicates for periods that already have entries."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "every_period",
+                seed_user, "every_period",
             )
 
             # First generation.
@@ -131,7 +130,7 @@ class TestRecurrenceGeneration:
         """Overridden entries are not replaced during generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "every_period",
+                seed_user, "every_period",
             )
 
             # Generate entries.
@@ -163,7 +162,7 @@ class TestRecurrenceGeneration:
         """Done/received/credit transactions are immutable to the engine."""
         with app.app_context():
             template = self._make_template_with_rule(
-                app, seed_user, "every_period",
+                seed_user, "every_period",
             )
 
             created = recurrence_engine.generate_for_template(

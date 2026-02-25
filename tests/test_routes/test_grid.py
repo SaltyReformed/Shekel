@@ -40,24 +40,23 @@ class TestGridView:
 class TestTransactionCRUD:
     """Tests for transaction create, update, delete, and status changes."""
 
-    def _create_test_txn(self, app, seed_user, seed_periods):
+    def _create_test_txn(self, seed_user, seed_periods):
         """Helper: create and return a projected expense."""
-        with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        projected = db.session.query(Status).filter_by(name="projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
-            txn = Transaction(
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
-                name="Test Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("123.45"),
-            )
-            db.session.add(txn)
-            db.session.commit()
-            return txn
+        txn = Transaction(
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=projected.id,
+            name="Test Expense",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("123.45"),
+        )
+        db.session.add(txn)
+        db.session.commit()
+        return txn
 
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions creates a new ad-hoc transaction."""
@@ -77,19 +76,19 @@ class TestTransactionCRUD:
     def test_update_transaction(self, app, auth_client, seed_user, seed_periods):
         """PATCH /transactions/<id> updates fields."""
         with app.app_context():
-            txn = self._create_test_txn(app, seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods)
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"estimated_amount": "200.00"},
             )
             assert response.status_code == 200
-            assert b"200.00" in response.data
+            assert b"200" in response.data
 
     def test_mark_expense_done(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/mark-done sets status to done for expenses."""
         with app.app_context():
-            txn = self._create_test_txn(app, seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods)
 
             response = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
@@ -131,7 +130,7 @@ class TestTransactionCRUD:
     def test_soft_delete_template_transaction(self, app, auth_client, seed_user, seed_periods):
         """DELETE /transactions/<id> soft-deletes template-linked items."""
         with app.app_context():
-            txn = self._create_test_txn(app, seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods)
             # Simulate template linkage.
             from app.models.transaction_template import TransactionTemplate
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()

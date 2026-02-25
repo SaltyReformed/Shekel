@@ -113,6 +113,7 @@ def unmark_credit(transaction_id):
 
     # Revert the original transaction's status.
     txn.status_id = projected_status.id
+    txn.status = projected_status
 
     # Delete the auto-generated payback transaction.
     payback = (

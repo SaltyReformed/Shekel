@@ -125,64 +125,63 @@ def seed_user(app, db):
     Returns:
         dict with keys: user, settings, account, scenario, categories.
     """
-    with app.app_context():
-        user = User(
-            email="test@shekel.local",
-            password_hash=hash_password("testpass"),
-            display_name="Test User",
-        )
-        db.session.add(user)
-        db.session.flush()
+    user = User(
+        email="test@shekel.local",
+        password_hash=hash_password("testpass"),
+        display_name="Test User",
+    )
+    db.session.add(user)
+    db.session.flush()
 
-        settings = UserSettings(user_id=user.id)
-        db.session.add(settings)
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
 
-        checking_type = (
-            db.session.query(AccountType).filter_by(name="checking").one()
-        )
-        account = Account(
+    checking_type = (
+        db.session.query(AccountType).filter_by(name="checking").one()
+    )
+    account = Account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Checking",
+        current_anchor_balance=Decimal("1000.00"),
+    )
+    db.session.add(account)
+
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.flush()
+
+    # Create default categories.
+    categories = []
+    for group, item in [
+        ("Income", "Salary"),
+        ("Home", "Rent"),
+        ("Auto", "Car Payment"),
+        ("Family", "Groceries"),
+        ("Credit Card", "Payback"),
+    ]:
+        cat = Category(
             user_id=user.id,
-            account_type_id=checking_type.id,
-            name="Checking",
-            current_anchor_balance=Decimal("1000.00"),
+            group_name=group,
+            item_name=item,
         )
-        db.session.add(account)
+        db.session.add(cat)
+        categories.append(cat)
+    db.session.flush()
 
-        scenario = Scenario(
-            user_id=user.id,
-            name="Baseline",
-            is_baseline=True,
-        )
-        db.session.add(scenario)
-        db.session.flush()
+    db.session.commit()
 
-        # Create default categories.
-        categories = []
-        for group, item in [
-            ("Income", "Salary"),
-            ("Home", "Rent"),
-            ("Auto", "Car Payment"),
-            ("Family", "Groceries"),
-            ("Credit Card", "Payback"),
-        ]:
-            cat = Category(
-                user_id=user.id,
-                group_name=group,
-                item_name=item,
-            )
-            db.session.add(cat)
-            categories.append(cat)
-        db.session.flush()
-
-        db.session.commit()
-
-        return {
-            "user": user,
-            "settings": settings,
-            "account": account,
-            "scenario": scenario,
-            "categories": {c.item_name: c for c in categories},
-        }
+    return {
+        "user": user,
+        "settings": settings,
+        "account": account,
+        "scenario": scenario,
+        "categories": {c.item_name: c for c in categories},
+    }
 
 
 @pytest.fixture()
@@ -196,21 +195,20 @@ def seed_periods(app, db, seed_user):
     """
     from app.services import pay_period_service
 
-    with app.app_context():
-        periods = pay_period_service.generate_pay_periods(
-            user_id=seed_user["user"].id,
-            start_date=date(2026, 1, 2),
-            num_periods=10,
-            cadence_days=14,
-        )
-        db.session.flush()
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_user["user"].id,
+        start_date=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.flush()
 
-        # Set the anchor period.
-        account = seed_user["account"]
-        account.current_anchor_period_id = periods[0].id
-        db.session.commit()
+    # Set the anchor period.
+    account = seed_user["account"]
+    account.current_anchor_period_id = periods[0].id
+    db.session.commit()
 
-        return periods
+    return periods
 
 
 @pytest.fixture()
@@ -219,11 +217,10 @@ def auth_client(app, db, client, seed_user):
 
     Logs in via the login form to get a proper session.
     """
-    with app.app_context():
-        client.post("/login", data={
-            "email": "test@shekel.local",
-            "password": "testpass",
-        })
+    client.post("/login", data={
+        "email": "test@shekel.local",
+        "password": "testpass",
+    })
     return client
 
 
