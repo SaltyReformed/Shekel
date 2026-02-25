@@ -24,6 +24,10 @@
             {{ bs.tax_year }} — {{ bs.filing_status.name|replace('_', ' ')|title }}
             <small class="text-muted">(Std. Deduction: ${{ "%.2f"|format(bs.standard_deduction|float) }})</small>
           </h6>
+          <div class="mb-2 small">
+            <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount|float) }}
+            <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount|float) }}
+          </div>
           <table class="table table-sm table-bordered mb-2" style="max-width: 500px;">
             <thead>
               <tr>

@@ -226,6 +226,11 @@ def create_profile():
         annual_salary=data["annual_salary"],
         state_code=data["state_code"],
         pay_periods_per_year=data.get("pay_periods_per_year", 26),
+        qualifying_children=data.get("qualifying_children", 0),
+        other_dependents=data.get("other_dependents", 0),
+        additional_income=data.get("additional_income", 0),
+        additional_deductions=data.get("additional_deductions", 0),
+        extra_withholding=data.get("extra_withholding", 0),
     )
     db.session.add(profile)
     db.session.flush()

@@ -68,12 +68,79 @@
                      placeholder="NC">
             </div>
           </div>
-
-          <button type="submit" class="btn btn-primary">
-            <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
-          </button>
-          <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
         </div>
+      </div>
+
+      {# ── W-4 Withholding Settings ── #}
+      <div class="card mb-3">
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-file-earmark-text"></i> W-4 Withholding Settings</h6>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">
+            These fields mirror your IRS Form W-4 and adjust federal tax withholding.
+            Leave at zero if you use the standard withholding.
+          </p>
+
+          {# Step 3 — Dependents #}
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="qualifying_children" class="form-label">Qualifying Children (under 17)</label>
+              <input type="number" min="0" id="qualifying_children" name="qualifying_children"
+                     class="form-control"
+                     value="{{ profile.qualifying_children if profile else 0 }}">
+              <div class="form-text">W-4 Step 3 — $2,000 credit each</div>
+            </div>
+            <div class="col-md-6">
+              <label for="other_dependents" class="form-label">Other Dependents</label>
+              <input type="number" min="0" id="other_dependents" name="other_dependents"
+                     class="form-control"
+                     value="{{ profile.other_dependents if profile else 0 }}">
+              <div class="form-text">W-4 Step 3 — $500 credit each</div>
+            </div>
+          </div>
+
+          {# Step 4 — Other Adjustments #}
+          <div class="row mb-3">
+            <div class="col-md-4">
+              <label for="additional_income" class="form-label">Other Annual Income</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="additional_income" name="additional_income"
+                       class="form-control"
+                       value="{{ profile.additional_income if profile else 0 }}">
+              </div>
+              <div class="form-text">W-4 Step 4(a)</div>
+            </div>
+            <div class="col-md-4">
+              <label for="additional_deductions" class="form-label">Additional Deductions</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="additional_deductions" name="additional_deductions"
+                       class="form-control"
+                       value="{{ profile.additional_deductions if profile else 0 }}">
+              </div>
+              <div class="form-text">W-4 Step 4(b)</div>
+            </div>
+            <div class="col-md-4">
+              <label for="extra_withholding" class="form-label">Extra Withholding / Period</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="extra_withholding" name="extra_withholding"
+                       class="form-control"
+                       value="{{ profile.extra_withholding if profile else 0 }}">
+              </div>
+              <div class="form-text">W-4 Step 4(c)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
+        </button>
+        <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
       </div>
     </form>
 
