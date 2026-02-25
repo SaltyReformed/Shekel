@@ -7,8 +7,8 @@
   <div class="d-flex align-items-center gap-3">
     <div>
       <h5 class="mb-0">Checking Balance</h5>
-      {% if account and account.anchor_period %}
-      <small class="text-muted" id="anchor-as-of">as of {{ account.anchor_period.start_date.strftime('%b %-d, %Y') }}</small>
+      {% if account and account.updated_at %}
+      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at.strftime('%b %-d, %Y') }}</small>
       {% endif %}
     </div>
     {% if account %}
@@ -28,7 +28,7 @@
 
     {# Quick-select buttons #}
     {% set range_options = [
-      ("3P", 3), ("6P", 6), ("13P", 13), ("6M", 26), ("1Y", 52), ("2Y", 104)
+      ("3P", 3), ("6P", 6), ("13P", 13), ("6M", 13), ("1Y", 26), ("2Y", 52)
     ] %}
     <div class="btn-group period-btn-group">
     {% for label, count in range_options %}

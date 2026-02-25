@@ -52,7 +52,7 @@
           <select id="transaction_type_id" name="transaction_type_id" class="form-select" required>
             {% for tt in txn_types %}
             <option value="{{ tt.id }}"
-              {{ 'selected' if template and template.transaction_type_id == tt.id else '' }}>
+              {{ 'selected' if (template and template.transaction_type_id == tt.id) or (not template and tt.name == 'expense') else '' }}>
               {{ tt.name|capitalize }}
             </option>
             {% endfor %}

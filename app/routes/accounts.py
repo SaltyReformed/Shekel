@@ -60,6 +60,7 @@ def true_up(account_id):
     )
     db.session.add(history)
     db.session.commit()
+    db.session.refresh(account)
 
     logger.info(
         "True-up: account %d set to $%s at period %d",
@@ -74,7 +75,7 @@ def true_up(account_id):
     )
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {current_period.start_date.strftime("%b %-d, %Y")}'
+        f'as of {account.updated_at.strftime("%b %-d, %Y")}'
         f'</small>'
     )
     return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
