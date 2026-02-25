@@ -12,7 +12,7 @@ import os
 from flask import Flask, render_template
 
 from app.config import CONFIG_MAP
-from app.extensions import csrf, db, login_manager, migrate
+from app.extensions import csrf, db, limiter, login_manager, migrate
 
 
 def create_app(config_name=None):
@@ -44,6 +44,7 @@ def create_app(config_name=None):
     migrate.init_app(app, db)
     login_manager.init_app(app)
     csrf.init_app(app)
+    limiter.init_app(app)
 
     # Flask-Login user loader callback.
     from app.models.user import User  # pylint: disable=import-outside-toplevel
@@ -58,6 +59,9 @@ def create_app(config_name=None):
 
     # --- Error Handlers ---------------------------------------------------
     _register_error_handlers(app)
+
+    # --- Security Headers -------------------------------------------------
+    _register_security_headers(app)
 
     # --- Create schemas (development convenience) ------------------------
     # In production, schemas are managed by Alembic migrations.
@@ -109,9 +113,35 @@ def _register_error_handlers(app):
     def page_not_found(e):
         return render_template("errors/404.html"), 404
 
+    @app.errorhandler(429)
+    def rate_limit_exceeded(e):
+        return render_template("errors/429.html"), 429
+
     @app.errorhandler(500)
     def internal_server_error(e):
         return render_template("errors/500.html"), 500
+
+
+def _register_security_headers(app):
+    """Add security headers to every response."""
+
+    @app.after_request
+    def set_security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'"
+        )
+        return response
 
 
 def _ensure_schemas():

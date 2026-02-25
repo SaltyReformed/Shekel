@@ -10,6 +10,7 @@ import logging
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
+from app.extensions import limiter
 from app.services import auth_service
 from app.exceptions import AuthError
 
@@ -19,6 +20,7 @@ auth_bp = Blueprint("auth", __name__)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
+@limiter.limit("5 per 15 minutes", methods=["POST"])
 def login():
     """Display the login form and handle authentication."""
     # Already logged in — go to the grid.

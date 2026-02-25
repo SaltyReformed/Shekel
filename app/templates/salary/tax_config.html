@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Tax Configuration — Shekel{% endblock %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Tax Configuration</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-lg-10">

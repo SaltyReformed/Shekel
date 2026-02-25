@@ -58,18 +58,18 @@ document.body.addEventListener("htmx:configRequest", function(event) {
   }
 });
 
-// Show a brief loading indicator during HTMX requests.
+// Show a loading spinner during HTMX requests (class-based).
 document.body.addEventListener("htmx:beforeRequest", function(event) {
   const target = event.detail.elt;
   if (target && target.closest && target.closest("td")) {
-    target.closest("td").style.opacity = "0.6";
+    target.closest("td").classList.add("htmx-loading");
   }
 });
 
 document.body.addEventListener("htmx:afterRequest", function(event) {
   const target = event.detail.elt;
   if (target && target.closest && target.closest("td")) {
-    target.closest("td").style.opacity = "1";
+    target.closest("td").classList.remove("htmx-loading");
   }
 });
 
@@ -347,3 +347,32 @@ document.addEventListener('keydown', function(e) {
     }
   });
 })();
+
+// --- Toast Notifications ---
+// Initialize Bootstrap toasts on page load.
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.toast').forEach(function(el) {
+    new bootstrap.Toast(el).show();
+  });
+});
+
+// --- Welcome Banner ---
+// Dismiss the onboarding banner and persist in localStorage.
+document.addEventListener('DOMContentLoaded', function() {
+  var banner = document.getElementById('welcome-banner');
+  if (!banner) return;
+
+  if (localStorage.getItem('shekel-welcome-dismissed')) {
+    banner.remove();
+    return;
+  }
+  banner.classList.remove('d-none');
+
+  var closeBtn = document.getElementById('welcome-dismiss');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', function() {
+      localStorage.setItem('shekel-welcome-dismissed', '1');
+      banner.remove();
+    });
+  }
+});

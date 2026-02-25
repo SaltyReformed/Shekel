@@ -7,6 +7,15 @@
   9: 'September', 10: 'October', 11: 'November', 12: 'December',
 } %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Profile' if profile else 'New Profile' }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-lg-8">

@@ -18,6 +18,15 @@
   9: 'September', 10: 'October', 11: 'November', 12: 'December',
 } %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('templates.list_templates') }}">Templates</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Template' if template else 'New Template' }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">

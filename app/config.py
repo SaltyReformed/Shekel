@@ -47,6 +47,7 @@ class TestConfig(BaseConfig):
     SQLALCHEMY_DATABASE_URI = os.getenv("TEST_DATABASE_URL")
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = False
+    RATELIMIT_ENABLED = False
 
 
 class ProdConfig(BaseConfig):
