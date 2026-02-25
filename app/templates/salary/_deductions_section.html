@@ -1,0 +1,151 @@
+<div class="card mb-3" id="deductions-section">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-dash-circle"></i> Deductions</h6>
+    <button class="btn btn-sm btn-outline-primary" type="button"
+            onclick="let f=document.getElementById('add-deduction-form'); f.classList.toggle('show');">
+      <i class="bi bi-plus"></i> Add Deduction
+    </button>
+  </div>
+  <div class="card-body">
+    {% if profile.deductions %}
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Timing</th>
+          <th>Method</th>
+          <th class="text-end">Amount</th>
+          <th>Per Year</th>
+          <th class="text-end">Cap</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in profile.deductions %}
+        <tr>
+          <td>{{ d.name }}</td>
+          <td>
+            <span class="badge {{ 'bg-info' if d.deduction_timing.name == 'pre_tax' else 'bg-secondary' }}">
+              {{ d.deduction_timing.name|replace('_', '-') }}
+            </span>
+          </td>
+          <td>{{ d.calc_method.name|title if d.calc_method else '—' }}</td>
+          <td class="text-end">
+            {% if d.calc_method and d.calc_method.name == 'percentage' %}
+              {{ "%.2f"|format((d.amount * 100)|float) }}%
+            {% else %}
+              ${{ "%.2f"|format(d.amount|float) }}
+            {% endif %}
+          </td>
+          <td>{{ d.deductions_per_year }}</td>
+          <td class="text-end">
+            {{ '$' ~ "%.2f"|format(d.annual_cap|float) if d.annual_cap else '—' }}
+          </td>
+          <td>
+            <form method="POST"
+                  action="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
+                  hx-post="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
+                  hx-target="#deductions-section"
+                  hx-swap="outerHTML">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted mb-0">No deductions configured.</p>
+    {% endif %}
+
+    {# Add deduction form (collapsed) #}
+    <div class="collapse mt-3" id="add-deduction-form">
+      <hr>
+      <form method="POST"
+            action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
+            hx-post="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
+            hx-target="#deductions-section"
+            hx-swap="outerHTML">
+        <div class="row g-2 mb-2">
+          <div class="col-md-4">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control form-control-sm"
+                   required placeholder="e.g. 401(k)">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Timing</label>
+            <select name="deduction_timing_id" class="form-select form-select-sm" required>
+              {% for dt in deduction_timings %}
+              <option value="{{ dt.id }}">{{ dt.name|replace('_', '-')|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Method</label>
+            <select name="calc_method_id" class="form-select form-select-sm" required
+                    onchange="let a=this.closest('form').querySelector('[name=amount]'),
+                              lbl=this.closest('form').querySelector('.amount-label');
+                              if(this.selectedOptions[0].textContent.trim().toLowerCase()==='percentage'){
+                                a.placeholder='e.g. 6 for 6%'; a.step='0.01'; lbl.textContent='Amount (%)';
+                              } else {
+                                a.placeholder='e.g. 500'; a.step='0.01'; lbl.textContent='Amount ($)';
+                              }">
+              {% for cm in calc_methods %}
+              <option value="{{ cm.id }}">{{ cm.name|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label amount-label">Amount</label>
+            <input type="number" step="0.01" name="amount"
+                   class="form-control form-control-sm" required
+                   placeholder="e.g. 500">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Per Year</label>
+            <select name="deductions_per_year" class="form-select form-select-sm">
+              <option value="26">26 (every paycheck)</option>
+              <option value="24">24 (skip 3rd paycheck)</option>
+              <option value="12">12 (monthly)</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-2 align-items-end">
+          <div class="col-md-3">
+            <label class="form-label">Annual Cap</label>
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">$</span>
+              <input type="number" step="0.01" name="annual_cap" class="form-control">
+            </div>
+          </div>
+          <div class="col-md-2">
+            <div class="form-check mt-4">
+              <input type="checkbox" name="inflation_enabled" class="form-check-input"
+                     id="ded-inflation">
+              <label class="form-check-label" for="ded-inflation">
+                <small>Inflation</small>
+              </label>
+            </div>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Inflation %</label>
+            <input type="number" step="0.01" name="inflation_rate"
+                   class="form-control form-control-sm" placeholder="e.g. 3 for 3%">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Inflation Mo.</label>
+            <input type="number" min="1" max="12" name="inflation_effective_month"
+                   class="form-control form-control-sm" placeholder="1-12">
+          </div>
+          <div class="col-md-1">
+            <button type="submit" class="btn btn-sm btn-primary">
+              <i class="bi bi-plus"></i> Add
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

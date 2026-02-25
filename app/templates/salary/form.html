@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if profile else 'New' }} Salary Profile — Shekel{% endblock %}
+
+{% set month_names = {
+  1: 'January', 2: 'February', 3: 'March', 4: 'April',
+  5: 'May', 6: 'June', 7: 'July', 8: 'August',
+  9: 'September', 10: 'October', 11: 'November', 12: 'December',
+} %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <h4>
+      <i class="bi bi-wallet2"></i>
+      {{ 'Edit' if profile else 'New' }} Salary Profile
+    </h4>
+
+    {# ── Profile Fields ── #}
+    <form method="POST"
+          action="{{ url_for('salary.update_profile', profile_id=profile.id) if profile else url_for('salary.create_profile') }}">
+      <div class="card mb-3">
+        <div class="card-body">
+          <div class="mb-3">
+            <label for="name" class="form-label">Profile Name</label>
+            <input type="text" id="name" name="name" class="form-control" required
+                   value="{{ profile.name if profile else '' }}"
+                   placeholder="e.g. Primary Job">
+          </div>
+
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="annual_salary" class="form-label">Annual Salary</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" id="annual_salary" name="annual_salary"
+                       class="form-control" required
+                       value="{{ profile.annual_salary if profile else '' }}">
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label for="pay_periods_per_year" class="form-label">Pay Periods / Year</label>
+              <select id="pay_periods_per_year" name="pay_periods_per_year" class="form-select">
+                <option value="26" {{ 'selected' if not profile or profile.pay_periods_per_year == 26 }}>26 (Biweekly)</option>
+                <option value="24" {{ 'selected' if profile and profile.pay_periods_per_year == 24 }}>24 (Semi-monthly)</option>
+                <option value="52" {{ 'selected' if profile and profile.pay_periods_per_year == 52 }}>52 (Weekly)</option>
+                <option value="12" {{ 'selected' if profile and profile.pay_periods_per_year == 12 }}>12 (Monthly)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="filing_status_id" class="form-label">Filing Status</label>
+              <select id="filing_status_id" name="filing_status_id" class="form-select" required>
+                {% for fs in filing_statuses %}
+                <option value="{{ fs.id }}"
+                  {{ 'selected' if profile and profile.filing_status_id == fs.id }}>
+                  {{ fs.name|replace('_', ' ')|title }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label for="state_code" class="form-label">State</label>
+              <input type="text" id="state_code" name="state_code" class="form-control"
+                     maxlength="2" required style="text-transform: uppercase"
+                     value="{{ profile.state_code if profile else 'NC' }}"
+                     placeholder="NC">
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
+          </button>
+          <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
+        </div>
+      </div>
+    </form>
+
+    {% if profile %}
+    {# ── Raises Section ── #}
+    <div id="raises-section">
+      {% include "salary/_raises_section.html" %}
+    </div>
+
+    {# ── Deductions Section ── #}
+    <div id="deductions-section">
+      {% include "salary/_deductions_section.html" %}
+    </div>
+
+    {# ── Quick Links ── #}
+    <div class="d-flex gap-2 mt-3 mb-4">
+      <a href="{{ url_for('salary.breakdown_current', profile_id=profile.id) }}" class="btn btn-outline-info">
+        <i class="bi bi-receipt"></i> View Breakdown
+      </a>
+      <a href="{{ url_for('salary.projection', profile_id=profile.id) }}" class="btn btn-outline-primary">
+        <i class="bi bi-graph-up"></i> View Projection
+      </a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

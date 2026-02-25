@@ -66,11 +66,18 @@ def true_up(account_id):
         account.id, new_balance, current_period.id,
     )
 
-    return render_template(
+    # Return the updated balance display + OOB swap for the "as of" date.
+    html = render_template(
         "grid/_anchor_edit.html",
         account=account,
         editing=False,
-    ), 200, {"HX-Trigger": "balanceChanged"}
+    )
+    as_of_html = (
+        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
+        f'as of {current_period.start_date.strftime("%b %-d, %Y")}'
+        f'</small>'
+    )
+    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Salary Profiles — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-wallet2"></i> Salary Profiles</h4>
+  <div>
+    <a href="{{ url_for('salary.tax_config') }}" class="btn btn-outline-secondary btn-sm me-1">
+      <i class="bi bi-sliders"></i> Tax Config
+    </a>
+    <a href="{{ url_for('salary.new_profile') }}" class="btn btn-primary btn-sm">
+      <i class="bi bi-plus-circle"></i> New Profile
+    </a>
+  </div>
+</div>
+
+{% if profile_data %}
+<table class="table table-hover table-sm">
+  <thead class="table-light">
+    <tr>
+      <th>Name</th>
+      <th>Filing Status</th>
+      <th>State</th>
+      <th class="text-end">Annual Salary</th>
+      <th class="text-end">Est. Net Biweekly</th>
+      <th>Active</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in profile_data %}
+    {% set p = item.profile %}
+    <tr class="{{ 'text-muted' if not p.is_active }}">
+      <td>{{ p.name }}</td>
+      <td>{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '—' }}</td>
+      <td>{{ p.state_code }}</td>
+      <td class="text-end">${{ "%.2f"|format(p.annual_salary|float) }}</td>
+      <td class="text-end">
+        {% if item.net_pay is not none %}
+          <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay|float) }}</span>
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td>
+        {% if p.is_active %}
+          <i class="bi bi-check-circle text-success"></i>
+        {% else %}
+          <i class="bi bi-x-circle text-muted"></i>
+        {% endif %}
+      </td>
+      <td>
+        <a href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-secondary me-1" title="Edit">
+          <i class="bi bi-pencil"></i>
+        </a>
+        <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-info me-1" title="Breakdown">
+          <i class="bi bi-receipt"></i>
+        </a>
+        <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-primary me-1" title="Projection">
+          <i class="bi bi-graph-up"></i>
+        </a>
+        {% if p.is_active %}
+        <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
+              class="d-inline"
+              onsubmit="return confirm('Deactivate this salary profile?')">
+          <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  No salary profiles yet. Create one to start calculating paychecks.
+</div>
+{% endif %}
+{% endblock %}

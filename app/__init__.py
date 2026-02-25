@@ -85,6 +85,7 @@ def _register_blueprints(app):
     from app.routes.accounts import accounts_bp
     from app.routes.categories import categories_bp
     from app.routes.settings import settings_bp
+    from app.routes.salary import salary_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -94,6 +95,7 @@ def _register_blueprints(app):
     app.register_blueprint(accounts_bp)
     app.register_blueprint(categories_bp)
     app.register_blueprint(settings_bp)
+    app.register_blueprint(salary_bp)
 
 
 def _ensure_schemas():

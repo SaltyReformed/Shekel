@@ -132,3 +132,118 @@ class CategoryCreateSchema(Schema):
     group_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     item_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     sort_order = fields.Integer(load_default=0)
+
+
+# ── Salary / Paycheck Schemas (Phase 2) ───────────────────────────
+
+
+class SalaryProfileCreateSchema(Schema):
+    """Validates POST data for creating a salary profile."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=200))
+    annual_salary = fields.Decimal(required=True, places=2, as_string=True)
+    filing_status_id = fields.Integer(required=True)
+    state_code = fields.String(
+        required=True, validate=validate.Length(min=2, max=2)
+    )
+    pay_periods_per_year = fields.Integer(
+        load_default=26, validate=validate.OneOf([12, 24, 26, 52])
+    )
+
+
+class SalaryProfileUpdateSchema(Schema):
+    """Validates POST data for updating a salary profile."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(validate=validate.Length(min=1, max=200))
+    annual_salary = fields.Decimal(places=2, as_string=True)
+    filing_status_id = fields.Integer()
+    state_code = fields.String(validate=validate.Length(min=2, max=2))
+    pay_periods_per_year = fields.Integer(
+        validate=validate.OneOf([12, 24, 26, 52])
+    )
+
+
+class RaiseCreateSchema(Schema):
+    """Validates POST data for adding a salary raise."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    raise_type_id = fields.Integer(required=True)
+    effective_month = fields.Integer(
+        required=True, validate=validate.Range(min=1, max=12)
+    )
+    effective_year = fields.Integer()
+    percentage = fields.Decimal(places=4, as_string=True)
+    flat_amount = fields.Decimal(places=2, as_string=True)
+    is_recurring = fields.Boolean(load_default=False)
+    notes = fields.String(allow_none=True)
+
+    @validates_schema
+    def validate_one_method(self, data, **kwargs):
+        has_pct = data.get("percentage") is not None
+        has_flat = data.get("flat_amount") is not None
+        if has_pct == has_flat:
+            raise ValidationError(
+                "Specify exactly one of percentage or flat_amount."
+            )
+
+
+class DeductionCreateSchema(Schema):
+    """Validates POST data for adding a paycheck deduction."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=200))
+    deduction_timing_id = fields.Integer(required=True)
+    calc_method_id = fields.Integer(required=True)
+    amount = fields.Decimal(required=True, places=4, as_string=True)
+    deductions_per_year = fields.Integer(
+        load_default=26, validate=validate.OneOf([12, 24, 26])
+    )
+    annual_cap = fields.Decimal(places=2, as_string=True, allow_none=True)
+    inflation_enabled = fields.Boolean(load_default=False)
+    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True)
+    inflation_effective_month = fields.Integer(
+        validate=validate.Range(min=1, max=12), allow_none=True
+    )
+
+
+class TaxBracketSetSchema(Schema):
+    """Validates POST data for updating a tax bracket set."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    filing_status_id = fields.Integer(required=True)
+    tax_year = fields.Integer(required=True)
+    standard_deduction = fields.Decimal(required=True, places=2, as_string=True)
+
+
+class FicaConfigSchema(Schema):
+    """Validates POST data for updating FICA configuration."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    tax_year = fields.Integer(required=True)
+    ss_rate = fields.Decimal(required=True, places=4, as_string=True)
+    ss_wage_base = fields.Decimal(required=True, places=2, as_string=True)
+    medicare_rate = fields.Decimal(required=True, places=4, as_string=True)
+    medicare_surtax_rate = fields.Decimal(required=True, places=4, as_string=True)
+    medicare_surtax_threshold = fields.Decimal(
+        required=True, places=2, as_string=True
+    )

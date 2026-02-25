@@ -30,6 +30,7 @@ from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.exceptions import RecurrenceConflict
+from app.models.salary_profile import SalaryProfile
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # Check for existing transactions to avoid duplicates and respect overrides.
     existing = _get_existing_map(template.id, scenario_id, matching_periods)
 
+    # Check if this template has a linked salary profile for paycheck calculation.
+    salary_profile = _get_salary_profile(template.id)
+
     created = []
     for period in matching_periods:
         existing_txn = existing.get(period.id)
@@ -103,6 +107,11 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             # Auto-generated and unmodified — it already exists, skip.
             continue
 
+        # Determine the amount — use paycheck calculator if salary-linked.
+        amount = _get_transaction_amount(
+            template, salary_profile, period, periods
+        )
+
         # No existing entry — create a new one.
         txn = Transaction(
             template_id=template.id,
@@ -112,7 +121,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             name=template.name,
             category_id=template.category_id,
             transaction_type_id=template.transaction_type_id,
-            estimated_amount=template.default_amount,
+            estimated_amount=amount,
             is_override=False,
             is_deleted=False,
         )
@@ -413,3 +422,73 @@ def _get_existing_map(template_id, scenario_id, periods):
         .all()
     )
     return {txn.pay_period_id: txn for txn in existing}
+
+
+def _get_salary_profile(template_id):
+    """Check if a template has a linked salary profile.
+
+    Returns the SalaryProfile if found, None otherwise.
+    """
+    return (
+        db.session.query(SalaryProfile)
+        .filter_by(template_id=template_id, is_active=True)
+        .first()
+    )
+
+
+def _get_transaction_amount(template, salary_profile, period, all_periods):
+    """Determine the transaction amount, using paycheck calculator if salary-linked."""
+    if salary_profile is None:
+        return template.default_amount
+
+    try:
+        from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
+        from app.models.tax_config import (  # pylint: disable=import-outside-toplevel
+            FicaConfig,
+            StateTaxConfig,
+            TaxBracketSet,
+        )
+
+        user_id = salary_profile.user_id
+        tax_year = period.start_date.year
+
+        bracket_set = (
+            db.session.query(TaxBracketSet)
+            .filter_by(
+                user_id=user_id,
+                filing_status_id=salary_profile.filing_status_id,
+                tax_year=tax_year,
+            )
+            .first()
+        )
+
+        state_config = (
+            db.session.query(StateTaxConfig)
+            .filter_by(user_id=user_id, state_code=salary_profile.state_code)
+            .first()
+        )
+
+        fica_config = (
+            db.session.query(FicaConfig)
+            .filter_by(user_id=user_id, tax_year=tax_year)
+            .first()
+        )
+
+        tax_configs = {
+            "bracket_set": bracket_set,
+            "state_config": state_config,
+            "fica_config": fica_config,
+        }
+
+        breakdown = paycheck_calculator.calculate_paycheck(
+            salary_profile, period, all_periods, tax_configs
+        )
+        return breakdown.net_pay
+
+    except Exception:
+        logger.exception(
+            "Failed to calculate paycheck for salary profile %d, "
+            "falling back to template default_amount",
+            salary_profile.id,
+        )
+        return template.default_amount

@@ -34,3 +34,14 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal
+
+# Salary domain
+from app.models.salary_profile import SalaryProfile
+from app.models.salary_raise import SalaryRaise
+from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.tax_config import (
+    FicaConfig,
+    StateTaxConfig,
+    TaxBracket,
+    TaxBracketSet,
+)

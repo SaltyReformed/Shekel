@@ -1,0 +1,127 @@
+{% set month_names = {
+  1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
+  5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
+  9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec',
+} %}
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-arrow-up-circle"></i> Raises</h6>
+    <button class="btn btn-sm btn-outline-primary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#add-raise-form">
+      <i class="bi bi-plus"></i> Add Raise
+    </button>
+  </div>
+  <div class="card-body">
+    {% if profile.raises %}
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Effective</th>
+          <th>Amount</th>
+          <th>Recurring</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in profile.raises %}
+        <tr>
+          <td>{{ r.raise_type.name|title if r.raise_type else '—' }}</td>
+          <td>
+            {{ month_names.get(r.effective_month, '?') }}
+            {{ r.effective_year if r.effective_year else '(yearly)' }}
+          </td>
+          <td>
+            {% if r.percentage %}
+              {{ "%.2f"|format((r.percentage * 100)|float) }}%
+            {% else %}
+              ${{ "%.2f"|format(r.flat_amount|float) }}
+            {% endif %}
+          </td>
+          <td>
+            {% if r.is_recurring %}
+              <i class="bi bi-arrow-repeat text-info"></i>
+            {% else %}
+              <i class="bi bi-dash text-muted"></i>
+            {% endif %}
+          </td>
+          <td>
+            <form method="POST"
+                  action="{{ url_for('salary.delete_raise', raise_id=r.id) }}"
+                  hx-post="{{ url_for('salary.delete_raise', raise_id=r.id) }}"
+                  hx-target="#raises-section"
+                  hx-swap="outerHTML">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted mb-0">No raises configured.</p>
+    {% endif %}
+
+    {# Add raise form (collapsed) #}
+    <div class="collapse mt-3" id="add-raise-form">
+      <hr>
+      <form method="POST"
+            action="{{ url_for('salary.add_raise', profile_id=profile.id) }}"
+            hx-post="{{ url_for('salary.add_raise', profile_id=profile.id) }}"
+            hx-target="#raises-section"
+            hx-swap="outerHTML">
+        <div class="row g-2 align-items-end">
+          <div class="col-md-2">
+            <label class="form-label">Type</label>
+            <select name="raise_type_id" class="form-select form-select-sm" required>
+              {% for rt in raise_types %}
+              <option value="{{ rt.id }}">{{ rt.name|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Month</label>
+            <select name="effective_month" class="form-select form-select-sm" required>
+              {% for num, name in month_names.items() %}
+              <option value="{{ num }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Year</label>
+            <input type="number" name="effective_year" class="form-control form-control-sm"
+                   placeholder="blank=recurring">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Percentage</label>
+            <input type="number" step="0.0001" name="percentage"
+                   class="form-control form-control-sm" placeholder="e.g. 0.03">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Flat Amount</label>
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">$</span>
+              <input type="number" step="0.01" name="flat_amount" class="form-control">
+            </div>
+          </div>
+          <div class="col-md-1">
+            <div class="form-check mt-4">
+              <input type="checkbox" name="is_recurring" class="form-check-input" id="raise-recurring">
+              <label class="form-check-label" for="raise-recurring">
+                <small>Recur</small>
+              </label>
+            </div>
+          </div>
+          <div class="col-md-1">
+            <button type="submit" class="btn btn-sm btn-primary">
+              <i class="bi bi-plus"></i>
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

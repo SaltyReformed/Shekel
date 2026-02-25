@@ -1,23 +1,80 @@
-{# Balance row partial — returned by the balance-row HTMX endpoint.
-   Replaces the entire <tr> when balanceChanged fires.
+{# Summary rows partial — returned by the balance-row HTMX endpoint.
+   Replaces the entire <tfoot> when balanceChanged fires.
 
-   Expected context: periods, balances, txn_by_period.
+   Expected context: periods, balances, txn_by_period, num_periods, start_offset, low_balance_threshold.
 #}
-<tr class="balance-row-summary fw-bold" id="balance-row"
-    hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
-    hx-trigger="balanceChanged from:body"
-    hx-swap="outerHTML">
-  <td class="sticky-col">
-    <i class="bi bi-bank"></i> Projected End Balance
-  </td>
-  {% for period in periods %}
-    {% set bal = balances.get(period.id) %}
-    <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
-      {% if bal is not none %}
-        ${{ "{:,.0f}".format(bal|int) }}
-      {% else %}
-        —
-      {% endif %}
+<tfoot id="grid-summary"
+       hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
+       hx-trigger="balanceChanged from:body"
+       hx-swap="outerHTML">
+  {# --- Income Totals --- #}
+  <tr class="summary-row fw-bold">
+    <td class="sticky-col">Total Income</td>
+    {% for period in periods %}
+      {% set total = namespace(val=0) %}
+      {% for txn in txn_by_period.get(period.id, []) %}
+        {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+          {% set total.val = total.val + (txn.effective_amount|float) %}
+        {% endif %}
+      {% endfor %}
+      <td class="text-end font-mono">
+        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+
+  {# --- Expense Totals --- #}
+  <tr class="summary-row fw-bold">
+    <td class="sticky-col">Total Expenses</td>
+    {% for period in periods %}
+      {% set total = namespace(val=0) %}
+      {% for txn in txn_by_period.get(period.id, []) %}
+        {% if txn.is_expense and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+          {% set total.val = total.val + (txn.effective_amount|float) %}
+        {% endif %}
+      {% endfor %}
+      <td class="text-end font-mono">
+        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+
+  {# --- Net --- #}
+  <tr class="summary-row fw-bold">
+    <td class="sticky-col">Net (Income − Expenses)</td>
+    {% for period in periods %}
+      {% set inc = namespace(val=0) %}
+      {% set exp = namespace(val=0) %}
+      {% for txn in txn_by_period.get(period.id, []) %}
+        {% if not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+          {% if txn.is_income %}
+            {% set inc.val = inc.val + (txn.effective_amount|float) %}
+          {% elif txn.is_expense %}
+            {% set exp.val = exp.val + (txn.effective_amount|float) %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {% set net = inc.val - exp.val %}
+      <td class="text-end font-mono {{ 'balance-negative' if net < 0 else '' }}">
+        {% if net != 0 %}${{ "{:,.0f}".format(net|int) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+
+  {# --- Projected End Balance --- #}
+  <tr class="balance-row-summary fw-bold">
+    <td class="sticky-col">
+      <i class="bi bi-bank"></i> Projected End Balance
     </td>
-  {% endfor %}
-</tr>
+    {% for period in periods %}
+      {% set bal = balances.get(period.id) %}
+      <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
+        {% if bal is not none %}
+          ${{ "{:,.0f}".format(bal|int) }}
+        {% else %}
+          —
+        {% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+</tfoot>
