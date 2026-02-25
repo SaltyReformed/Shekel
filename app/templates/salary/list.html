@@ -16,15 +16,16 @@
 
 {% if profile_data %}
 <table class="table table-hover table-sm">
+  <caption class="visually-hidden">Salary profiles with estimated net pay</caption>
   <thead class="table-light">
     <tr>
-      <th>Name</th>
-      <th>Filing Status</th>
-      <th>State</th>
-      <th class="text-end">Annual Salary</th>
-      <th class="text-end">Est. Net Biweekly</th>
-      <th>Active</th>
-      <th>Actions</th>
+      <th scope="col">Name</th>
+      <th scope="col">Filing Status</th>
+      <th scope="col">State</th>
+      <th scope="col" class="text-end">Annual Salary</th>
+      <th scope="col" class="text-end">Est. Net Biweekly</th>
+      <th scope="col">Active</th>
+      <th scope="col">Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -44,9 +45,11 @@
       </td>
       <td>
         {% if p.is_active %}
-          <i class="bi bi-check-circle text-success"></i>
+          <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
+          <span class="visually-hidden">Active</span>
         {% else %}
-          <i class="bi bi-x-circle text-muted"></i>
+          <i class="bi bi-x-circle text-muted" aria-hidden="true"></i>
+          <span class="visually-hidden">Inactive</span>
         {% endif %}
       </td>
       <td>

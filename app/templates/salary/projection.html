@@ -14,17 +14,18 @@
 
 <div class="table-responsive">
   <table class="table table-hover table-sm">
+    <caption class="visually-hidden">Salary projection by pay period</caption>
     <thead class="table-light sticky-top">
       <tr>
-        <th>Period</th>
-        <th class="text-end">Annual Salary</th>
-        <th>Raise Event</th>
-        <th class="text-end">Gross Biweekly</th>
-        <th class="text-end">Pre-Tax Ded.</th>
-        <th class="text-end">Taxes</th>
-        <th class="text-end">Post-Tax Ded.</th>
-        <th class="text-end">Net Biweekly</th>
-        <th>3rd</th>
+        <th scope="col">Period</th>
+        <th scope="col" class="text-end">Annual Salary</th>
+        <th scope="col">Raise Event</th>
+        <th scope="col" class="text-end">Gross Biweekly</th>
+        <th scope="col" class="text-end">Pre-Tax Ded.</th>
+        <th scope="col" class="text-end">Taxes</th>
+        <th scope="col" class="text-end">Post-Tax Ded.</th>
+        <th scope="col" class="text-end">Net Biweekly</th>
+        <th scope="col">3rd</th>
       </tr>
     </thead>
     <tbody>
@@ -53,7 +54,7 @@
         <td class="text-end fw-bold text-success">${{ "%.2f"|format(bd.net_pay|float) }}</td>
         <td>
           {% if bd.is_third_paycheck %}
-            <i class="bi bi-star-fill text-warning" title="3rd paycheck"></i>
+            <i class="bi bi-star-fill text-warning" title="3rd paycheck" aria-label="3rd paycheck in month"></i>
           {% endif %}
         </td>
       </tr>

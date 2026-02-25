@@ -9,7 +9,7 @@ to get a fully wired Flask instance.
 import logging
 import os
 
-from flask import Flask
+from flask import Flask, render_template
 
 from app.config import CONFIG_MAP
 from app.extensions import db, login_manager, migrate
@@ -55,6 +55,9 @@ def create_app(config_name=None):
     # --- Blueprints ------------------------------------------------------
     _register_blueprints(app)
 
+    # --- Error Handlers ---------------------------------------------------
+    _register_error_handlers(app)
+
     # --- Create schemas (development convenience) ------------------------
     # In production, schemas are managed by Alembic migrations.
     if config_name in ("development", "testing"):
@@ -96,6 +99,18 @@ def _register_blueprints(app):
     app.register_blueprint(categories_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(salary_bp)
+
+
+def _register_error_handlers(app):
+    """Register custom error pages for common HTTP errors."""
+
+    @app.errorhandler(404)
+    def page_not_found(e):
+        return render_template("errors/404.html"), 404
+
+    @app.errorhandler(500)
+    def internal_server_error(e):
+        return render_template("errors/500.html"), 500
 
 
 def _ensure_schemas():

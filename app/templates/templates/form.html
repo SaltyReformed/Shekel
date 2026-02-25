@@ -132,14 +132,14 @@
         {% if not template %}
         <div class="mb-3 d-none" id="field-start-period">
           <label class="form-label">First paycheck</label>
-          <select name="start_period_id" class="form-select">
+          <select name="start_period_id" class="form-select" aria-describedby="start-period-help">
             {% for p in periods %}
             <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
               {{ p.label }}
             </option>
             {% endfor %}
           </select>
-          <div class="form-text">When should this first appear on the grid?</div>
+          <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
         </div>
         {% endif %}
 
@@ -151,8 +151,9 @@
       {% if template %}
       <div class="mb-3">
         <label for="effective_from" class="form-label">Regenerate effective from</label>
-        <input type="date" id="effective_from" name="effective_from" class="form-control">
-        <div class="form-text">Leave blank to use today's date.</div>
+        <input type="date" id="effective_from" name="effective_from" class="form-control"
+               aria-describedby="effective-from-help">
+        <div id="effective-from-help" class="form-text">Leave blank to use today's date.</div>
       </div>
       {% endif %}
 

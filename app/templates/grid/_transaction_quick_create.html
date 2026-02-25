@@ -23,11 +23,13 @@
          name="estimated_amount"
          placeholder="0.00"
          class="form-control form-control-sm txn-quick-input"
+         aria-label="Transaction amount for {{ category.item_name }}"
          autofocus
          style="min-width: 0; flex: 1;">
   <button type="button"
           class="btn btn-sm btn-link p-0 txn-expand-btn"
           title="More options (F2)"
+          aria-label="More options"
           data-category-id="{{ category.id }}"
           data-period-id="{{ period.id }}"
           data-txn-type-name="{{ txn_type_name }}"

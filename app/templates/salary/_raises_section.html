@@ -41,9 +41,11 @@
           </td>
           <td>
             {% if r.is_recurring %}
-              <i class="bi bi-arrow-repeat text-info"></i>
+              <i class="bi bi-arrow-repeat text-info" aria-hidden="true"></i>
+              <span class="visually-hidden">Recurring</span>
             {% else %}
-              <i class="bi bi-dash text-muted"></i>
+              <i class="bi bi-dash text-muted" aria-hidden="true"></i>
+              <span class="visually-hidden">One-time</span>
             {% endif %}
           </td>
           <td>

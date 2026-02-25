@@ -14,12 +14,14 @@
          name="estimated_amount"
          value="{{ txn.estimated_amount }}"
          class="form-control form-control-sm txn-quick-input"
+         aria-label="Edit amount for {{ txn.name }}"
          autofocus
          onfocus="this.select()"
          style="min-width: 0; flex: 1;">
   <button type="button"
           class="btn btn-sm btn-link p-0 txn-expand-btn"
           title="More options (F2)"
+          aria-label="More options"
           data-txn-id="{{ txn.id }}"
           onclick="event.stopPropagation(); openFullEdit({{ txn.id }}, this);">
     <i class="bi bi-three-dots"></i>

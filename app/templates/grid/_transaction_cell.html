@@ -13,6 +13,8 @@
      hx-target="#txn-cell-{{ t.id }}"
      hx-swap="innerHTML"
      role="button"
+     tabindex="0"
+     aria-label="{{ t.name }}: ${{ '{:,.0f}'.format(t.effective_amount|int) }}{% if t.status %} ({{ t.status.name }}){% endif %}"
      title="{{ t.name }}{% if t.notes %} — {{ t.notes }}{% endif %}">
 
   {# Show crossed-out estimate + actual when they differ #}

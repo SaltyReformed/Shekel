@@ -6,7 +6,9 @@
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
        hx-trigger="balanceChanged from:body"
-       hx-swap="outerHTML">
+       hx-swap="outerHTML"
+       aria-live="polite"
+       aria-atomic="true">
   {# --- Income Totals --- #}
   <tr class="summary-row fw-bold">
     <td class="sticky-col">Total Income</td>
@@ -56,7 +58,10 @@
       {% endfor %}
       {% set net = inc.val - exp.val %}
       <td class="text-end font-mono {{ 'balance-negative' if net < 0 else '' }}">
-        {% if net != 0 %}${{ "{:,.0f}".format(net|int) }}{% endif %}
+        {% if net != 0 %}
+          {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+          ${{ "{:,.0f}".format(net|int) }}
+        {% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -70,6 +75,7 @@
       {% set bal = balances.get(period.id) %}
       <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
+          {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}
           ${{ "{:,.0f}".format(bal|int) }}
         {% else %}
           —

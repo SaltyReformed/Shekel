@@ -22,13 +22,13 @@
   <div class="d-flex align-items-center gap-2">
     {# Left arrow — shift window back #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset - 1) }}"
-       class="btn btn-sm btn-outline-secondary" title="Earlier">
+       class="btn btn-sm btn-outline-secondary" title="Earlier" aria-label="Show earlier periods">
       <i class="bi bi-chevron-left"></i>
     </a>
 
     {# Quick-select buttons #}
     {% set range_options = [
-      ("3P", 3), ("6P", 6), ("13P", 13), ("6M", 13), ("1Y", 26), ("2Y", 52)
+      ("3P", 3), ("6P", 6), ("6M", 13), ("1Y", 26), ("2Y", 52)
     ] %}
     <div class="btn-group period-btn-group">
     {% for label, count in range_options %}
@@ -41,7 +41,7 @@
 
     {# Right arrow — shift window forward #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset + 1) }}"
-       class="btn btn-sm btn-outline-secondary" title="Later">
+       class="btn btn-sm btn-outline-secondary" title="Later" aria-label="Show later periods">
       <i class="bi bi-chevron-right"></i>
     </a>
 
@@ -55,6 +55,7 @@
 {# --- Budget Grid Table --- #}
 <div class="table-responsive grid-wrapper grid-scroll-wrapper" style="position: relative;">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
+    <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
     <thead class="table-dark">
       <tr>
         <th scope="col" class="row-label-col sticky-col">Item</th>
@@ -112,9 +113,9 @@
           {% endif %}
 
           <tr>
-            <td class="sticky-col row-label" title="{{ category.display_name }}">
+            <th scope="row" class="sticky-col row-label" title="{{ category.display_name }}">
               {{ category.item_name }}
-            </td>
+            </th>
             {% for period in periods %}
               {% set period_txns = txn_by_period.get(period.id, []) %}
               {% set matched = [] %}
@@ -176,9 +177,9 @@
           {% endif %}
 
           <tr>
-            <td class="sticky-col row-label" title="{{ category.display_name }}">
+            <th scope="row" class="sticky-col row-label" title="{{ category.display_name }}">
               {{ category.item_name }}
-            </td>
+            </th>
             {% for period in periods %}
               {% set period_txns = txn_by_period.get(period.id, []) %}
               {% set matched = [] %}
@@ -216,16 +217,16 @@
   </table>
 
   {# Popover container for the full edit form — positioned absolutely within the grid wrapper #}
-  <div id="txn-popover" class="txn-full-edit-popover d-none"></div>
+  <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
 </div>
 
 {# --- Add Transaction Modal --- #}
-<div class="modal fade" id="addTransactionModal" tabindex="-1">
+<div class="modal fade" id="addTransactionModal" tabindex="-1" aria-labelledby="addTransactionModalLabel">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">Add Transaction</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        <h5 class="modal-title" id="addTransactionModalLabel">Add Transaction</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <form hx-post="{{ url_for('transactions.create_transaction') }}"
             hx-swap="none" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide(); location.reload();">
@@ -234,7 +235,7 @@
 
           <div class="mb-3">
             <label class="form-label">Name</label>
-            <input type="text" name="name" class="form-control" required>
+            <input type="text" name="name" class="form-control" required autofocus>
           </div>
           <div class="mb-3">
             <label class="form-label">Amount</label>
