@@ -18,6 +18,11 @@ class BaseSchema(Schema):
 class TransactionUpdateSchema(BaseSchema):
     """Validates PATCH data for updating a transaction."""
 
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
+        return {k: v for k, v in data.items() if v != ""}
+
     name = fields.String(validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
