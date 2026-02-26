@@ -18,6 +18,7 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import balance_calculator, pay_period_service
@@ -89,6 +90,17 @@ def index():
         .all()
     )
 
+    # Load transfers for all periods.
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    )
+
     # Calculate balances.
     anchor_balance = account.current_anchor_balance if account else Decimal("0.00")
     anchor_period_id = account.current_anchor_period_id if account else (
@@ -100,12 +112,19 @@ def index():
         anchor_period_id=anchor_period_id,
         periods=all_periods,
         transactions=all_transactions,
+        transfers=all_transfers,
+        account_id=account.id if account else None,
     )
 
     # Group transactions by period and then by category group for display.
     txn_by_period = {}
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
+
+    # Group transfers by period for display.
+    xfer_by_period = {}
+    for xfer in all_transfers:
+        xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
 
     # Load categories for grouping rows.
     categories = (
@@ -141,6 +160,7 @@ def index():
         current_period=current_period,
         balances=balances,
         txn_by_period=txn_by_period,
+        xfer_by_period=xfer_by_period,
         categories=categories,
         statuses=statuses,
         transaction_types=transaction_types,
@@ -193,6 +213,16 @@ def balance_row():
         .all()
     )
 
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    )
+
     anchor_balance = account.current_anchor_balance if account else Decimal("0.00")
     anchor_period_id = account.current_anchor_period_id if account else current_period.id
 
@@ -201,12 +231,18 @@ def balance_row():
         anchor_period_id=anchor_period_id,
         periods=all_periods,
         transactions=all_transactions,
+        transfers=all_transfers,
+        account_id=account.id if account else None,
     )
 
     # Also compute income/expense totals per visible period.
     txn_by_period = {}
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
+
+    xfer_by_period = {}
+    for xfer in all_transfers:
+        xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
 
     low_balance_threshold = (
         current_user.settings.low_balance_threshold
@@ -219,6 +255,8 @@ def balance_row():
         periods=periods,
         balances=balances,
         txn_by_period=txn_by_period,
+        xfer_by_period=xfer_by_period,
+        account=account,
         num_periods=num_periods,
         start_offset=start_offset,
         low_balance_threshold=low_balance_threshold,

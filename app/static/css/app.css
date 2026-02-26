@@ -35,6 +35,8 @@
   --shekel-section-income-text: #5ED9A0;
   --shekel-section-expense-bg: #3D1A2E;
   --shekel-section-expense-text: #D97BA0;
+  --shekel-section-transfer-bg: #1A2E3D;
+  --shekel-section-transfer-text: #7BA0D9;
   --shekel-group-header-bg: #2A2F38;
   --shekel-summary-bg: #1E2228;
 }
@@ -137,6 +139,8 @@
   --shekel-section-income-text: #1A6B40;
   --shekel-section-expense-bg: #EDCFDE;
   --shekel-section-expense-text: #6B1A40;
+  --shekel-section-transfer-bg: #CFE0ED;
+  --shekel-section-transfer-text: #1A406B;
   --shekel-group-header-bg: #F0F3F7;
   --shekel-summary-bg: #F0F4F8;
 }
@@ -200,6 +204,7 @@
 /* Don't override section banners, spacers, or summary rows on hover */
 .grid-table tbody tr.section-banner-income:hover td,
 .grid-table tbody tr.section-banner-expense:hover td,
+.grid-table tbody tr.section-banner-transfer:hover td,
 .grid-table tbody tr.spacer-row:hover td {
   background-color: transparent;
 }
@@ -282,6 +287,17 @@ thead .sticky-col {
 .section-banner-expense td {
   background-color: var(--shekel-section-expense-bg) !important;
   color: var(--shekel-section-expense-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.section-banner-transfer td {
+  background-color: var(--shekel-section-transfer-bg) !important;
+  color: var(--shekel-section-transfer-text);
   font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;

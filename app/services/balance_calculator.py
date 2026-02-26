@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 SETTLED_STATUSES = frozenset({"done", "received"})
 
 
-def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
+def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
+                       transfers=None, account_id=None):
     """Compute projected end balances from the anchor forward.
 
     Args:
@@ -35,6 +36,10 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
                            Must start at or before the anchor period.
         transactions:      List of Transaction objects covering all supplied periods.
                            Should exclude is_deleted=True rows before passing in.
+        transfers:         Optional list of Transfer objects. When provided with
+                           account_id, transfer effects are factored into balances.
+        account_id:        The account ID to calculate balances for. Required when
+                           transfers are provided.
 
     Returns:
         OrderedDict mapping period_id → Decimal end balance, in period order.
@@ -49,21 +54,38 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
     for txn in transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
+    # Group transfers by pay_period_id if provided.
+    xfer_by_period = {}
+    if transfers and account_id:
+        for xfer in transfers:
+            xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
+
     balances = OrderedDict()
     running_balance = None  # Set when we reach the anchor period.
 
     for period in periods:
         period_txns = txn_by_period.get(period.id, [])
+        period_xfers = xfer_by_period.get(period.id, [])
 
         if period.id == anchor_period_id:
             # Anchor period: start from the real balance, add only remaining items.
             income, expenses = _sum_remaining(period_txns)
-            running_balance = anchor_balance + income - expenses
+            xfer_in, xfer_out = _sum_transfer_effects_remaining(
+                period_xfers, account_id
+            )
+            running_balance = (
+                anchor_balance + income - expenses + xfer_in - xfer_out
+            )
 
         elif running_balance is not None:
             # Post-anchor: roll forward from previous end balance.
             income, expenses = _sum_all(period_txns)
-            running_balance = running_balance + income - expenses
+            xfer_in, xfer_out = _sum_transfer_effects_all(
+                period_xfers, account_id
+            )
+            running_balance = (
+                running_balance + income - expenses + xfer_in - xfer_out
+            )
 
         else:
             # Pre-anchor period — we don't calculate balances before the anchor.
@@ -134,3 +156,52 @@ def _sum_all(transactions):
             expenses += amount
 
     return income, expenses
+
+
+def _sum_transfer_effects_remaining(transfers, account_id):
+    """Sum transfer effects for the anchor period (remaining/projected only).
+
+    Settled transfers (done/received) are already reflected in the anchor
+    balance, so we exclude them.
+
+    Returns:
+        (incoming, outgoing) as Decimal tuple.
+    """
+    incoming = Decimal("0.00")
+    outgoing = Decimal("0.00")
+
+    for xfer in transfers:
+        status_name = xfer.status.name if xfer.status else "projected"
+        if status_name in SETTLED_STATUSES or status_name in ("cancelled",):
+            continue
+
+        amount = Decimal(str(xfer.amount))
+        if xfer.to_account_id == account_id:
+            incoming += amount
+        if xfer.from_account_id == account_id:
+            outgoing += amount
+
+    return incoming, outgoing
+
+
+def _sum_transfer_effects_all(transfers, account_id):
+    """Sum transfer effects for a post-anchor period (projected only).
+
+    Returns:
+        (incoming, outgoing) as Decimal tuple.
+    """
+    incoming = Decimal("0.00")
+    outgoing = Decimal("0.00")
+
+    for xfer in transfers:
+        status_name = xfer.status.name if xfer.status else "projected"
+        if status_name in ("cancelled", "done", "received"):
+            continue
+
+        amount = Decimal(str(xfer.amount))
+        if xfer.to_account_id == account_id:
+            incoming += amount
+        if xfer.from_account_id == account_id:
+            outgoing += amount
+
+    return incoming, outgoing

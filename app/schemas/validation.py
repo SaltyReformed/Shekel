@@ -289,3 +289,130 @@ class FicaConfigSchema(BaseSchema):
     medicare_surtax_threshold = fields.Decimal(
         required=True, places=2, as_string=True
     )
+
+
+# ── Transfer Schemas (Phase 4) ────────────────────────────────────
+
+
+class TransferTemplateCreateSchema(BaseSchema):
+    """Validates POST data for creating a transfer template."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=200))
+    default_amount = fields.Decimal(
+        required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    from_account_id = fields.Integer(required=True)
+    to_account_id = fields.Integer(required=True)
+
+    # Recurrence rule fields (optional — omit for one-time / manual).
+    recurrence_pattern = fields.String(
+        validate=validate.OneOf([
+            "every_period", "every_n_periods", "monthly",
+            "monthly_first", "quarterly", "semi_annual",
+            "annual", "once",
+        ])
+    )
+    interval_n = fields.Integer(validate=validate.Range(min=1))
+    offset_periods = fields.Integer(validate=validate.Range(min=0))
+    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
+    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
+    start_period_id = fields.Integer()
+
+    @validates_schema
+    def validate_different_accounts(self, data, **kwargs):
+        if data.get("from_account_id") and data.get("to_account_id"):
+            if data["from_account_id"] == data["to_account_id"]:
+                raise ValidationError("From and To accounts must be different.")
+
+
+class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
+    """Validates PUT data for updating a transfer template."""
+
+    # Override — all fields optional for update.
+    name = fields.String(validate=validate.Length(min=1, max=200))
+    default_amount = fields.Decimal(
+        places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    from_account_id = fields.Integer()
+    to_account_id = fields.Integer()
+
+    # Date from which regeneration takes effect.
+    effective_from = fields.Date()
+
+
+class TransferCreateSchema(BaseSchema):
+    """Validates POST data for creating an ad-hoc transfer."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    from_account_id = fields.Integer(required=True)
+    to_account_id = fields.Integer(required=True)
+    amount = fields.Decimal(
+        required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    pay_period_id = fields.Integer(required=True)
+    scenario_id = fields.Integer(required=True)
+    name = fields.String(validate=validate.Length(max=200))
+    notes = fields.String(allow_none=True)
+
+    @validates_schema
+    def validate_different_accounts(self, data, **kwargs):
+        if data.get("from_account_id") and data.get("to_account_id"):
+            if data["from_account_id"] == data["to_account_id"]:
+                raise ValidationError("From and To accounts must be different.")
+
+
+class TransferUpdateSchema(BaseSchema):
+    """Validates PATCH data for updating a transfer (inline edit)."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    amount = fields.Decimal(
+        places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    status_id = fields.Integer()
+    name = fields.String(validate=validate.Length(max=200))
+    notes = fields.String(allow_none=True)
+
+
+# ── Savings Goal Schemas (Phase 4) ────────────────────────────────
+
+
+class SavingsGoalCreateSchema(BaseSchema):
+    """Validates POST data for creating a savings goal."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    account_id = fields.Integer(required=True)
+    name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+    target_amount = fields.Decimal(
+        required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    target_date = fields.Date()
+    contribution_per_period = fields.Decimal(places=2, as_string=True)
+
+
+class SavingsGoalUpdateSchema(BaseSchema):
+    """Validates PUT data for updating a savings goal."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(validate=validate.Length(min=1, max=100))
+    target_amount = fields.Decimal(
+        places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    target_date = fields.Date(allow_none=True)
+    contribution_per_period = fields.Decimal(places=2, as_string=True, allow_none=True)
+    is_active = fields.Boolean()

@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if template else 'New' }} Transfer — Shekel{% endblock %}
+
+{% set pattern_labels = {
+  'every_period': 'Every paycheck',
+  'every_n_periods': 'Every N paychecks',
+  'monthly': 'Monthly (specific day)',
+  'monthly_first': 'Monthly (first paycheck of month)',
+  'quarterly': 'Quarterly',
+  'semi_annual': 'Every 6 months',
+  'annual': 'Yearly',
+  'once': 'One-time',
+} %}
+
+{% set month_names = {
+  1: 'January', 2: 'February', 3: 'March', 4: 'April',
+  5: 'May', 6: 'June', 7: 'July', 8: 'August',
+  9: 'September', 10: 'October', 11: 'November', 12: 'December',
+} %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('transfers.list_transfer_templates') }}">Transfers</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Transfer' if template else 'New Transfer' }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <h4>
+      <i class="bi bi-arrow-left-right"></i>
+      {{ 'Edit' if template else 'New' }} Transfer Template
+    </h4>
+
+    <form method="POST"
+          action="{{ url_for('transfers.update_transfer_template', template_id=template.id) if template else url_for('transfers.create_transfer_template') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="mb-3">
+        <label for="name" class="form-label">Name</label>
+        <input type="text" id="name" name="name" class="form-control" required
+               value="{{ template.name if template else '' }}"
+               placeholder="e.g. Monthly Savings">
+      </div>
+
+      <div class="mb-3">
+        <label for="default_amount" class="form-label">Amount</label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0.01" id="default_amount" name="default_amount"
+                 class="form-control" required
+                 value="{{ template.default_amount if template else '' }}">
+        </div>
+      </div>
+
+      <div class="row mb-3">
+        <div class="col">
+          <label for="from_account_id" class="form-label">From Account</label>
+          <select id="from_account_id" name="from_account_id" class="form-select" required>
+            {% for acct in accounts %}
+            <option value="{{ acct.id }}"
+              {{ 'selected' if template and template.from_account_id == acct.id else '' }}>
+              {{ acct.name }} ({{ acct.account_type.name|capitalize if acct.account_type else '' }})
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto d-flex align-items-end pb-2">
+          <i class="bi bi-arrow-right fs-4 text-muted"></i>
+        </div>
+        <div class="col">
+          <label for="to_account_id" class="form-label">To Account</label>
+          <select id="to_account_id" name="to_account_id" class="form-select" required>
+            {% for acct in accounts %}
+            <option value="{{ acct.id }}"
+              {{ 'selected' if template and template.to_account_id == acct.id else '' }}>
+              {{ acct.name }} ({{ acct.account_type.name|capitalize if acct.account_type else '' }})
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      {# Recurrence rule fields #}
+      <hr>
+      <h5>Recurrence Rule</h5>
+
+      <div class="mb-3">
+        <label for="recurrence_pattern" class="form-label">Pattern</label>
+        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
+                onchange="toggleRecurrenceFields(this.value)">
+          <option value="">None (one-time / manual)</option>
+          {% for p in patterns %}
+          <option value="{{ p.name }}"
+            {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern.name == p.name else '' }}>
+            {{ pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div id="recurrence-fields" class="d-none">
+        <div class="mb-3 d-none" id="field-interval">
+          <label for="interval_n" class="form-label">Repeat every N paychecks</label>
+          <input type="number" id="interval_n" name="interval_n"
+                 class="form-control" min="1"
+                 value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
+        </div>
+        <div class="row mb-3">
+          <div class="col d-none" id="field-dom">
+            <label for="day_of_month" class="form-label">Day of Month</label>
+            <input type="number" id="day_of_month" name="day_of_month"
+                   class="form-control" min="1" max="31"
+                   value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
+          </div>
+          <div class="col d-none" id="field-moy">
+            <label for="month_of_year" class="form-label">Month</label>
+            <select id="month_of_year" name="month_of_year" class="form-select">
+              <option value="">—</option>
+              {% for num, name in month_names.items() %}
+              <option value="{{ num }}"
+                {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
+                {{ name }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        {% if not template %}
+        <div class="mb-3 d-none" id="field-start-period">
+          <label class="form-label">First paycheck</label>
+          <select name="start_period_id" class="form-select" aria-describedby="start-period-help">
+            {% for p in periods %}
+            <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
+              {{ p.label }}
+            </option>
+            {% endfor %}
+          </select>
+          <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if template %}
+      <div class="mb-3">
+        <label for="effective_from" class="form-label">Regenerate effective from</label>
+        <input type="date" id="effective_from" name="effective_from" class="form-control"
+               aria-describedby="effective-from-help">
+        <div id="effective-from-help" class="form-text">Leave blank to use today's date.</div>
+      </div>
+      {% endif %}
+
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-check-circle"></i> {{ 'Update' if template else 'Create' }}
+        </button>
+        <a href="{{ url_for('transfers.list_transfer_templates') }}" class="btn btn-outline-secondary">
+          Cancel
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleRecurrenceFields(pattern) {
+  const container = document.getElementById('recurrence-fields');
+  const interval = document.getElementById('field-interval');
+  const dom = document.getElementById('field-dom');
+  const moy = document.getElementById('field-moy');
+  const startPeriod = document.getElementById('field-start-period');
+
+  if (!pattern) {
+    container.classList.add('d-none');
+    return;
+  }
+  container.classList.remove('d-none');
+
+  interval.classList.toggle('d-none', pattern !== 'every_n_periods');
+  dom.classList.toggle('d-none', !['monthly', 'quarterly', 'semi_annual', 'annual'].includes(pattern));
+  moy.classList.toggle('d-none', !['quarterly', 'semi_annual', 'annual'].includes(pattern));
+
+  if (startPeriod) {
+    startPeriod.classList.toggle('d-none', pattern === 'once');
+  }
+}
+
+const patternSelect = document.getElementById('recurrence_pattern');
+if (patternSelect) {
+  toggleRecurrenceFields(patternSelect.value);
+  patternSelect.addEventListener('change', function() { toggleRecurrenceFields(this.value); });
+}
+</script>
+{% endblock %}

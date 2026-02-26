@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if goal else 'New' }} Savings Goal — Shekel{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Savings</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Goal' if goal else 'New Goal' }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <h4>
+      <i class="bi bi-bullseye"></i>
+      {{ 'Edit' if goal else 'New' }} Savings Goal
+    </h4>
+
+    <form method="POST"
+          action="{{ url_for('savings.update_goal', goal_id=goal.id) if goal else url_for('savings.create_goal') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="mb-3">
+        <label for="account_id" class="form-label">Account</label>
+        <select id="account_id" name="account_id" class="form-select" required>
+          {% for acct in accounts %}
+          <option value="{{ acct.id }}"
+            {{ 'selected' if goal and goal.account_id == acct.id else '' }}>
+            {{ acct.name }} ({{ acct.account_type.name|capitalize if acct.account_type else '' }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="mb-3">
+        <label for="name" class="form-label">Goal Name</label>
+        <input type="text" id="name" name="name" class="form-control" required
+               value="{{ goal.name if goal else '' }}"
+               placeholder="e.g. Emergency Fund, Vacation">
+      </div>
+
+      <div class="mb-3">
+        <label for="target_amount" class="form-label">Target Amount</label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0.01" id="target_amount" name="target_amount"
+                 class="form-control" required
+                 value="{{ goal.target_amount if goal else '' }}">
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label for="target_date" class="form-label">Target Date <small class="text-muted">(optional)</small></label>
+        <input type="date" id="target_date" name="target_date" class="form-control"
+               value="{{ goal.target_date.isoformat() if goal and goal.target_date else '' }}">
+        <div class="form-text">When do you want to reach this goal?</div>
+      </div>
+
+      <div class="mb-3">
+        <label for="contribution_per_period" class="form-label">
+          Manual Contribution per Period <small class="text-muted">(optional)</small>
+        </label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" id="contribution_per_period"
+                 name="contribution_per_period" class="form-control"
+                 value="{{ goal.contribution_per_period if goal and goal.contribution_per_period else '' }}">
+        </div>
+        <div class="form-text">Override the auto-calculated recommendation.</div>
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-check-circle"></i> {{ 'Update' if goal else 'Create' }}
+        </button>
+        <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary">
+          Cancel
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

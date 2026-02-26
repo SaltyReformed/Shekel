@@ -1,0 +1,45 @@
+{# Transfer cell — displays amount with direction arrow and status badge.
+   Clicking opens the inline edit form via HTMX.
+
+   Expected context: xfer — a Transfer object, account — the active Account.
+   Optional: wrap_div — if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
+#}
+{% if xfer %}
+{% if wrap_div is defined and wrap_div %}<div id="xfer-cell-{{ xfer.id }}">{% endif %}
+<div class="txn-cell"
+     hx-get="{{ url_for('transfers.get_quick_edit', xfer_id=xfer.id) }}"
+     hx-trigger="click"
+     hx-target="#xfer-cell-{{ xfer.id }}"
+     hx-swap="innerHTML"
+     role="button"
+     tabindex="0"
+     aria-label="{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount|int) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     title="{{ xfer.name or 'Transfer' }}{% if xfer.notes %} — {{ xfer.notes }}{% endif %}">
+
+  {# Direction icon #}
+  {% if account %}
+    {% if xfer.to_account_id == account.id %}
+      <i class="bi bi-arrow-down-left text-success small" title="Incoming"></i>
+    {% elif xfer.from_account_id == account.id %}
+      <i class="bi bi-arrow-up-right text-danger small" title="Outgoing"></i>
+    {% endif %}
+  {% endif %}
+
+  {% if xfer.amount|float != 0 %}
+    <span class="font-mono">{{ "{:,.0f}".format(xfer.amount|int) }}</span>
+  {% endif %}
+
+  {# Status badge #}
+  {% if xfer.status %}
+    {% if xfer.status.name in ('done', 'received') %}
+      <span class="badge-done ms-1" title="{{ xfer.status.name|capitalize }}">&#10003;</span>
+    {% endif %}
+  {% endif %}
+
+  {# Override indicator #}
+  {% if xfer.is_override %}
+    <i class="bi bi-pencil text-info ms-1 small" title="Overridden"></i>
+  {% endif %}
+</div>
+{% if wrap_div is defined and wrap_div %}</div>{% endif %}
+{% endif %}

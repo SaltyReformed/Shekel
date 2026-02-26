@@ -1,8 +1,8 @@
 """
 Shekel Budget App — Transfer Model (budget schema)
 
-Tracks transfers between accounts (checking ↔ savings).
-Schema created in Phase 1 for forward-compatibility; feature in Phase 4.
+Tracks transfers between accounts (checking ↔ savings) within pay periods.
+Supports both template-generated recurring transfers and ad-hoc one-time transfers.
 """
 
 from app.extensions import db
@@ -17,6 +17,14 @@ class Transfer(db.Model):
         db.CheckConstraint(
             "from_account_id != to_account_id",
             name="ck_transfers_different_accounts",
+        ),
+        db.Index(
+            "idx_transfers_template_period_scenario",
+            "transfer_template_id", "pay_period_id", "scenario_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_template_id IS NOT NULL AND is_deleted = FALSE"
+            ),
         ),
         {"schema": "budget"},
     )
@@ -43,7 +51,14 @@ class Transfer(db.Model):
     status_id = db.Column(
         db.Integer, db.ForeignKey("ref.statuses.id"), nullable=False
     )
+    transfer_template_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.transfer_templates.id", ondelete="SET NULL"),
+    )
+    name = db.Column(db.String(200))
     amount = db.Column(db.Numeric(12, 2), nullable=False)
+    is_override = db.Column(db.Boolean, default=False, nullable=False)
+    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
@@ -52,5 +67,27 @@ class Transfer(db.Model):
         onupdate=db.func.now(),
     )
 
+    # Relationships
+    template = db.relationship("TransferTemplate", back_populates="transfers")
+    from_account = db.relationship(
+        "Account", foreign_keys=[from_account_id], lazy="joined"
+    )
+    to_account = db.relationship(
+        "Account", foreign_keys=[to_account_id], lazy="joined"
+    )
+    status = db.relationship("Status", lazy="joined")
+    pay_period = db.relationship("PayPeriod")
+    scenario = db.relationship("Scenario")
+
+    @property
+    def effective_amount(self):
+        """Return the amount used in balance calculations.
+
+        Cancelled transfers contribute 0.
+        """
+        if self.status and self.status.name == "cancelled":
+            return 0
+        return self.amount
+
     def __repr__(self):
-        return f"<Transfer ${self.amount} ({self.id})>"
+        return f"<Transfer '{self.name}' ${self.amount} ({self.id})>"

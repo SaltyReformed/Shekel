@@ -1,0 +1,19 @@
+{# Transfer quick edit — single amount input that fits inside the <td>.
+   Replaces cell content on click for fast amount edits.
+
+   Expected context: xfer — a Transfer object.
+#}
+<form class="txn-quick-edit d-flex align-items-center gap-1"
+      hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"
+      hx-target="#xfer-cell-{{ xfer.id }}"
+      hx-swap="innerHTML">
+  <input type="number"
+         step="0.01"
+         min="0.01"
+         name="amount"
+         value="{{ xfer.amount }}"
+         class="form-control form-control-sm txn-quick-input"
+         aria-label="Edit amount for {{ xfer.name or 'Transfer' }}"
+         autofocus
+         style="min-width: 0; flex: 1;">
+</form>

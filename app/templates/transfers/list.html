@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Transfer Templates — Shekel{% endblock %}
+
+{% set pattern_labels = {
+  'every_period': 'Every paycheck',
+  'every_n_periods': 'Every N paychecks',
+  'monthly': 'Monthly (specific day)',
+  'monthly_first': 'Monthly (first paycheck of month)',
+  'quarterly': 'Quarterly',
+  'semi_annual': 'Every 6 months',
+  'annual': 'Yearly',
+  'once': 'One-time',
+} %}
+
+{% set month_names = {
+  1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
+  5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
+  9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec',
+} %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-arrow-left-right"></i> Transfer Templates</h4>
+  <a href="{{ url_for('transfers.new_transfer_template') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-circle"></i> New Transfer
+  </a>
+</div>
+
+{% if templates %}
+<table class="table table-hover table-sm">
+  <caption class="visually-hidden">Transfer templates with recurrence rules</caption>
+  <thead class="table-light">
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">From</th>
+      <th scope="col">To</th>
+      <th scope="col" class="text-end">Amount</th>
+      <th scope="col">Recurrence</th>
+      <th scope="col">Active</th>
+      <th scope="col">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in templates %}
+    <tr class="{{ 'text-muted' if not t.is_active else '' }}">
+      <td>{{ t.name }}</td>
+      <td>{{ t.from_account.name if t.from_account else '—' }}</td>
+      <td>{{ t.to_account.name if t.to_account else '—' }}</td>
+      <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+      <td>
+        {% if t.recurrence_rule %}
+          {% set rr = t.recurrence_rule %}
+          {% set pname = rr.pattern.name %}
+          {% if pname == 'every_period' %}
+            Every paycheck
+          {% elif pname == 'every_n_periods' %}
+            Every {{ rr.interval_n }} paychecks
+          {% elif pname == 'monthly' and rr.day_of_month %}
+            Monthly (day {{ rr.day_of_month }})
+          {% elif pname == 'monthly_first' %}
+            Monthly (first paycheck)
+          {% elif pname == 'quarterly' %}
+            Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
+          {% elif pname == 'semi_annual' %}
+            Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
+          {% elif pname == 'annual' %}
+            Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
+          {% elif pname == 'once' %}
+            One-time
+          {% else %}
+            {{ pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
+          {% endif %}
+        {% else %}
+          <span class="text-muted">One-time</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if t.is_active %}
+          <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
+          <span class="visually-hidden">Active</span>
+        {% else %}
+          <i class="bi bi-x-circle text-muted" aria-hidden="true"></i>
+          <span class="visually-hidden">Inactive</span>
+        {% endif %}
+      </td>
+      <td>
+        <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
+           class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ t.name }}">
+          <i class="bi bi-pencil"></i>
+        </a>
+        {% if t.is_active %}
+        <form method="POST" action="{{ url_for('transfers.delete_transfer_template', template_id=t.id) }}"
+              class="d-inline"
+              data-confirm="Deactivate this transfer template? All projected transfers will be removed.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Deactivate {{ t.name }}">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </form>
+        {% else %}
+        <form method="POST" action="{{ url_for('transfers.reactivate_transfer_template', template_id=t.id) }}"
+              class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Reactivate {{ t.name }}">
+            <i class="bi bi-arrow-counterclockwise"></i>
+          </button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  No transfer templates yet. Create one to start auto-generating recurring transfers.
+</div>
+{% endif %}
+{% endblock %}
