@@ -43,6 +43,7 @@ from app.schemas.validation import (
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
 )
+from app.exceptions import RecurrenceConflict
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,7 @@ def create_profile():
     recurrence_engine.generate_for_template(template, periods, scenario.id)
 
     db.session.commit()
+    logger.info("user_id=%d created salary profile %d", current_user.id, profile.id)
     flash(f"Salary profile '{profile.name}' created.", "success")
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
@@ -299,6 +301,7 @@ def update_profile(profile_id):
     _regenerate_salary_transactions(profile)
 
     db.session.commit()
+    logger.info("user_id=%d updated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' updated.", "success")
     return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
@@ -317,6 +320,7 @@ def delete_profile(profile_id):
         profile.template.is_active = False
 
     db.session.commit()
+    logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' deactivated.", "info")
     return redirect(url_for("salary.list_profiles"))
 
@@ -348,6 +352,7 @@ def add_raise(profile_id):
     _regenerate_salary_transactions(profile)
 
     db.session.commit()
+    logger.info("user_id=%d added raise to profile %d", current_user.id, profile_id)
     flash("Raise added.", "success")
 
     if request.headers.get("HX-Request"):
@@ -372,6 +377,7 @@ def delete_raise(raise_id):
     db.session.delete(salary_raise)
     _regenerate_salary_transactions(profile)
     db.session.commit()
+    logger.info("user_id=%d deleted raise %d from profile %d", current_user.id, raise_id, profile.id)
     flash("Raise removed.", "info")
 
     if request.headers.get("HX-Request"):
@@ -413,6 +419,7 @@ def add_deduction(profile_id):
     _regenerate_salary_transactions(profile)
 
     db.session.commit()
+    logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
     flash(f"Deduction '{deduction.name}' added.", "success")
 
     if request.headers.get("HX-Request"):
@@ -437,6 +444,7 @@ def delete_deduction(ded_id):
     db.session.delete(deduction)
     _regenerate_salary_transactions(profile)
     db.session.commit()
+    logger.info("user_id=%d deleted deduction %d from profile %d", current_user.id, ded_id, profile.id)
     flash("Deduction removed.", "info")
 
     if request.headers.get("HX-Request"):
@@ -588,6 +596,7 @@ def update_tax_config():
             flash(f"State tax config for {state_code} created.", "success")
 
     db.session.commit()
+    logger.info("user_id=%d updated state tax config for %s", current_user.id, state_code)
     return redirect(url_for("salary.tax_config"))
 
 
@@ -619,6 +628,7 @@ def update_fica_config():
         flash(f"FICA config for {tax_year} created.", "success")
 
     db.session.commit()
+    logger.info("user_id=%d updated FICA config for %d", current_user.id, tax_year)
     return redirect(url_for("salary.tax_config"))
 
 
@@ -655,7 +665,7 @@ def _regenerate_salary_transactions(profile):
             profile.template, periods, scenario.id,
             effective_from=date.today(),
         )
-    except Exception as e:
+    except RecurrenceConflict as e:
         logger.warning("Recurrence conflict during salary regeneration: %s", e)
 
 

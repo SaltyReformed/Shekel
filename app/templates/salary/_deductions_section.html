@@ -46,7 +46,8 @@
                   action="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
                   hx-post="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
                   hx-target="#deductions-section"
-                  hx-swap="outerHTML">
+                  hx-swap="outerHTML"
+                  hx-disabled-elt="find button[type=submit]">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
                 <i class="bi bi-trash"></i>
               </button>
@@ -67,7 +68,8 @@
             action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
             hx-post="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
             hx-target="#deductions-section"
-            hx-swap="outerHTML">
+            hx-swap="outerHTML"
+            hx-disabled-elt="find button[type=submit]">
         <div class="row g-2 mb-2">
           <div class="col-md-4">
             <label class="form-label">Name</label>

@@ -66,7 +66,8 @@
           <div class="small text-light-emphasis">{{ period.end_date.strftime('%m/%d/%y') }}</div>
           {% if period.start_date < today and period.id != current_period.id %}
           <form hx-post="{{ url_for('transactions.carry_forward', period_id=period.id) }}"
-                hx-swap="none" class="mt-1">
+                hx-swap="none" class="mt-1"
+                hx-disabled-elt="find button[type=submit]">
             <button type="submit" class="btn btn-warning btn-xs"
                     title="Carry forward unpaid items to current period">
               <i class="bi bi-arrow-right-circle"></i> Carry Fwd
@@ -229,7 +230,8 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <form hx-post="{{ url_for('transactions.create_transaction') }}"
-            hx-swap="none" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide(); location.reload();">
+            hx-swap="none" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide(); location.reload();"
+            hx-disabled-elt="find button[type=submit]">
         <div class="modal-body">
           <input type="hidden" name="scenario_id" value="{{ scenario.id }}">
 

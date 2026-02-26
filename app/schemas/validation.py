@@ -19,8 +19,8 @@ class TransactionUpdateSchema(BaseSchema):
     """Validates PATCH data for updating a transaction."""
 
     name = fields.String(validate=validate.Length(min=1, max=200))
-    estimated_amount = fields.Decimal(places=2, as_string=True)
-    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True)
+    estimated_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
+    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
     status_id = fields.Integer()
     pay_period_id = fields.Integer()
     category_id = fields.Integer()
@@ -31,8 +31,8 @@ class TransactionCreateSchema(BaseSchema):
     """Validates POST data for creating an ad-hoc transaction."""
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    estimated_amount = fields.Decimal(required=True, places=2, as_string=True)
-    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True)
+    estimated_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
     pay_period_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
     category_id = fields.Integer(required=True)
@@ -48,8 +48,8 @@ class InlineTransactionCreateSchema(BaseSchema):
     the category so it is not required from the user.
     """
 
-    estimated_amount = fields.Decimal(required=True, places=2, as_string=True)
-    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True)
+    estimated_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
     category_id = fields.Integer(required=True)
     pay_period_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)

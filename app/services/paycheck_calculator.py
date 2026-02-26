@@ -214,17 +214,18 @@ def _apply_raises(profile, period):
         eff_month = raise_obj.effective_month
 
         if raise_obj.is_recurring:
-            # Recurring raises apply every year at the specified month.
-            # Check if we've passed the effective month this year or any prior year.
-            # For the first year (profile creation year), apply if month reached.
-            if period_month >= eff_month:
-                salary = _apply_single_raise(salary, raise_obj)
-            # Also count full years of recurring raises for prior years.
-            if eff_year and period_year > eff_year:
-                years_passed = period_year - eff_year
-                if period_month < eff_month:
-                    years_passed -= 1
-                for _ in range(years_passed):
+            # Recurring raises compound each year at the specified month.
+            # Count total applications: one per year from eff_year onward
+            # where the effective month has been reached.
+            if not eff_year:
+                # No start year — apply once if month reached this year.
+                if period_month >= eff_month:
+                    salary = _apply_single_raise(salary, raise_obj)
+            elif period_year >= eff_year:
+                total_applications = period_year - eff_year
+                if period_month >= eff_month:
+                    total_applications += 1
+                for _ in range(total_applications):
                     salary = _apply_single_raise(salary, raise_obj)
         else:
             # One-time raise: apply if we're at or past the effective date.

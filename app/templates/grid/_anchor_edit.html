@@ -6,6 +6,7 @@
 <form hx-patch="{{ url_for('accounts.true_up', account_id=account.id) }}"
       hx-target="this"
       hx-swap="outerHTML"
+      hx-disabled-elt="find button[type=submit]"
       class="d-inline-flex align-items-center gap-2">
   <div class="input-group input-group-sm" style="max-width: 200px;">
     <span class="input-group-text">$</span>

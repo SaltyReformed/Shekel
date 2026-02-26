@@ -406,7 +406,9 @@ def _match_annual(periods, month, day):
 def _get_existing_map(template_id, scenario_id, periods):
     """Build a dict of period_id → Transaction for existing template entries.
 
-    Only fetches non-deleted entries to check for duplicates.
+    Fetches all entries (including deleted) to check for duplicates and
+    respect override/delete flags.  The caller checks is_deleted to skip
+    re-creating those periods.
     """
     period_ids = [p.id for p in periods]
     if not period_ids:

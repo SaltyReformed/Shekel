@@ -6,7 +6,7 @@ Returns HTMX fragments for inline editing in the grid.
 """
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
@@ -113,7 +113,7 @@ def update_transaction(txn_id):
         txn.is_override = True
 
     db.session.commit()
-    logger.info("Updated transaction %d", txn_id)
+    logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # Return the updated cell with a trigger to refresh balances.
     response = render_template("grid/_transaction_cell.html", txn=txn)
@@ -142,10 +142,13 @@ def mark_done(txn_id):
     # Accept an actual amount from the form.
     actual = request.form.get("actual_amount")
     if actual:
-        txn.actual_amount = Decimal(actual)
+        try:
+            txn.actual_amount = Decimal(actual)
+        except (InvalidOperation, ValueError, ArithmeticError):
+            return "Invalid actual amount", 400
 
     db.session.commit()
-    logger.info("Marked transaction %d as %s", txn_id, status.name)
+    logger.info("user_id=%d marked transaction %d as %s", current_user.id, txn_id, status.name)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -197,7 +200,7 @@ def cancel_transaction(txn_id):
     txn.status_id = status.id
 
     db.session.commit()
-    logger.info("Cancelled transaction %d", txn_id)
+    logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -337,7 +340,7 @@ def create_inline():
     txn = Transaction(**data)
     db.session.add(txn)
     db.session.commit()
-    logger.info("Created inline transaction: %s (id=%d)", txn.name, txn.id)
+    logger.info("user_id=%d created inline transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
     # Return the cell wrapped in a div with a unique ID, matching
     # the pattern used in grid.html for existing transactions.
@@ -372,7 +375,7 @@ def create_transaction():
     txn = Transaction(**data)
     db.session.add(txn)
     db.session.commit()
-    logger.info("Created ad-hoc transaction: %s", txn.name)
+    logger.info("user_id=%d created ad-hoc transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 201, {"HX-Trigger": "balanceChanged"}
@@ -394,7 +397,7 @@ def delete_transaction(txn_id):
         db.session.delete(txn)
 
     db.session.commit()
-    logger.info("Deleted transaction %d", txn_id)
+    logger.info("user_id=%d deleted transaction %d", current_user.id, txn_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
 
@@ -417,6 +420,6 @@ def carry_forward(period_id):
     except NotFoundError as exc:
         return str(exc), 404
 
-    logger.info("Carried forward %d items from period %d", count, period_id)
+    logger.info("user_id=%d carried forward %d items from period %d", current_user.id, count, period_id)
     # Trigger a full grid refresh.
     return "", 200, {"HX-Trigger": "gridRefresh"}
