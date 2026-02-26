@@ -47,6 +47,16 @@ def mark_as_credit(transaction_id):
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
 
+    # Idempotency: if already credited with existing payback, return it.
+    if txn.status and txn.status.name == "credit":
+        existing_payback = (
+            db.session.query(Transaction)
+            .filter_by(credit_payback_for_id=txn.id)
+            .first()
+        )
+        if existing_payback:
+            return existing_payback
+
     # Get the 'credit' status.
     credit_status = db.session.query(Status).filter_by(name="credit").one()
     projected_status = db.session.query(Status).filter_by(name="projected").one()

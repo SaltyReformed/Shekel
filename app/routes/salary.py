@@ -190,57 +190,64 @@ def create_profile():
         flash("No active account found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
-    # Create every_period recurrence rule
-    every_period_pattern = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="every_period")
-        .one()
-    )
-    rule = RecurrenceRule(
-        user_id=current_user.id,
-        pattern_id=every_period_pattern.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    try:
+        # Create every_period recurrence rule
+        every_period_pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name="every_period")
+            .one()
+        )
+        rule = RecurrenceRule(
+            user_id=current_user.id,
+            pattern_id=every_period_pattern.id,
+        )
+        db.session.add(rule)
+        db.session.flush()
 
-    # Create linked transaction template
-    template = TransactionTemplate(
-        user_id=current_user.id,
-        account_id=account.id,
-        category_id=salary_category.id,
-        recurrence_rule_id=rule.id,
-        transaction_type_id=income_type.id,
-        name=data["name"],
-        default_amount=data["annual_salary"] / (data.get("pay_periods_per_year", 26)),
-        is_active=True,
-    )
-    db.session.add(template)
-    db.session.flush()
+        # Create linked transaction template
+        template = TransactionTemplate(
+            user_id=current_user.id,
+            account_id=account.id,
+            category_id=salary_category.id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=income_type.id,
+            name=data["name"],
+            default_amount=data["annual_salary"] / (data.get("pay_periods_per_year", 26)),
+            is_active=True,
+        )
+        db.session.add(template)
+        db.session.flush()
 
-    # Create the salary profile
-    profile = SalaryProfile(
-        user_id=current_user.id,
-        scenario_id=scenario.id,
-        template_id=template.id,
-        filing_status_id=data["filing_status_id"],
-        name=data["name"],
-        annual_salary=data["annual_salary"],
-        state_code=data["state_code"],
-        pay_periods_per_year=data.get("pay_periods_per_year", 26),
-        qualifying_children=data.get("qualifying_children", 0),
-        other_dependents=data.get("other_dependents", 0),
-        additional_income=data.get("additional_income", 0),
-        additional_deductions=data.get("additional_deductions", 0),
-        extra_withholding=data.get("extra_withholding", 0),
-    )
-    db.session.add(profile)
-    db.session.flush()
+        # Create the salary profile
+        profile = SalaryProfile(
+            user_id=current_user.id,
+            scenario_id=scenario.id,
+            template_id=template.id,
+            filing_status_id=data["filing_status_id"],
+            name=data["name"],
+            annual_salary=data["annual_salary"],
+            state_code=data["state_code"],
+            pay_periods_per_year=data.get("pay_periods_per_year", 26),
+            qualifying_children=data.get("qualifying_children", 0),
+            other_dependents=data.get("other_dependents", 0),
+            additional_income=data.get("additional_income", 0),
+            additional_deductions=data.get("additional_deductions", 0),
+            extra_withholding=data.get("extra_withholding", 0),
+        )
+        db.session.add(profile)
+        db.session.flush()
 
-    # Generate income transactions via recurrence engine
-    periods = pay_period_service.get_all_periods(current_user.id)
-    recurrence_engine.generate_for_template(template, periods, scenario.id)
+        # Generate income transactions via recurrence engine
+        periods = pay_period_service.get_all_periods(current_user.id)
+        recurrence_engine.generate_for_template(template, periods, scenario.id)
 
-    db.session.commit()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to create salary profile", current_user.id)
+        flash("Failed to create salary profile. Please try again.", "danger")
+        return redirect(url_for("salary.new_profile"))
+
     logger.info("user_id=%d created salary profile %d", current_user.id, profile.id)
     flash(f"Salary profile '{profile.name}' created.", "success")
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
@@ -286,21 +293,28 @@ def update_profile(profile_id):
 
     data = _update_schema.load(request.form)
 
-    for field_name, value in data.items():
-        if hasattr(profile, field_name):
-            setattr(profile, field_name, value)
+    try:
+        for field_name, value in data.items():
+            if hasattr(profile, field_name):
+                setattr(profile, field_name, value)
 
-    # Update linked template amount
-    if profile.template and "annual_salary" in data:
-        pay_periods = profile.pay_periods_per_year or 26
-        profile.template.default_amount = data["annual_salary"] / pay_periods
-        if "name" in data:
-            profile.template.name = data["name"]
+        # Update linked template amount
+        if profile.template and "annual_salary" in data:
+            pay_periods = profile.pay_periods_per_year or 26
+            profile.template.default_amount = data["annual_salary"] / pay_periods
+            if "name" in data:
+                profile.template.name = data["name"]
 
-    # Regenerate transactions with new amount
-    _regenerate_salary_transactions(profile)
+        # Regenerate transactions with new amount
+        _regenerate_salary_transactions(profile)
 
-    db.session.commit()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to update salary profile %d", current_user.id, profile_id)
+        flash("Failed to update salary profile. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+
     logger.info("user_id=%d updated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' updated.", "success")
     return redirect(url_for("salary.edit_profile", profile_id=profile_id))
@@ -349,9 +363,15 @@ def add_raise(profile_id):
     salary_raise = SalaryRaise(salary_profile_id=profile.id, **data)
     db.session.add(salary_raise)
 
-    _regenerate_salary_transactions(profile)
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
+        flash("Failed to add raise. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
-    db.session.commit()
     logger.info("user_id=%d added raise to profile %d", current_user.id, profile_id)
     flash("Raise added.", "success")
 
@@ -374,9 +394,16 @@ def delete_raise(raise_id):
         flash("Not authorized.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
-    db.session.delete(salary_raise)
-    _regenerate_salary_transactions(profile)
-    db.session.commit()
+    try:
+        db.session.delete(salary_raise)
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
+        flash("Failed to remove raise. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
     logger.info("user_id=%d deleted raise %d from profile %d", current_user.id, raise_id, profile.id)
     flash("Raise removed.", "info")
 
@@ -416,9 +443,15 @@ def add_deduction(profile_id):
     deduction = PaycheckDeduction(salary_profile_id=profile.id, **data)
     db.session.add(deduction)
 
-    _regenerate_salary_transactions(profile)
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
+        flash("Failed to add deduction. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
-    db.session.commit()
     logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
     flash(f"Deduction '{deduction.name}' added.", "success")
 
@@ -441,9 +474,16 @@ def delete_deduction(ded_id):
         flash("Not authorized.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
-    db.session.delete(deduction)
-    _regenerate_salary_transactions(profile)
-    db.session.commit()
+    try:
+        db.session.delete(deduction)
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
+        flash("Failed to remove deduction. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
     logger.info("user_id=%d deleted deduction %d from profile %d", current_user.id, ded_id, profile.id)
     flash("Deduction removed.", "info")
 
@@ -667,6 +707,9 @@ def _regenerate_salary_transactions(profile):
         )
     except RecurrenceConflict as e:
         logger.warning("Recurrence conflict during salary regeneration: %s", e)
+    except Exception:
+        logger.exception("Failed to regenerate salary transactions for profile %d", profile.id)
+        raise
 
 
 def _render_raises_partial(profile):

@@ -42,6 +42,7 @@ def login():
             return redirect(next_page or url_for("grid.index"))
 
         except AuthError:
+            logger.warning("action=login_failed email=%s ip=%s", email, request.remote_addr)
             flash("Invalid email or password.", "danger")
 
     return render_template("auth/login.html")

@@ -87,24 +87,33 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
     created = []
     for period in matching_periods:
-        existing_txn = existing.get(period.id)
+        existing_txns = existing.get(period.id, [])
 
-        if existing_txn is not None:
+        # Skip this period if any existing entry matches a skip condition.
+        should_skip = False
+        for existing_txn in existing_txns:
             status_name = existing_txn.status.name if existing_txn.status else "projected"
 
             # Never touch immutable (historical) transactions.
             if status_name in IMMUTABLE_STATUSES:
-                continue
+                should_skip = True
+                break
 
             # Skip overridden entries — the user made a deliberate change.
             if existing_txn.is_override:
-                continue
+                should_skip = True
+                break
 
             # Skip soft-deleted entries — the user intentionally removed it.
             if existing_txn.is_deleted:
-                continue
+                should_skip = True
+                break
 
             # Auto-generated and unmodified — it already exists, skip.
+            should_skip = True
+            break
+
+        if should_skip:
             continue
 
         # Determine the amount — use paycheck calculator if salary-linked.
@@ -404,12 +413,14 @@ def _match_annual(periods, month, day):
 
 
 def _get_existing_map(template_id, scenario_id, periods):
-    """Build a dict of period_id → Transaction for existing template entries.
+    """Build a dict of period_id → [Transaction, ...] for existing template entries.
 
-    Fetches all entries (including deleted) to check for duplicates and
-    respect override/delete flags.  The caller checks is_deleted to skip
-    re-creating those periods.
+    Uses a list per period to avoid silent dict overwrites when a deleted and
+    non-deleted transaction share the same period_id.  Fetches all entries
+    (including deleted) to check for duplicates and respect override/delete flags.
     """
+    from collections import defaultdict  # pylint: disable=import-outside-toplevel
+
     period_ids = [p.id for p in periods]
     if not period_ids:
         return {}
@@ -423,7 +434,10 @@ def _get_existing_map(template_id, scenario_id, periods):
         )
         .all()
     )
-    return {txn.pay_period_id: txn for txn in existing}
+    result = defaultdict(list)
+    for txn in existing:
+        result[txn.pay_period_id].append(txn)
+    return result
 
 
 def _get_salary_profile(template_id):

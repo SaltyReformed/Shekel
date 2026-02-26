@@ -152,6 +152,25 @@ class TestRecurringRaiseCompounding:
         # 3 applications: 100000 + 5000 + 5000 + 5000 = 115000
         assert result == Decimal("115000.00")
 
+    def test_recurring_raise_second_year_at_effective_month(self):
+        """March 2026 raise checked in March 2027 = 2 applications.
+
+        Validates the `+1` in the application count formula:
+          years_passed = 2027 - 2026 = 1
+          period_month (3) >= eff_month (3) → applications = 1 + 1 = 2
+        This is correct because the raise applied in March 2026 AND
+        recurs again in March 2027.
+        """
+        profile = FakeProfile(
+            annual_salary=100000,
+            raises=[FakeRaise(percentage="0.03", effective_month=3,
+                              effective_year=2026, is_recurring=True)],
+        )
+        period = FakePeriod(start_date=date(2027, 3, 1))
+        result = _apply_raises(profile, period)
+        # 100000 * 1.03^2 = 106090
+        assert result == Decimal("106090.00")
+
     def test_recurring_raise_no_effective_year(self):
         """Recurring raise with no effective_year applies once if month reached."""
         profile = FakeProfile(
