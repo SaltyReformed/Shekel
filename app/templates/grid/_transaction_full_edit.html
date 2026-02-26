@@ -4,19 +4,18 @@
 
    Expected context: txn, statuses.
 #}
-<div class="txn-full-edit-content" onclick="event.stopPropagation()">
+<div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <small class="fw-semibold text-truncate" style="max-width: 200px;" title="{{ txn.name }}">
       {{ txn.name }}
     </small>
     <button type="button" class="btn-close btn-close-sm" aria-label="Close"
-            onclick="closeFullEdit()"></button>
+            data-action="close-popover"></button>
   </div>
 
   <form hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"
         hx-target="#txn-cell-{{ txn.id }}"
         hx-swap="innerHTML"
-        hx-on::after-request="if(event.detail.successful) closeFullEdit()"
         hx-disabled-elt="find button[type=submit]">
 
     {# Estimated amount #}
@@ -64,7 +63,7 @@
         <i class="bi bi-check"></i> Save
       </button>
       <button type="button" class="btn btn-sm btn-outline-secondary"
-              onclick="closeFullEdit()">
+              data-action="close-popover">
         <i class="bi bi-x"></i> Cancel
       </button>
     </div>
@@ -76,7 +75,6 @@
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) closeFullEdit()"
             hx-disabled-elt="this"
             aria-label="Mark as done">
       <i class="bi bi-check-circle"></i> Done
@@ -87,7 +85,6 @@
     <button type="button" class="btn btn-xs btn-warning flex-grow-1"
             hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) closeFullEdit()"
             hx-disabled-elt="this"
             aria-label="Mark as credit card">
       <i class="bi bi-credit-card"></i> Credit
@@ -96,7 +93,6 @@
     <button type="button" class="btn btn-xs btn-outline-warning flex-grow-1"
             hx-delete="{{ url_for('transactions.unmark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) closeFullEdit()"
             hx-disabled-elt="this"
             aria-label="Undo credit card">
       <i class="bi bi-x-circle"></i> Undo CC
@@ -107,7 +103,6 @@
     <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
             hx-post="{{ url_for('transactions.cancel_transaction', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) closeFullEdit()"
             hx-disabled-elt="this"
             aria-label="Cancel transaction">
       <i class="bi bi-x-octagon"></i> Cancel
@@ -118,7 +113,6 @@
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) closeFullEdit()"
             hx-disabled-elt="this"
             aria-label="Mark as received">
       <i class="bi bi-check-circle"></i> Received

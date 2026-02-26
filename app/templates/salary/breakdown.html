@@ -34,7 +34,7 @@
           {% endfor %}
         </select>
         <button type="button" class="btn btn-sm btn-primary"
-                onclick="window.location.href=document.getElementById('period-select').value"
+                data-action="period-navigate" data-select-id="period-select"
                 aria-label="Go to selected period">
           Go
         </button>

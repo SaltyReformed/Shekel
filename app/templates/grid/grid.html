@@ -230,7 +230,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <form hx-post="{{ url_for('transactions.create_transaction') }}"
-            hx-swap="none" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide(); location.reload();"
+            hx-swap="none" data-modal-auto-close
             hx-disabled-elt="find button[type=submit]">
         <div class="modal-body">
           <input type="hidden" name="scenario_id" value="{{ scenario.id }}">

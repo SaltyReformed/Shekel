@@ -12,8 +12,7 @@
       data-mode="create"
       hx-post="{{ url_for('transactions.create_inline') }}"
       hx-target="closest td"
-      hx-swap="innerHTML"
-      onclick="event.stopPropagation()">
+      hx-swap="innerHTML">
   <input type="hidden" name="category_id" value="{{ category.id }}">
   <input type="hidden" name="pay_period_id" value="{{ period.id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
@@ -32,8 +31,7 @@
           aria-label="More options"
           data-category-id="{{ category.id }}"
           data-period-id="{{ period.id }}"
-          data-txn-type-name="{{ txn_type_name }}"
-          onclick="event.stopPropagation(); openFullCreate({{ category.id }}, {{ period.id }}, '{{ txn_type_name }}', this);">
+          data-txn-type-name="{{ txn_type_name }}">
     <i class="bi bi-three-dots"></i>
   </button>
 </form>

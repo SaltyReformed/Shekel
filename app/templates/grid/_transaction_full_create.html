@@ -9,20 +9,19 @@
      transaction_type_id — income or expense type ID
      statuses            — list of Status objects
 #}
-<div class="txn-full-edit-content" onclick="event.stopPropagation()">
+<div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <small class="fw-semibold text-truncate" style="max-width: 200px;"
            title="{{ category.display_name }}">
       New: {{ category.item_name }}
     </small>
     <button type="button" class="btn-close btn-close-sm" aria-label="Close"
-            onclick="closeFullEdit()"></button>
+            data-action="close-popover"></button>
   </div>
 
   <form hx-post="{{ url_for('transactions.create_inline') }}"
         hx-target="closest td"
         hx-swap="innerHTML"
-        hx-on::after-request="if(event.detail.successful) closeFullEdit()"
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="category_id" value="{{ category.id }}">
     <input type="hidden" name="pay_period_id" value="{{ period.id }}">
@@ -71,7 +70,7 @@
         <i class="bi bi-plus"></i> Create
       </button>
       <button type="button" class="btn btn-sm btn-outline-secondary"
-              onclick="closeFullEdit()">
+              data-action="close-popover">
         <i class="bi bi-x"></i> Cancel
       </button>
     </div>

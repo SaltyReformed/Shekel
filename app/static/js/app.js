@@ -91,6 +91,54 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
   }
 });
 
+// Close Add Transaction modal and reload after successful creation.
+document.body.addEventListener("htmx:afterRequest", function(event) {
+    if (!event.detail.successful) return;
+    var form = event.detail.elt;
+    if (form && form.hasAttribute('data-modal-auto-close')) {
+        var modal = bootstrap.Modal.getInstance(
+            document.getElementById('addTransactionModal')
+        );
+        if (modal) modal.hide();
+        location.reload();
+    }
+});
+
+// Delegated handlers for salary pages (CSP-compliant, replaces inline onclick/onchange).
+document.addEventListener('click', function(e) {
+    // Toggle target element (e.g. deduction form collapse)
+    var toggleBtn = e.target.closest('[data-toggle-target]');
+    if (toggleBtn) {
+        var target = document.getElementById(toggleBtn.dataset.toggleTarget);
+        if (target) target.classList.toggle('show');
+        return;
+    }
+
+    // Period select navigation (breakdown page)
+    var navBtn = e.target.closest('[data-action="period-navigate"]');
+    if (navBtn) {
+        var sel = document.getElementById(navBtn.dataset.selectId);
+        if (sel) window.location.href = sel.value;
+        return;
+    }
+});
+
+// Update deduction form labels when calc method changes.
+document.addEventListener('change', function(e) {
+    if (!e.target.matches('[data-action="update-deduction-labels"]')) return;
+    var form = e.target.closest('form');
+    if (!form) return;
+    var amountInput = form.querySelector('[name=amount]');
+    var label = form.querySelector('.amount-label');
+    if (e.target.selectedOptions[0].textContent.trim().toLowerCase() === 'percentage') {
+        if (amountInput) { amountInput.placeholder = 'e.g. 6 for 6%'; amountInput.step = '0.01'; }
+        if (label) label.textContent = 'Amount (%)';
+    } else {
+        if (amountInput) { amountInput.placeholder = 'e.g. 500'; amountInput.step = '0.01'; }
+        if (label) label.textContent = 'Amount ($)';
+    }
+});
+
 // --- Confirmation Modal (replaces browser confirm()) ---
 // Forms with data-confirm="message" show a Bootstrap modal instead of confirm().
 (function() {

@@ -224,3 +224,38 @@ document.addEventListener('keydown', function(e) {
     }
 
 });
+
+// --- Delegated click handlers (CSP-compliant, replaces inline onclick) ---
+document.addEventListener('click', function(e) {
+    // Open full edit popover (expand button in quick-edit mode)
+    var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
+    if (editBtn) {
+        openFullEdit(parseInt(editBtn.dataset.txnId), editBtn);
+        return;
+    }
+
+    // Open full create popover (expand button in quick-create mode)
+    var createBtn = e.target.closest('.txn-expand-btn[data-category-id]');
+    if (createBtn) {
+        openFullCreate(
+            parseInt(createBtn.dataset.categoryId),
+            parseInt(createBtn.dataset.periodId),
+            createBtn.dataset.txnTypeName,
+            createBtn
+        );
+        return;
+    }
+
+    // Close popover (close/cancel buttons)
+    if (e.target.closest('[data-action="close-popover"]')) {
+        closeFullEdit();
+        return;
+    }
+});
+
+// Auto-select text when quick-edit input receives focus.
+document.addEventListener('focus', function(e) {
+    if (e.target.matches('.txn-quick-input')) {
+        e.target.select();
+    }
+}, true);
