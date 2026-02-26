@@ -36,12 +36,28 @@ _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
 
 
+def _get_owned_transaction(txn_id):
+    """Fetch a transaction and verify it belongs to the current user.
+
+    Ownership is determined via the pay_period's user_id since
+    transactions don't have a direct user_id column.
+
+    Returns:
+        Transaction if found and owned by current_user, else None.
+    """
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return None
+    if txn.pay_period.user_id != current_user.id:
+        return None
+    return txn
+
 
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
 @login_required
 def get_cell(txn_id):
     """HTMX partial: return the display-mode cell content for a transaction."""
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
     return render_template("grid/_transaction_cell.html", txn=txn)
@@ -51,7 +67,7 @@ def get_cell(txn_id):
 @login_required
 def get_quick_edit(txn_id):
     """HTMX partial: return the minimal inline amount input."""
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
     return render_template("grid/_transaction_quick_edit.html", txn=txn)
@@ -61,7 +77,7 @@ def get_quick_edit(txn_id):
 @login_required
 def get_full_edit(txn_id):
     """HTMX partial: return the full edit popover form."""
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
     statuses = db.session.query(Status).all()
@@ -76,7 +92,7 @@ def update_transaction(txn_id):
     Returns the updated cell fragment.  Sends an HX-Trigger header
     to refresh the balance row.
     """
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -112,7 +128,7 @@ def mark_done(txn_id):
     Automatically picks the correct status based on transaction type.
     Accepts an optional actual_amount from the form.
     """
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -139,13 +155,15 @@ def mark_done(txn_id):
 @login_required
 def mark_credit(txn_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense."""
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+
     try:
         payback = credit_workflow.mark_as_credit(txn_id)
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
-
-    txn = db.session.get(Transaction, txn_id)
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -154,13 +172,15 @@ def mark_credit(txn_id):
 @login_required
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback."""
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+
     try:
         credit_workflow.unmark_credit(txn_id)
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
-
-    txn = db.session.get(Transaction, txn_id)
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -169,7 +189,7 @@ def unmark_credit(txn_id):
 @login_required
 def cancel_transaction(txn_id):
     """Set a transaction's status to 'cancelled'."""
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -298,8 +318,13 @@ def create_inline():
 
     # Look up the category to derive the transaction name.
     category = db.session.get(Category, data["category_id"])
-    if not category:
+    if not category or category.user_id != current_user.id:
         return "Category not found", 404
+
+    # Verify the pay period belongs to the current user.
+    period = db.session.get(PayPeriod, data["pay_period_id"])
+    if not period or period.user_id != current_user.id:
+        return "Pay period not found", 404
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
@@ -334,6 +359,11 @@ def create_transaction():
 
     data = _create_schema.load(request.form)
 
+    # Verify the pay period belongs to the current user.
+    period = db.session.get(PayPeriod, data["pay_period_id"])
+    if not period or period.user_id != current_user.id:
+        return "Pay period not found", 404
+
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
         projected = db.session.query(Status).filter_by(name="projected").one()
@@ -352,7 +382,7 @@ def create_transaction():
 @login_required
 def delete_transaction(txn_id):
     """Soft-delete a transaction (or hard-delete if it's ad-hoc)."""
-    txn = db.session.get(Transaction, txn_id)
+    txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -372,6 +402,11 @@ def delete_transaction(txn_id):
 @login_required
 def carry_forward(period_id):
     """Carry forward all unpaid items from a period to the current period."""
+    # Verify the source period belongs to the current user.
+    source_period = db.session.get(PayPeriod, period_id)
+    if source_period is None or source_period.user_id != current_user.id:
+        return "Not found", 404
+
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period is None:
         return "No current period found", 400
