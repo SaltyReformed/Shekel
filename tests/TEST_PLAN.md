@@ -23,13 +23,14 @@
 | `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD             |
 | `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough   |
 | `test_services/test_balance_calculator.py`  | 4       | Basic cases only                 |
+| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete    |
 | `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate       |
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete |
 | `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                  |
 | `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions       |
 | `test_services/test_tax_calculator.py`      | 36      | Excellent coverage               |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints       |
-| **Total**                                   | **118** |                                  |
+| **Total**                                   | **147** |                                  |
 
 ---
 
@@ -409,57 +410,55 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ## 2. Routes
 
-### 2.1 `routes/accounts.py` — Priority P1
+### 2.1 `routes/accounts.py` — Priority P1 ✅
 
-**Status: Zero tests for 16 endpoints.** **[AUDIT GAP]** Anchor balance true-up (modifies foundation
-of balance calculation) has no tests. Account CRUD (including deactivation guards) is untested.
-Mass-assignment whitelist is untested.
+**Status: Complete (29 tests in `test_routes/test_accounts.py`).**
 
 #### Account CRUD
 
-| Category | Tests Needed                                                                                 |
-| -------- | -------------------------------------------------------------------------------------------- |
-| HP       | GET `/accounts` — renders list with user's accounts                                          |
-| HP       | GET `/accounts/new` — renders create form                                                    |
-| HP       | POST `/accounts` — creates account, redirects to list                                        |
-| HP       | GET `/accounts/<id>/edit` — renders edit form                                                |
-| HP       | POST `/accounts/<id>` — updates account fields                                               |
-| HP       | POST `/accounts/<id>/delete` — soft-deactivates account                                      |
-| HP       | POST `/accounts/<id>/reactivate` — reactivates account                                       |
-| SP       | POST `/accounts` — validation error (missing name)                                           |
-| SP       | POST `/accounts` — duplicate name → flash warning                                            |
-| SP       | POST `/accounts/<id>` — duplicate name → flash warning                                       |
-| IDOR     | GET `/accounts/<id>/edit` — other user's account → redirect                                  |
-| IDOR     | POST `/accounts/<id>` — other user's account → redirect                                      |
-| IDOR     | POST `/accounts/<id>/delete` — other user's account → redirect                               |
-| SM       | POST `/accounts/<id>/delete` — account in use by active transfers → flash warning, no delete |
-| IDEM     | POST `/accounts` — double-submit same name → duplicate flash on 2nd                          |
+| Category | Tests Needed                                                                                 | Status |
+| -------- | -------------------------------------------------------------------------------------------- | ------ |
+| HP       | GET `/accounts` — renders list with user's accounts                                          | ✅ `test_list_accounts_renders` |
+| HP       | GET `/accounts/new` — renders create form                                                    | ✅ `test_new_account_form_renders` |
+| HP       | POST `/accounts` — creates account, redirects to list                                        | ✅ `test_create_account` |
+| HP       | GET `/accounts/<id>/edit` — renders edit form                                                | ✅ `test_edit_account_form_renders` |
+| HP       | POST `/accounts/<id>` — updates account fields                                               | ✅ `test_update_account` |
+| HP       | POST `/accounts/<id>/delete` — soft-deactivates account                                      | ✅ `test_deactivate_account` |
+| HP       | POST `/accounts/<id>/reactivate` — reactivates account                                       | ✅ `test_reactivate_account` |
+| SP       | POST `/accounts` — validation error (missing name)                                           | ✅ `test_create_account_validation_error` |
+| SP       | POST `/accounts` — duplicate name → flash warning                                            | ✅ `test_create_account_duplicate_name` |
+| SP       | POST `/accounts/<id>` — duplicate name → flash warning                                       | ✅ `test_update_account_duplicate_name` |
+| IDOR     | GET `/accounts/<id>/edit` — other user's account → redirect                                  | ✅ `test_edit_other_users_account_redirects` |
+| IDOR     | POST `/accounts/<id>` — other user's account → redirect                                      | ✅ `test_update_other_users_account_redirects` |
+| IDOR     | POST `/accounts/<id>/delete` — other user's account → redirect                               | ✅ `test_deactivate_other_users_account_redirects` |
+| SM       | POST `/accounts/<id>/delete` — account in use by active transfers → flash warning, no delete | ✅ `test_deactivate_account_with_active_transfers` |
+| IDEM     | POST `/accounts` — double-submit same name → duplicate flash on 2nd                          | ✅ `test_create_account_double_submit` |
 
 #### Anchor Balance (Grid Integration)
 
-| Category | Tests Needed                                                            |
-| -------- | ----------------------------------------------------------------------- |
-| HP       | PATCH `/accounts/<id>/inline-anchor` — updates balance, returns partial |
-| HP       | GET `/accounts/<id>/inline-anchor-form` — returns edit partial          |
-| HP       | GET `/accounts/<id>/inline-anchor-display` — returns display partial    |
-| HP       | PATCH `/accounts/<id>/true-up` — updates balance, creates history entry |
-| SP       | PATCH `/accounts/<id>/true-up` — no current period → 400                |
-| SP       | PATCH `/accounts/<id>/inline-anchor` — invalid amount → 400             |
-| IDOR     | PATCH `/accounts/<id>/inline-anchor` — other user's account → 404       |
-| IDOR     | PATCH `/accounts/<id>/true-up` — other user's account → 404             |
-| FIN      | True-up creates `AccountAnchorHistory` audit record                     |
+| Category | Tests Needed                                                            | Status |
+| -------- | ----------------------------------------------------------------------- | ------ |
+| HP       | PATCH `/accounts/<id>/inline-anchor` — updates balance, returns partial | ✅ `test_inline_anchor_update` |
+| HP       | GET `/accounts/<id>/inline-anchor-form` — returns edit partial          | ✅ `test_inline_anchor_form_returns_partial` |
+| HP       | GET `/accounts/<id>/inline-anchor-display` — returns display partial    | ✅ `test_inline_anchor_display_returns_partial` |
+| HP       | PATCH `/accounts/<id>/true-up` — updates balance, creates history entry | ✅ `test_true_up_updates_balance` |
+| SP       | PATCH `/accounts/<id>/true-up` — no current period → 400                | ✅ `test_true_up_no_current_period` |
+| SP       | PATCH `/accounts/<id>/inline-anchor` — invalid amount → 400             | ✅ `test_inline_anchor_invalid_amount` |
+| IDOR     | PATCH `/accounts/<id>/inline-anchor` — other user's account → 404       | ✅ `test_inline_anchor_other_users_account` |
+| IDOR     | PATCH `/accounts/<id>/true-up` — other user's account → 404             | ✅ `test_true_up_other_users_account` |
+| FIN      | True-up creates `AccountAnchorHistory` audit record                     | ✅ `test_true_up_updates_balance` (combined) |
 
 #### Account Type Management
 
-| Category | Tests Needed                                                     |
-| -------- | ---------------------------------------------------------------- |
-| HP       | POST `/accounts/types` — creates new account type                |
-| HP       | POST `/accounts/types/<id>` — renames account type               |
-| HP       | POST `/accounts/types/<id>/delete` — deletes unused type         |
-| SP       | POST `/accounts/types` — duplicate name → flash warning          |
-| SP       | POST `/accounts/types/<id>/delete` — type in use → flash warning |
+| Category | Tests Needed                                                     | Status |
+| -------- | ---------------------------------------------------------------- | ------ |
+| HP       | POST `/accounts/types` — creates new account type                | ✅ `test_create_account_type` |
+| HP       | POST `/accounts/types/<id>` — renames account type               | ✅ `test_rename_account_type` |
+| HP       | POST `/accounts/types/<id>/delete` — deletes unused type         | ✅ `test_delete_unused_account_type` |
+| SP       | POST `/accounts/types` — duplicate name → flash warning          | ✅ `test_create_duplicate_account_type` |
+| SP       | POST `/accounts/types/<id>/delete` — type in use → flash warning | ✅ `test_delete_account_type_in_use` |
 
-**Estimated new tests: 30**
+**Estimated new tests: ~~30~~ 29 Done (FIN merged into HP true-up test)**
 
 ---
 
@@ -934,7 +933,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done   |
 | **Routes**                                  |          |                 |
 | salary.py                                   | P1       | 35              |
-| accounts.py                                 | P1       | 30              |
+| accounts.py                                 | P1       | ~~30~~ 29 ✅ Done |
 | transfers.py                                | P1       | 28              |
 | templates.py                                | P2       | 20              |
 | savings.py                                  | P1       | 16              |
@@ -1026,7 +1025,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
    edges, transfer_recurrence
 2. **P0 models** — transaction/transfer effective_amount full coverage
 3. **P1 schemas** — all Marshmallow schemas in isolation
-4. **P1 routes** — salary, accounts, transfers, savings (happy + IDOR)
+4. **P1 routes** — salary, ~~accounts~~ ✅, transfers, savings (happy + IDOR)
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
