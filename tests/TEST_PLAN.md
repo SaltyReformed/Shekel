@@ -23,12 +23,13 @@
 | `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD             |
 | `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough   |
 | `test_services/test_balance_calculator.py`  | 4       | Basic cases only                 |
+| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate       |
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete |
 | `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                  |
 | `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions       |
 | `test_services/test_tax_calculator.py`      | 36      | Excellent coverage               |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints       |
-| **Total**                                   | **111** |                                  |
+| **Total**                                   | **118** |                                  |
 
 ---
 
@@ -372,37 +373,37 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 **Status: Complete (9 tests in `test_credit_workflow.py::TestCarryForward`).**
 
-| Category | Tests Needed                                     | Status |
-| -------- | ------------------------------------------------ | ------ |
-| HP       | Moves projected transactions to target period    | ✅ `test_carry_forward_moves_projected_items` |
-| HP       | Returns correct count of moved items             | ✅ `test_carry_forward_moves_projected_items` |
-| SM       | Template-linked items flagged `is_override=True` | ✅ `test_carry_forward_flags_template_items_as_override` |
+| Category | Tests Needed                                     | Status                                                                              |
+| -------- | ------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| HP       | Moves projected transactions to target period    | ✅ `test_carry_forward_moves_projected_items`                                       |
+| HP       | Returns correct count of moved items             | ✅ `test_carry_forward_moves_projected_items`                                       |
+| SM       | Template-linked items flagged `is_override=True` | ✅ `test_carry_forward_flags_template_items_as_override`                            |
 | SM       | Done/received items NOT moved                    | ✅ `test_carry_forward_skips_done_items`, `test_carry_forward_skips_received_items` |
-| SM       | Cancelled items NOT moved                        | ✅ `test_carry_forward_skips_cancelled_items` |
-| SM       | Soft-deleted items NOT moved                     | ✅ `test_carry_forward_skips_soft_deleted_items` |
-| SP       | Source period doesn't exist → NotFoundError      | ✅ `test_carry_forward_source_not_found` |
-| SP       | Target period doesn't exist → NotFoundError      | ✅ `test_carry_forward_target_not_found` |
-| BE       | No projected items → returns 0                   | ✅ `test_carry_forward_empty_source_returns_zero` |
+| SM       | Cancelled items NOT moved                        | ✅ `test_carry_forward_skips_cancelled_items`                                       |
+| SM       | Soft-deleted items NOT moved                     | ✅ `test_carry_forward_skips_soft_deleted_items`                                    |
+| SP       | Source period doesn't exist → NotFoundError      | ✅ `test_carry_forward_source_not_found`                                            |
+| SP       | Target period doesn't exist → NotFoundError      | ✅ `test_carry_forward_target_not_found`                                            |
+| BE       | No projected items → returns 0                   | ✅ `test_carry_forward_empty_source_returns_zero`                                   |
 
 **Estimated new tests: ~~9~~ Done**
 
 ---
 
-### 1.10 `services/auth_service.py` — Priority P2
+### 1.10 `services/auth_service.py` — Priority P2 ✅
 
-**Status: Indirect coverage only (via route tests).**
+**Status: Complete (7 tests in `test_auth_service.py`).**
 
-| Category | Tests Needed                                          |
-| -------- | ----------------------------------------------------- |
-| HP       | `hash_password()` returns bcrypt hash                 |
-| HP       | `verify_password()` returns True for matching pair    |
-| SP       | `verify_password()` returns False for wrong password  |
-| HP       | `authenticate()` returns User on valid credentials    |
-| SP       | `authenticate()` raises AuthError on wrong email      |
-| SP       | `authenticate()` raises AuthError on wrong password   |
-| SP       | `authenticate()` raises AuthError on disabled account |
+| Category | Tests Needed                                          | Status |
+| -------- | ----------------------------------------------------- | ------ |
+| HP       | `hash_password()` returns bcrypt hash                 | ✅ `test_hash_password_returns_bcrypt_hash` |
+| HP       | `verify_password()` returns True for matching pair    | ✅ `test_verify_password_returns_true_for_correct_password` |
+| SP       | `verify_password()` returns False for wrong password  | ✅ `test_verify_password_returns_false_for_wrong_password` |
+| HP       | `authenticate()` returns User on valid credentials    | ✅ `test_authenticate_returns_user_on_valid_credentials` |
+| SP       | `authenticate()` raises AuthError on wrong email      | ✅ `test_authenticate_raises_auth_error_on_wrong_email` |
+| SP       | `authenticate()` raises AuthError on wrong password   | ✅ `test_authenticate_raises_auth_error_on_wrong_password` |
+| SP       | `authenticate()` raises AuthError on disabled account | ✅ `test_authenticate_raises_auth_error_on_disabled_account` |
 
-**Estimated new tests: 7**
+**Estimated new tests: ~~7~~ Done**
 
 ---
 
@@ -928,7 +929,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | transfer_recurrence                         | P0       | 8               |
 | pay_period_service                          | P1       | 16              |
 | savings_goal_service                        | P1       | 14              |
-| auth_service                                | P2       | 7               |
+| auth_service                                | P2       | ~~7~~ ✅ Done   |
 | carry_forward_service                       | P2       | ~~9~~ ✅ Done   |
 | credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done   |
 | **Routes**                                  |          |                 |
@@ -1029,6 +1030,6 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
-8. **P2 services** — auth_service, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
+8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting
