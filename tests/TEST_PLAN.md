@@ -29,11 +29,12 @@
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete     |
 | `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete |
 | `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete      |
+| `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete   |
 | `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                      |
 | `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions           |
 | `test_services/test_tax_calculator.py`      | 36      | Excellent coverage                   |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints           |
-| **Total**                                   | **230** |                                      |
+| **Total**                                   | **254** |                                      |
 
 ---
 
@@ -595,31 +596,31 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 #### Dashboard
 
-| Category | Tests Needed                                                  | Status |
-| -------- | ------------------------------------------------------------- | ------ |
+| Category | Tests Needed                                                  | Status                                                   |
+| -------- | ------------------------------------------------------------- | -------------------------------------------------------- |
 | HP       | GET `/savings` — renders dashboard with goals and projections | ✅ `test_dashboard_renders`, `test_dashboard_with_goals` |
-| BE       | No savings accounts → empty dashboard                         | ✅ `test_dashboard_no_savings_accounts` |
-| BE       | No goals → dashboard still renders account projections        | ✅ `test_dashboard_no_goals` |
-| HP       | Unauthenticated request → redirect to login                   | ✅ `test_dashboard_requires_login` |
+| BE       | No savings accounts → empty dashboard                         | ✅ `test_dashboard_no_savings_accounts`                  |
+| BE       | No goals → dashboard still renders account projections        | ✅ `test_dashboard_no_goals`                             |
+| HP       | Unauthenticated request → redirect to login                   | ✅ `test_dashboard_requires_login`                       |
 
 #### Goal CRUD
 
-| Category | Tests Needed                                                       | Status |
-| -------- | ------------------------------------------------------------------ | ------ |
-| HP       | GET `/savings/goals/new` — renders form with accounts              | ✅ `test_new_goal_form` |
-| HP       | POST `/savings/goals` — creates goal, redirects to dashboard       | ✅ `test_create_goal_success` |
+| Category | Tests Needed                                                       | Status                                        |
+| -------- | ------------------------------------------------------------------ | --------------------------------------------- |
+| HP       | GET `/savings/goals/new` — renders form with accounts              | ✅ `test_new_goal_form`                       |
+| HP       | POST `/savings/goals` — creates goal, redirects to dashboard       | ✅ `test_create_goal_success`                 |
 | HP       | POST `/savings/goals` — optional fields omitted                    | ✅ `test_create_goal_without_optional_fields` |
-| HP       | GET `/savings/goals/<id>/edit` — renders edit form                 | ✅ `test_edit_goal_form` |
-| HP       | POST `/savings/goals/<id>` — updates goal fields                   | ✅ `test_update_goal_success` |
-| HP       | POST `/savings/goals/<id>/delete` — soft-deactivates goal          | ✅ `test_delete_goal_success` |
-| SP       | POST `/savings/goals` — validation error (missing fields)          | ✅ `test_create_goal_validation_error` |
-| SP       | POST `/savings/goals/<id>` — negative target_amount                | ✅ `test_update_goal_validation_error` |
-| SP       | POST `/savings/goals` — another user's account → invalid           | ✅ `test_create_goal_invalid_account` |
-| IDOR     | GET `/savings/goals/<id>/edit` — other user's goal → redirect      | ✅ `test_edit_goal_idor` |
-| IDOR     | POST `/savings/goals/<id>` — other user's goal → redirect          | ✅ `test_update_goal_idor` |
-| IDOR     | POST `/savings/goals/<id>/delete` — other user's goal → redirect   | ✅ `test_delete_goal_idor` |
-| BE       | POST `/savings/goals/999999/delete` — nonexistent goal             | ✅ `test_delete_nonexistent_goal` |
-| IDEM     | POST `/savings/goals` — duplicate name+account → unique constraint | ✅ `test_duplicate_goal_name_same_account` |
+| HP       | GET `/savings/goals/<id>/edit` — renders edit form                 | ✅ `test_edit_goal_form`                      |
+| HP       | POST `/savings/goals/<id>` — updates goal fields                   | ✅ `test_update_goal_success`                 |
+| HP       | POST `/savings/goals/<id>/delete` — soft-deactivates goal          | ✅ `test_delete_goal_success`                 |
+| SP       | POST `/savings/goals` — validation error (missing fields)          | ✅ `test_create_goal_validation_error`        |
+| SP       | POST `/savings/goals/<id>` — negative target_amount                | ✅ `test_update_goal_validation_error`        |
+| SP       | POST `/savings/goals` — another user's account → invalid           | ✅ `test_create_goal_invalid_account`         |
+| IDOR     | GET `/savings/goals/<id>/edit` — other user's goal → redirect      | ✅ `test_edit_goal_idor`                      |
+| IDOR     | POST `/savings/goals/<id>` — other user's goal → redirect          | ✅ `test_update_goal_idor`                    |
+| IDOR     | POST `/savings/goals/<id>/delete` — other user's goal → redirect   | ✅ `test_delete_goal_idor`                    |
+| BE       | POST `/savings/goals/999999/delete` — nonexistent goal             | ✅ `test_delete_nonexistent_goal`             |
+| IDEM     | POST `/savings/goals` — duplicate name+account → unique constraint | ✅ `test_duplicate_goal_name_same_account`    |
 
 **Tests: 19** (5 dashboard + 5 create + 5 update + 3 delete + 1 idempotency)
 
@@ -627,39 +628,43 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ### 2.5 `routes/templates.py` — Priority P2
 
-**Status: 2 IDOR tests only. Zero happy-path tests.**
+**Status: Complete (24 tests in `test_routes/test_templates.py`).**
 
 #### Template CRUD
 
-| Category | Tests Needed                                                                                |
-| -------- | ------------------------------------------------------------------------------------------- |
-| HP       | GET `/templates` — lists user's templates                                                   |
-| HP       | GET `/templates/new` — renders form with categories, accounts, patterns                     |
-| HP       | POST `/templates` — creates template with recurrence, generates transactions                |
-| HP       | GET `/templates/<id>/edit` — renders edit form                                              |
-| HP       | POST `/templates/<id>` — updates template, regenerates                                      |
-| HP       | POST `/templates/<id>/delete` — deactivates, soft-deletes transactions                      |
-| HP       | POST `/templates/<id>/reactivate` — reactivates, restores transactions                      |
-| SP       | POST `/templates` — validation error (missing name)                                         |
-| SP       | POST `/templates/<id>` — validation error                                                   |
-| IDOR     | POST `/templates/<id>` — other user's template → redirect                                   |
-| IDOR     | POST `/templates/<id>/delete` — other user's template → redirect                            |
-| SM       | Delete → deactivate + soft-delete projected txns                                            |
-| SM       | Reactivate → restore soft-deleted + regenerate from rule                                    |
-| SM       | Update triggers `RecurrenceConflict` → flash warning                                        |
-| IDEM     | POST `/templates` — double-submit creates duplicate (no unique constraint on template name) |
+| Category | Tests Needed                                                                                | Status |
+| -------- | ------------------------------------------------------------------------------------------- | ------ |
+| HP       | GET `/templates` — lists user's templates                                                   | ✅ `test_list_templates` |
+| HP       | GET `/templates` — empty list                                                               | ✅ `test_list_templates_empty` |
+| HP       | GET `/templates/new` — renders form with categories, accounts, patterns                     | ✅ `test_new_template_form` |
+| HP       | POST `/templates` — creates template without recurrence                                     | ✅ `test_create_template_no_recurrence` |
+| HP       | POST `/templates` — creates template with recurrence, generates transactions                | ✅ `test_create_template_with_recurrence` |
+| HP       | GET `/templates/<id>/edit` — renders edit form                                              | ✅ `test_edit_template_form` |
+| HP       | POST `/templates/<id>` — updates template, regenerates                                      | ✅ `test_update_template_success` |
+| HP       | POST `/templates/<id>/delete` — deactivates, soft-deletes transactions                      | ✅ `test_delete_deactivates_and_soft_deletes` |
+| HP       | POST `/templates/<id>/reactivate` — reactivates, restores transactions                      | ✅ `test_reactivate_restores_transactions` |
+| SP       | POST `/templates` — validation error (missing fields)                                       | ✅ `test_create_template_validation_error` |
+| SP       | POST `/templates/<id>` — validation error (invalid day_of_month)                            | ✅ `test_update_template_validation_error` |
+| SP       | POST `/templates` — another user's account → invalid                                        | ✅ `test_create_template_invalid_account` |
+| SP       | POST `/templates` — another user's category → invalid                                       | ✅ `test_create_template_invalid_category` |
+| IDOR     | GET `/templates/<id>/edit` — other user's template → redirect                               | ✅ `test_edit_template_idor` |
+| IDOR     | POST `/templates/<id>` — other user's template → redirect                                   | ✅ `test_update_template_idor` |
+| IDOR     | POST `/templates/<id>/delete` — other user's template → redirect                            | ✅ `test_delete_template_idor` |
+| IDOR     | POST `/templates/<id>/reactivate` — other user's template → redirect                        | ✅ `test_reactivate_template_idor` |
+| BE       | POST `/templates/999999/delete` — nonexistent template                                      | ✅ `test_delete_nonexistent_template` |
+| SM       | Update triggers `RecurrenceConflict` → flash warning                                        | ✅ `test_update_triggers_recurrence_conflict` |
 
 #### Preview Recurrence
 
-| Category | Tests Needed                                                                                       |
-| -------- | -------------------------------------------------------------------------------------------------- |
-| HP       | GET `/templates/preview-recurrence?recurrence_pattern=monthly&day_of_month=15` → returns HTML list |
-| BE       | Pattern = "once" → "No preview" message                                                            |
-| BE       | Unknown pattern → "Unknown pattern" message                                                        |
-| BE       | No periods → "No pay periods" message                                                              |
-| BE       | No matching periods → "No matching periods" message                                                |
+| Category | Tests Needed                                                                                       | Status |
+| -------- | -------------------------------------------------------------------------------------------------- | ------ |
+| HP       | GET `/templates/preview-recurrence?recurrence_pattern=monthly&day_of_month=15` → returns HTML list | ✅ `test_preview_monthly` |
+| HP       | GET `/templates/preview-recurrence?recurrence_pattern=every_period` → returns list                 | ✅ `test_preview_every_period` |
+| BE       | Pattern = "once" → "No preview" message                                                            | ✅ `test_preview_once_pattern` |
+| BE       | Unknown pattern → "Unknown pattern" message                                                        | ✅ `test_preview_unknown_pattern` |
+| BE       | No pattern parameter → "No preview" message                                                        | ✅ `test_preview_no_pattern` |
 
-**Estimated new tests: 20**
+**Tests: 24** (2 list + 6 create + 6 update + 3 delete + 2 reactivate + 5 preview)
 
 ---
 
@@ -935,7 +940,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | salary.py                                   | P1       | ~~35~~ 36 ✅ Done |
 | accounts.py                                 | P1       | ~~30~~ 29 ✅ Done |
 | transfers.py                                | P1       | ~~28~~ ✅ Done    |
-| templates.py                                | P2       | 20                |
+| templates.py                                | P2       | ~~20~~ 24 ✅ Done |
 | savings.py                                  | P1       | ~~16~~ 19 ✅ Done |
 | categories.py                               | P2       | 10                |
 | settings.py                                 | P2       | 7                 |
@@ -1028,7 +1033,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
-7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
+7. **P2 routes** — ~~templates~~ ✅, categories, pay_periods, settings, grid gaps
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting
