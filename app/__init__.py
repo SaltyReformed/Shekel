@@ -6,13 +6,13 @@ with an optional config_name ('development', 'testing', 'production')
 to get a fully wired Flask instance.
 """
 
-import logging
 import os
 
 from flask import Flask, render_template
 
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
+from app.utils.logging_config import setup_logging
 
 
 def create_app(config_name=None):
@@ -37,7 +37,7 @@ def create_app(config_name=None):
     app.config.from_object(config_class)
 
     # --- Logging ---------------------------------------------------------
-    _configure_logging(app)
+    setup_logging(app)
 
     # --- Extensions ------------------------------------------------------
     db.init_app(app)
@@ -71,15 +71,6 @@ def create_app(config_name=None):
 
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
-
-
-def _configure_logging(app):
-    """Set up basic console logging for Phase 1."""
-    log_level = logging.DEBUG if app.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
 
 def _register_blueprints(app):
