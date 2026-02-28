@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import create_app
 from app.extensions import db
 from app.models.ref import (
+    AccountType,
     CalcMethod,
     DeductionTiming,
     FilingStatus,
@@ -27,6 +28,7 @@ from app.models.ref import (
 
 
 REF_DATA = {
+    AccountType: ["checking", "savings"],
     FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
     DeductionTiming: ["pre_tax", "post_tax"],
     CalcMethod: ["flat", "percentage"],

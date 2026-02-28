@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Accounts — Shekel{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-8">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h4><i class="bi bi-bank"></i> Accounts</h4>
+      <a href="{{ url_for('accounts.new_account') }}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-circle"></i> New Account
+      </a>
+    </div>
+
+    {% if accounts %}
+    <table class="table table-hover table-sm">
+      <caption class="visually-hidden">User accounts with type, balance, and status</caption>
+      <thead class="table-light">
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Type</th>
+          <th scope="col" class="text-end">Anchor Balance</th>
+          <th scope="col">Active</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for acct in accounts %}
+        <tr class="{{ 'text-muted' if not acct.is_active else '' }}">
+          <td>{{ acct.name }}</td>
+          <td>{{ acct.account_type.name|capitalize if acct.account_type else '—' }}</td>
+          <td class="text-end">
+            {% set editing = false %}
+            {% include "accounts/_anchor_cell.html" %}
+          </td>
+          <td>
+            {% if acct.is_active %}
+              <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
+              <span class="visually-hidden">Active</span>
+            {% else %}
+              <i class="bi bi-x-circle text-muted" aria-hidden="true"></i>
+              <span class="visually-hidden">Inactive</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="{{ url_for('accounts.edit_account', account_id=acct.id) }}"
+               class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ acct.name }}">
+              <i class="bi bi-pencil"></i>
+            </a>
+            {% if acct.is_active %}
+            <form method="POST" action="{{ url_for('accounts.deactivate_account', account_id=acct.id) }}"
+                  class="d-inline"
+                  data-confirm="Deactivate this account?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Deactivate {{ acct.name }}">
+                <i class="bi bi-x-circle"></i>
+              </button>
+            </form>
+            {% else %}
+            <form method="POST" action="{{ url_for('accounts.reactivate_account', account_id=acct.id) }}"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Reactivate {{ acct.name }}">
+                <i class="bi bi-arrow-counterclockwise"></i>
+              </button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-info">
+      No accounts yet. Create one to get started.
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header fw-semibold">Account Types</div>
+      <ul class="list-group list-group-flush">
+        {% for at in account_types %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <form method="POST" action="{{ url_for('accounts.update_account_type', type_id=at.id) }}"
+                class="d-flex align-items-center flex-grow-1 me-2 account-type-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" value="{{ at.name }}" class="form-control form-control-sm border-0 bg-transparent"
+                   aria-label="Account type name"
+                   onfocus="this.classList.remove('bg-transparent', 'border-0')"
+                   onblur="if(!this.form._changed){this.classList.add('bg-transparent', 'border-0')}"
+                   oninput="this.form._changed=true">
+            <button type="submit" class="btn btn-sm btn-outline-primary ms-1 d-none save-type-btn"
+                    aria-label="Save">
+              <i class="bi bi-check"></i>
+            </button>
+          </form>
+          {% if at.id in types_in_use %}
+          <button class="btn btn-sm btn-outline-danger" disabled
+                  title="In use by accounts" aria-label="Cannot delete — in use">
+            <i class="bi bi-trash"></i>
+          </button>
+          {% else %}
+          <form method="POST" action="{{ url_for('accounts.delete_account_type', type_id=at.id) }}"
+                class="d-inline"
+                data-confirm="Delete this account type?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ at.name }}">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="list-group-item text-muted">No account types defined.</li>
+        {% endfor %}
+      </ul>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('accounts.create_account_type') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="input-group input-group-sm">
+            <input type="text" name="name" class="form-control" required
+                   placeholder="New type name" aria-label="New account type name">
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-plus"></i> Add
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Show the save button when the inline account type name input changes.
+document.querySelectorAll('.account-type-form').forEach(function(form) {
+  var input = form.querySelector('input[name="name"]');
+  var btn = form.querySelector('.save-type-btn');
+  var original = input.value;
+  input.addEventListener('input', function() {
+    btn.classList.toggle('d-none', input.value === original);
+  });
+});
+</script>
+{% endblock %}

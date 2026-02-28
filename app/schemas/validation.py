@@ -416,3 +416,43 @@ class SavingsGoalUpdateSchema(BaseSchema):
     target_date = fields.Date(allow_none=True)
     contribution_per_period = fields.Decimal(places=2, as_string=True, allow_none=True)
     is_active = fields.Boolean()
+
+
+# ── Account Schemas ────────────────────────────────────────────────
+
+
+class AccountCreateSchema(BaseSchema):
+    """Validates POST data for creating an account."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+    account_type_id = fields.Integer(required=True)
+    anchor_balance = fields.Decimal(places=2, as_string=True)
+
+
+class AccountUpdateSchema(BaseSchema):
+    """Validates POST data for updating an account."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(validate=validate.Length(min=1, max=100))
+    account_type_id = fields.Integer()
+    is_active = fields.Boolean()
+    anchor_balance = fields.Decimal(places=2, as_string=True)
+
+
+class AccountTypeCreateSchema(BaseSchema):
+    """Validates POST data for creating an account type."""
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=30))
+
+
+class AccountTypeUpdateSchema(BaseSchema):
+    """Validates POST data for updating an account type."""
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=30))

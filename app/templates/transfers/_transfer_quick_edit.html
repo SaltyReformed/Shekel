@@ -1,5 +1,6 @@
 {# Transfer quick edit — single amount input that fits inside the <td>.
    Replaces cell content on click for fast amount edits.
+   Expand button (⋯) or F2 opens the full edit popover.
 
    Expected context: xfer — a Transfer object.
 #}
@@ -16,4 +17,11 @@
          aria-label="Edit amount for {{ xfer.name or 'Transfer' }}"
          autofocus
          style="min-width: 0; flex: 1;">
+  <button type="button"
+          class="btn btn-sm btn-link p-0 xfer-expand-btn"
+          title="More options (F2)"
+          aria-label="More options"
+          data-xfer-id="{{ xfer.id }}">
+    <i class="bi bi-three-dots"></i>
+  </button>
 </form>

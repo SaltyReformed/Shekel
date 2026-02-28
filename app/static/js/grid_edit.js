@@ -84,6 +84,28 @@ function openFullEdit(txnId, triggerEl) {
 }
 
 /**
+ * Open the full edit popover for a transfer.
+ * Same pattern as openFullEdit but fetches from the transfer endpoint.
+ */
+function openTransferFullEdit(xferId, triggerEl) {
+    const cell = triggerEl.closest('td');
+    const popover = positionPopover(cell);
+    if (!popover) return;
+
+    fetch('/transfers/' + xferId + '/full-edit', {
+        headers: { 'HX-Request': 'true' }
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(html) {
+        showPopover(popover, html);
+    })
+    .catch(function() {
+        closeFullEdit();
+    });
+}
+
+
+/**
  * Open the full create popover for an empty cell.
  * Loads the create form via fetch, anchored to the cell.
  */
@@ -164,10 +186,17 @@ document.addEventListener('keydown', function(e) {
         if (quickInput && quickInput.closest('.txn-quick-edit')) {
             e.preventDefault();
             const quickForm = quickInput.closest('.txn-quick-edit');
-            const expandBtn = quickForm.querySelector('.txn-expand-btn');
 
+            // Transfer expand button.
+            const xferBtn = quickForm.querySelector('.xfer-expand-btn');
+            if (xferBtn) {
+                openTransferFullEdit(parseInt(xferBtn.dataset.xferId), quickInput);
+                return;
+            }
+
+            // Transaction expand button.
+            const expandBtn = quickForm.querySelector('.txn-expand-btn');
             if (quickForm.dataset.mode === 'create') {
-                // Create mode — open full create popover.
                 openFullCreate(
                     parseInt(expandBtn.dataset.categoryId),
                     parseInt(expandBtn.dataset.periodId),
@@ -175,7 +204,6 @@ document.addEventListener('keydown', function(e) {
                     quickInput
                 );
             } else {
-                // Edit mode — open full edit popover.
                 openFullEdit(parseInt(expandBtn.dataset.txnId), quickInput);
             }
             return;
@@ -196,10 +224,24 @@ document.addEventListener('keydown', function(e) {
         if (quickInput && quickInput.closest('.txn-quick-edit')) {
             e.preventDefault();
             const quickForm = quickInput.closest('.txn-quick-edit');
-            const expandBtn = quickForm.querySelector('.txn-expand-btn');
 
+            // Transfer quick edit — revert to display mode.
+            const xferBtn = quickForm.querySelector('.xfer-expand-btn');
+            if (xferBtn) {
+                const xferId = xferBtn.dataset.xferId;
+                const targetDiv = document.getElementById('xfer-cell-' + xferId);
+                if (targetDiv) {
+                    htmx.ajax('GET', '/transfers/cell/' + xferId, {
+                        target: targetDiv,
+                        swap: 'innerHTML'
+                    });
+                }
+                return;
+            }
+
+            // Transaction quick edit/create.
+            const expandBtn = quickForm.querySelector('.txn-expand-btn');
             if (quickForm.dataset.mode === 'create') {
-                // Create mode — revert to empty cell via server.
                 const td = quickForm.closest('td');
                 if (td) {
                     htmx.ajax('GET',
@@ -210,7 +252,6 @@ document.addEventListener('keydown', function(e) {
                     );
                 }
             } else {
-                // Edit mode — revert cell to display mode.
                 const targetDiv = document.getElementById('txn-cell-' + expandBtn.dataset.txnId);
                 if (targetDiv) {
                     htmx.ajax('GET', '/transactions/' + expandBtn.dataset.txnId + '/cell', {
@@ -227,6 +268,13 @@ document.addEventListener('keydown', function(e) {
 
 // --- Delegated click handlers (CSP-compliant, replaces inline onclick) ---
 document.addEventListener('click', function(e) {
+    // Open transfer full edit popover (expand button in transfer quick-edit)
+    var xferEditBtn = e.target.closest('.xfer-expand-btn[data-xfer-id]');
+    if (xferEditBtn) {
+        openTransferFullEdit(parseInt(xferEditBtn.dataset.xferId), xferEditBtn);
+        return;
+    }
+
     // Open full edit popover (expand button in quick-edit mode)
     var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
     if (editBtn) {
