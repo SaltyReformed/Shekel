@@ -29,6 +29,7 @@
 | `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete        |
 | `test_routes/test_categories.py`            | 11      | CRUD, HTMX, in-use checks; complete      |
 | `test_routes/test_pay_periods.py`           | 6       | Generate form + validation; complete      |
+| `test_routes/test_settings.py`              | 7       | Show, update, validation; complete        |
 | `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate; complete      |
 | `test_services/test_balance_calculator.py`  | 14      | Edge cases + transfers; complete          |
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete          |
@@ -39,7 +40,7 @@
 | `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
 | `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
-| **Total**                                   | **376** |                                           |
+| **Total**                                   | **383** |                                           |
 
 ---
 
@@ -715,19 +716,19 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ### 2.8 `routes/settings.py` — Priority P2
 
-**Status: Zero tests.**
+**Status: Complete (7 tests in `test_routes/test_settings.py`).**
 
-| Category | Tests Needed                                                    |
-| -------- | --------------------------------------------------------------- |
-| HP       | GET `/settings` — renders settings page                         |
-| HP       | GET `/settings` — auto-creates UserSettings if missing          |
-| HP       | POST `/settings` — updates all three fields                     |
-| SP       | POST `/settings` — non-numeric grid_periods → flash danger      |
-| SP       | POST `/settings` — invalid Decimal for inflation → flash danger |
-| SP       | POST `/settings` — non-numeric threshold → flash danger         |
-| BE       | Blank fields skipped (partial update)                           |
+| Category | Tests Needed                                                    | Status |
+| -------- | --------------------------------------------------------------- | ------ |
+| HP       | GET `/settings` — renders settings page                         | ✅ `test_settings_page_renders` |
+| HP       | GET `/settings` — auto-creates UserSettings if missing          | ✅ `test_settings_auto_creates_if_missing` |
+| HP       | POST `/settings` — updates all three fields                     | ✅ `test_update_all_fields` |
+| SP       | POST `/settings` — non-numeric grid_periods → flash danger      | ✅ `test_invalid_grid_periods` |
+| SP       | POST `/settings` — invalid Decimal for inflation → flash danger | ✅ `test_invalid_inflation_rate` |
+| SP       | POST `/settings` — non-numeric threshold → flash danger         | ✅ `test_invalid_threshold` |
+| BE       | Blank fields skipped (partial update)                           | ✅ `test_blank_fields_skipped` |
 
-**Estimated new tests: 7**
+**Tests: 7** (2 show + 5 update)
 
 ---
 
@@ -950,7 +951,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | templates.py                                | P2       | ~~20~~ 24 ✅ Done |
 | savings.py                                  | P1       | ~~16~~ 19 ✅ Done |
 | categories.py                               | P2       | ~~10~~ 11 ✅ Done |
-| settings.py                                 | P2       | 7                 |
+| settings.py                                 | P2       | ~~7~~ ✅ Done     |
 | pay_periods.py                              | P2       | ~~6~~ ✅ Done     |
 | grid.py (gaps)                              | P2       | 4                 |
 | transactions.py (gaps)                      | P2       | 9                 |
@@ -966,8 +967,8 @@ Every POST endpoint should be tested for double-submission behavior:
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~91**           |
-| **Current total (actual)**                  |          | **376**           |
+| **Remaining estimated**                     |          | **~84**           |
+| **Current total (actual)**                  |          | **383**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1040,7 +1041,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
-7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, settings, grid gaps
+7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, grid gaps
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting
