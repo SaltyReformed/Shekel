@@ -298,6 +298,149 @@ class TestCarryForward:
             assert txn.is_override is True
             assert txn.pay_period_id == seed_periods[1].id
 
+    def test_carry_forward_skips_cancelled_items(self, app, db, seed_user, seed_periods):
+        """Cancelled items stay in the source period and are not carried forward."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+            # One projected (should move), one cancelled (should stay).
+            t1 = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Unpaid Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("80.00"),
+            )
+            t2 = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=cancelled.id,
+                name="Cancelled Expense",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("200.00"),
+            )
+            db.session.add_all([t1, t2])
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+            )
+            db.session.flush()
+
+            assert count == 1
+
+            # Cancelled item stays in source period.
+            remaining = (
+                db.session.query(Transaction)
+                .filter_by(pay_period_id=seed_periods[0].id)
+                .all()
+            )
+            assert len(remaining) == 1
+            assert remaining[0].name == "Cancelled Expense"
+
+    def test_carry_forward_skips_received_items(self, app, db, seed_user, seed_periods):
+        """Received income items stay in the source period and are not carried forward."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            received = db.session.query(Status).filter_by(name="received").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+
+            # One projected expense (should move), one received income (should stay).
+            t1 = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Unpaid Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("60.00"),
+            )
+            t2 = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=received.id,
+                name="Received Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+                actual_amount=Decimal("2000.00"),
+            )
+            db.session.add_all([t1, t2])
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+            )
+            db.session.flush()
+
+            assert count == 1
+
+            # Received item stays in source period.
+            remaining = (
+                db.session.query(Transaction)
+                .filter_by(pay_period_id=seed_periods[0].id)
+                .all()
+            )
+            assert len(remaining) == 1
+            assert remaining[0].name == "Received Paycheck"
+
+    def test_carry_forward_skips_soft_deleted_items(self, app, db, seed_user, seed_periods):
+        """Soft-deleted projected items are excluded from carry forward."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+            # Soft-deleted projected expense — should NOT be moved.
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Deleted Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("40.00"),
+                is_deleted=True,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+            )
+            db.session.flush()
+
+            assert count == 0
+
+            # Item stays in source period, untouched.
+            assert txn.pay_period_id == seed_periods[0].id
+
+    def test_carry_forward_source_not_found(self, app, db, seed_periods):
+        """NotFoundError is raised when the source period does not exist."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(999999, seed_periods[1].id)
+
+    def test_carry_forward_target_not_found(self, app, db, seed_periods):
+        """NotFoundError is raised when the target period does not exist."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(seed_periods[0].id, 999999)
+
+    def test_carry_forward_empty_source_returns_zero(self, app, db, seed_periods):
+        """Carry forward returns 0 when the source period has no transactions."""
+        with app.app_context():
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+            )
+
+            assert count == 0
+
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate

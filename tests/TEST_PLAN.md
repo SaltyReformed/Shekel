@@ -17,18 +17,18 @@
 
 ## Current Coverage Snapshot
 
-| File                                        | Tests   | Notes                          |
-| ------------------------------------------- | ------- | ------------------------------ |
-| `test_routes/test_auth.py`                  | 5       | Login/logout; good             |
-| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD           |
-| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough |
-| `test_services/test_balance_calculator.py`  | 4       | Basic cases only               |
-| `test_services/test_credit_workflow.py`     | 9       | Credit + carry-forward; complete |
-| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                |
-| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions     |
-| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage             |
-| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints     |
-| **Total**                                   | **105** |                                |
+| File                                        | Tests   | Notes                            |
+| ------------------------------------------- | ------- | -------------------------------- |
+| `test_routes/test_auth.py`                  | 5       | Login/logout; good               |
+| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD             |
+| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough   |
+| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                 |
+| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete |
+| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                  |
+| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions       |
+| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage               |
+| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints       |
+| **Total**                                   | **111** |                                  |
 
 ---
 
@@ -363,27 +363,28 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 | SM       | `unmark_credit()` reverts status to projected                                      | ✅     |
 | BE       | No next period → raises ValidationError                                            | ✅     |
 
-**New tests added: 3** (`test_payback_uses_actual_amount_when_set`, `test_auto_creates_cc_category_if_missing`, `test_no_next_period_raises_validation_error`)
+**New tests added: 3** (`test_payback_uses_actual_amount_when_set`,
+`test_auto_creates_cc_category_if_missing`, `test_no_next_period_raises_validation_error`)
 
 ---
 
-### 1.9 `services/carry_forward_service.py` — Priority P2
+### 1.9 `services/carry_forward_service.py` — Priority P2 ✅
 
-**Status: Indirect coverage only (via credit_workflow tests).**
+**Status: Complete (9 tests in `test_credit_workflow.py::TestCarryForward`).**
 
-| Category | Tests Needed                                     |
-| -------- | ------------------------------------------------ |
-| HP       | Moves projected transactions to target period    |
-| HP       | Returns correct count of moved items             |
-| SM       | Template-linked items flagged `is_override=True` |
-| SM       | Done/received items NOT moved                    |
-| SM       | Cancelled items NOT moved                        |
-| SM       | Soft-deleted items NOT moved                     |
-| SP       | Source period doesn't exist → NotFoundError      |
-| SP       | Target period doesn't exist → NotFoundError      |
-| BE       | No projected items → returns 0                   |
+| Category | Tests Needed                                     | Status |
+| -------- | ------------------------------------------------ | ------ |
+| HP       | Moves projected transactions to target period    | ✅ `test_carry_forward_moves_projected_items` |
+| HP       | Returns correct count of moved items             | ✅ `test_carry_forward_moves_projected_items` |
+| SM       | Template-linked items flagged `is_override=True` | ✅ `test_carry_forward_flags_template_items_as_override` |
+| SM       | Done/received items NOT moved                    | ✅ `test_carry_forward_skips_done_items`, `test_carry_forward_skips_received_items` |
+| SM       | Cancelled items NOT moved                        | ✅ `test_carry_forward_skips_cancelled_items` |
+| SM       | Soft-deleted items NOT moved                     | ✅ `test_carry_forward_skips_soft_deleted_items` |
+| SP       | Source period doesn't exist → NotFoundError      | ✅ `test_carry_forward_source_not_found` |
+| SP       | Target period doesn't exist → NotFoundError      | ✅ `test_carry_forward_target_not_found` |
+| BE       | No projected items → returns 0                   | ✅ `test_carry_forward_empty_source_returns_zero` |
 
-**Estimated new tests: 9**
+**Estimated new tests: ~~9~~ Done**
 
 ---
 
@@ -928,7 +929,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | pay_period_service                          | P1       | 16              |
 | savings_goal_service                        | P1       | 14              |
 | auth_service                                | P2       | 7               |
-| carry_forward_service                       | P2       | 9               |
+| carry_forward_service                       | P2       | ~~9~~ ✅ Done   |
 | credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done   |
 | **Routes**                                  |          |                 |
 | salary.py                                   | P1       | 35              |
@@ -1028,6 +1029,6 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
-8. **P2 services** — auth_service, carry_forward, ~~credit_workflow gaps~~ ✅
+8. **P2 services** — auth_service, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting
