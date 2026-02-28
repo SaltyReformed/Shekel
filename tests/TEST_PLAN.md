@@ -28,6 +28,7 @@
 | `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete           |
 | `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete        |
 | `test_routes/test_categories.py`            | 11      | CRUD, HTMX, in-use checks; complete      |
+| `test_routes/test_pay_periods.py`           | 6       | Generate form + validation; complete      |
 | `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate; complete      |
 | `test_services/test_balance_calculator.py`  | 14      | Edge cases + transfers; complete          |
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete          |
@@ -38,7 +39,7 @@
 | `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
 | `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
-| **Total**                                   | **370** |                                           |
+| **Total**                                   | **376** |                                           |
 
 ---
 
@@ -697,18 +698,18 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ### 2.7 `routes/pay_periods.py` — Priority P2
 
-**Status: Zero tests.**
+**Status: Complete (6 tests in `test_routes/test_pay_periods.py`).**
 
-| Category | Tests Needed                                                        |
-| -------- | ------------------------------------------------------------------- |
-| HP       | GET `/pay-periods/generate` — renders form                          |
-| HP       | POST `/pay-periods/generate` — creates periods, redirects to grid   |
-| SP       | POST `/pay-periods/generate` — invalid start_date → 422 with errors |
-| SP       | POST `/pay-periods/generate` — cadence_days=0 → validation error    |
-| BE       | `num_periods=1` → creates single period                             |
-| IDEM     | POST `/pay-periods/generate` — double-submit → duplicates skipped   |
+| Category | Tests Needed                                                        | Status |
+| -------- | ------------------------------------------------------------------- | ------ |
+| HP       | GET `/pay-periods/generate` — renders form                          | ✅ `test_generate_form_renders` |
+| HP       | POST `/pay-periods/generate` — creates periods, redirects to grid   | ✅ `test_generate_periods_success` |
+| SP       | POST `/pay-periods/generate` — invalid start_date → 422 with errors | ✅ `test_generate_missing_start_date` |
+| SP       | POST `/pay-periods/generate` — cadence_days=0 → validation error    | ✅ `test_generate_cadence_zero` |
+| BE       | `num_periods=1` → creates single period                             | ✅ `test_generate_single_period` |
+| IDEM     | POST `/pay-periods/generate` — double-submit → duplicates skipped   | ✅ `test_generate_double_submit_skips_duplicates` |
 
-**Estimated new tests: 6**
+**Tests: 6**
 
 ---
 
@@ -950,7 +951,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | savings.py                                  | P1       | ~~16~~ 19 ✅ Done |
 | categories.py                               | P2       | ~~10~~ 11 ✅ Done |
 | settings.py                                 | P2       | 7                 |
-| pay_periods.py                              | P2       | 6                 |
+| pay_periods.py                              | P2       | ~~6~~ ✅ Done     |
 | grid.py (gaps)                              | P2       | 4                 |
 | transactions.py (gaps)                      | P2       | 9                 |
 | auth.py (gaps)                              | P3       | 2                 |
@@ -965,8 +966,8 @@ Every POST endpoint should be tested for double-submission behavior:
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~97**           |
-| **Current total (actual)**                  |          | **370**           |
+| **Remaining estimated**                     |          | **~91**           |
+| **Current total (actual)**                  |          | **376**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1039,7 +1040,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
-7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, pay_periods, settings, grid gaps
+7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, settings, grid gaps
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting
