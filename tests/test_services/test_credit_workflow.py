@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 from app.services import credit_workflow, carry_forward_service
@@ -85,6 +86,74 @@ class TestCreditWorkflow:
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
                 estimated_amount=Decimal("2000.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            with pytest.raises(ValidationError):
+                credit_workflow.mark_as_credit(txn.id)
+
+    def test_payback_uses_actual_amount_when_set(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Payback amount uses actual_amount when it is set on the original."""
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods, amount="100.00")
+            txn.actual_amount = Decimal("75.00")
+            db.session.flush()
+
+            payback = credit_workflow.mark_as_credit(txn.id)
+            db.session.flush()
+
+            assert payback.estimated_amount == Decimal("75.00")
+
+    def test_auto_creates_cc_category_if_missing(
+        self, app, db, seed_user, seed_periods
+    ):
+        """mark_as_credit auto-creates the CC Payback category if missing."""
+        with app.app_context():
+            # Delete the pre-seeded CC Payback category by ID (re-fetch to
+            # avoid cross-session issues).
+            cc_cat = db.session.get(
+                Category, seed_user["categories"]["Payback"].id
+            )
+            db.session.delete(cc_cat)
+            db.session.flush()
+
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id)
+            db.session.flush()
+
+            # A new category should have been created.
+            new_cat = (
+                db.session.query(Category)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    group_name="Credit Card",
+                    item_name="Payback",
+                )
+                .one()
+            )
+            assert new_cat is not None
+            assert payback.category_id == new_cat.id
+
+    def test_no_next_period_raises_validation_error(
+        self, app, db, seed_user, seed_periods
+    ):
+        """mark_as_credit raises ValidationError when no next period exists."""
+        with app.app_context():
+            # Create expense in the last period (no period follows it).
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+            txn = Transaction(
+                pay_period_id=seed_periods[-1].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Last Period Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
             )
             db.session.add(txn)
             db.session.flush()
