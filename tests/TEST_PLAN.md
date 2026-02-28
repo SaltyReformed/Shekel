@@ -17,25 +17,28 @@
 
 ## Current Coverage Snapshot
 
-| File                                        | Tests   | Notes                                |
-| ------------------------------------------- | ------- | ------------------------------------ |
-| `test_routes/test_auth.py`                  | 5       | Login/logout; good                   |
-| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD                 |
-| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough       |
-| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                     |
-| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete        |
-| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax    |
-| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate           |
-| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete     |
-| `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete |
-| `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete      |
-| `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete   |
-| `test_routes/test_categories.py`            | 11      | CRUD, HTMX, in-use checks; complete |
-| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                      |
-| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions           |
-| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage                   |
-| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints           |
-| **Total**                                   | **265** |                                      |
+| File                                        | Tests   | Notes                                     |
+| ------------------------------------------- | ------- | ----------------------------------------- |
+| `test_routes/test_auth.py`                  | 5       | Login/logout; good                        |
+| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD                      |
+| `test_routes/test_transaction_auth.py`      | 13      | IDOR on transactions; thorough            |
+| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete             |
+| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax         |
+| `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete      |
+| `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete           |
+| `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete        |
+| `test_routes/test_categories.py`            | 11      | CRUD, HTMX, in-use checks; complete      |
+| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate; complete      |
+| `test_services/test_balance_calculator.py`  | 14      | Edge cases + transfers; complete          |
+| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete          |
+| `test_services/test_pay_period_service.py`  | 17      | Generate, current, range, next; complete  |
+| `test_services/test_paycheck_calculator.py` | 47      | Full pipeline + deductions; complete      |
+| `test_services/test_recurrence_engine.py`   | 28      | All patterns + regen; complete            |
+| `test_services/test_savings_goal_service.py`| 14      | Contributions, metrics, periods; complete |
+| `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
+| `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
+| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
+| **Total**                                   | **370** |                                           |
 
 ---
 
@@ -75,7 +78,7 @@ in the adversarial audit.
 
 ### 1.1 `services/tax_calculator.py` — Priority P0
 
-**Status: Well covered (36 tests).** No new tests needed.
+**Status: Well covered (30 tests).** No new tests needed.
 
 Existing tests cover: zero-tax scenarios, positive tax scenarios, high income, bracket boundaries,
 input validation, dependent credits, legacy wrapper, and marginal bracket application.
@@ -93,9 +96,8 @@ input validation, dependent credits, legacy wrapper, and marginal bracket applic
 
 ### 1.2 `services/paycheck_calculator.py` — Priority P0
 
-**Status: Partially covered (10 tests — raises only).** **[AUDIT GAP]** The full
-`calculate_paycheck()` pipeline, deduction logic, 3rd-paycheck detection, inflation, cumulative
-wages, and `project_salary()` are untested.
+**Status: Complete (47 tests in `test_services/test_paycheck_calculator.py`).** Full pipeline,
+deductions, 3rd-paycheck detection, inflation, cumulative wages, and projections all covered.
 
 #### `calculate_paycheck()` — Full Pipeline
 
@@ -175,9 +177,9 @@ wages, and `project_salary()` are untested.
 
 ### 1.3 `services/recurrence_engine.py` — Priority P0
 
-**Status: Partially covered (6 tests — `every_period` and `every_n_periods` only).** **[AUDIT GAP]**
-Six of eight recurrence patterns are untested. `regenerate_for_template()`, `resolve_conflicts()`,
-and salary-linked amounts are untested.
+**Status: Complete (28 tests in `test_services/test_recurrence_engine.py`).** All 8 patterns,
+`generate_for_template()`, `regenerate_for_template()`, `resolve_conflicts()`, and salary-linked
+amounts covered.
 
 #### Pattern Matching — `_match_periods()`
 
@@ -230,8 +232,8 @@ and salary-linked amounts are untested.
 
 ### 1.4 `services/transfer_recurrence.py` — Priority P0
 
-**Status: Zero dedicated tests.** **[AUDIT GAP]** Entire module untested. Parallel to
-`recurrence_engine` but for Transfer objects.
+**Status: Complete (10 tests in `test_services/test_transfer_recurrence.py`).** Generate,
+regenerate, resolve_conflicts, and edge cases covered.
 
 | Category | Tests Needed                                                     |
 | -------- | ---------------------------------------------------------------- |
@@ -250,8 +252,8 @@ and salary-linked amounts are untested.
 
 ### 1.5 `services/balance_calculator.py` — Priority P0
 
-**Status: Partially covered (4 basic + 3 transfer tests).** **[AUDIT GAP]** Missing edge cases for
-pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
+**Status: Complete (14 tests in `test_services/test_balance_calculator.py`).** Edge cases for
+pre-anchor periods, None anchor_balance, mixed transactions + transfers all covered.
 
 | Category | Tests Needed                                                               |
 | -------- | -------------------------------------------------------------------------- |
@@ -272,7 +274,8 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ### 1.6 `services/pay_period_service.py` — Priority P1
 
-**Status: Zero tests.** **[AUDIT GAP]** Foundation service with no direct test coverage.
+**Status: Complete (17 tests in `test_services/test_pay_period_service.py`).** Generate, get_current,
+get_next, get_all, get_periods_in_range all covered.
 
 #### `generate_pay_periods()`
 
@@ -322,7 +325,8 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ### 1.7 `services/savings_goal_service.py` — Priority P1
 
-**Status: Zero tests.** **[AUDIT GAP]** Pure functions with no test coverage.
+**Status: Complete (14 tests in `test_services/test_savings_goal_service.py`).** Required
+contribution, savings metrics, and count_periods_until all covered.
 
 #### `calculate_required_contribution()`
 
@@ -744,7 +748,7 @@ endpoint.
 
 ### 2.10 `routes/transactions.py` — Priority P2
 
-**Status: Well covered for IDOR (15 tests) and basic CRUD (5 tests).** Some state transitions and
+**Status: Well covered for IDOR (13 tests) and basic CRUD (5 tests).** Some state transitions and
 edge cases remain.
 
 | Category | Tests Needed                                                         |
@@ -929,12 +933,12 @@ Every POST endpoint should be tested for double-submission behavior:
 | Module                                      | Priority | Estimated Tests   |
 | ------------------------------------------- | -------- | ----------------- |
 | **Services**                                |          |                   |
-| paycheck_calculator (pipeline + deductions) | P0       | 30                |
-| recurrence_engine (patterns + regen)        | P0       | 22                |
-| balance_calculator (edge cases)             | P0       | 10                |
-| transfer_recurrence                         | P0       | 8                 |
-| pay_period_service                          | P1       | 16                |
-| savings_goal_service                        | P1       | 14                |
+| paycheck_calculator (pipeline + deductions) | P0       | ~~30~~ 47 ✅ Done |
+| recurrence_engine (patterns + regen)        | P0       | ~~22~~ 28 ✅ Done |
+| balance_calculator (edge cases)             | P0       | ~~10~~ 14 ✅ Done |
+| transfer_recurrence                         | P0       | ~~8~~ 10 ✅ Done  |
+| pay_period_service                          | P1       | ~~16~~ 17 ✅ Done |
+| savings_goal_service                        | P1       | ~~14~~ 14 ✅ Done |
 | auth_service                                | P2       | ~~7~~ ✅ Done     |
 | carry_forward_service                       | P2       | ~~9~~ ✅ Done     |
 | credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done     |
@@ -961,9 +965,9 @@ Every POST endpoint should be tested for double-submission behavior:
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Total new tests**                         |          | **~355**          |
-| **Existing tests**                          |          | **105**           |
-| **Grand total**                             |          | **~460**          |
+| **Remaining estimated**                     |          | **~97**           |
+| **Current total (actual)**                  |          | **370**           |
+| **Projected grand total**                   |          | **~467**          |
 
 ---
 
@@ -1028,12 +1032,12 @@ tests/
 
 Tests should be written in this order to maximize coverage of high-risk areas first:
 
-1. **P0 services** — paycheck_calculator pipeline, recurrence engine patterns, balance_calculator
-   edges, transfer_recurrence
+1. **P0 services** — ~~paycheck_calculator~~ ✅, ~~recurrence engine~~ ✅, ~~balance_calculator~~ ✅,
+   ~~transfer_recurrence~~ ✅
 2. **P0 models** — transaction/transfer effective_amount full coverage
 3. **P1 schemas** — all Marshmallow schemas in isolation
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
-5. **P1 services** — pay_period_service, savings_goal_service
+5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, pay_periods, settings, grid gaps
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
