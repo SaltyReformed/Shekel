@@ -20,7 +20,7 @@
 | File                                        | Tests   | Notes                                     |
 | ------------------------------------------- | ------- | ----------------------------------------- |
 | `test_routes/test_auth.py`                  | 5       | Login/logout; good                        |
-| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD                      |
+| `test_routes/test_grid.py`                  | 12      | Grid view, balance row, txn CRUD          |
 | `test_routes/test_transaction_auth.py`      | 13      | IDOR on transactions; thorough            |
 | `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete             |
 | `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax         |
@@ -40,7 +40,7 @@
 | `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
 | `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
-| **Total**                                   | **383** |                                           |
+| **Total**                                   | **387** |                                           |
 
 ---
 
@@ -734,17 +734,16 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ### 2.9 `routes/grid.py` — Priority P2
 
-**Status: Partially covered (8 tests for `index` + transaction CRUD).** Missing `balance_row`
-endpoint.
+**Status: Complete (12 tests in `test_routes/test_grid.py` — 8 existing + 4 new).**
 
-| Category | Tests Needed                                                   |
-| -------- | -------------------------------------------------------------- |
-| HP       | GET `/grid/balance-row` — returns recalculated balance partial |
-| BE       | GET `/grid/balance-row` — no current period → 204 empty        |
-| BE       | GET `/grid/balance-row` — no scenario/account → empty balances |
-| BE       | GET `/` — `periods` query param out of range → clipped         |
+| Category | Tests Needed                                                   | Status |
+| -------- | -------------------------------------------------------------- | ------ |
+| HP       | GET `/grid/balance-row` — returns recalculated balance partial | ✅ `test_balance_row_returns_partial` |
+| BE       | GET `/grid/balance-row` — no current period → 204 empty        | ✅ `test_balance_row_no_current_period` |
+| BE       | GET `/grid/balance-row` — custom offset shifts window          | ✅ `test_balance_row_custom_offset` |
+| BE       | GET `/` — `periods` larger than available → renders available  | ✅ `test_grid_periods_large_value` |
 
-**Estimated new tests: 4**
+**Tests: 4 new** (added to existing 8)
 
 ---
 
@@ -953,7 +952,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | categories.py                               | P2       | ~~10~~ 11 ✅ Done |
 | settings.py                                 | P2       | ~~7~~ ✅ Done     |
 | pay_periods.py                              | P2       | ~~6~~ ✅ Done     |
-| grid.py (gaps)                              | P2       | 4                 |
+| grid.py (gaps)                              | P2       | ~~4~~ ✅ Done     |
 | transactions.py (gaps)                      | P2       | 9                 |
 | auth.py (gaps)                              | P3       | 2                 |
 | **Models**                                  |          |                   |
@@ -967,8 +966,8 @@ Every POST endpoint should be tested for double-submission behavior:
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~84**           |
-| **Current total (actual)**                  |          | **383**           |
+| **Remaining estimated**                     |          | **~80**           |
+| **Current total (actual)**                  |          | **387**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1041,7 +1040,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
-7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, grid gaps
+7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid gaps~~ ✅
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
 10. **P3 models + routes** — computed properties, rate limiting

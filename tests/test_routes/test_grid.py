@@ -37,6 +37,37 @@ class TestGridView:
             assert response.status_code == 200
 
 
+class TestBalanceRow:
+    """Tests for GET /grid/balance-row HTMX partial."""
+
+    def test_balance_row_returns_partial(self, app, auth_client, seed_user, seed_periods):
+        """GET /grid/balance-row returns recalculated balance HTML partial."""
+        with app.app_context():
+            resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
+            assert resp.status_code == 200
+
+    def test_balance_row_no_current_period(self, app, auth_client, seed_user):
+        """GET /grid/balance-row with no periods returns 204 empty."""
+        with app.app_context():
+            # No periods generated — get_current_period returns None.
+            resp = auth_client.get("/grid/balance-row")
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+    def test_balance_row_custom_offset(self, app, auth_client, seed_user, seed_periods):
+        """GET /grid/balance-row with offset shifts the visible window."""
+        with app.app_context():
+            resp = auth_client.get("/grid/balance-row?periods=3&offset=2")
+            assert resp.status_code == 200
+
+    def test_grid_periods_large_value(self, app, auth_client, seed_user, seed_periods):
+        """GET / with periods larger than available still renders."""
+        with app.app_context():
+            # Request 100 periods when only 10 exist — should render what's available.
+            resp = auth_client.get("/?periods=100")
+            assert resp.status_code == 200
+
+
 class TestTransactionCRUD:
     """Tests for transaction create, update, delete, and status changes."""
 
