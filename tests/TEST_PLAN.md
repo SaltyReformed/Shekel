@@ -24,13 +24,14 @@
 | `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough   |
 | `test_services/test_balance_calculator.py`  | 4       | Basic cases only                 |
 | `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete    |
+| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax|
 | `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate       |
 | `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete |
 | `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                  |
 | `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions       |
 | `test_services/test_tax_calculator.py`      | 36      | Excellent coverage               |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints       |
-| **Total**                                   | **147** |                                  |
+| **Total**                                   | **183** |                                  |
 
 ---
 
@@ -462,75 +463,72 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ---
 
-### 2.2 `routes/salary.py` — Priority P1
+### 2.2 `routes/salary.py` — Priority P1 ✅
 
-**Status: Zero tests for ~15 endpoints.** **[AUDIT GAP]** Complete salary profile lifecycle is
-untested: create (which auto-creates category, recurrence rule, template, and generates
-transactions), update (which regenerates transactions), and delete. Raises, deductions, breakdown,
-projection, and tax config routes are all untested.
+**Status: Complete (36 tests in `test_routes/test_salary.py`).**
 
 #### Profile CRUD
 
-| Category | Tests Needed                                                                  |
-| -------- | ----------------------------------------------------------------------------- |
-| HP       | GET `/salary` — lists profiles with estimated net pay                         |
-| HP       | GET `/salary/new` — renders create form                                       |
-| HP       | POST `/salary` — creates profile with linked template + recurrence + category |
-| HP       | GET `/salary/<id>/edit` — renders edit form                                   |
-| HP       | POST `/salary/<id>` — updates profile, regenerates transactions               |
-| HP       | POST `/salary/<id>/delete` — deactivates profile + template                   |
-| SP       | POST `/salary` — validation error → flash danger                              |
-| SP       | POST `/salary` — no baseline scenario → flash danger                          |
-| SP       | POST `/salary` — no active account → flash danger                             |
-| IDOR     | GET `/salary/<id>/edit` — other user's profile → redirect                     |
-| IDOR     | POST `/salary/<id>` — other user's profile → redirect                         |
-| IDOR     | POST `/salary/<id>/delete` — other user's profile → redirect                  |
-| FIN      | Created template amount = `annual_salary / pay_periods_per_year`              |
-| IDEM     | POST `/salary` — double-submit → 2nd attempt duplicate name or re-create      |
+| Category | Tests Needed                                                                  | Status |
+| -------- | ----------------------------------------------------------------------------- | ------ |
+| HP       | GET `/salary` — lists profiles with estimated net pay                         | ✅ `test_list_profiles` |
+| HP       | GET `/salary/new` — renders create form                                       | ✅ `test_new_profile_form` |
+| HP       | POST `/salary` — creates profile with linked template + recurrence + category | ✅ `test_create_profile` |
+| HP       | GET `/salary/<id>/edit` — renders edit form                                   | ✅ `test_edit_profile_form` |
+| HP       | POST `/salary/<id>` — updates profile, regenerates transactions               | ✅ `test_update_profile` |
+| HP       | POST `/salary/<id>/delete` — deactivates profile + template                   | ✅ `test_delete_profile` |
+| SP       | POST `/salary` — validation error → flash danger                              | ✅ `test_create_profile_validation_error` |
+| SP       | POST `/salary` — no baseline scenario → flash danger                          | ✅ `test_create_profile_no_baseline_scenario` |
+| SP       | POST `/salary` — no active account → flash danger                             | ✅ `test_create_profile_no_active_account` |
+| IDOR     | GET `/salary/<id>/edit` — other user's profile → redirect                     | ✅ `test_edit_other_users_profile_redirects` |
+| IDOR     | POST `/salary/<id>` — other user's profile → redirect                         | ✅ `test_update_other_users_profile_redirects` |
+| IDOR     | POST `/salary/<id>/delete` — other user's profile → redirect                  | ✅ `test_delete_other_users_profile_redirects` |
+| FIN      | Created template amount = `annual_salary / pay_periods_per_year`              | ✅ `test_create_profile_template_amount` |
+| IDEM     | POST `/salary` — double-submit → 2nd attempt duplicate name or re-create      | ✅ `test_create_profile_double_submit` |
 
 #### Raises
 
-| Category | Tests Needed                                                                       |
-| -------- | ---------------------------------------------------------------------------------- |
-| HP       | POST `/salary/<id>/raises` — adds raise, regenerates transactions                  |
-| HP       | POST `/salary/raises/<id>/delete` — removes raise, regenerates                     |
-| SP       | POST `/salary/<id>/raises` — validation error (missing percentage and flat_amount) |
-| SP       | POST `/salary/<id>/raises` — profile not found → flash danger                      |
-| IDOR     | POST `/salary/raises/<id>/delete` — other user's raise → "Not authorized"          |
-| HP       | HTMX response returns `_raises_section.html` partial                               |
+| Category | Tests Needed                                                                       | Status |
+| -------- | ---------------------------------------------------------------------------------- | ------ |
+| HP       | POST `/salary/<id>/raises` — adds raise, regenerates transactions                  | ✅ `test_add_raise` |
+| HP       | POST `/salary/raises/<id>/delete` — removes raise, regenerates                     | ✅ `test_delete_raise` |
+| SP       | POST `/salary/<id>/raises` — validation error (missing percentage and flat_amount) | ✅ `test_add_raise_validation_error` |
+| SP       | POST `/salary/<id>/raises` — profile not found → flash danger                      | ✅ `test_add_raise_profile_not_found` |
+| IDOR     | POST `/salary/raises/<id>/delete` — other user's raise → "Not authorized"          | ✅ `test_delete_other_users_raise_redirects` |
+| HP       | HTMX response returns `_raises_section.html` partial                               | ✅ `test_add_raise_htmx_returns_partial` |
 
 #### Deductions
 
-| Category | Tests Needed                                                           |
-| -------- | ---------------------------------------------------------------------- |
-| HP       | POST `/salary/<id>/deductions` — adds deduction, regenerates           |
-| HP       | POST `/salary/deductions/<id>/delete` — removes deduction, regenerates |
-| SP       | POST `/salary/<id>/deductions` — validation error                      |
-| IDOR     | POST `/salary/deductions/<id>/delete` — other user's deduction         |
-| HP       | HTMX response returns `_deductions_section.html` partial               |
-| BE       | Percentage input converted correctly (6 → 0.06)                        |
+| Category | Tests Needed                                                           | Status |
+| -------- | ---------------------------------------------------------------------- | ------ |
+| HP       | POST `/salary/<id>/deductions` — adds deduction, regenerates           | ✅ `test_add_deduction` |
+| HP       | POST `/salary/deductions/<id>/delete` — removes deduction, regenerates | ✅ `test_delete_deduction` |
+| SP       | POST `/salary/<id>/deductions` — validation error                      | ✅ `test_add_deduction_validation_error` |
+| IDOR     | POST `/salary/deductions/<id>/delete` — other user's deduction         | ✅ `test_delete_other_users_deduction_redirects` |
+| HP       | HTMX response returns `_deductions_section.html` partial               | ✅ `test_add_deduction_htmx_returns_partial` |
+| BE       | Percentage input converted correctly (6 → 0.06)                        | ✅ `test_add_percentage_deduction_converts_input` |
 
 #### Breakdown & Projection
 
-| Category | Tests Needed                                                               |
-| -------- | -------------------------------------------------------------------------- |
-| HP       | GET `/salary/<id>/breakdown/<period_id>` — renders breakdown               |
-| HP       | GET `/salary/<id>/breakdown` — redirects to current period                 |
-| HP       | GET `/salary/<id>/projection` — renders multi-period projection            |
-| SP       | GET `/salary/<id>/breakdown` — no current period → flash warning           |
-| IDOR     | GET `/salary/<id>/breakdown/<period_id>` — other user's profile → redirect |
+| Category | Tests Needed                                                               | Status |
+| -------- | -------------------------------------------------------------------------- | ------ |
+| HP       | GET `/salary/<id>/breakdown/<period_id>` — renders breakdown               | ✅ `test_breakdown_renders` |
+| HP       | GET `/salary/<id>/breakdown` — redirects to current period                 | ✅ `test_breakdown_current_redirects` |
+| HP       | GET `/salary/<id>/projection` — renders multi-period projection            | ✅ `test_projection_renders` |
+| SP       | GET `/salary/<id>/breakdown` — no current period → flash warning           | ✅ `test_breakdown_no_current_period` |
+| IDOR     | GET `/salary/<id>/breakdown/<period_id>` — other user's profile → redirect | ✅ `test_breakdown_other_users_profile_redirects` |
 
 #### Tax Config
 
-| Category | Tests Needed                                                  |
-| -------- | ------------------------------------------------------------- |
-| HP       | GET `/salary/tax-config` — renders tax config page            |
-| HP       | POST `/salary/tax-config` — creates/updates state config      |
-| HP       | POST `/salary/fica-config` — creates/updates FICA config      |
-| SP       | POST `/salary/tax-config` — invalid state code → flash danger |
-| SP       | POST `/salary/fica-config` — validation error → flash danger  |
+| Category | Tests Needed                                                  | Status |
+| -------- | ------------------------------------------------------------- | ------ |
+| HP       | GET `/salary/tax-config` — renders tax config page            | ✅ `test_tax_config_page_renders` |
+| HP       | POST `/salary/tax-config` — creates/updates state config      | ✅ `test_update_state_tax_config` |
+| HP       | POST `/salary/fica-config` — creates/updates FICA config      | ✅ `test_update_fica_config` |
+| SP       | POST `/salary/tax-config` — invalid state code → flash danger | ✅ `test_update_state_tax_invalid_code` |
+| SP       | POST `/salary/fica-config` — validation error → flash danger  | ✅ `test_update_fica_validation_error` |
 
-**Estimated new tests: 35**
+**Estimated new tests: ~~35~~ 36 Done**
 
 ---
 
@@ -932,7 +930,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | carry_forward_service                       | P2       | ~~9~~ ✅ Done   |
 | credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done   |
 | **Routes**                                  |          |                 |
-| salary.py                                   | P1       | 35              |
+| salary.py                                   | P1       | ~~35~~ 36 ✅ Done |
 | accounts.py                                 | P1       | ~~30~~ 29 ✅ Done |
 | transfers.py                                | P1       | 28              |
 | templates.py                                | P2       | 20              |
@@ -1025,7 +1023,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
    edges, transfer_recurrence
 2. **P0 models** — transaction/transfer effective_amount full coverage
 3. **P1 schemas** — all Marshmallow schemas in isolation
-4. **P1 routes** — salary, ~~accounts~~ ✅, transfers, savings (happy + IDOR)
+4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, transfers, savings (happy + IDOR)
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps

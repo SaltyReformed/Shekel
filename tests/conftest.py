@@ -25,7 +25,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    AccountType, TransactionType, Status, RecurrencePattern,
+    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    RaiseType, RecurrencePattern, Status, TaxType, TransactionType,
 )
 from app.services.auth_service import hash_password
 
@@ -86,6 +87,13 @@ def db(app, setup_database):
         # Truncate budget and auth tables (order matters for FK constraints).
         _db.session.execute(_db.text(
             "TRUNCATE TABLE "
+            "salary.paycheck_deductions, "
+            "salary.salary_raises, "
+            "salary.salary_profiles, "
+            "salary.fica_configs, "
+            "salary.state_tax_configs, "
+            "salary.tax_brackets, "
+            "salary.tax_bracket_sets, "
             "budget.savings_goals, "
             "budget.transfers, "
             "budget.transfer_templates, "
@@ -239,6 +247,14 @@ def _seed_ref_tables():
             "monthly_first", "quarterly", "semi_annual",
             "annual", "once",
         ]),
+        (FilingStatus, [
+            "single", "married_jointly", "married_separately",
+            "head_of_household",
+        ]),
+        (DeductionTiming, ["pre_tax", "post_tax"]),
+        (CalcMethod, ["flat", "percentage"]),
+        (TaxType, ["flat", "none", "bracket"]),
+        (RaiseType, ["merit", "cola", "custom"]),
     ]
     for model_class, names in ref_data:
         for name in names:
