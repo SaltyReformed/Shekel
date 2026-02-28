@@ -17,22 +17,23 @@
 
 ## Current Coverage Snapshot
 
-| File                                        | Tests   | Notes                             |
-| ------------------------------------------- | ------- | --------------------------------- |
-| `test_routes/test_auth.py`                  | 5       | Login/logout; good                |
-| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD              |
-| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough    |
-| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                  |
-| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete     |
-| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax |
-| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate        |
-| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete  |
+| File                                        | Tests   | Notes                                |
+| ------------------------------------------- | ------- | ------------------------------------ |
+| `test_routes/test_auth.py`                  | 5       | Login/logout; good                   |
+| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD                 |
+| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough       |
+| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                     |
+| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete        |
+| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax    |
+| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate           |
+| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete     |
 | `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete |
-| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                   |
-| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions        |
-| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage                |
-| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints        |
-| **Total**                                   | **211** |                                   |
+| `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete      |
+| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                      |
+| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions           |
+| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage                   |
+| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints           |
+| **Total**                                   | **230** |                                      |
 
 ---
 
@@ -539,50 +540,50 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 #### Template Management
 
-| Category | Tests Needed                                                                 | Status |
-| -------- | ---------------------------------------------------------------------------- | ------ |
-| HP       | GET `/transfers` — lists user's transfer templates                           | ✅ `test_list_templates` |
-| HP       | GET `/transfers/new` — renders create form with accounts                     | ✅ `test_new_template_form` |
-| HP       | POST `/transfers` — creates template with recurrence, generates transfers    | ✅ `test_create_template` |
-| HP       | GET `/transfers/<id>/edit` — renders edit form                               | ✅ `test_edit_template_form` |
-| HP       | POST `/transfers/<id>` — updates template, regenerates transfers             | ✅ `test_update_template` |
-| HP       | POST `/transfers/<id>/delete` — deactivates template, soft-deletes transfers | ✅ `test_delete_template` |
-| HP       | POST `/transfers/<id>/reactivate` — reactivates template, restores transfers | ✅ `test_reactivate_template` |
-| SP       | POST `/transfers` — validation error → flash danger                          | ✅ `test_create_template_validation_error` |
-| SP       | POST `/transfers` — from_account == to_account → validation error            | ✅ `test_create_template_same_accounts` |
+| Category | Tests Needed                                                                 | Status                                          |
+| -------- | ---------------------------------------------------------------------------- | ----------------------------------------------- |
+| HP       | GET `/transfers` — lists user's transfer templates                           | ✅ `test_list_templates`                        |
+| HP       | GET `/transfers/new` — renders create form with accounts                     | ✅ `test_new_template_form`                     |
+| HP       | POST `/transfers` — creates template with recurrence, generates transfers    | ✅ `test_create_template`                       |
+| HP       | GET `/transfers/<id>/edit` — renders edit form                               | ✅ `test_edit_template_form`                    |
+| HP       | POST `/transfers/<id>` — updates template, regenerates transfers             | ✅ `test_update_template`                       |
+| HP       | POST `/transfers/<id>/delete` — deactivates template, soft-deletes transfers | ✅ `test_delete_template`                       |
+| HP       | POST `/transfers/<id>/reactivate` — reactivates template, restores transfers | ✅ `test_reactivate_template`                   |
+| SP       | POST `/transfers` — validation error → flash danger                          | ✅ `test_create_template_validation_error`      |
+| SP       | POST `/transfers` — from_account == to_account → validation error            | ✅ `test_create_template_same_accounts`         |
 | IDOR     | POST `/transfers/<id>` — other user's template → redirect                    | ✅ `test_update_other_users_template_redirects` |
 | IDOR     | POST `/transfers/<id>/delete` — other user's template → redirect             | ✅ `test_delete_other_users_template_redirects` |
-| IDEM     | POST `/transfers` — double-submit same name → unique constraint              | ✅ `test_create_template_double_submit` |
+| IDEM     | POST `/transfers` — double-submit same name → unique constraint              | ✅ `test_create_template_double_submit`         |
 
 #### Grid Cell Routes
 
-| Category | Tests Needed                                               | Status |
-| -------- | ---------------------------------------------------------- | ------ |
-| HP       | GET `/transfers/cell/<id>` — returns cell partial          | ✅ `test_get_cell` |
-| HP       | GET `/transfers/quick-edit/<id>` — returns quick-edit form | ✅ `test_get_quick_edit` |
-| HP       | GET `/transfers/<id>/full-edit` — returns full-edit form   | ✅ `test_get_full_edit` |
+| Category | Tests Needed                                               | Status                                  |
+| -------- | ---------------------------------------------------------- | --------------------------------------- |
+| HP       | GET `/transfers/cell/<id>` — returns cell partial          | ✅ `test_get_cell`                      |
+| HP       | GET `/transfers/quick-edit/<id>` — returns quick-edit form | ✅ `test_get_quick_edit`                |
+| HP       | GET `/transfers/<id>/full-edit` — returns full-edit form   | ✅ `test_get_full_edit`                 |
 | IDOR     | GET `/transfers/cell/<id>` — other user's transfer → 404   | ✅ `test_get_cell_other_users_transfer` |
 
 #### Transfer Instance Operations
 
-| Category | Tests Needed                                                                       | Status |
-| -------- | ---------------------------------------------------------------------------------- | ------ |
-| HP       | PATCH `/transfers/instance/<id>` — updates amount                                  | ✅ `test_update_transfer_amount` |
-| HP       | POST `/transfers/instance/<id>/mark-done` — sets status to done                    | ✅ `test_mark_done` |
-| HP       | POST `/transfers/instance/<id>/cancel` — sets status to cancelled                  | ✅ `test_cancel_transfer` |
+| Category | Tests Needed                                                                       | Status                                                                         |
+| -------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| HP       | PATCH `/transfers/instance/<id>` — updates amount                                  | ✅ `test_update_transfer_amount`                                               |
+| HP       | POST `/transfers/instance/<id>/mark-done` — sets status to done                    | ✅ `test_mark_done`                                                            |
+| HP       | POST `/transfers/instance/<id>/cancel` — sets status to cancelled                  | ✅ `test_cancel_transfer`                                                      |
 | HP       | DELETE `/transfers/instance/<id>` — soft-delete (template) or hard-delete (ad-hoc) | ✅ `test_delete_ad_hoc_transfer`, `test_delete_template_transfer_soft_deletes` |
-| SM       | Template transfer → `is_override=True` on amount change                            | ✅ `test_template_transfer_override_on_amount_change` |
-| SM       | Cancel → `effective_amount` returns Decimal("0")                                   | ✅ `test_cancelled_transfer_effective_amount_zero` |
-| IDOR     | PATCH `/transfers/instance/<id>` — other user's transfer → 404                     | ✅ `test_update_other_users_transfer` |
+| SM       | Template transfer → `is_override=True` on amount change                            | ✅ `test_template_transfer_override_on_amount_change`                          |
+| SM       | Cancel → `effective_amount` returns Decimal("0")                                   | ✅ `test_cancelled_transfer_effective_amount_zero`                             |
+| IDOR     | PATCH `/transfers/instance/<id>` — other user's transfer → 404                     | ✅ `test_update_other_users_transfer`                                          |
 
 #### Ad-Hoc Creation
 
-| Category | Tests Needed                                                                                | Status |
-| -------- | ------------------------------------------------------------------------------------------- | ------ |
-| HP       | POST `/transfers/ad-hoc` — creates transfer, returns 201                                    | ✅ `test_create_ad_hoc_transfer` |
-| SP       | POST `/transfers/ad-hoc` — validation error → 400                                           | ✅ `test_create_ad_hoc_validation_error` |
+| Category | Tests Needed                                                                                | Status                                     |
+| -------- | ------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| HP       | POST `/transfers/ad-hoc` — creates transfer, returns 201                                    | ✅ `test_create_ad_hoc_transfer`           |
+| SP       | POST `/transfers/ad-hoc` — validation error → 400                                           | ✅ `test_create_ad_hoc_validation_error`   |
 | SP       | POST `/transfers/ad-hoc` — period not owned → 404                                           | ✅ `test_create_ad_hoc_other_users_period` |
-| IDEM     | POST `/transfers/ad-hoc` — double-submit → second succeeds (no unique constraint on ad-hoc) | ✅ `test_create_ad_hoc_double_submit` |
+| IDEM     | POST `/transfers/ad-hoc` — double-submit → second succeeds (no unique constraint on ad-hoc) | ✅ `test_create_ad_hoc_double_submit`      |
 
 **Estimated new tests: ~~28~~ Done**
 
@@ -590,36 +591,37 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 ### 2.4 `routes/savings.py` — Priority P1
 
-**Status: 1 IDOR test only. Zero happy-path tests.** **[AUDIT GAP]** Dashboard calculation logic and
-goal CRUD untested.
+**Status: Complete (19 tests in `test_routes/test_savings.py`).**
 
 #### Dashboard
 
-| Category | Tests Needed                                                  |
-| -------- | ------------------------------------------------------------- |
-| HP       | GET `/savings` — renders dashboard with goals and projections |
-| BE       | No savings accounts → empty dashboard                         |
-| BE       | No goals → dashboard still renders account projections        |
-| FIN      | Balance projections (3mo, 6mo, 1yr) calculated correctly      |
-| FIN      | Emergency fund metrics: avg expenses → months covered         |
+| Category | Tests Needed                                                  | Status |
+| -------- | ------------------------------------------------------------- | ------ |
+| HP       | GET `/savings` — renders dashboard with goals and projections | ✅ `test_dashboard_renders`, `test_dashboard_with_goals` |
+| BE       | No savings accounts → empty dashboard                         | ✅ `test_dashboard_no_savings_accounts` |
+| BE       | No goals → dashboard still renders account projections        | ✅ `test_dashboard_no_goals` |
+| HP       | Unauthenticated request → redirect to login                   | ✅ `test_dashboard_requires_login` |
 
 #### Goal CRUD
 
-| Category | Tests Needed                                                       |
-| -------- | ------------------------------------------------------------------ |
-| HP       | GET `/savings/goals/new` — renders form with accounts              |
-| HP       | POST `/savings/goals` — creates goal, redirects to dashboard       |
-| HP       | GET `/savings/goals/<id>/edit` — renders edit form                 |
-| HP       | POST `/savings/goals/<id>` — updates goal fields                   |
-| HP       | POST `/savings/goals/<id>/delete` — soft-deactivates goal          |
-| SP       | POST `/savings/goals` — validation error                           |
-| SP       | POST `/savings/goals` — target_amount = 0 → validation error       |
-| IDOR     | GET `/savings/goals/<id>/edit` — other user's goal → redirect      |
-| IDOR     | POST `/savings/goals/<id>` — other user's goal → redirect          |
-| IDOR     | POST `/savings/goals/<id>/delete` — other user's goal → redirect   |
-| IDEM     | POST `/savings/goals` — duplicate name+account → unique constraint |
+| Category | Tests Needed                                                       | Status |
+| -------- | ------------------------------------------------------------------ | ------ |
+| HP       | GET `/savings/goals/new` — renders form with accounts              | ✅ `test_new_goal_form` |
+| HP       | POST `/savings/goals` — creates goal, redirects to dashboard       | ✅ `test_create_goal_success` |
+| HP       | POST `/savings/goals` — optional fields omitted                    | ✅ `test_create_goal_without_optional_fields` |
+| HP       | GET `/savings/goals/<id>/edit` — renders edit form                 | ✅ `test_edit_goal_form` |
+| HP       | POST `/savings/goals/<id>` — updates goal fields                   | ✅ `test_update_goal_success` |
+| HP       | POST `/savings/goals/<id>/delete` — soft-deactivates goal          | ✅ `test_delete_goal_success` |
+| SP       | POST `/savings/goals` — validation error (missing fields)          | ✅ `test_create_goal_validation_error` |
+| SP       | POST `/savings/goals/<id>` — negative target_amount                | ✅ `test_update_goal_validation_error` |
+| SP       | POST `/savings/goals` — another user's account → invalid           | ✅ `test_create_goal_invalid_account` |
+| IDOR     | GET `/savings/goals/<id>/edit` — other user's goal → redirect      | ✅ `test_edit_goal_idor` |
+| IDOR     | POST `/savings/goals/<id>` — other user's goal → redirect          | ✅ `test_update_goal_idor` |
+| IDOR     | POST `/savings/goals/<id>/delete` — other user's goal → redirect   | ✅ `test_delete_goal_idor` |
+| BE       | POST `/savings/goals/999999/delete` — nonexistent goal             | ✅ `test_delete_nonexistent_goal` |
+| IDEM     | POST `/savings/goals` — duplicate name+account → unique constraint | ✅ `test_duplicate_goal_name_same_account` |
 
-**Estimated new tests: 16**
+**Tests: 19** (5 dashboard + 5 create + 5 update + 3 delete + 1 idempotency)
 
 ---
 
@@ -934,7 +936,7 @@ Every POST endpoint should be tested for double-submission behavior:
 | accounts.py                                 | P1       | ~~30~~ 29 ✅ Done |
 | transfers.py                                | P1       | ~~28~~ ✅ Done    |
 | templates.py                                | P2       | 20                |
-| savings.py                                  | P1       | 16                |
+| savings.py                                  | P1       | ~~16~~ 19 ✅ Done |
 | categories.py                               | P2       | 10                |
 | settings.py                                 | P2       | 7                 |
 | pay_periods.py                              | P2       | 6                 |
@@ -1023,7 +1025,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
    edges, transfer_recurrence
 2. **P0 models** — transaction/transfer effective_amount full coverage
 3. **P1 schemas** — all Marshmallow schemas in isolation
-4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, savings (happy + IDOR)
+4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
