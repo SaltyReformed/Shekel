@@ -17,21 +17,22 @@
 
 ## Current Coverage Snapshot
 
-| File                                        | Tests   | Notes                            |
-| ------------------------------------------- | ------- | -------------------------------- |
-| `test_routes/test_auth.py`                  | 5       | Login/logout; good               |
-| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD             |
-| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough   |
-| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                 |
-| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete    |
-| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax|
-| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate       |
-| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete |
-| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                  |
-| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions       |
-| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage               |
-| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints       |
-| **Total**                                   | **183** |                                  |
+| File                                        | Tests   | Notes                             |
+| ------------------------------------------- | ------- | --------------------------------- |
+| `test_routes/test_auth.py`                  | 5       | Login/logout; good                |
+| `test_routes/test_grid.py`                  | 8       | Grid view + txn CRUD              |
+| `test_routes/test_transaction_auth.py`      | 15      | IDOR on transactions; thorough    |
+| `test_services/test_balance_calculator.py`  | 4       | Basic cases only                  |
+| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete     |
+| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax |
+| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate        |
+| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete  |
+| `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete |
+| `test_services/test_recurrence_engine.py`   | 6       | 2 of 8 patterns                   |
+| `test_services/test_paycheck_calculator.py` | 10      | Raises only; no deductions        |
+| `test_services/test_tax_calculator.py`      | 36      | Excellent coverage                |
+| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints        |
+| **Total**                                   | **211** |                                   |
 
 ---
 
@@ -395,14 +396,14 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 **Status: Complete (7 tests in `test_auth_service.py`).**
 
-| Category | Tests Needed                                          | Status |
-| -------- | ----------------------------------------------------- | ------ |
-| HP       | `hash_password()` returns bcrypt hash                 | ✅ `test_hash_password_returns_bcrypt_hash` |
-| HP       | `verify_password()` returns True for matching pair    | ✅ `test_verify_password_returns_true_for_correct_password` |
-| SP       | `verify_password()` returns False for wrong password  | ✅ `test_verify_password_returns_false_for_wrong_password` |
-| HP       | `authenticate()` returns User on valid credentials    | ✅ `test_authenticate_returns_user_on_valid_credentials` |
-| SP       | `authenticate()` raises AuthError on wrong email      | ✅ `test_authenticate_raises_auth_error_on_wrong_email` |
-| SP       | `authenticate()` raises AuthError on wrong password   | ✅ `test_authenticate_raises_auth_error_on_wrong_password` |
+| Category | Tests Needed                                          | Status                                                       |
+| -------- | ----------------------------------------------------- | ------------------------------------------------------------ |
+| HP       | `hash_password()` returns bcrypt hash                 | ✅ `test_hash_password_returns_bcrypt_hash`                  |
+| HP       | `verify_password()` returns True for matching pair    | ✅ `test_verify_password_returns_true_for_correct_password`  |
+| SP       | `verify_password()` returns False for wrong password  | ✅ `test_verify_password_returns_false_for_wrong_password`   |
+| HP       | `authenticate()` returns User on valid credentials    | ✅ `test_authenticate_returns_user_on_valid_credentials`     |
+| SP       | `authenticate()` raises AuthError on wrong email      | ✅ `test_authenticate_raises_auth_error_on_wrong_email`      |
+| SP       | `authenticate()` raises AuthError on wrong password   | ✅ `test_authenticate_raises_auth_error_on_wrong_password`   |
 | SP       | `authenticate()` raises AuthError on disabled account | ✅ `test_authenticate_raises_auth_error_on_disabled_account` |
 
 **Estimated new tests: ~~7~~ Done**
@@ -417,47 +418,47 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 #### Account CRUD
 
-| Category | Tests Needed                                                                                 | Status |
-| -------- | -------------------------------------------------------------------------------------------- | ------ |
-| HP       | GET `/accounts` — renders list with user's accounts                                          | ✅ `test_list_accounts_renders` |
-| HP       | GET `/accounts/new` — renders create form                                                    | ✅ `test_new_account_form_renders` |
-| HP       | POST `/accounts` — creates account, redirects to list                                        | ✅ `test_create_account` |
-| HP       | GET `/accounts/<id>/edit` — renders edit form                                                | ✅ `test_edit_account_form_renders` |
-| HP       | POST `/accounts/<id>` — updates account fields                                               | ✅ `test_update_account` |
-| HP       | POST `/accounts/<id>/delete` — soft-deactivates account                                      | ✅ `test_deactivate_account` |
-| HP       | POST `/accounts/<id>/reactivate` — reactivates account                                       | ✅ `test_reactivate_account` |
-| SP       | POST `/accounts` — validation error (missing name)                                           | ✅ `test_create_account_validation_error` |
-| SP       | POST `/accounts` — duplicate name → flash warning                                            | ✅ `test_create_account_duplicate_name` |
-| SP       | POST `/accounts/<id>` — duplicate name → flash warning                                       | ✅ `test_update_account_duplicate_name` |
-| IDOR     | GET `/accounts/<id>/edit` — other user's account → redirect                                  | ✅ `test_edit_other_users_account_redirects` |
-| IDOR     | POST `/accounts/<id>` — other user's account → redirect                                      | ✅ `test_update_other_users_account_redirects` |
+| Category | Tests Needed                                                                                 | Status                                             |
+| -------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| HP       | GET `/accounts` — renders list with user's accounts                                          | ✅ `test_list_accounts_renders`                    |
+| HP       | GET `/accounts/new` — renders create form                                                    | ✅ `test_new_account_form_renders`                 |
+| HP       | POST `/accounts` — creates account, redirects to list                                        | ✅ `test_create_account`                           |
+| HP       | GET `/accounts/<id>/edit` — renders edit form                                                | ✅ `test_edit_account_form_renders`                |
+| HP       | POST `/accounts/<id>` — updates account fields                                               | ✅ `test_update_account`                           |
+| HP       | POST `/accounts/<id>/delete` — soft-deactivates account                                      | ✅ `test_deactivate_account`                       |
+| HP       | POST `/accounts/<id>/reactivate` — reactivates account                                       | ✅ `test_reactivate_account`                       |
+| SP       | POST `/accounts` — validation error (missing name)                                           | ✅ `test_create_account_validation_error`          |
+| SP       | POST `/accounts` — duplicate name → flash warning                                            | ✅ `test_create_account_duplicate_name`            |
+| SP       | POST `/accounts/<id>` — duplicate name → flash warning                                       | ✅ `test_update_account_duplicate_name`            |
+| IDOR     | GET `/accounts/<id>/edit` — other user's account → redirect                                  | ✅ `test_edit_other_users_account_redirects`       |
+| IDOR     | POST `/accounts/<id>` — other user's account → redirect                                      | ✅ `test_update_other_users_account_redirects`     |
 | IDOR     | POST `/accounts/<id>/delete` — other user's account → redirect                               | ✅ `test_deactivate_other_users_account_redirects` |
 | SM       | POST `/accounts/<id>/delete` — account in use by active transfers → flash warning, no delete | ✅ `test_deactivate_account_with_active_transfers` |
-| IDEM     | POST `/accounts` — double-submit same name → duplicate flash on 2nd                          | ✅ `test_create_account_double_submit` |
+| IDEM     | POST `/accounts` — double-submit same name → duplicate flash on 2nd                          | ✅ `test_create_account_double_submit`             |
 
 #### Anchor Balance (Grid Integration)
 
-| Category | Tests Needed                                                            | Status |
-| -------- | ----------------------------------------------------------------------- | ------ |
-| HP       | PATCH `/accounts/<id>/inline-anchor` — updates balance, returns partial | ✅ `test_inline_anchor_update` |
-| HP       | GET `/accounts/<id>/inline-anchor-form` — returns edit partial          | ✅ `test_inline_anchor_form_returns_partial` |
+| Category | Tests Needed                                                            | Status                                          |
+| -------- | ----------------------------------------------------------------------- | ----------------------------------------------- |
+| HP       | PATCH `/accounts/<id>/inline-anchor` — updates balance, returns partial | ✅ `test_inline_anchor_update`                  |
+| HP       | GET `/accounts/<id>/inline-anchor-form` — returns edit partial          | ✅ `test_inline_anchor_form_returns_partial`    |
 | HP       | GET `/accounts/<id>/inline-anchor-display` — returns display partial    | ✅ `test_inline_anchor_display_returns_partial` |
-| HP       | PATCH `/accounts/<id>/true-up` — updates balance, creates history entry | ✅ `test_true_up_updates_balance` |
-| SP       | PATCH `/accounts/<id>/true-up` — no current period → 400                | ✅ `test_true_up_no_current_period` |
-| SP       | PATCH `/accounts/<id>/inline-anchor` — invalid amount → 400             | ✅ `test_inline_anchor_invalid_amount` |
-| IDOR     | PATCH `/accounts/<id>/inline-anchor` — other user's account → 404       | ✅ `test_inline_anchor_other_users_account` |
-| IDOR     | PATCH `/accounts/<id>/true-up` — other user's account → 404             | ✅ `test_true_up_other_users_account` |
-| FIN      | True-up creates `AccountAnchorHistory` audit record                     | ✅ `test_true_up_updates_balance` (combined) |
+| HP       | PATCH `/accounts/<id>/true-up` — updates balance, creates history entry | ✅ `test_true_up_updates_balance`               |
+| SP       | PATCH `/accounts/<id>/true-up` — no current period → 400                | ✅ `test_true_up_no_current_period`             |
+| SP       | PATCH `/accounts/<id>/inline-anchor` — invalid amount → 400             | ✅ `test_inline_anchor_invalid_amount`          |
+| IDOR     | PATCH `/accounts/<id>/inline-anchor` — other user's account → 404       | ✅ `test_inline_anchor_other_users_account`     |
+| IDOR     | PATCH `/accounts/<id>/true-up` — other user's account → 404             | ✅ `test_true_up_other_users_account`           |
+| FIN      | True-up creates `AccountAnchorHistory` audit record                     | ✅ `test_true_up_updates_balance` (combined)    |
 
 #### Account Type Management
 
-| Category | Tests Needed                                                     | Status |
-| -------- | ---------------------------------------------------------------- | ------ |
-| HP       | POST `/accounts/types` — creates new account type                | ✅ `test_create_account_type` |
-| HP       | POST `/accounts/types/<id>` — renames account type               | ✅ `test_rename_account_type` |
-| HP       | POST `/accounts/types/<id>/delete` — deletes unused type         | ✅ `test_delete_unused_account_type` |
+| Category | Tests Needed                                                     | Status                                  |
+| -------- | ---------------------------------------------------------------- | --------------------------------------- |
+| HP       | POST `/accounts/types` — creates new account type                | ✅ `test_create_account_type`           |
+| HP       | POST `/accounts/types/<id>` — renames account type               | ✅ `test_rename_account_type`           |
+| HP       | POST `/accounts/types/<id>/delete` — deletes unused type         | ✅ `test_delete_unused_account_type`    |
 | SP       | POST `/accounts/types` — duplicate name → flash warning          | ✅ `test_create_duplicate_account_type` |
-| SP       | POST `/accounts/types/<id>/delete` — type in use → flash warning | ✅ `test_delete_account_type_in_use` |
+| SP       | POST `/accounts/types/<id>/delete` — type in use → flash warning | ✅ `test_delete_account_type_in_use`    |
 
 **Estimated new tests: ~~30~~ 29 Done (FIN merged into HP true-up test)**
 
@@ -469,122 +470,121 @@ pre-anchor periods, None anchor_balance, and mixed transactions + transfers.
 
 #### Profile CRUD
 
-| Category | Tests Needed                                                                  | Status |
-| -------- | ----------------------------------------------------------------------------- | ------ |
-| HP       | GET `/salary` — lists profiles with estimated net pay                         | ✅ `test_list_profiles` |
-| HP       | GET `/salary/new` — renders create form                                       | ✅ `test_new_profile_form` |
-| HP       | POST `/salary` — creates profile with linked template + recurrence + category | ✅ `test_create_profile` |
-| HP       | GET `/salary/<id>/edit` — renders edit form                                   | ✅ `test_edit_profile_form` |
-| HP       | POST `/salary/<id>` — updates profile, regenerates transactions               | ✅ `test_update_profile` |
-| HP       | POST `/salary/<id>/delete` — deactivates profile + template                   | ✅ `test_delete_profile` |
-| SP       | POST `/salary` — validation error → flash danger                              | ✅ `test_create_profile_validation_error` |
-| SP       | POST `/salary` — no baseline scenario → flash danger                          | ✅ `test_create_profile_no_baseline_scenario` |
-| SP       | POST `/salary` — no active account → flash danger                             | ✅ `test_create_profile_no_active_account` |
-| IDOR     | GET `/salary/<id>/edit` — other user's profile → redirect                     | ✅ `test_edit_other_users_profile_redirects` |
+| Category | Tests Needed                                                                  | Status                                         |
+| -------- | ----------------------------------------------------------------------------- | ---------------------------------------------- |
+| HP       | GET `/salary` — lists profiles with estimated net pay                         | ✅ `test_list_profiles`                        |
+| HP       | GET `/salary/new` — renders create form                                       | ✅ `test_new_profile_form`                     |
+| HP       | POST `/salary` — creates profile with linked template + recurrence + category | ✅ `test_create_profile`                       |
+| HP       | GET `/salary/<id>/edit` — renders edit form                                   | ✅ `test_edit_profile_form`                    |
+| HP       | POST `/salary/<id>` — updates profile, regenerates transactions               | ✅ `test_update_profile`                       |
+| HP       | POST `/salary/<id>/delete` — deactivates profile + template                   | ✅ `test_delete_profile`                       |
+| SP       | POST `/salary` — validation error → flash danger                              | ✅ `test_create_profile_validation_error`      |
+| SP       | POST `/salary` — no baseline scenario → flash danger                          | ✅ `test_create_profile_no_baseline_scenario`  |
+| SP       | POST `/salary` — no active account → flash danger                             | ✅ `test_create_profile_no_active_account`     |
+| IDOR     | GET `/salary/<id>/edit` — other user's profile → redirect                     | ✅ `test_edit_other_users_profile_redirects`   |
 | IDOR     | POST `/salary/<id>` — other user's profile → redirect                         | ✅ `test_update_other_users_profile_redirects` |
 | IDOR     | POST `/salary/<id>/delete` — other user's profile → redirect                  | ✅ `test_delete_other_users_profile_redirects` |
-| FIN      | Created template amount = `annual_salary / pay_periods_per_year`              | ✅ `test_create_profile_template_amount` |
-| IDEM     | POST `/salary` — double-submit → 2nd attempt duplicate name or re-create      | ✅ `test_create_profile_double_submit` |
+| FIN      | Created template amount = `annual_salary / pay_periods_per_year`              | ✅ `test_create_profile_template_amount`       |
+| IDEM     | POST `/salary` — double-submit → 2nd attempt duplicate name or re-create      | ✅ `test_create_profile_double_submit`         |
 
 #### Raises
 
-| Category | Tests Needed                                                                       | Status |
-| -------- | ---------------------------------------------------------------------------------- | ------ |
-| HP       | POST `/salary/<id>/raises` — adds raise, regenerates transactions                  | ✅ `test_add_raise` |
-| HP       | POST `/salary/raises/<id>/delete` — removes raise, regenerates                     | ✅ `test_delete_raise` |
-| SP       | POST `/salary/<id>/raises` — validation error (missing percentage and flat_amount) | ✅ `test_add_raise_validation_error` |
-| SP       | POST `/salary/<id>/raises` — profile not found → flash danger                      | ✅ `test_add_raise_profile_not_found` |
+| Category | Tests Needed                                                                       | Status                                       |
+| -------- | ---------------------------------------------------------------------------------- | -------------------------------------------- |
+| HP       | POST `/salary/<id>/raises` — adds raise, regenerates transactions                  | ✅ `test_add_raise`                          |
+| HP       | POST `/salary/raises/<id>/delete` — removes raise, regenerates                     | ✅ `test_delete_raise`                       |
+| SP       | POST `/salary/<id>/raises` — validation error (missing percentage and flat_amount) | ✅ `test_add_raise_validation_error`         |
+| SP       | POST `/salary/<id>/raises` — profile not found → flash danger                      | ✅ `test_add_raise_profile_not_found`        |
 | IDOR     | POST `/salary/raises/<id>/delete` — other user's raise → "Not authorized"          | ✅ `test_delete_other_users_raise_redirects` |
-| HP       | HTMX response returns `_raises_section.html` partial                               | ✅ `test_add_raise_htmx_returns_partial` |
+| HP       | HTMX response returns `_raises_section.html` partial                               | ✅ `test_add_raise_htmx_returns_partial`     |
 
 #### Deductions
 
-| Category | Tests Needed                                                           | Status |
-| -------- | ---------------------------------------------------------------------- | ------ |
-| HP       | POST `/salary/<id>/deductions` — adds deduction, regenerates           | ✅ `test_add_deduction` |
-| HP       | POST `/salary/deductions/<id>/delete` — removes deduction, regenerates | ✅ `test_delete_deduction` |
-| SP       | POST `/salary/<id>/deductions` — validation error                      | ✅ `test_add_deduction_validation_error` |
-| IDOR     | POST `/salary/deductions/<id>/delete` — other user's deduction         | ✅ `test_delete_other_users_deduction_redirects` |
-| HP       | HTMX response returns `_deductions_section.html` partial               | ✅ `test_add_deduction_htmx_returns_partial` |
+| Category | Tests Needed                                                           | Status                                            |
+| -------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
+| HP       | POST `/salary/<id>/deductions` — adds deduction, regenerates           | ✅ `test_add_deduction`                           |
+| HP       | POST `/salary/deductions/<id>/delete` — removes deduction, regenerates | ✅ `test_delete_deduction`                        |
+| SP       | POST `/salary/<id>/deductions` — validation error                      | ✅ `test_add_deduction_validation_error`          |
+| IDOR     | POST `/salary/deductions/<id>/delete` — other user's deduction         | ✅ `test_delete_other_users_deduction_redirects`  |
+| HP       | HTMX response returns `_deductions_section.html` partial               | ✅ `test_add_deduction_htmx_returns_partial`      |
 | BE       | Percentage input converted correctly (6 → 0.06)                        | ✅ `test_add_percentage_deduction_converts_input` |
 
 #### Breakdown & Projection
 
-| Category | Tests Needed                                                               | Status |
-| -------- | -------------------------------------------------------------------------- | ------ |
-| HP       | GET `/salary/<id>/breakdown/<period_id>` — renders breakdown               | ✅ `test_breakdown_renders` |
-| HP       | GET `/salary/<id>/breakdown` — redirects to current period                 | ✅ `test_breakdown_current_redirects` |
-| HP       | GET `/salary/<id>/projection` — renders multi-period projection            | ✅ `test_projection_renders` |
-| SP       | GET `/salary/<id>/breakdown` — no current period → flash warning           | ✅ `test_breakdown_no_current_period` |
+| Category | Tests Needed                                                               | Status                                            |
+| -------- | -------------------------------------------------------------------------- | ------------------------------------------------- |
+| HP       | GET `/salary/<id>/breakdown/<period_id>` — renders breakdown               | ✅ `test_breakdown_renders`                       |
+| HP       | GET `/salary/<id>/breakdown` — redirects to current period                 | ✅ `test_breakdown_current_redirects`             |
+| HP       | GET `/salary/<id>/projection` — renders multi-period projection            | ✅ `test_projection_renders`                      |
+| SP       | GET `/salary/<id>/breakdown` — no current period → flash warning           | ✅ `test_breakdown_no_current_period`             |
 | IDOR     | GET `/salary/<id>/breakdown/<period_id>` — other user's profile → redirect | ✅ `test_breakdown_other_users_profile_redirects` |
 
 #### Tax Config
 
-| Category | Tests Needed                                                  | Status |
-| -------- | ------------------------------------------------------------- | ------ |
-| HP       | GET `/salary/tax-config` — renders tax config page            | ✅ `test_tax_config_page_renders` |
-| HP       | POST `/salary/tax-config` — creates/updates state config      | ✅ `test_update_state_tax_config` |
-| HP       | POST `/salary/fica-config` — creates/updates FICA config      | ✅ `test_update_fica_config` |
+| Category | Tests Needed                                                  | Status                                  |
+| -------- | ------------------------------------------------------------- | --------------------------------------- |
+| HP       | GET `/salary/tax-config` — renders tax config page            | ✅ `test_tax_config_page_renders`       |
+| HP       | POST `/salary/tax-config` — creates/updates state config      | ✅ `test_update_state_tax_config`       |
+| HP       | POST `/salary/fica-config` — creates/updates FICA config      | ✅ `test_update_fica_config`            |
 | SP       | POST `/salary/tax-config` — invalid state code → flash danger | ✅ `test_update_state_tax_invalid_code` |
-| SP       | POST `/salary/fica-config` — validation error → flash danger  | ✅ `test_update_fica_validation_error` |
+| SP       | POST `/salary/fica-config` — validation error → flash danger  | ✅ `test_update_fica_validation_error`  |
 
 **Estimated new tests: ~~35~~ 36 Done**
 
 ---
 
-### 2.3 `routes/transfers.py` — Priority P1
+### 2.3 `routes/transfers.py` — Priority P1 ✅
 
-**Status: 3 IDOR tests only. Zero happy-path tests.** **[AUDIT GAP]** Happy paths, status
-transitions, and HTMX partials untested for all 19 endpoints.
+**Status: Complete (28 tests in `test_routes/test_transfers.py`).**
 
 #### Template Management
 
-| Category | Tests Needed                                                                 |
-| -------- | ---------------------------------------------------------------------------- |
-| HP       | GET `/transfers` — lists user's transfer templates                           |
-| HP       | GET `/transfers/new` — renders create form with accounts                     |
-| HP       | POST `/transfers` — creates template with recurrence, generates transfers    |
-| HP       | GET `/transfers/<id>/edit` — renders edit form                               |
-| HP       | POST `/transfers/<id>` — updates template, regenerates transfers             |
-| HP       | POST `/transfers/<id>/delete` — deactivates template, soft-deletes transfers |
-| HP       | POST `/transfers/<id>/reactivate` — reactivates template, restores transfers |
-| SP       | POST `/transfers` — validation error → flash danger                          |
-| SP       | POST `/transfers` — from_account == to_account → validation error            |
-| IDOR     | POST `/transfers/<id>` — other user's template → redirect                    |
-| IDOR     | POST `/transfers/<id>/delete` — other user's template → redirect             |
-| IDEM     | POST `/transfers` — double-submit same name → unique constraint              |
+| Category | Tests Needed                                                                 | Status |
+| -------- | ---------------------------------------------------------------------------- | ------ |
+| HP       | GET `/transfers` — lists user's transfer templates                           | ✅ `test_list_templates` |
+| HP       | GET `/transfers/new` — renders create form with accounts                     | ✅ `test_new_template_form` |
+| HP       | POST `/transfers` — creates template with recurrence, generates transfers    | ✅ `test_create_template` |
+| HP       | GET `/transfers/<id>/edit` — renders edit form                               | ✅ `test_edit_template_form` |
+| HP       | POST `/transfers/<id>` — updates template, regenerates transfers             | ✅ `test_update_template` |
+| HP       | POST `/transfers/<id>/delete` — deactivates template, soft-deletes transfers | ✅ `test_delete_template` |
+| HP       | POST `/transfers/<id>/reactivate` — reactivates template, restores transfers | ✅ `test_reactivate_template` |
+| SP       | POST `/transfers` — validation error → flash danger                          | ✅ `test_create_template_validation_error` |
+| SP       | POST `/transfers` — from_account == to_account → validation error            | ✅ `test_create_template_same_accounts` |
+| IDOR     | POST `/transfers/<id>` — other user's template → redirect                    | ✅ `test_update_other_users_template_redirects` |
+| IDOR     | POST `/transfers/<id>/delete` — other user's template → redirect             | ✅ `test_delete_other_users_template_redirects` |
+| IDEM     | POST `/transfers` — double-submit same name → unique constraint              | ✅ `test_create_template_double_submit` |
 
 #### Grid Cell Routes
 
-| Category | Tests Needed                                               |
-| -------- | ---------------------------------------------------------- |
-| HP       | GET `/transfers/cell/<id>` — returns cell partial          |
-| HP       | GET `/transfers/quick-edit/<id>` — returns quick-edit form |
-| HP       | GET `/transfers/<id>/full-edit` — returns full-edit form   |
-| IDOR     | GET `/transfers/cell/<id>` — other user's transfer → 404   |
+| Category | Tests Needed                                               | Status |
+| -------- | ---------------------------------------------------------- | ------ |
+| HP       | GET `/transfers/cell/<id>` — returns cell partial          | ✅ `test_get_cell` |
+| HP       | GET `/transfers/quick-edit/<id>` — returns quick-edit form | ✅ `test_get_quick_edit` |
+| HP       | GET `/transfers/<id>/full-edit` — returns full-edit form   | ✅ `test_get_full_edit` |
+| IDOR     | GET `/transfers/cell/<id>` — other user's transfer → 404   | ✅ `test_get_cell_other_users_transfer` |
 
 #### Transfer Instance Operations
 
-| Category | Tests Needed                                                                       |
-| -------- | ---------------------------------------------------------------------------------- |
-| HP       | PATCH `/transfers/instance/<id>` — updates amount                                  |
-| HP       | POST `/transfers/instance/<id>/mark-done` — sets status to done                    |
-| HP       | POST `/transfers/instance/<id>/cancel` — sets status to cancelled                  |
-| HP       | DELETE `/transfers/instance/<id>` — soft-delete (template) or hard-delete (ad-hoc) |
-| SM       | Template transfer → `is_override=True` on amount change                            |
-| SM       | Cancel → `effective_amount` returns Decimal("0")                                   |
-| IDOR     | PATCH `/transfers/instance/<id>` — other user's transfer → 404                     |
+| Category | Tests Needed                                                                       | Status |
+| -------- | ---------------------------------------------------------------------------------- | ------ |
+| HP       | PATCH `/transfers/instance/<id>` — updates amount                                  | ✅ `test_update_transfer_amount` |
+| HP       | POST `/transfers/instance/<id>/mark-done` — sets status to done                    | ✅ `test_mark_done` |
+| HP       | POST `/transfers/instance/<id>/cancel` — sets status to cancelled                  | ✅ `test_cancel_transfer` |
+| HP       | DELETE `/transfers/instance/<id>` — soft-delete (template) or hard-delete (ad-hoc) | ✅ `test_delete_ad_hoc_transfer`, `test_delete_template_transfer_soft_deletes` |
+| SM       | Template transfer → `is_override=True` on amount change                            | ✅ `test_template_transfer_override_on_amount_change` |
+| SM       | Cancel → `effective_amount` returns Decimal("0")                                   | ✅ `test_cancelled_transfer_effective_amount_zero` |
+| IDOR     | PATCH `/transfers/instance/<id>` — other user's transfer → 404                     | ✅ `test_update_other_users_transfer` |
 
 #### Ad-Hoc Creation
 
-| Category | Tests Needed                                                                                |
-| -------- | ------------------------------------------------------------------------------------------- |
-| HP       | POST `/transfers/ad-hoc` — creates transfer, returns 201                                    |
-| SP       | POST `/transfers/ad-hoc` — validation error → 400                                           |
-| SP       | POST `/transfers/ad-hoc` — period not owned → 404                                           |
-| IDEM     | POST `/transfers/ad-hoc` — double-submit → second succeeds (no unique constraint on ad-hoc) |
+| Category | Tests Needed                                                                                | Status |
+| -------- | ------------------------------------------------------------------------------------------- | ------ |
+| HP       | POST `/transfers/ad-hoc` — creates transfer, returns 201                                    | ✅ `test_create_ad_hoc_transfer` |
+| SP       | POST `/transfers/ad-hoc` — validation error → 400                                           | ✅ `test_create_ad_hoc_validation_error` |
+| SP       | POST `/transfers/ad-hoc` — period not owned → 404                                           | ✅ `test_create_ad_hoc_other_users_period` |
+| IDEM     | POST `/transfers/ad-hoc` — double-submit → second succeeds (no unique constraint on ad-hoc) | ✅ `test_create_ad_hoc_double_submit` |
 
-**Estimated new tests: 28**
+**Estimated new tests: ~~28~~ Done**
 
 ---
 
@@ -917,44 +917,44 @@ Every POST endpoint should be tested for double-submission behavior:
 
 ## 6. Test Count Summary
 
-| Module                                      | Priority | Estimated Tests |
-| ------------------------------------------- | -------- | --------------- |
-| **Services**                                |          |                 |
-| paycheck_calculator (pipeline + deductions) | P0       | 30              |
-| recurrence_engine (patterns + regen)        | P0       | 22              |
-| balance_calculator (edge cases)             | P0       | 10              |
-| transfer_recurrence                         | P0       | 8               |
-| pay_period_service                          | P1       | 16              |
-| savings_goal_service                        | P1       | 14              |
-| auth_service                                | P2       | ~~7~~ ✅ Done   |
-| carry_forward_service                       | P2       | ~~9~~ ✅ Done   |
-| credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done   |
-| **Routes**                                  |          |                 |
+| Module                                      | Priority | Estimated Tests   |
+| ------------------------------------------- | -------- | ----------------- |
+| **Services**                                |          |                   |
+| paycheck_calculator (pipeline + deductions) | P0       | 30                |
+| recurrence_engine (patterns + regen)        | P0       | 22                |
+| balance_calculator (edge cases)             | P0       | 10                |
+| transfer_recurrence                         | P0       | 8                 |
+| pay_period_service                          | P1       | 16                |
+| savings_goal_service                        | P1       | 14                |
+| auth_service                                | P2       | ~~7~~ ✅ Done     |
+| carry_forward_service                       | P2       | ~~9~~ ✅ Done     |
+| credit_workflow (gaps)                      | P2       | ~~3~~ ✅ Done     |
+| **Routes**                                  |          |                   |
 | salary.py                                   | P1       | ~~35~~ 36 ✅ Done |
 | accounts.py                                 | P1       | ~~30~~ 29 ✅ Done |
-| transfers.py                                | P1       | 28              |
-| templates.py                                | P2       | 20              |
-| savings.py                                  | P1       | 16              |
-| categories.py                               | P2       | 10              |
-| settings.py                                 | P2       | 7               |
-| pay_periods.py                              | P2       | 6               |
-| grid.py (gaps)                              | P2       | 4               |
-| transactions.py (gaps)                      | P2       | 9               |
-| auth.py (gaps)                              | P3       | 2               |
-| **Models**                                  |          |                 |
-| transaction.py                              | P0       | 5               |
-| transfer.py                                 | P0       | 2               |
-| PaycheckBreakdown                           | P2       | 4               |
-| category.py, pay_period.py                  | P3       | 2               |
-| **Schemas**                                 |          |                 |
-| validation.py (all schemas)                 | P1       | 40              |
-| **Integration**                             |          |                 |
-| End-to-end workflows                        | P1       | 6               |
-| Idempotency                                 | P2       | 10              |
-|                                             |          |                 |
-| **Total new tests**                         |          | **~355**        |
-| **Existing tests**                          |          | **105**         |
-| **Grand total**                             |          | **~460**        |
+| transfers.py                                | P1       | ~~28~~ ✅ Done    |
+| templates.py                                | P2       | 20                |
+| savings.py                                  | P1       | 16                |
+| categories.py                               | P2       | 10                |
+| settings.py                                 | P2       | 7                 |
+| pay_periods.py                              | P2       | 6                 |
+| grid.py (gaps)                              | P2       | 4                 |
+| transactions.py (gaps)                      | P2       | 9                 |
+| auth.py (gaps)                              | P3       | 2                 |
+| **Models**                                  |          |                   |
+| transaction.py                              | P0       | 5                 |
+| transfer.py                                 | P0       | 2                 |
+| PaycheckBreakdown                           | P2       | 4                 |
+| category.py, pay_period.py                  | P3       | 2                 |
+| **Schemas**                                 |          |                   |
+| validation.py (all schemas)                 | P1       | 40                |
+| **Integration**                             |          |                   |
+| End-to-end workflows                        | P1       | 6                 |
+| Idempotency                                 | P2       | 10                |
+|                                             |          |                   |
+| **Total new tests**                         |          | **~355**          |
+| **Existing tests**                          |          | **105**           |
+| **Grand total**                             |          | **~460**          |
 
 ---
 
@@ -1023,7 +1023,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
    edges, transfer_recurrence
 2. **P0 models** — transaction/transfer effective_amount full coverage
 3. **P1 schemas** — all Marshmallow schemas in isolation
-4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, transfers, savings (happy + IDOR)
+4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, savings (happy + IDOR)
 5. **P1 services** — pay_period_service, savings_goal_service
 6. **P1 integration** — end-to-end workflows
 7. **P2 routes** — templates, categories, pay_periods, settings, grid gaps
