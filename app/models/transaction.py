@@ -6,6 +6,8 @@ assigned to a specific pay period and scenario, with estimated and
 actual amounts plus a status workflow.
 """
 
+from decimal import Decimal
+
 from app.extensions import db
 
 
@@ -93,7 +95,7 @@ class Transaction(db.Model):
         - credit: 0 (excluded from checking balance)
         """
         if self.status and self.status.name in ("credit", "cancelled"):
-            return 0
+            return Decimal("0")
         if self.status and self.status.name in ("done", "received"):
             return self.actual_amount if self.actual_amount is not None else self.estimated_amount
         return self.estimated_amount

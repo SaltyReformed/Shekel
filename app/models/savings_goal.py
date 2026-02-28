@@ -11,7 +11,18 @@ class SavingsGoal(db.Model):
     """A savings goal with target amount, target date, and contribution plan."""
 
     __tablename__ = "savings_goals"
-    __table_args__ = {"schema": "budget"}
+    __table_args__ = (
+        db.CheckConstraint("target_amount > 0", name="ck_savings_goals_positive_target"),
+        db.CheckConstraint(
+            "contribution_per_period IS NULL OR contribution_per_period > 0",
+            name="ck_savings_goals_positive_contribution",
+        ),
+        db.UniqueConstraint(
+            "user_id", "account_id", "name",
+            name="uq_savings_goals_user_acct_name",
+        ),
+        {"schema": "budget"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(

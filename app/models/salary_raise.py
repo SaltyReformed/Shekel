@@ -18,6 +18,12 @@ class SalaryRaise(db.Model):
             "(percentage IS NULL AND flat_amount IS NOT NULL)",
             name="ck_salary_raises_one_method",
         ),
+        db.CheckConstraint(
+            "effective_month >= 1 AND effective_month <= 12",
+            name="ck_salary_raises_valid_month",
+        ),
+        db.CheckConstraint("percentage IS NULL OR percentage > 0", name="ck_salary_raises_positive_pct"),
+        db.CheckConstraint("flat_amount IS NULL OR flat_amount > 0", name="ck_salary_raises_positive_flat"),
         {"schema": "salary"},
     )
 

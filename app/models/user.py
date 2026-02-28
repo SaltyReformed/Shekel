@@ -41,7 +41,15 @@ class UserSettings(db.Model):
     """Per-user application preferences (grid defaults, inflation rate, etc.)."""
 
     __tablename__ = "user_settings"
-    __table_args__ = {"schema": "auth"}
+    __table_args__ = (
+        db.CheckConstraint(
+            "default_inflation_rate >= 0 AND default_inflation_rate <= 1",
+            name="ck_user_settings_valid_inflation",
+        ),
+        db.CheckConstraint("grid_default_periods > 0", name="ck_user_settings_positive_periods"),
+        db.CheckConstraint("low_balance_threshold >= 0", name="ck_user_settings_positive_threshold"),
+        {"schema": "auth"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(

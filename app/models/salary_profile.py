@@ -17,6 +17,13 @@ class SalaryProfile(db.Model):
             "user_id", "scenario_id", "name",
             name="uq_salary_profiles_user_scenario_name",
         ),
+        db.CheckConstraint("annual_salary > 0", name="ck_salary_profiles_positive_salary"),
+        db.CheckConstraint("pay_periods_per_year > 0", name="ck_salary_profiles_positive_periods"),
+        db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),
+        db.CheckConstraint("other_dependents >= 0", name="ck_salary_profiles_nonneg_dependents"),
+        db.CheckConstraint("additional_income >= 0", name="ck_salary_profiles_nonneg_add_income"),
+        db.CheckConstraint("additional_deductions >= 0", name="ck_salary_profiles_nonneg_add_deductions"),
+        db.CheckConstraint("extra_withholding >= 0", name="ck_salary_profiles_nonneg_extra_withholding"),
         {"schema": "salary"},
     )
 

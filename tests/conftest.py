@@ -88,6 +88,7 @@ def db(app, setup_database):
             "TRUNCATE TABLE "
             "budget.savings_goals, "
             "budget.transfers, "
+            "budget.transfer_templates, "
             "budget.transactions, "
             "budget.transaction_templates, "
             "budget.recurrence_rules, "

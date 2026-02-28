@@ -16,6 +16,7 @@ class TransactionTemplate(db.Model):
     __tablename__ = "transaction_templates"
     __table_args__ = (
         db.Index("idx_templates_user_type", "user_id", "transaction_type_id"),
+        db.CheckConstraint("default_amount >= 0", name="ck_transaction_templates_nonneg_amount"),
         {"schema": "budget"},
     )
 

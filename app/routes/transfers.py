@@ -91,6 +91,16 @@ def create_transfer_template():
 
     data = _create_schema.load(request.form)
 
+    # Validate account ownership.
+    from_acct = db.session.get(Account, data.get("from_account_id"))
+    to_acct = db.session.get(Account, data.get("to_account_id"))
+    if not from_acct or from_acct.user_id != current_user.id:
+        flash("Invalid source account.", "danger")
+        return redirect(url_for("transfers.new_transfer_template"))
+    if not to_acct or to_acct.user_id != current_user.id:
+        flash("Invalid destination account.", "danger")
+        return redirect(url_for("transfers.new_transfer_template"))
+
     start_period_id = data.pop("start_period_id", None)
 
     # Create the recurrence rule if a pattern was specified.
@@ -108,8 +118,10 @@ def create_transfer_template():
 
         if pattern_name == "every_n_periods" and start_period_id and interval_n:
             start_period = db.session.get(PayPeriod, start_period_id)
-            if start_period:
-                offset_periods = start_period.period_index % interval_n
+            if not start_period or start_period.user_id != current_user.id:
+                flash("Invalid start period.", "danger")
+                return redirect(url_for("transfers.new_transfer_template"))
+            offset_periods = start_period.period_index % interval_n
 
         rule = RecurrenceRule(
             user_id=current_user.id,
@@ -223,8 +235,21 @@ def update_transfer_template(template_id):
         for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
             data.pop(key, None)
 
+    # Validate account ownership if accounts are being changed.
+    if "from_account_id" in data:
+        from_acct = db.session.get(Account, data["from_account_id"])
+        if not from_acct or from_acct.user_id != current_user.id:
+            flash("Invalid source account.", "danger")
+            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    if "to_account_id" in data:
+        to_acct = db.session.get(Account, data["to_account_id"])
+        if not to_acct or to_acct.user_id != current_user.id:
+            flash("Invalid destination account.", "danger")
+            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+
+    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "is_active", "sort_order"}
     for field, value in data.items():
-        if hasattr(template, field):
+        if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
 
     # Regenerate future transfers.
@@ -352,6 +377,19 @@ def get_quick_edit(xfer_id):
     return render_template("transfers/_transfer_quick_edit.html", xfer=xfer)
 
 
+@transfers_bp.route("/transfers/<int:xfer_id>/full-edit", methods=["GET"])
+@login_required
+def get_full_edit(xfer_id):
+    """HTMX partial: return the full edit popover form for a transfer."""
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found", 404
+    statuses = db.session.query(Status).all()
+    return render_template(
+        "transfers/_transfer_full_edit.html", xfer=xfer, statuses=statuses,
+    )
+
+
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
 @login_required
 def update_transfer(xfer_id):
@@ -366,8 +404,10 @@ def update_transfer(xfer_id):
 
     data = _xfer_update_schema.load(request.form)
 
+    _TRANSFER_UPDATE_FIELDS = {"amount", "status_id", "name", "notes"}
     for field, value in data.items():
-        setattr(xfer, field, value)
+        if field in _TRANSFER_UPDATE_FIELDS:
+            setattr(xfer, field, value)
 
     if xfer.transfer_template_id and "amount" in data:
         xfer.is_override = True
@@ -399,6 +439,13 @@ def create_ad_hoc():
     period = db.session.get(PayPeriod, data["pay_period_id"])
     if not period or period.user_id != current_user.id:
         return "Pay period not found", 404
+
+    from_acct = db.session.get(Account, data["from_account_id"])
+    to_acct = db.session.get(Account, data["to_account_id"])
+    if not from_acct or from_acct.user_id != current_user.id:
+        return "Invalid source account", 404
+    if not to_acct or to_acct.user_id != current_user.id:
+        return "Invalid destination account", 404
 
     projected = db.session.query(Status).filter_by(name="projected").one()
 
@@ -438,6 +485,59 @@ def delete_transfer(xfer_id):
     db.session.commit()
     logger.info("user_id=%d deleted transfer %d", current_user.id, xfer_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
+
+
+# ── Transfer Status Actions ─────────────────────────────────────────
+
+
+@transfers_bp.route("/transfers/instance/<int:xfer_id>/mark-done", methods=["POST"])
+@login_required
+def mark_done(xfer_id):
+    """Mark a transfer as 'done' (settled)."""
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found", 404
+
+    status = db.session.query(Status).filter_by(name="done").one()
+    xfer.status_id = status.id
+
+    db.session.commit()
+    logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
+
+    account = (
+        db.session.query(Account)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .first()
+    )
+    response = render_template(
+        "transfers/_transfer_cell.html", xfer=xfer, account=account,
+    )
+    return response, 200, {"HX-Trigger": "balanceChanged"}
+
+
+@transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
+@login_required
+def cancel_transfer(xfer_id):
+    """Mark a transfer as 'cancelled'."""
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found", 404
+
+    status = db.session.query(Status).filter_by(name="cancelled").one()
+    xfer.status_id = status.id
+
+    db.session.commit()
+    logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
+
+    account = (
+        db.session.query(Account)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .first()
+    )
+    response = render_template(
+        "transfers/_transfer_cell.html", xfer=xfer, account=account,
+    )
+    return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

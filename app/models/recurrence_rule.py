@@ -12,7 +12,11 @@ class RecurrenceRule(db.Model):
     """A recurrence pattern attached to a transaction template."""
 
     __tablename__ = "recurrence_rules"
-    __table_args__ = {"schema": "budget"}
+    __table_args__ = (
+        db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
+        db.CheckConstraint("offset_periods >= 0", name="ck_recurrence_rules_valid_offset"),
+        {"schema": "budget"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(

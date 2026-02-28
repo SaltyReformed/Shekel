@@ -56,6 +56,10 @@ class ProdConfig(BaseConfig):
     DEBUG = False
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
 
+    SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "Lax"
+
     def __init__(self):
         """Validate production-critical settings on instantiation."""
         if not self.SECRET_KEY or self.SECRET_KEY.startswith("dev-only"):

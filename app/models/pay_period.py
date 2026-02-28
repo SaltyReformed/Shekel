@@ -15,6 +15,8 @@ class PayPeriod(db.Model):
     __table_args__ = (
         db.UniqueConstraint("user_id", "start_date", name="uq_pay_periods_user_start"),
         db.Index("idx_pay_periods_user_index", "user_id", "period_index"),
+        db.CheckConstraint("start_date < end_date", name="ck_pay_periods_date_order"),
+        db.CheckConstraint("period_index >= 0", name="ck_pay_periods_positive_index"),
         {"schema": "budget"},
     )
 

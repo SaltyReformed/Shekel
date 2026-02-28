@@ -24,6 +24,7 @@ class TransferTemplate(db.Model):
             "default_amount > 0",
             name="ck_transfer_templates_positive_amount",
         ),
+        db.UniqueConstraint("user_id", "name", name="uq_transfer_templates_user_name"),
         {"schema": "budget"},
     )
 

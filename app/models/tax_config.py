@@ -17,6 +17,9 @@ class TaxBracketSet(db.Model):
             "user_id", "tax_year", "filing_status_id",
             name="uq_tax_bracket_sets_user_year_status",
         ),
+        db.CheckConstraint("standard_deduction >= 0", name="ck_tax_bracket_sets_nonneg_deduction"),
+        db.CheckConstraint("child_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_child_credit"),
+        db.CheckConstraint("other_dependent_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_other_credit"),
         {"schema": "salary"},
     )
 
@@ -55,7 +58,15 @@ class TaxBracket(db.Model):
     """A single tax bracket within a bracket set."""
 
     __tablename__ = "tax_brackets"
-    __table_args__ = {"schema": "salary"}
+    __table_args__ = (
+        db.CheckConstraint("min_income >= 0", name="ck_tax_brackets_nonneg_min"),
+        db.CheckConstraint(
+            "max_income IS NULL OR max_income >= min_income",
+            name="ck_tax_brackets_income_order",
+        ),
+        db.CheckConstraint("rate >= 0 AND rate <= 1", name="ck_tax_brackets_valid_rate"),
+        {"schema": "salary"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     bracket_set_id = db.Column(
@@ -83,6 +94,10 @@ class StateTaxConfig(db.Model):
         db.UniqueConstraint(
             "user_id", "state_code",
             name="uq_state_tax_configs_user_state",
+        ),
+        db.CheckConstraint(
+            "flat_rate IS NULL OR (flat_rate >= 0 AND flat_rate <= 1)",
+            name="ck_state_tax_configs_valid_rate",
         ),
         {"schema": "salary"},
     )
@@ -115,6 +130,14 @@ class FicaConfig(db.Model):
             "user_id", "tax_year",
             name="uq_fica_configs_user_year",
         ),
+        db.CheckConstraint("ss_rate >= 0 AND ss_rate <= 1", name="ck_fica_configs_valid_ss_rate"),
+        db.CheckConstraint("ss_wage_base > 0", name="ck_fica_configs_positive_wage_base"),
+        db.CheckConstraint("medicare_rate >= 0 AND medicare_rate <= 1", name="ck_fica_configs_valid_medicare_rate"),
+        db.CheckConstraint(
+            "medicare_surtax_rate >= 0 AND medicare_surtax_rate <= 1",
+            name="ck_fica_configs_valid_surtax_rate",
+        ),
+        db.CheckConstraint("medicare_surtax_threshold > 0", name="ck_fica_configs_positive_surtax_threshold"),
         {"schema": "salary"},
     )
 

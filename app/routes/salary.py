@@ -294,8 +294,13 @@ def update_profile(profile_id):
     data = _update_schema.load(request.form)
 
     try:
+        _PROFILE_UPDATE_FIELDS = {
+            "name", "annual_salary", "filing_status_id", "state_code",
+            "pay_periods_per_year", "qualifying_children", "other_dependents",
+            "additional_income", "additional_deductions", "extra_withholding",
+        }
         for field_name, value in data.items():
-            if hasattr(profile, field_name):
+            if field_name in _PROFILE_UPDATE_FIELDS:
                 setattr(profile, field_name, value)
 
         # Update linked template amount

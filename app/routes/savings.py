@@ -16,6 +16,7 @@ from app.models.account import Account
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
@@ -52,30 +53,54 @@ def dashboard():
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
 
+    # Load all transactions and transfers once, then filter per-account.
+    period_ids = [p.id for p in all_periods]
+
+    all_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    # Map template_id → account_id so we can filter transactions per-account
+    # without N+1 queries through the template relationship.
+    template_account_map = dict(
+        db.session.query(TransactionTemplate.id, TransactionTemplate.account_id)
+        .filter_by(user_id=user_id)
+        .all()
+    ) if scenario else {}
+
+    # The grid uses the first active account (by sort_order) for its balance
+    # view.  Ad-hoc transactions (no template) are created in that context,
+    # so attribute them to the same account.
+    grid_account_id = accounts[0].id if accounts else None
+
     # Compute projected balances for each account.
     account_data = []
     for acct in accounts:
-        period_ids = [p.id for p in all_periods]
-
-        transactions = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.pay_period_id.in_(period_ids),
-                Transaction.scenario_id == scenario.id,
-                Transaction.is_deleted.is_(False),
-            )
-            .all()
-        ) if scenario and period_ids else []
-
-        transfers = (
-            db.session.query(Transfer)
-            .filter(
-                Transfer.pay_period_id.in_(period_ids),
-                Transfer.scenario_id == scenario.id,
-                Transfer.is_deleted.is_(False),
-            )
-            .all()
-        ) if scenario and period_ids else []
+        # Include transactions belonging to this account (via template).
+        # Ad-hoc transactions (no template_id) are attributed to the grid
+        # account since they were created in that context.
+        acct_transactions = [
+            txn for txn in all_transactions
+            if (txn.template_id
+                and template_account_map.get(txn.template_id) == acct.id)
+            or (not txn.template_id and acct.id == grid_account_id)
+        ]
 
         anchor_balance = acct.current_anchor_balance or Decimal("0.00")
         anchor_period_id = acct.current_anchor_period_id or (
@@ -88,8 +113,8 @@ def dashboard():
                 anchor_balance=anchor_balance,
                 anchor_period_id=anchor_period_id,
                 periods=all_periods,
-                transactions=transactions,
-                transfers=transfers,
+                transactions=acct_transactions,
+                transfers=all_transfers,
                 account_id=acct.id,
             )
 
@@ -173,7 +198,7 @@ def dashboard():
 
             total_expenses = Decimal("0.00")
             for txn in recent_txns:
-                if txn.is_expense and txn.status and txn.status.name in ("done", "received", "projected"):
+                if txn.is_expense and txn.status and txn.status.name in ("done", "received"):
                     total_expenses += Decimal(str(txn.effective_amount))
 
             # Convert from biweekly to monthly: total / periods * 26/12
@@ -238,9 +263,16 @@ def create_goal():
 
     data = _create_schema.load(request.form)
 
+    # Validate account ownership.
+    acct = db.session.get(Account, data.get("account_id"))
+    if not acct or acct.user_id != current_user.id:
+        flash("Invalid account.", "danger")
+        return redirect(url_for("savings.new_goal"))
+
     goal = SavingsGoal(user_id=current_user.id, **data)
     db.session.add(goal)
     db.session.commit()
+    logger.info("user_id=%d created savings goal (id=%d)", current_user.id, goal.id)
 
     flash(f"Savings goal '{goal.name}' created.", "success")
     return redirect(url_for("savings.dashboard"))
@@ -280,11 +312,20 @@ def update_goal(goal_id):
 
     data = _update_schema.load(request.form)
 
+    # Validate account ownership if account is being changed.
+    if "account_id" in data:
+        acct = db.session.get(Account, data["account_id"])
+        if not acct or acct.user_id != current_user.id:
+            flash("Invalid account.", "danger")
+            return redirect(url_for("savings.edit_goal", goal_id=goal_id))
+
+    _GOAL_UPDATE_FIELDS = {"name", "target_amount", "target_date", "contribution_per_period", "account_id", "is_active"}
     for field, value in data.items():
-        if hasattr(goal, field):
+        if field in _GOAL_UPDATE_FIELDS:
             setattr(goal, field, value)
 
     db.session.commit()
+    logger.info("user_id=%d updated savings goal %d", current_user.id, goal_id)
     flash(f"Savings goal '{goal.name}' updated.", "success")
     return redirect(url_for("savings.dashboard"))
 
@@ -300,6 +341,7 @@ def delete_goal(goal_id):
 
     goal.is_active = False
     db.session.commit()
+    logger.info("user_id=%d deleted savings goal %d", current_user.id, goal_id)
 
     flash(f"Savings goal '{goal.name}' deactivated.", "info")
     return redirect(url_for("savings.dashboard"))

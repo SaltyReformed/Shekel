@@ -89,6 +89,16 @@ def create_template():
 
     data = _create_schema.load(request.form)
 
+    # Validate account and category ownership.
+    acct = db.session.get(Account, data.get("account_id"))
+    if not acct or acct.user_id != current_user.id:
+        flash("Invalid account.", "danger")
+        return redirect(url_for("templates.new_template"))
+    cat = db.session.get(Category, data.get("category_id"))
+    if not cat or cat.user_id != current_user.id:
+        flash("Invalid category.", "danger")
+        return redirect(url_for("templates.new_template"))
+
     # Extract start_period_id before creating the rule.
     start_period_id = data.pop("start_period_id", None)
 
@@ -108,8 +118,10 @@ def create_template():
         # Auto-derive offset from start period for every_n_periods.
         if pattern_name == "every_n_periods" and start_period_id and interval_n:
             start_period = db.session.get(PayPeriod, start_period_id)
-            if start_period:
-                offset_periods = start_period.period_index % interval_n
+            if not start_period or start_period.user_id != current_user.id:
+                flash("Invalid start period.", "danger")
+                return redirect(url_for("templates.new_template"))
+            offset_periods = start_period.period_index % interval_n
 
         rule = RecurrenceRule(
             user_id=current_user.id,
@@ -238,9 +250,22 @@ def update_template(template_id):
         for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
             data.pop(key, None)
 
+    # Validate ownership if account or category is being changed.
+    if "account_id" in data:
+        acct = db.session.get(Account, data["account_id"])
+        if not acct or acct.user_id != current_user.id:
+            flash("Invalid account.", "danger")
+            return redirect(url_for("templates.edit_template", template_id=template_id))
+    if "category_id" in data:
+        cat = db.session.get(Category, data["category_id"])
+        if not cat or cat.user_id != current_user.id:
+            flash("Invalid category.", "danger")
+            return redirect(url_for("templates.edit_template", template_id=template_id))
+
     # Apply remaining field updates to the template.
+    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "category_id", "transaction_type_id", "account_id", "is_active", "sort_order"}
     for field, value in data.items():
-        if hasattr(template, field):
+        if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
 
     # Regenerate future transactions.

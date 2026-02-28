@@ -5,6 +5,8 @@ Tracks transfers between accounts (checking ↔ savings) within pay periods.
 Supports both template-generated recurring transfers and ad-hoc one-time transfers.
 """
 
+from decimal import Decimal
+
 from app.extensions import db
 
 
@@ -18,6 +20,7 @@ class Transfer(db.Model):
             "from_account_id != to_account_id",
             name="ck_transfers_different_accounts",
         ),
+        db.CheckConstraint("amount > 0", name="ck_transfers_positive_amount"),
         db.Index(
             "idx_transfers_template_period_scenario",
             "transfer_template_id", "pay_period_id", "scenario_id",
@@ -86,7 +89,7 @@ class Transfer(db.Model):
         Cancelled transfers contribute 0.
         """
         if self.status and self.status.name == "cancelled":
-            return 0
+            return Decimal("0")
         return self.amount
 
     def __repr__(self):
