@@ -40,8 +40,9 @@
 | `test_services/test_tax_calculator.py`       | 30      | Excellent coverage                                |
 | `test_services/test_transfer_recurrence.py`  | 10      | Generate, regen, conflicts; complete              |
 | `test_models/test_computed_properties.py`    | 13      | effective_amount, is_income/expense, label; complete |
+| `test_schemas/test_validation.py`            | 51      | All 16 schemas; complete                          |
 | `test_audit_fixes.py`                        | 15      | Decimal, IDOR, constraints                        |
-| **Total**                                    | **409** |                                                   |
+| **Total**                                    | **460** |                                                   |
 
 ---
 
@@ -848,43 +849,33 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ## 4. Schemas
 
-### 4.1 `schemas/validation.py` — Priority P1
+### 4.1 `schemas/validation.py` — Priority P1 ✅
 
-**Status: Zero dedicated tests.** **[AUDIT GAP]** Schema validation is the first line of defense
-against malformed input. No schema is tested in isolation.
+**Status: Complete (51 tests in `test_schemas/test_validation.py`).** All 16 schemas tested in
+isolation covering required fields, type coercion, range validation, @pre_load stripping,
+and @validates_schema cross-field rules.
 
-#### Strategy
-
-Test each schema's `load()` method directly for:
-
-- Required field enforcement (missing → ValidationError)
-- Type coercion (string "100.00" → Decimal)
-- Range validation (amount >= 0, month 1-12)
-- `@pre_load` empty-string stripping
-- `@validates_schema` cross-field rules
-
-#### Schemas to Test
-
-| Schema                          | Key Validations to Test                                  |
+| Schema (tests)                  | Key Validations Covered                                  |
 | ------------------------------- | -------------------------------------------------------- |
-| `TransactionCreateSchema`       | Required fields; `estimated_amount >= 0`                 |
-| `TransactionUpdateSchema`       | All optional; `@pre_load` strips empty strings           |
-| `InlineTransactionCreateSchema` | Required fields; `@pre_load`                             |
-| `TemplateCreateSchema`          | Required fields; recurrence fields optional              |
-| `TemplateUpdateSchema`          | All optional; `effective_from` Date parsing              |
-| `TransferTemplateCreateSchema`  | `from != to` validator; `default_amount > 0`             |
-| `TransferCreateSchema`          | `from != to` validator; `amount > 0`                     |
-| `TransferUpdateSchema`          | `amount > 0`; `@pre_load`                                |
-| `SavingsGoalCreateSchema`       | `target_amount > 0`; `@pre_load`                         |
-| `SalaryProfileCreateSchema`     | Required fields; `pay_periods_per_year` in {12,24,26,52} |
-| `RaiseCreateSchema`             | Exactly one of percentage/flat_amount; month 1-12        |
-| `DeductionCreateSchema`         | Required fields; `deductions_per_year` in {12,24,26}     |
-| `FicaConfigSchema`              | All required; `@pre_load`                                |
-| `AccountCreateSchema`           | Required `name`, `account_type_id`; `@pre_load`          |
-| `PayPeriodGenerateSchema`       | `num_periods` 1-260; `cadence_days` 1-365                |
-| `CategoryCreateSchema`          | Required `group_name`, `item_name`                       |
+| `TransactionCreateSchema` (3)   | Required fields; `estimated_amount >= 0`                 |
+| `TransactionUpdateSchema` (3)   | @pre_load strips; partial update; invalid amount         |
+| `InlineTransactionCreateSchema` (2) | Required fields; no name required                    |
+| `TemplateCreateSchema` (5)      | Required fields; OneOf pattern; day_of_month range; @pre_load |
+| `TemplateUpdateSchema` (3)      | All optional; Date parsing; invalid date                 |
+| `TransferTemplateCreateSchema` (3) | `from != to` validator; `default_amount > 0`          |
+| `TransferCreateSchema` (2)      | `from != to` validator; valid data                       |
+| `TransferUpdateSchema` (2)      | `amount > 0`; partial update                             |
+| `SavingsGoalCreateSchema` (3)   | `target_amount > 0`; required fields                     |
+| `SavingsGoalUpdateSchema` (2)   | @pre_load strips; Boolean coercion                       |
+| `SalaryProfileCreateSchema` (4) | Required fields; OneOf pay_periods; state_code length    |
+| `RaiseCreateSchema` (5)         | percentage/flat_amount XOR; month range; both/neither    |
+| `DeductionCreateSchema` (3)     | Required fields; OneOf deductions_per_year               |
+| `FicaConfigSchema` (2)          | All required; Decimal coercion                           |
+| `AccountCreateSchema` (3)       | Required fields; @pre_load strips empty optional         |
+| `PayPeriodGenerateSchema` (4)   | Defaults; Range num_periods/cadence; missing start_date  |
+| `CategoryCreateSchema` (2)      | Required fields; sort_order default                      |
 
-**Estimated new tests: 40**
+**Added: 51 new tests**
 
 ---
 
@@ -962,13 +953,13 @@ Every POST endpoint should be tested for double-submission behavior:
 | PaycheckBreakdown                           | P2       | ~~4~~ ✅ Done     |
 | category.py, pay_period.py                  | P3       | ~~2~~ ✅ Done     |
 | **Schemas**                                 |          |                   |
-| validation.py (all schemas)                 | P1       | 40                |
+| validation.py (all schemas)                 | P1       | ~~40~~ 51 ✅ Done |
 | **Integration**                             |          |                   |
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~56**           |
-| **Current total (actual)**                  |          | **409**           |
+| **Remaining estimated**                     |          | **~16**           |
+| **Current total (actual)**                  |          | **460**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1037,7 +1028,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 1. **P0 services** — ~~paycheck_calculator~~ ✅, ~~recurrence engine~~ ✅, ~~balance_calculator~~
    ✅, ~~transfer_recurrence~~ ✅
 2. **P0 models** — ~~transaction/transfer effective_amount full coverage~~ ✅
-3. **P1 schemas** — all Marshmallow schemas in isolation
+3. **P1 schemas** — ~~all Marshmallow schemas in isolation~~ ✅
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
