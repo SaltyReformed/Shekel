@@ -17,30 +17,31 @@
 
 ## Current Coverage Snapshot
 
-| File                                        | Tests   | Notes                                     |
-| ------------------------------------------- | ------- | ----------------------------------------- |
-| `test_routes/test_auth.py`                  | 7       | Login/logout, disabled acct, rate limit; complete |
-| `test_routes/test_grid.py`                  | 19      | Grid view, balance row, txn CRUD+SM       |
-| `test_routes/test_transaction_auth.py`      | 13      | IDOR on transactions; thorough            |
-| `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete             |
-| `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax         |
-| `test_routes/test_transfers.py`             | 28      | Templates, grid, instances; complete      |
-| `test_routes/test_savings.py`               | 19      | Dashboard, goals CRUD; complete           |
-| `test_routes/test_templates.py`             | 24      | CRUD, recurrence preview; complete        |
-| `test_routes/test_categories.py`            | 11      | CRUD, HTMX, in-use checks; complete      |
-| `test_routes/test_pay_periods.py`           | 6       | Generate form + validation; complete      |
-| `test_routes/test_settings.py`              | 7       | Show, update, validation; complete        |
-| `test_services/test_auth_service.py`        | 7       | Hash, verify, authenticate; complete      |
-| `test_services/test_balance_calculator.py`  | 14      | Edge cases + transfers; complete          |
-| `test_services/test_credit_workflow.py`     | 15      | Credit + carry-forward; complete          |
-| `test_services/test_pay_period_service.py`  | 17      | Generate, current, range, next; complete  |
-| `test_services/test_paycheck_calculator.py` | 47      | Full pipeline + deductions; complete      |
-| `test_services/test_recurrence_engine.py`   | 28      | All patterns + regen; complete            |
-| `test_services/test_savings_goal_service.py`| 14      | Contributions, metrics, periods; complete |
-| `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
-| `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
-| `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
-| **Total**                                   | **396** |                                           |
+| File                                         | Tests   | Notes                                             |
+| -------------------------------------------- | ------- | ------------------------------------------------- |
+| `test_routes/test_auth.py`                   | 7       | Login/logout, disabled acct, rate limit; complete |
+| `test_routes/test_grid.py`                   | 19      | Grid view, balance row, txn CRUD+SM               |
+| `test_routes/test_transaction_auth.py`       | 13      | IDOR on transactions; thorough                    |
+| `test_routes/test_accounts.py`               | 29      | CRUD, anchor, types; complete                     |
+| `test_routes/test_salary.py`                 | 36      | Profiles, raises, deductions, tax                 |
+| `test_routes/test_transfers.py`              | 28      | Templates, grid, instances; complete              |
+| `test_routes/test_savings.py`                | 19      | Dashboard, goals CRUD; complete                   |
+| `test_routes/test_templates.py`              | 24      | CRUD, recurrence preview; complete                |
+| `test_routes/test_categories.py`             | 11      | CRUD, HTMX, in-use checks; complete               |
+| `test_routes/test_pay_periods.py`            | 6       | Generate form + validation; complete              |
+| `test_routes/test_settings.py`               | 7       | Show, update, validation; complete                |
+| `test_services/test_auth_service.py`         | 7       | Hash, verify, authenticate; complete              |
+| `test_services/test_balance_calculator.py`   | 14      | Edge cases + transfers; complete                  |
+| `test_services/test_credit_workflow.py`      | 15      | Credit + carry-forward; complete                  |
+| `test_services/test_pay_period_service.py`   | 17      | Generate, current, range, next; complete          |
+| `test_services/test_paycheck_calculator.py`  | 47      | Full pipeline + deductions; complete              |
+| `test_services/test_recurrence_engine.py`    | 28      | All patterns + regen; complete                    |
+| `test_services/test_savings_goal_service.py` | 14      | Contributions, metrics, periods; complete         |
+| `test_services/test_tax_calculator.py`       | 30      | Excellent coverage                                |
+| `test_services/test_transfer_recurrence.py`  | 10      | Generate, regen, conflicts; complete              |
+| `test_models/test_computed_properties.py`    | 13      | effective_amount, is_income/expense, label; complete |
+| `test_audit_fixes.py`                        | 15      | Decimal, IDOR, constraints                        |
+| **Total**                                    | **409** |                                                   |
 
 ---
 
@@ -276,8 +277,8 @@ pre-anchor periods, None anchor_balance, mixed transactions + transfers all cove
 
 ### 1.6 `services/pay_period_service.py` — Priority P1
 
-**Status: Complete (17 tests in `test_services/test_pay_period_service.py`).** Generate, get_current,
-get_next, get_all, get_periods_in_range all covered.
+**Status: Complete (17 tests in `test_services/test_pay_period_service.py`).** Generate,
+get_current, get_next, get_all, get_periods_in_range all covered.
 
 #### `generate_pay_periods()`
 
@@ -679,19 +680,19 @@ contribution, savings metrics, and count_periods_until all covered.
 
 **Status: Complete (11 tests in `test_routes/test_categories.py`).**
 
-| Category | Tests Needed                                                           | Status |
-| -------- | ---------------------------------------------------------------------- | ------ |
-| HP       | GET `/categories` — renders list grouped by group_name                 | ✅ `test_list_categories` |
-| HP       | POST `/categories` — creates category, redirects                       | ✅ `test_create_category_success` |
-| HP       | POST `/categories` — HTMX request → returns partial HTML               | ✅ `test_create_category_htmx` |
-| HP       | POST `/categories/<id>/delete` — deletes unused category               | ✅ `test_delete_unused_category` |
-| SP       | POST `/categories` — validation error                                  | ✅ `test_create_category_validation_error` |
-| SP       | POST `/categories` — HTMX validation error → 400 JSON                 | ✅ `test_create_category_htmx_validation_error` |
-| SP       | POST `/categories` — duplicate group+item → flash warning              | ✅ `test_create_category_duplicate` |
-| SP       | POST `/categories/<id>/delete` — in use by template → flash warning    | ✅ `test_delete_category_in_use_by_template` |
+| Category | Tests Needed                                                           | Status                                          |
+| -------- | ---------------------------------------------------------------------- | ----------------------------------------------- |
+| HP       | GET `/categories` — renders list grouped by group_name                 | ✅ `test_list_categories`                       |
+| HP       | POST `/categories` — creates category, redirects                       | ✅ `test_create_category_success`               |
+| HP       | POST `/categories` — HTMX request → returns partial HTML               | ✅ `test_create_category_htmx`                  |
+| HP       | POST `/categories/<id>/delete` — deletes unused category               | ✅ `test_delete_unused_category`                |
+| SP       | POST `/categories` — validation error                                  | ✅ `test_create_category_validation_error`      |
+| SP       | POST `/categories` — HTMX validation error → 400 JSON                  | ✅ `test_create_category_htmx_validation_error` |
+| SP       | POST `/categories` — duplicate group+item → flash warning              | ✅ `test_create_category_duplicate`             |
+| SP       | POST `/categories/<id>/delete` — in use by template → flash warning    | ✅ `test_delete_category_in_use_by_template`    |
 | SP       | POST `/categories/<id>/delete` — in use by transaction → flash warning | ✅ `test_delete_category_in_use_by_transaction` |
-| IDOR     | POST `/categories/<id>/delete` — other user's category → flash danger  | ✅ `test_delete_category_idor` |
-| BE       | POST `/categories/999999/delete` — nonexistent category                | ✅ `test_delete_nonexistent_category` |
+| IDOR     | POST `/categories/<id>/delete` — other user's category → flash danger  | ✅ `test_delete_category_idor`                  |
+| BE       | POST `/categories/999999/delete` — nonexistent category                | ✅ `test_delete_nonexistent_category`           |
 
 **Tests: 11** (1 list + 5 create + 5 delete)
 
@@ -701,13 +702,13 @@ contribution, savings metrics, and count_periods_until all covered.
 
 **Status: Complete (6 tests in `test_routes/test_pay_periods.py`).**
 
-| Category | Tests Needed                                                        | Status |
-| -------- | ------------------------------------------------------------------- | ------ |
-| HP       | GET `/pay-periods/generate` — renders form                          | ✅ `test_generate_form_renders` |
-| HP       | POST `/pay-periods/generate` — creates periods, redirects to grid   | ✅ `test_generate_periods_success` |
-| SP       | POST `/pay-periods/generate` — invalid start_date → 422 with errors | ✅ `test_generate_missing_start_date` |
-| SP       | POST `/pay-periods/generate` — cadence_days=0 → validation error    | ✅ `test_generate_cadence_zero` |
-| BE       | `num_periods=1` → creates single period                             | ✅ `test_generate_single_period` |
+| Category | Tests Needed                                                        | Status                                            |
+| -------- | ------------------------------------------------------------------- | ------------------------------------------------- |
+| HP       | GET `/pay-periods/generate` — renders form                          | ✅ `test_generate_form_renders`                   |
+| HP       | POST `/pay-periods/generate` — creates periods, redirects to grid   | ✅ `test_generate_periods_success`                |
+| SP       | POST `/pay-periods/generate` — invalid start_date → 422 with errors | ✅ `test_generate_missing_start_date`             |
+| SP       | POST `/pay-periods/generate` — cadence_days=0 → validation error    | ✅ `test_generate_cadence_zero`                   |
+| BE       | `num_periods=1` → creates single period                             | ✅ `test_generate_single_period`                  |
 | IDEM     | POST `/pay-periods/generate` — double-submit → duplicates skipped   | ✅ `test_generate_double_submit_skips_duplicates` |
 
 **Tests: 6**
@@ -718,15 +719,15 @@ contribution, savings metrics, and count_periods_until all covered.
 
 **Status: Complete (7 tests in `test_routes/test_settings.py`).**
 
-| Category | Tests Needed                                                    | Status |
-| -------- | --------------------------------------------------------------- | ------ |
-| HP       | GET `/settings` — renders settings page                         | ✅ `test_settings_page_renders` |
+| Category | Tests Needed                                                    | Status                                     |
+| -------- | --------------------------------------------------------------- | ------------------------------------------ |
+| HP       | GET `/settings` — renders settings page                         | ✅ `test_settings_page_renders`            |
 | HP       | GET `/settings` — auto-creates UserSettings if missing          | ✅ `test_settings_auto_creates_if_missing` |
-| HP       | POST `/settings` — updates all three fields                     | ✅ `test_update_all_fields` |
-| SP       | POST `/settings` — non-numeric grid_periods → flash danger      | ✅ `test_invalid_grid_periods` |
-| SP       | POST `/settings` — invalid Decimal for inflation → flash danger | ✅ `test_invalid_inflation_rate` |
-| SP       | POST `/settings` — non-numeric threshold → flash danger         | ✅ `test_invalid_threshold` |
-| BE       | Blank fields skipped (partial update)                           | ✅ `test_blank_fields_skipped` |
+| HP       | POST `/settings` — updates all three fields                     | ✅ `test_update_all_fields`                |
+| SP       | POST `/settings` — non-numeric grid_periods → flash danger      | ✅ `test_invalid_grid_periods`             |
+| SP       | POST `/settings` — invalid Decimal for inflation → flash danger | ✅ `test_invalid_inflation_rate`           |
+| SP       | POST `/settings` — non-numeric threshold → flash danger         | ✅ `test_invalid_threshold`                |
+| BE       | Blank fields skipped (partial update)                           | ✅ `test_blank_fields_skipped`             |
 
 **Tests: 7** (2 show + 5 update)
 
@@ -736,12 +737,12 @@ contribution, savings metrics, and count_periods_until all covered.
 
 **Status: Complete (12 tests in `test_routes/test_grid.py` — 8 existing + 4 new).**
 
-| Category | Tests Needed                                                   | Status |
-| -------- | -------------------------------------------------------------- | ------ |
-| HP       | GET `/grid/balance-row` — returns recalculated balance partial | ✅ `test_balance_row_returns_partial` |
+| Category | Tests Needed                                                   | Status                                  |
+| -------- | -------------------------------------------------------------- | --------------------------------------- |
+| HP       | GET `/grid/balance-row` — returns recalculated balance partial | ✅ `test_balance_row_returns_partial`   |
 | BE       | GET `/grid/balance-row` — no current period → 204 empty        | ✅ `test_balance_row_no_current_period` |
-| BE       | GET `/grid/balance-row` — custom offset shifts window          | ✅ `test_balance_row_custom_offset` |
-| BE       | GET `/` — `periods` larger than available → renders available  | ✅ `test_grid_periods_large_value` |
+| BE       | GET `/grid/balance-row` — custom offset shifts window          | ✅ `test_balance_row_custom_offset`     |
+| BE       | GET `/` — `periods` larger than available → renders available  | ✅ `test_grid_periods_large_value`      |
 
 **Tests: 4 new** (added to existing 8)
 
@@ -749,19 +750,20 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ### 2.10 `routes/transactions.py` — Priority P2
 
-**Status: Complete (19 tests in `test_routes/test_grid.py` + 13 in `test_routes/test_transaction_auth.py`).**
+**Status: Complete (19 tests in `test_routes/test_grid.py` + 13 in
+`test_routes/test_transaction_auth.py`).**
 
-| Category | Tests Needed                                                         | Status |
-| -------- | -------------------------------------------------------------------- | ------ |
-| SM       | `mark_done` with `actual_amount` provided → sets actual, status=done | ✅ `test_mark_expense_done` (existing) |
-| SM       | `mark_done` without `actual_amount` → status only                    | ✅ `test_mark_done_without_actual_amount` |
-| SM       | `cancel_transaction` → status=cancelled, `effective_amount`=0        | ✅ `test_cancel_transaction` |
-| SM       | `mark_credit` → creates payback in next period                       | ✅ `test_mark_credit_creates_payback` |
-| SM       | `unmark_credit` → reverts to projected, deletes payback              | ✅ `test_unmark_credit_reverts_and_deletes_payback` |
-| HP       | `create_transaction` (full form) → creates with all fields           | ✅ `test_create_transaction_full_form` |
-| BE       | `create_inline` when no baseline scenario → 400                      | ✅ `test_create_inline_no_scenario` |
+| Category | Tests Needed                                                         | Status                                                |
+| -------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
+| SM       | `mark_done` with `actual_amount` provided → sets actual, status=done | ✅ `test_mark_expense_done` (existing)                |
+| SM       | `mark_done` without `actual_amount` → status only                    | ✅ `test_mark_done_without_actual_amount`             |
+| SM       | `cancel_transaction` → status=cancelled, `effective_amount`=0        | ✅ `test_cancel_transaction`                          |
+| SM       | `mark_credit` → creates payback in next period                       | ✅ `test_mark_credit_creates_payback`                 |
+| SM       | `unmark_credit` → reverts to projected, deletes payback              | ✅ `test_unmark_credit_reverts_and_deletes_payback`   |
+| HP       | `create_transaction` (full form) → creates with all fields           | ✅ `test_create_transaction_full_form`                |
+| BE       | `create_inline` when no baseline scenario → 400                      | ✅ `test_create_inline_no_scenario`                   |
 | SM       | Delete template-linked txn → soft-delete (`is_deleted=True`)         | ✅ `test_soft_delete_template_transaction` (existing) |
-| SM       | Delete ad-hoc txn → hard-delete                                      | ✅ `test_hard_delete_adhoc_transaction` |
+| SM       | Delete ad-hoc txn → hard-delete                                      | ✅ `test_hard_delete_adhoc_transaction`               |
 
 **Tests: 7 new** (added to existing 12 in test_grid.py)
 
@@ -771,10 +773,10 @@ contribution, savings metrics, and count_periods_until all covered.
 
 **Status: Complete (7 tests).** All edge cases covered.
 
-| Status | Test                                                     |
-| ------ | -------------------------------------------------------- |
-| ✅     | `test_login_disabled_account`                            |
-| ✅     | `test_rate_limiting_after_5_attempts`                    |
+| Status | Test                                  |
+| ------ | ------------------------------------- |
+| ✅     | `test_login_disabled_account`         |
+| ✅     | `test_rate_limiting_after_5_attempts` |
 
 **Added: 2 new tests**
 
@@ -782,65 +784,65 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ## 3. Models
 
-### 3.1 `models/transaction.py` — Priority P0
+### 3.1 `models/transaction.py` — Priority P0 ✅
 
-**Status: `effective_amount` Decimal return covered (2 tests).**
+**Status: Complete (5 tests in `test_models/test_computed_properties.py`).**
 
-| Category | Tests Needed                                                               |
-| -------- | -------------------------------------------------------------------------- |
-| HP       | `effective_amount` returns `estimated_amount` when projected               |
-| HP       | `effective_amount` returns `actual_amount` when done and actual is set     |
-| HP       | `effective_amount` returns `estimated_amount` when done and actual is None |
-| HP       | `is_income` returns True for income type                                   |
-| HP       | `is_expense` returns True for expense type                                 |
+| Status | Test                                                                       |
+| ------ | -------------------------------------------------------------------------- |
+| ✅     | `test_projected_returns_estimated`                                         |
+| ✅     | `test_done_with_actual_returns_actual`                                     |
+| ✅     | `test_done_without_actual_returns_estimated`                               |
+| ✅     | `test_is_income`                                                           |
+| ✅     | `test_is_expense`                                                          |
 
-**Estimated new tests: 5**
-
----
-
-### 3.2 `models/transfer.py` — Priority P0
-
-**Status: `effective_amount` Decimal return covered (2 tests).**
-
-| Category | Tests Needed                                       |
-| -------- | -------------------------------------------------- |
-| HP       | `effective_amount` returns `amount` when projected |
-| HP       | `effective_amount` returns `amount` when done      |
-
-**Estimated new tests: 2**
+**Added: 5 new tests**
 
 ---
 
-### 3.3 `models/category.py` — Priority P3
+### 3.2 `models/transfer.py` — Priority P0 ✅
 
-| Category | Tests Needed                                |
-| -------- | ------------------------------------------- |
-| HP       | `display_name` returns "group: item" format |
+**Status: Complete (2 tests in `test_models/test_computed_properties.py`).**
 
-**Estimated new tests: 1**
+| Status | Test                                       |
+| ------ | ------------------------------------------ |
+| ✅     | `test_projected_returns_amount`            |
+| ✅     | `test_done_returns_amount`                 |
 
----
-
-### 3.4 `models/pay_period.py` — Priority P3
-
-| Category | Tests Needed                                     |
-| -------- | ------------------------------------------------ |
-| HP       | `label` returns formatted "MM/DD – MM/DD" string |
-
-**Estimated new tests: 1**
+**Added: 2 new tests**
 
 ---
 
-### 3.5 `models/paycheck_deduction.py` (PaycheckBreakdown dataclass) — Priority P2
+### 3.3 `models/category.py` — Priority P3 ✅
 
-| Category | Tests Needed                                     |
-| -------- | ------------------------------------------------ |
-| HP       | `total_pre_tax` sums pre-tax deduction amounts   |
-| HP       | `total_post_tax` sums post-tax deduction amounts |
-| HP       | `total_taxes` = federal + state + ss + medicare  |
-| BE       | Empty deduction lists → totals are Decimal("0")  |
+| Status | Test                                |
+| ------ | ----------------------------------- |
+| ✅     | `test_display_name_format`          |
 
-**Estimated new tests: 4**
+**Added: 1 new test**
+
+---
+
+### 3.4 `models/pay_period.py` — Priority P3 ✅
+
+| Status | Test                                     |
+| ------ | ---------------------------------------- |
+| ✅     | `test_label_format`                      |
+
+**Added: 1 new test**
+
+---
+
+### 3.5 `models/paycheck_deduction.py` (PaycheckBreakdown dataclass) — Priority P2 ✅
+
+| Status | Test                                     |
+| ------ | ---------------------------------------- |
+| ✅     | `test_total_pre_tax`                     |
+| ✅     | `test_total_post_tax`                    |
+| ✅     | `test_total_taxes`                       |
+| ✅     | `test_empty_deductions_return_zero`      |
+
+**Added: 4 new tests**
 
 ---
 
@@ -955,18 +957,18 @@ Every POST endpoint should be tested for double-submission behavior:
 | transactions.py (gaps)                      | P2       | ~~9~~ 7 ✅ Done   |
 | auth.py (gaps)                              | P3       | ~~2~~ ✅ Done     |
 | **Models**                                  |          |                   |
-| transaction.py                              | P0       | 5                 |
-| transfer.py                                 | P0       | 2                 |
-| PaycheckBreakdown                           | P2       | 4                 |
-| category.py, pay_period.py                  | P3       | 2                 |
+| transaction.py                              | P0       | ~~5~~ ✅ Done     |
+| transfer.py                                 | P0       | ~~2~~ ✅ Done     |
+| PaycheckBreakdown                           | P2       | ~~4~~ ✅ Done     |
+| category.py, pay_period.py                  | P3       | ~~2~~ ✅ Done     |
 | **Schemas**                                 |          |                   |
 | validation.py (all schemas)                 | P1       | 40                |
 | **Integration**                             |          |                   |
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~69**           |
-| **Current total (actual)**                  |          | **394**           |
+| **Remaining estimated**                     |          | **~56**           |
+| **Current total (actual)**                  |          | **409**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1032,14 +1034,15 @@ tests/
 
 Tests should be written in this order to maximize coverage of high-risk areas first:
 
-1. **P0 services** — ~~paycheck_calculator~~ ✅, ~~recurrence engine~~ ✅, ~~balance_calculator~~ ✅,
-   ~~transfer_recurrence~~ ✅
-2. **P0 models** — transaction/transfer effective_amount full coverage
+1. **P0 services** — ~~paycheck_calculator~~ ✅, ~~recurrence engine~~ ✅, ~~balance_calculator~~
+   ✅, ~~transfer_recurrence~~ ✅
+2. **P0 models** — ~~transaction/transfer effective_amount full coverage~~ ✅
 3. **P1 schemas** — all Marshmallow schemas in isolation
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
 6. **P1 integration** — end-to-end workflows
-7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid gaps~~ ✅
+7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid
+   gaps~~ ✅
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
-10. **P3 models + routes** — computed properties, ~~rate limiting~~ ✅
+10. **P3 models + routes** — ~~computed properties~~ ✅, ~~rate limiting~~ ✅
