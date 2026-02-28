@@ -41,8 +41,9 @@
 | `test_services/test_transfer_recurrence.py`  | 10      | Generate, regen, conflicts; complete              |
 | `test_models/test_computed_properties.py`    | 13      | effective_amount, is_income/expense, label; complete |
 | `test_schemas/test_validation.py`            | 51      | All 16 schemas; complete                          |
+| `test_integration/test_workflows.py`         | 6       | End-to-end cross-service workflows; complete      |
 | `test_audit_fixes.py`                        | 15      | Decimal, IDOR, constraints                        |
-| **Total**                                    | **460** |                                                   |
+| **Total**                                    | **466** |                                                   |
 
 ---
 
@@ -881,20 +882,20 @@ and @validates_schema cross-field rules.
 
 ## 5. Integration / Cross-Cutting Tests
 
-### 5.1 End-to-End Workflows — Priority P1
+### 5.1 End-to-End Workflows — Priority P1 ✅
 
-These tests verify multi-step workflows that span services and routes.
+**Status: Complete (6 tests in `test_integration/test_workflows.py`).**
 
-| Test                         | Description                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| Salary → Grid                | Create profile → verify income transactions appear in grid periods                         |
-| Template → Recurrence → Grid | Create template with monthly recurrence → verify transactions generated in correct periods |
-| Transfer → Balance           | Create transfer template → verify balance calculator includes transfer effects             |
-| Credit → Payback → Balance   | Mark expense as credit → verify payback in next period → verify balance unaffected         |
-| Anchor True-Up → Balance     | Change anchor balance → verify all downstream period balances recalculate                  |
-| Carry Forward                | Create projected txns → carry forward → verify moved to target period                      |
+| Status | Test                         | Description                                                                                |
+| ------ | ---------------------------- | ------------------------------------------------------------------------------------------ |
+| ✅     | Salary → Grid                | `test_salary_generates_income_per_period`                                                  |
+| ✅     | Template → Recurrence → Grid | `test_monthly_recurrence_hits_correct_periods`                                             |
+| ✅     | Transfer → Balance           | `test_transfer_reduces_source_balance`                                                     |
+| ✅     | Credit → Payback → Balance   | `test_credit_creates_payback_and_zeroes_effective`                                         |
+| ✅     | Anchor True-Up → Balance     | `test_anchor_change_shifts_all_balances`                                                   |
+| ✅     | Carry Forward                | `test_carry_forward_moves_projected_items`                                                 |
 
-**Estimated new tests: 6**
+**Added: 6 new tests**
 
 ---
 
@@ -955,11 +956,11 @@ Every POST endpoint should be tested for double-submission behavior:
 | **Schemas**                                 |          |                   |
 | validation.py (all schemas)                 | P1       | ~~40~~ 51 ✅ Done |
 | **Integration**                             |          |                   |
-| End-to-end workflows                        | P1       | 6                 |
+| End-to-end workflows                        | P1       | ~~6~~ ✅ Done     |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~16**           |
-| **Current total (actual)**                  |          | **460**           |
+| **Remaining estimated**                     |          | **~10**           |
+| **Current total (actual)**                  |          | **466**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1031,7 +1032,7 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 3. **P1 schemas** — ~~all Marshmallow schemas in isolation~~ ✅
 4. **P1 routes** — ~~salary~~ ✅, ~~accounts~~ ✅, ~~transfers~~ ✅, ~~savings~~ ✅ (happy + IDOR)
 5. **P1 services** — ~~pay_period_service~~ ✅, ~~savings_goal_service~~ ✅
-6. **P1 integration** — end-to-end workflows
+6. **P1 integration** — ~~end-to-end workflows~~ ✅
 7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid
    gaps~~ ✅
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
