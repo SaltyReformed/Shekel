@@ -42,8 +42,9 @@
 | `test_models/test_computed_properties.py`    | 13      | effective_amount, is_income/expense, label; complete |
 | `test_schemas/test_validation.py`            | 51      | All 16 schemas; complete                          |
 | `test_integration/test_workflows.py`         | 6       | End-to-end cross-service workflows; complete      |
+| `test_integration/test_idempotency.py`       | 4       | Double-submit: login, templates, raises, deductions |
 | `test_audit_fixes.py`                        | 15      | Decimal, IDOR, constraints                        |
-| **Total**                                    | **466** |                                                   |
+| **Total**                                    | **470** |                                                   |
 
 ---
 
@@ -899,26 +900,25 @@ and @validates_schema cross-field rules.
 
 ---
 
-### 5.2 Idempotency — Priority P2
+### 5.2 Idempotency — Priority P2 ✅
 
-**[AUDIT GAP]** Double-submit on POST routes untested.
+**Status: Complete.** All POST endpoints tested for double-submission behavior.
+6 tests already existed in route test files; 4 new tests added.
 
-Every POST endpoint should be tested for double-submission behavior:
+| Status | Route                          | Expected Behavior                                          | Test Location                                    |
+| ------ | ------------------------------ | ---------------------------------------------------------- | ------------------------------------------------ |
+| ✅     | POST `/login`                  | Second login succeeds (session refresh)                    | `test_integration/test_idempotency.py`           |
+| ✅     | POST `/accounts`               | Duplicate name → flash warning, no second account          | `test_routes/test_accounts.py` (existing)        |
+| ✅     | POST `/salary`                 | Duplicate profile name → unique constraint error           | `test_routes/test_salary.py` (existing)          |
+| ✅     | POST `/templates`              | Creates duplicate (no unique constraint)                   | `test_integration/test_idempotency.py`           |
+| ✅     | POST `/transfers`              | Duplicate name → unique constraint error                   | `test_routes/test_transfers.py` (existing)       |
+| ✅     | POST `/savings/goals`          | Duplicate name+account → unique constraint error           | `test_routes/test_savings.py` (existing)         |
+| ✅     | POST `/categories`             | Duplicate group+item → flash warning                       | `test_routes/test_categories.py` (existing)      |
+| ✅     | POST `/pay-periods/generate`   | Duplicate dates silently skipped                           | `test_routes/test_pay_periods.py` (existing)     |
+| ✅     | POST `/salary/<id>/raises`     | Creates duplicate raise (no unique constraint)             | `test_integration/test_idempotency.py`           |
+| ✅     | POST `/salary/<id>/deductions` | Creates duplicate deduction (no unique constraint)         | `test_integration/test_idempotency.py`           |
 
-| Route                          | Expected Behavior                                          |
-| ------------------------------ | ---------------------------------------------------------- |
-| POST `/login`                  | Second login succeeds (session refresh)                    |
-| POST `/accounts`               | Duplicate name → flash warning, no second account          |
-| POST `/salary`                 | Duplicate profile name → unique constraint error           |
-| POST `/templates`              | Creates duplicate (no unique constraint — verify behavior) |
-| POST `/transfers`              | Duplicate name → unique constraint error                   |
-| POST `/savings/goals`          | Duplicate name+account → unique constraint error           |
-| POST `/categories`             | Duplicate group+item → flash warning                       |
-| POST `/pay-periods/generate`   | Duplicate dates silently skipped                           |
-| POST `/salary/<id>/raises`     | Creates duplicate raise (verify this is acceptable)        |
-| POST `/salary/<id>/deductions` | Creates duplicate deduction (verify this is acceptable)    |
-
-**Estimated new tests: 10**
+**Added: 4 new tests**
 
 ---
 
@@ -957,10 +957,10 @@ Every POST endpoint should be tested for double-submission behavior:
 | validation.py (all schemas)                 | P1       | ~~40~~ 51 ✅ Done |
 | **Integration**                             |          |                   |
 | End-to-end workflows                        | P1       | ~~6~~ ✅ Done     |
-| Idempotency                                 | P2       | 10                |
+| Idempotency                                 | P2       | ~~10~~ 4 ✅ Done  |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~10**           |
-| **Current total (actual)**                  |          | **466**           |
+| **Remaining estimated**                     |          | **0**             |
+| **Current total (actual)**                  |          | **470**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1036,5 +1036,5 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid
    gaps~~ ✅
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
-9. **P2 idempotency** — double-submit tests
+9. **P2 idempotency** — ~~double-submit tests~~ ✅
 10. **P3 models + routes** — ~~computed properties~~ ✅, ~~rate limiting~~ ✅
