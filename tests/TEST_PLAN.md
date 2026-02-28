@@ -19,8 +19,8 @@
 
 | File                                        | Tests   | Notes                                     |
 | ------------------------------------------- | ------- | ----------------------------------------- |
-| `test_routes/test_auth.py`                  | 5       | Login/logout; good                        |
-| `test_routes/test_grid.py`                  | 12      | Grid view, balance row, txn CRUD          |
+| `test_routes/test_auth.py`                  | 7       | Login/logout, disabled acct, rate limit; complete |
+| `test_routes/test_grid.py`                  | 19      | Grid view, balance row, txn CRUD+SM       |
 | `test_routes/test_transaction_auth.py`      | 13      | IDOR on transactions; thorough            |
 | `test_routes/test_accounts.py`              | 29      | CRUD, anchor, types; complete             |
 | `test_routes/test_salary.py`                | 36      | Profiles, raises, deductions, tax         |
@@ -40,7 +40,7 @@
 | `test_services/test_tax_calculator.py`      | 30      | Excellent coverage                        |
 | `test_services/test_transfer_recurrence.py` | 10      | Generate, regen, conflicts; complete      |
 | `test_audit_fixes.py`                       | 15      | Decimal, IDOR, constraints                |
-| **Total**                                   | **387** |                                           |
+| **Total**                                   | **396** |                                           |
 
 ---
 
@@ -749,35 +749,34 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ### 2.10 `routes/transactions.py` — Priority P2
 
-**Status: Well covered for IDOR (13 tests) and basic CRUD (5 tests).** Some state transitions and
-edge cases remain.
+**Status: Complete (19 tests in `test_routes/test_grid.py` + 13 in `test_routes/test_transaction_auth.py`).**
 
-| Category | Tests Needed                                                         |
-| -------- | -------------------------------------------------------------------- |
-| SM       | `mark_done` with `actual_amount` provided → sets actual, status=done |
-| SM       | `mark_done` without `actual_amount` → status only                    |
-| SM       | `cancel_transaction` → status=cancelled, `effective_amount`=0        |
-| SM       | `mark_credit` → creates payback in next period                       |
-| SM       | `unmark_credit` → reverts to projected, deletes payback              |
-| HP       | `create_transaction` (full form) → creates with all fields           |
-| BE       | `create_inline` when no baseline scenario → 400                      |
-| SM       | Delete template-linked txn → soft-delete (`is_deleted=True`)         |
-| SM       | Delete ad-hoc txn → hard-delete                                      |
+| Category | Tests Needed                                                         | Status |
+| -------- | -------------------------------------------------------------------- | ------ |
+| SM       | `mark_done` with `actual_amount` provided → sets actual, status=done | ✅ `test_mark_expense_done` (existing) |
+| SM       | `mark_done` without `actual_amount` → status only                    | ✅ `test_mark_done_without_actual_amount` |
+| SM       | `cancel_transaction` → status=cancelled, `effective_amount`=0        | ✅ `test_cancel_transaction` |
+| SM       | `mark_credit` → creates payback in next period                       | ✅ `test_mark_credit_creates_payback` |
+| SM       | `unmark_credit` → reverts to projected, deletes payback              | ✅ `test_unmark_credit_reverts_and_deletes_payback` |
+| HP       | `create_transaction` (full form) → creates with all fields           | ✅ `test_create_transaction_full_form` |
+| BE       | `create_inline` when no baseline scenario → 400                      | ✅ `test_create_inline_no_scenario` |
+| SM       | Delete template-linked txn → soft-delete (`is_deleted=True`)         | ✅ `test_soft_delete_template_transaction` (existing) |
+| SM       | Delete ad-hoc txn → hard-delete                                      | ✅ `test_hard_delete_adhoc_transaction` |
 
-**Estimated new tests: 9**
+**Tests: 7 new** (added to existing 12 in test_grid.py)
 
 ---
 
-### 2.11 `routes/auth.py` — Priority P3
+### 2.11 `routes/auth.py` — Priority P3 ✅
 
-**Status: Good coverage (5 tests).** Minor edge cases.
+**Status: Complete (7 tests).** All edge cases covered.
 
-| Category | Tests Needed                                             |
-| -------- | -------------------------------------------------------- |
-| BE       | Login with disabled account → error message              |
-| BE       | Rate limiting after 5 failed attempts (may need mocking) |
+| Status | Test                                                     |
+| ------ | -------------------------------------------------------- |
+| ✅     | `test_login_disabled_account`                            |
+| ✅     | `test_rate_limiting_after_5_attempts`                    |
 
-**Estimated new tests: 2**
+**Added: 2 new tests**
 
 ---
 
@@ -953,8 +952,8 @@ Every POST endpoint should be tested for double-submission behavior:
 | settings.py                                 | P2       | ~~7~~ ✅ Done     |
 | pay_periods.py                              | P2       | ~~6~~ ✅ Done     |
 | grid.py (gaps)                              | P2       | ~~4~~ ✅ Done     |
-| transactions.py (gaps)                      | P2       | 9                 |
-| auth.py (gaps)                              | P3       | 2                 |
+| transactions.py (gaps)                      | P2       | ~~9~~ 7 ✅ Done   |
+| auth.py (gaps)                              | P3       | ~~2~~ ✅ Done     |
 | **Models**                                  |          |                   |
 | transaction.py                              | P0       | 5                 |
 | transfer.py                                 | P0       | 2                 |
@@ -966,8 +965,8 @@ Every POST endpoint should be tested for double-submission behavior:
 | End-to-end workflows                        | P1       | 6                 |
 | Idempotency                                 | P2       | 10                |
 |                                             |          |                   |
-| **Remaining estimated**                     |          | **~80**           |
-| **Current total (actual)**                  |          | **387**           |
+| **Remaining estimated**                     |          | **~69**           |
+| **Current total (actual)**                  |          | **394**           |
 | **Projected grand total**                   |          | **~467**          |
 
 ---
@@ -1043,4 +1042,4 @@ Tests should be written in this order to maximize coverage of high-risk areas fi
 7. **P2 routes** — ~~templates~~ ✅, ~~categories~~ ✅, ~~pay_periods~~ ✅, ~~settings~~ ✅, ~~grid gaps~~ ✅
 8. **P2 services** — ~~auth_service~~ ✅, ~~carry_forward~~ ✅, ~~credit_workflow gaps~~ ✅
 9. **P2 idempotency** — double-submit tests
-10. **P3 models + routes** — computed properties, rate limiting
+10. **P3 models + routes** — computed properties, ~~rate limiting~~ ✅

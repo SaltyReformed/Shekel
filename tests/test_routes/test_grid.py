@@ -183,3 +183,124 @@ class TestTransactionCRUD:
 
             db.session.refresh(txn)
             assert txn.is_deleted is True
+
+    def test_hard_delete_adhoc_transaction(self, app, auth_client, seed_user, seed_periods):
+        """DELETE /transactions/<id> hard-deletes ad-hoc (no template) items."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+            txn_id = txn.id
+
+            response = auth_client.delete(f"/transactions/{txn_id}")
+            assert response.status_code == 200
+
+            # Ad-hoc transaction should be fully deleted.
+            assert db.session.get(Transaction, txn_id) is None
+
+    def test_mark_done_without_actual_amount(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions/<id>/mark-done without actual_amount sets status only."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            response = auth_client.post(f"/transactions/{txn.id}/mark-done")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "done"
+            assert txn.actual_amount is None
+
+    def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions/<id>/cancel sets status to cancelled."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            response = auth_client.post(f"/transactions/{txn.id}/cancel")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "cancelled"
+            assert txn.effective_amount == Decimal("0")
+
+    def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions/<id>/mark-credit creates payback in next period."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            response = auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "credit"
+
+            # A payback transaction should exist in the next period.
+            payback = db.session.query(Transaction).filter(
+                Transaction.name.like("%Payback%"),
+                Transaction.pay_period_id == seed_periods[1].id,
+            ).first()
+            assert payback is not None
+
+    def test_unmark_credit_reverts_and_deletes_payback(self, app, auth_client, seed_user, seed_periods):
+        """DELETE /transactions/<id>/unmark-credit reverts to projected and deletes payback."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            # First mark as credit.
+            auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            db.session.refresh(txn)
+            assert txn.status.name == "credit"
+
+            # Now unmark.
+            response = auth_client.delete(f"/transactions/{txn.id}/unmark-credit")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+
+            # Payback should be deleted.
+            payback = db.session.query(Transaction).filter(
+                Transaction.name.like("%Payback%"),
+                Transaction.pay_period_id == seed_periods[1].id,
+            ).first()
+            assert payback is None
+
+    def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions with all fields creates a complete transaction."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            projected = db.session.query(Status).filter_by(name="projected").one()
+
+            response = auth_client.post("/transactions", data={
+                "name": "Full Form Expense",
+                "estimated_amount": "250.00",
+                "pay_period_id": seed_periods[2].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Car Payment"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": projected.id,
+            })
+            assert response.status_code == 201
+
+            txn = db.session.query(Transaction).filter_by(
+                name="Full Form Expense"
+            ).one()
+            assert txn.estimated_amount == Decimal("250.00")
+            assert txn.pay_period_id == seed_periods[2].id
+            assert txn.category_id == seed_user["categories"]["Car Payment"].id
+
+    def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods):
+        """GET /transactions/new/quick with no baseline scenario returns 400."""
+        with app.app_context():
+            from app.models.scenario import Scenario
+
+            # Delete the baseline scenario.
+            db.session.query(Scenario).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            db.session.commit()
+
+            response = auth_client.get(
+                f"/transactions/new/quick"
+                f"?category_id={seed_user['categories']['Rent'].id}"
+                f"&period_id={seed_periods[0].id}"
+                f"&txn_type_name=expense"
+            )
+            assert response.status_code == 400
