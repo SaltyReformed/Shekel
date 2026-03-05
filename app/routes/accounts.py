@@ -13,16 +13,22 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.hysa_params import HysaParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
+from app.models.scenario import Scenario
+from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 from app.schemas.validation import (
     AccountCreateSchema,
     AccountUpdateSchema,
     AccountTypeCreateSchema,
     AccountTypeUpdateSchema,
     AnchorUpdateSchema,
+    HysaParamsUpdateSchema,
 )
-from app.services import pay_period_service
+from app.services import balance_calculator, pay_period_service
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +39,7 @@ _create_schema = AccountCreateSchema()
 _update_schema = AccountUpdateSchema()
 _type_create_schema = AccountTypeCreateSchema()
 _type_update_schema = AccountTypeUpdateSchema()
+_hysa_params_schema = HysaParamsUpdateSchema()
 
 
 # ── Account CRUD ───────────────────────────────────────────────────
@@ -119,6 +126,14 @@ def create_account():
         **data,
     )
     db.session.add(account)
+    db.session.flush()
+
+    # Auto-create HysaParams for HYSA accounts.
+    account_type = db.session.get(AccountType, account.account_type_id)
+    if account_type and account_type.name == "hysa":
+        params = HysaParams(account_id=account.id)
+        db.session.add(params)
+
     db.session.commit()
 
     logger.info("Created account: %s (id=%d)", account.name, account.id)
@@ -509,3 +524,164 @@ def anchor_display(account_id):
         account=account,
         editing=False,
     )
+
+
+# ── HYSA Detail & Params ──────────────────────────────────────────
+
+
+@accounts_bp.route("/accounts/<int:account_id>/hysa")
+@login_required
+def hysa_detail(account_id):
+    """HYSA detail page with interest projections."""
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        return redirect(url_for("accounts.list_accounts"))
+
+    # Verify this is a HYSA account.
+    if not account.account_type or account.account_type.name != "hysa":
+        flash("This account is not a HYSA.", "warning")
+        return redirect(url_for("accounts.list_accounts"))
+
+    params = (
+        db.session.query(HysaParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    if not params:
+        # Auto-create params if missing (shouldn't happen normally).
+        params = HysaParams(account_id=account.id)
+        db.session.add(params)
+        db.session.commit()
+
+    user_id = current_user.id
+    all_periods = pay_period_service.get_all_periods(user_id)
+    current_period = pay_period_service.get_current_period(user_id)
+
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=user_id, is_baseline=True)
+        .first()
+    )
+
+    period_ids = [p.id for p in all_periods]
+
+    all_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    # Filter transactions for this account.
+    template_account_map = dict(
+        db.session.query(TransactionTemplate.id, TransactionTemplate.account_id)
+        .filter_by(user_id=user_id)
+        .all()
+    ) if scenario else {}
+
+    acct_transactions = [
+        txn for txn in all_transactions
+        if txn.template_id and template_account_map.get(txn.template_id) == account.id
+    ]
+
+    anchor_balance = account.current_anchor_balance or Decimal("0.00")
+    anchor_period_id = account.current_anchor_period_id or (
+        current_period.id if current_period else None
+    )
+
+    balances = {}
+    interest_by_period = {}
+    if anchor_period_id:
+        balances, interest_by_period = balance_calculator.calculate_balances_with_interest(
+            anchor_balance=anchor_balance,
+            anchor_period_id=anchor_period_id,
+            periods=all_periods,
+            transactions=acct_transactions,
+            transfers=all_transfers,
+            account_id=account.id,
+            hysa_params=params,
+        )
+
+    current_bal = balances.get(current_period.id) if current_period else anchor_balance
+
+    # Build period projection data for the template.
+    period_data = []
+    for p in all_periods:
+        if p.id in balances:
+            period_data.append({
+                "period": p,
+                "balance": balances[p.id],
+                "interest": interest_by_period.get(p.id, Decimal("0.00")),
+            })
+
+    # 3/6/12 month horizon projections.
+    projected = {}
+    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
+        if current_period:
+            target_idx = current_period.period_index + offset_count
+            for p in all_periods:
+                if p.period_index == target_idx and p.id in balances:
+                    projected[offset_label] = balances[p.id]
+                    break
+
+    return render_template(
+        "accounts/hysa_detail.html",
+        account=account,
+        params=params,
+        current_balance=current_bal,
+        projected=projected,
+        period_data=period_data,
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/hysa/params", methods=["POST"])
+@login_required
+def update_hysa_params(account_id):
+    """Update HYSA parameters (APY, compounding frequency)."""
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("accounts.list_accounts"))
+
+    if not account.account_type or account.account_type.name != "hysa":
+        flash("This account is not a HYSA.", "warning")
+        return redirect(url_for("accounts.list_accounts"))
+
+    errors = _hysa_params_schema.validate(request.form)
+    if errors:
+        flash(f"Validation error: {errors}", "danger")
+        return redirect(url_for("accounts.hysa_detail", account_id=account_id))
+
+    data = _hysa_params_schema.load(request.form)
+
+    params = (
+        db.session.query(HysaParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    if not params:
+        params = HysaParams(account_id=account.id)
+        db.session.add(params)
+
+    if "apy" in data:
+        params.apy = data["apy"]
+    if "compounding_frequency" in data:
+        params.compounding_frequency = data["compounding_frequency"]
+
+    db.session.commit()
+    logger.info("Updated HYSA params for account %d", account.id)
+    flash("HYSA parameters updated.", "success")
+    return redirect(url_for("accounts.hysa_detail", account_id=account_id))

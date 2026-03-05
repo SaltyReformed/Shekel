@@ -19,6 +19,8 @@ import logging
 from collections import OrderedDict
 from decimal import Decimal
 
+from app.services.interest_projection import calculate_interest
+
 logger = logging.getLogger(__name__)
 
 # Status names that indicate "already settled" — amounts baked into anchor.
@@ -94,6 +96,72 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
         balances[period.id] = running_balance
 
     return balances
+
+
+def calculate_balances_with_interest(
+    anchor_balance, anchor_period_id, periods, transactions,
+    transfers=None, account_id=None, hysa_params=None,
+):
+    """Same as calculate_balances but also returns interest earned per period.
+
+    When hysa_params is provided (an object with .apy and .compounding_frequency),
+    interest is projected for each period and added to the running balance.
+
+    Args:
+        anchor_balance:    Decimal — the real balance at the anchor period.
+        anchor_period_id:  int — the pay_period.id of the anchor.
+        periods:           List of PayPeriod objects, ordered by period_index.
+        transactions:      List of Transaction objects.
+        transfers:         Optional list of Transfer objects.
+        account_id:        The account ID for transfer calculations.
+        hysa_params:       Object with .apy (Decimal) and .compounding_frequency (str).
+
+    Returns:
+        (balances, interest_by_period) where:
+            balances: OrderedDict mapping period_id → Decimal end balance
+            interest_by_period: dict mapping period_id → Decimal interest earned
+    """
+    # First compute base balances without interest.
+    base_balances = calculate_balances(
+        anchor_balance, anchor_period_id, periods, transactions,
+        transfers=transfers, account_id=account_id,
+    )
+
+    interest_by_period = {}
+
+    if not hysa_params or not hasattr(hysa_params, "apy"):
+        return base_balances, interest_by_period
+
+    apy = Decimal(str(hysa_params.apy))
+    compounding = hysa_params.compounding_frequency
+
+    # Re-walk periods, layering interest on top of the base balances.
+    balances = OrderedDict()
+    running_balance = None
+    interest_cumulative = Decimal("0.00")
+
+    for period in periods:
+        if period.id not in base_balances:
+            continue
+
+        base_bal = base_balances[period.id]
+        # Add cumulative interest from prior periods.
+        running_balance = base_bal + interest_cumulative
+
+        # Calculate interest for this period.
+        interest = calculate_interest(
+            balance=running_balance,
+            apy=apy,
+            compounding_frequency=compounding,
+            period_start=period.start_date,
+            period_end=period.end_date,
+        )
+        interest_cumulative += interest
+        running_balance += interest
+        interest_by_period[period.id] = interest
+        balances[period.id] = running_balance
+
+    return balances, interest_by_period
 
 
 def _sum_remaining(transactions):

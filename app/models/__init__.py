@@ -35,6 +35,7 @@ from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal
+from app.models.hysa_params import HysaParams
 
 # Salary domain
 from app.models.salary_profile import SalaryProfile

@@ -9,13 +9,14 @@ from app.extensions import db
 
 
 class AccountType(db.Model):
-    """Account type reference: 'checking', 'savings'."""
+    """Account type reference: 'checking', 'savings', 'hysa'."""
 
     __tablename__ = "account_types"
     __table_args__ = {"schema": "ref"}
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(30), unique=True, nullable=False)
+    category = db.Column(db.String(20))
 
     def __repr__(self):
         return f"<AccountType {self.name}>"

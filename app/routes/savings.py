@@ -11,8 +11,11 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from collections import OrderedDict
+
 from app.extensions import db
 from app.models.account import Account
+from app.models.hysa_params import HysaParams
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -89,6 +92,19 @@ def dashboard():
     # so attribute them to the same account.
     grid_account_id = accounts[0].id if accounts else None
 
+    # Load HYSA params for all HYSA accounts in one query.
+    hysa_type = (
+        db.session.query(AccountType).filter_by(name="hysa").first()
+    )
+    hysa_params_map = {}
+    if hysa_type:
+        hysa_account_ids = [a.id for a in accounts if a.account_type_id == hysa_type.id]
+        if hysa_account_ids:
+            for hp in db.session.query(HysaParams).filter(
+                HysaParams.account_id.in_(hysa_account_ids)
+            ).all():
+                hysa_params_map[hp.account_id] = hp
+
     # Compute projected balances for each account.
     account_data = []
     for acct in accounts:
@@ -108,15 +124,29 @@ def dashboard():
         )
 
         balances = {}
+        interest_by_period = {}
+        acct_hysa_params = hysa_params_map.get(acct.id)
+
         if anchor_period_id:
-            balances = balance_calculator.calculate_balances(
-                anchor_balance=anchor_balance,
-                anchor_period_id=anchor_period_id,
-                periods=all_periods,
-                transactions=acct_transactions,
-                transfers=all_transfers,
-                account_id=acct.id,
-            )
+            if acct_hysa_params:
+                balances, interest_by_period = balance_calculator.calculate_balances_with_interest(
+                    anchor_balance=anchor_balance,
+                    anchor_period_id=anchor_period_id,
+                    periods=all_periods,
+                    transactions=acct_transactions,
+                    transfers=all_transfers,
+                    account_id=acct.id,
+                    hysa_params=acct_hysa_params,
+                )
+            else:
+                balances = balance_calculator.calculate_balances(
+                    anchor_balance=anchor_balance,
+                    anchor_period_id=anchor_period_id,
+                    periods=all_periods,
+                    transactions=acct_transactions,
+                    transfers=all_transfers,
+                    account_id=acct.id,
+                )
 
         # Get projected balance at current period and a few future milestones.
         current_bal = balances.get(current_period.id) if current_period else anchor_balance
@@ -129,11 +159,14 @@ def dashboard():
                         projected[offset_label] = balances[p.id]
                         break
 
-        account_data.append({
+        ad = {
             "account": acct,
             "current_balance": current_bal,
             "projected": projected,
-        })
+        }
+        if acct_hysa_params:
+            ad["hysa_params"] = acct_hysa_params
+        account_data.append(ad)
 
     # Load savings goals.
     goals = (
@@ -207,30 +240,58 @@ def dashboard():
                 per_period = total_expenses / num_periods
                 avg_monthly_expenses = per_period * Decimal("26") / Decimal("12")
 
-    # Sum savings balances for emergency fund calculation.
+    # Sum savings + HYSA balances for emergency fund calculation.
     savings_type = (
         db.session.query(AccountType)
         .filter_by(name="savings")
         .first()
     )
+    savings_type_ids = set()
+    if savings_type:
+        savings_type_ids.add(savings_type.id)
+    if hysa_type:
+        savings_type_ids.add(hysa_type.id)
+
     total_savings = Decimal("0.00")
     for ad in account_data:
-        if savings_type and ad["account"].account_type_id == savings_type.id:
+        if ad["account"].account_type_id in savings_type_ids:
             total_savings += ad["current_balance"] or Decimal("0.00")
 
     emergency_metrics = savings_goal_service.calculate_savings_metrics(
         total_savings, avg_monthly_expenses,
     )
 
-    # Load savings accounts for the goal form dropdown.
+    # Load savings/HYSA accounts for the goal form dropdown.
     savings_accounts = [
         ad["account"] for ad in account_data
-        if savings_type and ad["account"].account_type_id == savings_type.id
+        if ad["account"].account_type_id in savings_type_ids
     ]
+
+    # Group accounts by category for the dashboard layout.
+    # Desired order: Asset, Liability, Retirement, Investment.
+    category_order = ["asset", "liability", "retirement", "investment"]
+    grouped_accounts = OrderedDict()
+    for cat in category_order:
+        cat_accounts = [
+            ad for ad in account_data
+            if ad["account"].account_type
+            and (ad["account"].account_type.category or "").lower() == cat
+        ]
+        if cat_accounts:
+            grouped_accounts[cat] = cat_accounts
+    # Catch any accounts without a category.
+    uncategorized = [
+        ad for ad in account_data
+        if not ad["account"].account_type
+        or not ad["account"].account_type.category
+    ]
+    if uncategorized:
+        grouped_accounts["other"] = uncategorized
 
     return render_template(
         "savings/dashboard.html",
         account_data=account_data,
+        grouped_accounts=grouped_accounts,
         goal_data=goal_data,
         emergency_metrics=emergency_metrics,
         total_savings=total_savings,

@@ -1,32 +1,61 @@
 {% extends "base.html" %}
-{% block title %}Savings — Shekel{% endblock %}
+{% block title %}Accounts — Shekel{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-piggy-bank"></i> Savings Dashboard</h4>
+  <h4><i class="bi bi-wallet2"></i> Accounts & Savings</h4>
   <a href="{{ url_for('savings.new_goal') }}" class="btn btn-primary btn-sm">
     <i class="bi bi-plus-circle"></i> New Goal
   </a>
 </div>
 
-{# --- Account Overview Cards --- #}
+{# --- Account Overview Cards (grouped by category) --- #}
+{% set category_icons = {
+  'asset': 'bi-bank',
+  'liability': 'bi-credit-card',
+  'retirement': 'bi-briefcase',
+  'investment': 'bi-graph-up',
+  'other': 'bi-wallet',
+} %}
+{% for category_name, category_accounts in grouped_accounts.items() %}
+<h5 class="mb-2 mt-3">
+  <i class="bi {{ category_icons.get(category_name, 'bi-wallet') }}"></i>
+  {{ category_name|title }}
+</h5>
 <div class="row g-3 mb-4">
-  {% for ad in account_data %}
+  {% for ad in category_accounts %}
   <div class="col-md-6 col-lg-4">
     <div class="card h-100">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-start">
           <div>
             <h6 class="card-title mb-1">
-              {% if ad.account.account_type and ad.account.account_type.name == 'savings' %}
+              {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+                <i class="bi bi-bank2 text-info"></i>
+              {% elif ad.account.account_type and ad.account.account_type.name == 'savings' %}
                 <i class="bi bi-piggy-bank text-success"></i>
               {% else %}
                 <i class="bi bi-bank text-primary"></i>
               {% endif %}
               {{ ad.account.name }}
             </h6>
-            <small class="text-muted">{{ ad.account.account_type.name|capitalize if ad.account.account_type else '' }}</small>
+            <small class="text-muted">
+              {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+                HYSA
+              {% elif ad.account.account_type %}
+                {{ ad.account.account_type.name|capitalize }}
+              {% endif %}
+              {% if ad.hysa_params is defined and ad.hysa_params %}
+                — APY: {{ "%.2f"|format(ad.hysa_params.apy|float * 100) }}%
+              {% endif %}
+            </small>
           </div>
+          {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+          <a href="{{ url_for('accounts.hysa_detail', account_id=ad.account.id) }}"
+             class="btn btn-sm btn-outline-info" title="HYSA Detail">
+            <i class="bi bi-graph-up"></i>
+          </a>
+          {% endif %}
         </div>
         <div class="mt-3">
           <div class="text-muted small">Current Balance</div>
@@ -54,6 +83,7 @@
   </div>
   {% endfor %}
 </div>
+{% endfor %}
 
 {# --- Emergency Fund Metrics --- #}
 {% if total_savings > 0 %}

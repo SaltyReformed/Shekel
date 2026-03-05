@@ -456,3 +456,39 @@ class AccountTypeUpdateSchema(BaseSchema):
     """Validates POST data for updating an account type."""
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=30))
+
+
+# ── HYSA Schemas ──────────────────────────────────────────────────
+
+
+class HysaParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating/updating HYSA parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    apy = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    compounding_frequency = fields.String(
+        required=True,
+        validate=validate.OneOf(["daily", "monthly", "quarterly"]),
+    )
+
+
+class HysaParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating HYSA parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    apy = fields.Decimal(
+        places=5, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    compounding_frequency = fields.String(
+        validate=validate.OneOf(["daily", "monthly", "quarterly"]),
+    )

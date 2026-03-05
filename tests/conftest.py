@@ -94,6 +94,7 @@ def db(app, setup_database):
             "salary.state_tax_configs, "
             "salary.tax_brackets, "
             "salary.tax_bracket_sets, "
+            "budget.hysa_params, "
             "budget.savings_goals, "
             "budget.transfers, "
             "budget.transfer_templates, "
@@ -239,7 +240,7 @@ def auth_client(app, db, client, seed_user):
 def _seed_ref_tables():
     """Populate reference tables for the test database."""
     ref_data = [
-        (AccountType, ["checking", "savings"]),
+        (AccountType, ["checking", "savings", "hysa"]),
         (TransactionType, ["income", "expense"]),
         (Status, ["projected", "done", "received", "credit", "cancelled"]),
         (RecurrencePattern, [
@@ -263,3 +264,11 @@ def _seed_ref_tables():
             )
             if existing is None:
                 _db.session.add(model_class(name=name))
+
+    # Backfill category on account types.
+    _db.session.flush()
+    category_map = {"checking": "asset", "savings": "asset", "hysa": "asset"}
+    for type_name, category in category_map.items():
+        at = _db.session.query(AccountType).filter_by(name=type_name).first()
+        if at:
+            at.category = category
