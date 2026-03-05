@@ -36,6 +36,8 @@ from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal
 from app.models.hysa_params import HysaParams
+from app.models.mortgage_params import MortgageParams, MortgageRateHistory, EscrowComponent
+from app.models.auto_loan_params import AutoLoanParams
 
 # Salary domain
 from app.models.salary_profile import SalaryProfile

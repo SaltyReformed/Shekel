@@ -492,3 +492,105 @@ class HysaParamsUpdateSchema(BaseSchema):
     compounding_frequency = fields.String(
         validate=validate.OneOf(["daily", "monthly", "quarterly"]),
     )
+
+
+# ── Mortgage Schemas ─────────────────────────────────────────────
+
+
+class MortgageParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating mortgage parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=600))
+    origination_date = fields.Date(required=True)
+    payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
+    is_arm = fields.Boolean(load_default=False)
+    arm_first_adjustment_months = fields.Integer(allow_none=True)
+    arm_adjustment_interval_months = fields.Integer(allow_none=True)
+
+
+class MortgageParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating mortgage parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
+    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
+    is_arm = fields.Boolean()
+    arm_first_adjustment_months = fields.Integer(allow_none=True)
+    arm_adjustment_interval_months = fields.Integer(allow_none=True)
+
+
+class MortgageRateChangeSchema(BaseSchema):
+    """Validates POST data for recording an ARM rate change."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    effective_date = fields.Date(required=True)
+    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+
+class EscrowComponentSchema(BaseSchema):
+    """Validates POST data for creating/updating an escrow component."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+    annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=1))
+
+
+# ── Auto Loan Schemas ────────────────────────────────────────────
+
+
+class AutoLoanParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating auto loan parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=120))
+    origination_date = fields.Date(required=True)
+    payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
+
+
+class AutoLoanParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating auto loan parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
+    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
+
+
+class PayoffCalculatorSchema(BaseSchema):
+    """Validates POST data for payoff scenario analysis."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    mode = fields.String(required=True, validate=validate.OneOf(["extra_payment", "target_date"]))
+    extra_monthly = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
+    target_date = fields.Date()

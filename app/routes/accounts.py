@@ -13,7 +13,9 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
+from app.models.mortgage_params import MortgageParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
@@ -128,7 +130,7 @@ def create_account():
     db.session.add(account)
     db.session.flush()
 
-    # Auto-create HysaParams for HYSA accounts.
+    # Auto-create type-specific params.
     account_type = db.session.get(AccountType, account.account_type_id)
     if account_type and account_type.name == "hysa":
         params = HysaParams(account_id=account.id)
@@ -138,6 +140,13 @@ def create_account():
 
     logger.info("Created account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' created.", "success")
+
+    # Redirect to detail page for debt accounts (params need user input).
+    if account_type and account_type.name == "mortgage":
+        return redirect(url_for("mortgage.dashboard", account_id=account.id))
+    if account_type and account_type.name == "auto_loan":
+        return redirect(url_for("auto_loan.dashboard", account_id=account.id))
+
     return redirect(url_for("accounts.list_accounts"))
 
 

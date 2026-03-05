@@ -17,7 +17,7 @@ Calculation rules:
 
 import logging
 from collections import OrderedDict
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.services.interest_projection import calculate_interest
 
@@ -162,6 +162,103 @@ def calculate_balances_with_interest(
         balances[period.id] = running_balance
 
     return balances, interest_by_period
+
+
+def calculate_balances_with_amortization(
+    anchor_balance, anchor_period_id, periods, transactions,
+    transfers=None, account_id=None, loan_params=None,
+):
+    """Calculate balances for a debt account (mortgage or auto loan).
+
+    For debt accounts, transfers INTO the account represent payments.
+    Only the principal portion (determined by amortization) reduces the balance.
+    Interest portion is the cost of the loan.
+
+    Args:
+        anchor_balance:    Decimal — the current principal at the anchor period.
+        anchor_period_id:  int — the pay_period.id of the anchor.
+        periods:           List of PayPeriod objects, ordered by period_index.
+        transactions:      List of Transaction objects.
+        transfers:         Optional list of Transfer objects.
+        account_id:        The account ID for transfer calculations.
+        loan_params:       Object with .current_principal, .interest_rate,
+                           .term_months, .origination_date, .payment_day.
+
+    Returns:
+        (balances, principal_by_period) where:
+            balances: OrderedDict mapping period_id → Decimal end balance
+            principal_by_period: dict mapping period_id → Decimal principal paid
+    """
+    from app.services.amortization_engine import calculate_monthly_payment
+
+    # First compute base balances (transfer effects applied normally).
+    base_balances = calculate_balances(
+        anchor_balance, anchor_period_id, periods, transactions,
+        transfers=transfers, account_id=account_id,
+    )
+
+    principal_by_period = {}
+
+    if not loan_params or not hasattr(loan_params, "interest_rate"):
+        return base_balances, principal_by_period
+
+    annual_rate = Decimal(str(loan_params.interest_rate))
+    remaining_months = loan_params.term_months
+    monthly_payment = calculate_monthly_payment(
+        Decimal(str(loan_params.current_principal)),
+        annual_rate,
+        remaining_months,
+    )
+
+    monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
+
+    # Re-walk periods, tracking the loan balance reduction by principal only.
+    balances = OrderedDict()
+    running_principal = None
+
+    # Group transfers by period for fast lookup.
+    xfer_by_period = {}
+    if transfers and account_id:
+        for xfer in transfers:
+            xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
+
+    for period in periods:
+        if period.id not in base_balances:
+            continue
+
+        if period.id == anchor_period_id:
+            running_principal = Decimal(str(anchor_balance))
+        elif running_principal is None:
+            continue
+
+        # Calculate how much principal is paid this period.
+        period_xfers = xfer_by_period.get(period.id, [])
+        total_payment_in = Decimal("0.00")
+        for xfer in period_xfers:
+            status_name = xfer.status.name if xfer.status else "projected"
+            if status_name in ("cancelled",):
+                continue
+            if xfer.to_account_id == account_id:
+                total_payment_in += Decimal(str(xfer.amount))
+
+        # For each payment, split into interest and principal.
+        if total_payment_in > 0 and running_principal > 0:
+            interest_portion = (running_principal * monthly_rate).quantize(
+                Decimal("0.01"), ROUND_HALF_UP
+            )
+            principal_portion = total_payment_in - interest_portion
+            principal_portion = max(principal_portion, Decimal("0.00"))
+            principal_portion = min(principal_portion, running_principal)
+
+            running_principal -= principal_portion
+            running_principal = max(running_principal, Decimal("0.00"))
+            principal_by_period[period.id] = principal_portion
+        else:
+            principal_by_period[period.id] = Decimal("0.00")
+
+        balances[period.id] = running_principal
+
+    return balances, principal_by_period
 
 
 def _sum_remaining(transactions):

@@ -15,7 +15,9 @@ from collections import OrderedDict
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
+from app.models.mortgage_params import MortgageParams
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -23,7 +25,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import balance_calculator, pay_period_service, savings_goal_service
+from app.services import amortization_engine, balance_calculator, pay_period_service, savings_goal_service
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,26 @@ def dashboard():
             ).all():
                 hysa_params_map[hp.account_id] = hp
 
+    # Load loan params for mortgage and auto loan accounts.
+    mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").first()
+    auto_loan_type = db.session.query(AccountType).filter_by(name="auto_loan").first()
+
+    loan_params_map = {}
+    if mortgage_type:
+        mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type.id]
+        if mortgage_ids:
+            for mp in db.session.query(MortgageParams).filter(
+                MortgageParams.account_id.in_(mortgage_ids)
+            ).all():
+                loan_params_map[mp.account_id] = mp
+    if auto_loan_type:
+        auto_loan_ids = [a.id for a in accounts if a.account_type_id == auto_loan_type.id]
+        if auto_loan_ids:
+            for alp in db.session.query(AutoLoanParams).filter(
+                AutoLoanParams.account_id.in_(auto_loan_ids)
+            ).all():
+                loan_params_map[alp.account_id] = alp
+
     # Compute projected balances for each account.
     account_data = []
     for acct in accounts:
@@ -149,15 +171,46 @@ def dashboard():
                 )
 
         # Get projected balance at current period and a few future milestones.
+        acct_loan_params = loan_params_map.get(acct.id)
         current_bal = balances.get(current_period.id) if current_period else anchor_balance
         projected = {}
-        for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
-            if current_period:
-                target_idx = current_period.period_index + offset_count
-                for p in all_periods:
-                    if p.period_index == target_idx and p.id in balances:
-                        projected[offset_label] = balances[p.id]
-                        break
+
+        if acct_loan_params:
+            # Debt accounts: use amortization schedule for projections instead
+            # of the generic balance calculator (which treats payments as deposits).
+            from datetime import date as _date
+            from decimal import Decimal as D
+            remaining = amortization_engine.calculate_remaining_months(
+                acct_loan_params.origination_date,
+                acct_loan_params.term_months,
+            )
+            principal = D(str(acct_loan_params.current_principal))
+            rate = D(str(acct_loan_params.interest_rate))
+            current_bal = principal
+            monthly = amortization_engine.calculate_monthly_payment(
+                principal, rate, remaining,
+            )
+            schedule = amortization_engine.generate_schedule(
+                principal, rate, remaining,
+                payment_day=acct_loan_params.payment_day,
+            )
+            for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
+                if month_offset <= len(schedule):
+                    projected[label] = schedule[month_offset - 1].remaining_balance
+            summary = amortization_engine.calculate_summary(
+                principal, rate, remaining,
+                _date.today().replace(day=1),
+                acct_loan_params.payment_day,
+                acct_loan_params.term_months,
+            )
+        else:
+            for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
+                if current_period:
+                    target_idx = current_period.period_index + offset_count
+                    for p in all_periods:
+                        if p.period_index == target_idx and p.id in balances:
+                            projected[offset_label] = balances[p.id]
+                            break
 
         ad = {
             "account": acct,
@@ -166,6 +219,12 @@ def dashboard():
         }
         if acct_hysa_params:
             ad["hysa_params"] = acct_hysa_params
+
+        if acct_loan_params:
+            ad["loan_params"] = acct_loan_params
+            ad["monthly_payment"] = monthly
+            ad["payoff_date"] = summary.payoff_date
+
         account_data.append(ad)
 
     # Load savings goals.

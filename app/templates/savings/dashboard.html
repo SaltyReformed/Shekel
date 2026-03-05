@@ -34,6 +34,10 @@
                 <i class="bi bi-bank2 text-info"></i>
               {% elif ad.account.account_type and ad.account.account_type.name == 'savings' %}
                 <i class="bi bi-piggy-bank text-success"></i>
+              {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+                <i class="bi bi-house text-warning"></i>
+              {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+                <i class="bi bi-car-front text-warning"></i>
               {% else %}
                 <i class="bi bi-bank text-primary"></i>
               {% endif %}
@@ -42,11 +46,18 @@
             <small class="text-muted">
               {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
                 HYSA
+              {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+                Mortgage
+              {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+                Auto Loan
               {% elif ad.account.account_type %}
                 {{ ad.account.account_type.name|capitalize }}
               {% endif %}
               {% if ad.hysa_params is defined and ad.hysa_params %}
                 — APY: {{ "%.2f"|format(ad.hysa_params.apy|float * 100) }}%
+              {% endif %}
+              {% if ad.loan_params is defined and ad.loan_params %}
+                — {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
               {% endif %}
             </small>
           </div>
@@ -54,6 +65,16 @@
           <a href="{{ url_for('accounts.hysa_detail', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-info" title="HYSA Detail">
             <i class="bi bi-graph-up"></i>
+          </a>
+          {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+          <a href="{{ url_for('mortgage.dashboard', account_id=ad.account.id) }}"
+             class="btn btn-sm btn-outline-warning" title="Mortgage Detail">
+            <i class="bi bi-house"></i>
+          </a>
+          {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+          <a href="{{ url_for('auto_loan.dashboard', account_id=ad.account.id) }}"
+             class="btn btn-sm btn-outline-warning" title="Auto Loan Detail">
+            <i class="bi bi-car-front"></i>
           </a>
           {% endif %}
         </div>
@@ -67,6 +88,20 @@
             {% endif %}
           </div>
         </div>
+        {% if ad.loan_params is defined and ad.loan_params %}
+        <div class="mt-2">
+          <div class="d-flex justify-content-between small">
+            <span class="text-muted">Monthly Payment</span>
+            <span class="font-mono">${{ "{:,.2f}".format(ad.monthly_payment|float) }}</span>
+          </div>
+          {% if ad.payoff_date %}
+          <div class="d-flex justify-content-between small">
+            <span class="text-muted">Payoff Date</span>
+            <span>{{ ad.payoff_date.strftime('%b %Y') }}</span>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
         {% if ad.projected %}
         <div class="mt-2">
           <small class="text-muted">Projected:</small>
