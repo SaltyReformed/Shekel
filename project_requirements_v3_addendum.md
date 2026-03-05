@@ -50,18 +50,28 @@ The original v2 phases are restructured to integrate the new account types at lo
 1 and 2 are unchanged. Phase 3 (Scenarios) is deferred to allow the financial foundation to be built
 first.
 
-| Phase                                        | Features                                                                                                                                                                                                                                   |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Phase 1 — Replace the Spreadsheet**        | _(unchanged from v2)_                                                                                                                                                                                                                      |
-| **Phase 2 — Paycheck Calculator**            | _(unchanged from v2)_ — with one addition: pre-tax paycheck deductions for 401(k)/Roth 401(k) are wired to credit the corresponding retirement account (see §4.3)                                                                          |
-| **Phase 3 — Savings & Accounts (was v2 §4)** | Savings account balance tracking, HYSA with interest projection, transfers (checking ↔ savings), savings goals, accounts dashboard                                                                                                         |
-| **Phase 4 — Debt Accounts**                  | Mortgage (fixed-rate and ARM), auto loan, escrow modeling, linked transactions (payment from checking → principal reduction), amortization engine, payoff calculator with basic inline chart                                               |
-| **Phase 5 — Investments & Retirement**       | 401(k), Roth 401(k), Traditional IRA, Roth IRA, taxable brokerage, compound growth engine, contribution limits, employer contributions, pension modeling, retirement income gap dashboard with basic inline chart                          |
-| **Phase 6 — Visualization**                  | Balance-over-time (all account types), spending by category, budget vs. actuals, amortization chart (principal vs. interest over time), investment growth curve, retirement gap waterfall, scenario comparison overlay, net pay trajectory |
-| **Phase 7 — Scenarios**                      | _(moved from v2 Phase 3)_ Named scenarios, clone from baseline, scenario-scoped transactions, salary profiles, and account parameters; side-by-side comparison; balance diff highlighting; now includes debt and investment what-ifs       |
-| **Phase 8 — Hardening & Ops**                | _(unchanged from v2 Phase 6)_ Audit logging, structured logging, backups, MFA, CSV export, mobile layout, registration                                                                                                                     |
-| **Phase 9 — Smart Features**                 | _(unchanged from v2 Phase 7)_ Smart estimates, expense inflation, deduction inflation                                                                                                                                                      |
-| **Phase 10 — Notifications**                 | _(unchanged from v2 Phase 8)_ In-app alerts, email notifications; extended to include loan payoff milestones, retirement goal milestones, contribution limit warnings                                                                      |
+**Already built (v2 phases):**
+
+| Phase                                 | Status                                                                       |
+| ------------------------------------- | ---------------------------------------------------------------------------- |
+| **Phase 1 — Replace the Spreadsheet** | ✅ Built                                                                     |
+| **Phase 2 — Paycheck Calculator**     | ✅ Built                                                                     |
+| **Phase 4 — Savings & Accounts**      | ✅ Built (savings dashboard, transfers, savings goals, balance roll-forward) |
+
+**Note:** v2 Phase 3 (Scenarios) was **not** built and is deferred in this addendum to Phase 7.
+
+**New and remaining phases:**
+
+| Phase                                        | Features                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Phase 3 — HYSA & Accounts Reorganization** | Extends the existing savings infrastructure (v2 Phase 4, already built) with: HYSA account type with interest projection, `category` column on `ref.account_types`, accounts dashboard reorganized by category (Asset / Liability / Retirement / Investment)                                      |
+| **Phase 4 — Debt Accounts**                  | Mortgage (fixed-rate and ARM), auto loan, escrow modeling, linked transactions (payment from checking → principal reduction), amortization engine, payoff calculator with basic inline chart                                                                                                      |
+| **Phase 5 — Investments & Retirement**       | 401(k), Roth 401(k), Traditional IRA, Roth IRA, taxable brokerage, compound growth engine, contribution limits, employer contributions (extends the existing paycheck deduction system from v2 Phase 2, already built), pension modeling, retirement income gap dashboard with basic inline chart |
+| **Phase 6 — Visualization**                  | Balance-over-time (all account types), spending by category, budget vs. actuals, amortization chart (principal vs. interest over time), investment growth curve, retirement gap waterfall, scenario comparison overlay, net pay trajectory                                                        |
+| **Phase 7 — Scenarios**                      | _(moved from v2 Phase 3, never built)_ Named scenarios, clone from baseline, scenario-scoped transactions, salary profiles, and account parameters; side-by-side comparison; balance diff highlighting; now includes debt and investment what-ifs                                                 |
+| **Phase 8 — Hardening & Ops**                | _(unchanged from v2 Phase 6)_ Audit logging, structured logging, backups, MFA, CSV export, mobile layout, registration                                                                                                                                                                            |
+| **Phase 9 — Smart Features**                 | _(unchanged from v2 Phase 7)_ Smart estimates, expense inflation, deduction inflation                                                                                                                                                                                                             |
+| **Phase 10 — Notifications**                 | _(unchanged from v2 Phase 8)_ In-app alerts, email notifications; extended to include loan payoff milestones, retirement goal milestones, contribution limit warnings                                                                                                                             |
 
 ---
 
@@ -968,18 +978,25 @@ app/
 
 ## 10. Development Roadmap — New Phases
 
-### Phase 3 — Savings & Accounts (Weeks 9–12)
+### Phase 3 — HYSA & Accounts Reorganization (Weeks 9–12)
 
-- [ ] Add `category` column to `ref.account_types`
-- [ ] Seed new account type: `hysa`
-- [ ] HYSA parameter table + model
+This phase extends the **already-built** savings infrastructure (v2 Phase 4) rather than building it
+from scratch. The existing savings dashboard, savings goals, transfers, and balance roll-forward are
+all in place.
+
+- [ ] Add `category` column to `ref.account_types`; backfill existing types (`checking` → asset,
+      `savings` → asset)
+- [ ] Seed new account type: `hysa` (category: asset)
+- [ ] HYSA parameter table + model (`budget.hysa_params`)
 - [ ] Interest projection service (pure function, daily/monthly/quarterly compounding)
-- [ ] Integrate interest projection into balance calculator for HYSA accounts
-- [ ] Savings account setup, transfers (checking ↔ savings — existing Phase 4 scope)
-- [ ] Savings goals (target amount, target date, auto-calculated contributions)
-- [ ] Unified accounts dashboard (grouped by category)
+- [ ] Integrate interest projection into existing balance calculator for HYSA accounts
+- [ ] Reorganize existing accounts/savings dashboard into unified accounts dashboard grouped by
+      category
 - [ ] HYSA detail view with interest projections
-- [ ] Test suite: interest projection service
+- [ ] Update navigation: savings dashboard route becomes the unified accounts dashboard
+- [ ] Test suite: interest projection service, HYSA balance calculation, accounts dashboard
+      rendering
+- [ ] Verify all existing savings tests still pass (no regressions)
 
 ### Phase 4 — Debt Accounts (Weeks 13–18)
 
@@ -1000,6 +1017,11 @@ app/
 - [ ] Test suite: amortization engine, escrow calculator, payoff scenarios
 
 ### Phase 5 — Investments & Retirement (Weeks 19–26)
+
+This phase extends the **already-built** paycheck calculator (v2 Phase 2). The salary profiles,
+paycheck deductions, and tax calculator are all in place. The key integration point is adding
+`target_account_id` to the existing `salary.paycheck_deductions` table so that deductions can credit
+retirement accounts.
 
 - [ ] Seed new account types: `401k`, `roth_401k`, `traditional_ira`, `roth_ira`, `brokerage`
 - [ ] Investment parameter table + model
@@ -1061,3 +1083,4 @@ app/
 | Version | Date       | Changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 3.0     | 2026-02-28 | Addendum: extended account types (HYSA, mortgage, auto loan, 401(k), Roth 401(k), Traditional IRA, Roth IRA, brokerage); amortization engine with ARM and escrow support; compound growth engine; pension modeling; retirement income gap analysis; contribution limit tracking; employer contribution modeling; restructured phase roadmap (scenarios moved to Phase 7, debt accounts Phase 4, investments Phase 5); removed "debt amortization schedules" from out-of-scope list; added inline charts per feature phase |
+| 3.0.1   | 2026-03-04 | Clarified that v2 Phases 1, 2, and 4 are already built; Phase 3 renamed to "HYSA & Accounts Reorganization" to reflect that it extends existing savings infrastructure; Phase 5 notes clarify it extends the existing paycheck deduction system; added build status table                                                                                                                                                                                                                                                 |
