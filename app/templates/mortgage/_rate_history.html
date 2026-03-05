@@ -1,0 +1,53 @@
+{# HTMX fragment: ARM rate change history #}
+<div class="card-body p-0">
+  {% if rate_history %}
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Effective Date</th>
+          <th class="text-end">Interest Rate</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in rate_history %}
+        <tr>
+          <td>{{ entry.effective_date.strftime('%b %-d, %Y') }}</td>
+          <td class="text-end font-mono">{{ "%.3f"|format(entry.interest_rate|float * 100) }}%</td>
+          <td><small class="text-muted">{{ entry.notes or '' }}</small></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-3 text-muted">No rate changes recorded.</div>
+  {% endif %}
+</div>
+<div class="card-footer">
+  <form hx-post="{{ url_for('mortgage.add_rate_change', account_id=account.id) }}"
+        hx-target="#rate-history" hx-swap="innerHTML"
+        class="row g-2 align-items-end">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="col-md-3">
+      <label for="rate-date" class="form-label small">Effective Date</label>
+      <input type="date" class="form-control form-control-sm" id="rate-date" name="effective_date" required>
+    </div>
+    <div class="col-md-3">
+      <label for="rate-value" class="form-label small">New Rate</label>
+      <input type="number" class="form-control form-control-sm" id="rate-value"
+             name="interest_rate" step="0.00001" min="0" max="1" required>
+    </div>
+    <div class="col-md-3">
+      <label for="rate-notes" class="form-label small">Notes</label>
+      <input type="text" class="form-control form-control-sm" id="rate-notes"
+             name="notes" placeholder="Optional">
+    </div>
+    <div class="col-md-3">
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-circle"></i> Record Change
+      </button>
+    </div>
+  </form>
+</div>

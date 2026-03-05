@@ -1,0 +1,79 @@
+{# HTMX fragment: escrow component list #}
+<div class="card-body p-0">
+  {% if escrow_components %}
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th class="text-end">Annual Amount</th>
+          <th class="text-end">Monthly</th>
+          <th class="text-end">Inflation</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for comp in escrow_components %}
+        <tr>
+          <td>{{ comp.name }}</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(comp.annual_amount|float) }}</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(comp.annual_amount|float / 12) }}</td>
+          <td class="text-end">
+            {% if comp.inflation_rate %}
+              {{ "%.1f"|format(comp.inflation_rate|float * 100) }}%
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td class="text-end">
+            <form hx-post="{{ url_for('mortgage.delete_escrow', account_id=account.id, component_id=comp.id) }}"
+                  hx-target="#escrow-list" hx-swap="innerHTML"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-3 text-muted">No escrow components configured.</div>
+  {% endif %}
+</div>
+<div class="card-footer">
+  <form hx-post="{{ url_for('mortgage.add_escrow', account_id=account.id) }}"
+        hx-target="#escrow-list" hx-swap="innerHTML"
+        class="row g-2 align-items-end">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="col-md-3">
+      <label for="escrow-name" class="form-label small">Name</label>
+      <input type="text" class="form-control form-control-sm" id="escrow-name"
+             name="name" placeholder="Property Tax" required>
+    </div>
+    <div class="col-md-3">
+      <label for="escrow-amount" class="form-label small">Annual Amount</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text">$</span>
+        <input type="number" class="form-control" id="escrow-amount"
+               name="annual_amount" step="0.01" min="0" required>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <label for="escrow-inflation" class="form-label small">Inflation Rate</label>
+      <div class="input-group input-group-sm">
+        <input type="number" class="form-control" id="escrow-inflation"
+               name="inflation_rate" step="0.0001" min="0" max="1" placeholder="0.03">
+        <span class="input-group-text">%</span>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-circle"></i> Add
+      </button>
+    </div>
+  </form>
+</div>

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ account.name }} — Auto Loan Setup — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-car-front"></i> {{ account.name }} — Setup</h4>
+  <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back to Accounts
+  </a>
+</div>
+
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Configure Auto Loan Parameters</h6>
+      </div>
+      <div class="card-body">
+        <p class="text-muted">
+          Enter the details of your auto loan to enable amortization tracking
+          and balance projections.
+        </p>
+        <form method="POST" action="{{ url_for('auto_loan.create_params', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="row mb-3">
+            <div class="col-6">
+              <label for="original_principal" class="form-label">Original Principal</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="original_principal"
+                       name="original_principal" step="0.01" min="0" required>
+              </div>
+            </div>
+            <div class="col-6">
+              <label for="current_principal" class="form-label">Current Principal</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="current_principal"
+                       name="current_principal" step="0.01" min="0" required>
+              </div>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <div class="col-6">
+              <label for="interest_rate" class="form-label">Interest Rate</label>
+              <div class="input-group">
+                <input type="number" class="form-control" id="interest_rate"
+                       name="interest_rate" step="0.00001" min="0" max="1" required
+                       placeholder="0.05000">
+                <span class="input-group-text">decimal</span>
+              </div>
+              <div class="form-text">Enter as decimal (e.g. 0.05 for 5%)</div>
+            </div>
+            <div class="col-6">
+              <label for="term_months" class="form-label">Term (months)</label>
+              <input type="number" class="form-control" id="term_months"
+                     name="term_months" min="1" max="120" required placeholder="60">
+              <div class="form-text">e.g. 60 for 5 years</div>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <div class="col-6">
+              <label for="origination_date" class="form-label">Origination Date</label>
+              <input type="date" class="form-control" id="origination_date"
+                     name="origination_date" required>
+            </div>
+            <div class="col-6">
+              <label for="payment_day" class="form-label">Payment Day of Month</label>
+              <input type="number" class="form-control" id="payment_day"
+                     name="payment_day" min="1" max="31" required value="15">
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-lg"></i> Save & Continue
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

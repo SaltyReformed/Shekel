@@ -1,0 +1,62 @@
+{# HTMX fragment: payoff calculator results #}
+{% if error %}
+<div class="alert alert-warning">{{ error }}</div>
+{% elif mode == "extra_payment" %}
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="text-muted small">New Payoff Date</div>
+    <div class="fw-bold" style="color: var(--shekel-accent);">
+      {{ payoff_summary.payoff_date_with_extra.strftime('%b %Y') }}
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="text-muted small">Months Saved</div>
+    <div class="fw-bold text-success">{{ payoff_summary.months_saved }}</div>
+  </div>
+  <div class="col-md-4">
+    <div class="text-muted small">Interest Saved</div>
+    <div class="fw-bold text-success font-mono">
+      ${{ "{:,.2f}".format(payoff_summary.interest_saved|float) }}
+    </div>
+  </div>
+</div>
+{% if chart_labels %}
+<canvas id="payoff-chart-results"
+        class="mt-3"
+        data-labels='{{ chart_labels|tojson }}'
+        data-standard='{{ chart_standard|tojson }}'
+        data-accelerated='{{ chart_accelerated|tojson }}'
+        style="max-height: 300px;"></canvas>
+<script>
+  // Re-render chart after HTMX swap.
+  if (typeof renderPayoffChart === 'function') {
+    renderPayoffChart('payoff-chart-results');
+  }
+</script>
+{% endif %}
+{% elif mode == "target_date" %}
+{% if required_extra is none %}
+<div class="alert alert-warning">
+  Target date is not achievable — it may be in the past or too soon.
+</div>
+{% elif required_extra == 0 %}
+<div class="alert alert-success">
+  Your loan will be paid off before this date with standard payments.
+</div>
+{% else %}
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="text-muted small">Required Extra Monthly Payment</div>
+    <div class="fs-5 fw-bold font-mono" style="color: var(--shekel-accent);">
+      ${{ "{:,.2f}".format(required_extra|float) }}
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="text-muted small">New Total Monthly</div>
+    <div class="fw-bold font-mono">
+      ${{ "{:,.2f}".format((monthly_payment|float + required_extra|float)) }}
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endif %}
