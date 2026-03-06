@@ -15,10 +15,13 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
+from app.models.transfer import Transfer
 from app.models.user import UserSettings
 from app.models.ref import AccountType
+from app.services.investment_projection import calculate_investment_inputs
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
@@ -91,17 +94,19 @@ def dashboard():
             pension_benefit = benefit
             monthly_pension_income += benefit.monthly_benefit
 
+    # Load all periods and find current period.
+    all_periods = pay_period_service.get_all_periods(user_id)
+    current_period = pay_period_service.get_current_period(user_id)
+
     # Calculate current net biweekly pay.
     net_biweekly = Decimal("0")
     if salary_profiles:
         profile = salary_profiles[0]
-        periods = pay_period_service.get_all_periods(user_id)
-        current_period = pay_period_service.get_current_period(user_id)
         if current_period:
             from app.routes.salary import _load_tax_configs
             tax_configs = _load_tax_configs(user_id, profile)
             breakdown = paycheck_calculator.calculate_paycheck(
-                profile, current_period, periods, tax_configs,
+                profile, current_period, all_periods, tax_configs,
             )
             net_biweekly = breakdown.net_pay
 
@@ -129,7 +134,54 @@ def dashboard():
         settings.planned_retirement_date if settings else None
     )
 
-    all_periods = pay_period_service.get_all_periods(user_id)
+    # Batch-load paycheck deductions targeting retirement accounts.
+    deductions_by_account = {}
+    account_ids = [a.id for a in accounts]
+    if account_ids:
+        inv_deductions = (
+            db.session.query(PaycheckDeduction)
+            .join(SalaryProfile)
+            .filter(
+                SalaryProfile.user_id == user_id,
+                SalaryProfile.is_active.is_(True),
+                PaycheckDeduction.target_account_id.in_(account_ids),
+                PaycheckDeduction.is_active.is_(True),
+            )
+            .all()
+        )
+        for ded in inv_deductions:
+            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+
+    # Batch-load transfers targeting retirement accounts.
+    period_ids = [p.id for p in all_periods]
+    all_acct_transfers = []
+    if account_ids and period_ids:
+        all_acct_transfers = (
+            db.session.query(Transfer)
+            .filter(
+                Transfer.to_account_id.in_(account_ids),
+                Transfer.pay_period_id.in_(period_ids),
+                Transfer.is_deleted.is_(False),
+            )
+            .all()
+        )
+
+    # Load salary gross biweekly for employer contribution calculation.
+    salary_gross_biweekly = Decimal("0")
+    if salary_profiles:
+        profile = salary_profiles[0]
+        salary_gross_biweekly = (
+            Decimal(str(profile.annual_salary))
+            / (profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+
+    # Generate synthetic future periods from today to retirement.
+    synthetic_periods = []
+    if planned_retirement_date:
+        synthetic_periods = growth_engine.generate_projection_periods(
+            start_date=date.today(),
+            end_date=planned_retirement_date,
+        )
 
     for acct in accounts:
         params = (
@@ -140,21 +192,42 @@ def dashboard():
         balance = acct.current_anchor_balance or Decimal("0")
         projected_balance = balance
 
-        if params and planned_retirement_date and all_periods:
-            future_periods = [
-                p for p in all_periods
-                if p.start_date <= planned_retirement_date
-            ]
-            if future_periods:
-                proj = growth_engine.project_balance(
-                    current_balance=balance,
-                    assumed_annual_return=params.assumed_annual_return,
-                    periods=future_periods,
-                    periodic_contribution=Decimal("0"),
-                    annual_contribution_limit=params.annual_contribution_limit,
-                )
-                if proj:
-                    projected_balance = proj[-1].end_balance
+        if params and synthetic_periods:
+            # Adapt deductions for this account.
+            acct_deductions = deductions_by_account.get(acct.id, [])
+            adapted_deductions = []
+            for ded in acct_deductions:
+                ded_profile = ded.salary_profile
+                adapted_deductions.append(type("D", (), {
+                    "amount": ded.amount,
+                    "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+                    "annual_salary": ded_profile.annual_salary,
+                    "pay_periods_per_year": ded_profile.pay_periods_per_year or 26,
+                })())
+
+            # Compute contribution inputs using the shared helper.
+            inputs = calculate_investment_inputs(
+                account_id=acct.id,
+                investment_params=params,
+                deductions=adapted_deductions,
+                all_transfers=all_acct_transfers,
+                all_periods=all_periods,
+                current_period=current_period,
+                salary_gross_biweekly=salary_gross_biweekly,
+            )
+
+            # Project balance forward using synthetic periods to retirement.
+            proj = growth_engine.project_balance(
+                current_balance=balance,
+                assumed_annual_return=params.assumed_annual_return,
+                periods=synthetic_periods,
+                periodic_contribution=inputs.periodic_contribution,
+                employer_params=inputs.employer_params,
+                annual_contribution_limit=inputs.annual_contribution_limit,
+                ytd_contributions_start=inputs.ytd_contributions,
+            )
+            if proj:
+                projected_balance = proj[-1].end_balance
 
         type_name = type_name_map.get(acct.account_type_id, "")
         retirement_account_projections.append({

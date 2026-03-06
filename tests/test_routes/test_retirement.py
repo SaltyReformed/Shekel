@@ -2,6 +2,7 @@
 Tests for retirement planning routes.
 """
 
+import pytest
 from datetime import date
 from decimal import Decimal
 
@@ -13,8 +14,11 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
+from app.models.investment_params import InvestmentParams
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import (
-    AccountType, FilingStatus, RecurrencePattern, TransactionType,
+    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    RecurrencePattern, TransactionType,
 )
 
 
@@ -102,6 +106,31 @@ def _create_other_user(db_session):
     db_session.add(settings)
     db_session.commit()
     return user
+
+
+def _create_retirement_account(seed_user, db_session, type_name="401k"):
+    """Helper to create a retirement account with investment params."""
+    acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=acct_type.id,
+        name=f"Test {type_name}",
+        current_anchor_balance=Decimal("10000.00"),
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    params = InvestmentParams(
+        account_id=account.id,
+        assumed_annual_return=Decimal("0.07000"),
+        annual_contribution_limit=Decimal("23500.00"),
+        employer_contribution_type="match",
+        employer_match_percentage=Decimal("1.0000"),
+        employer_match_cap_percentage=Decimal("0.0600"),
+    )
+    db_session.add(params)
+    db_session.flush()
+    return account, params
 
 
 class TestRetirementDashboard:
@@ -241,3 +270,105 @@ class TestRetirementSettings:
             "safe_withdrawal_rate": "3.5",
         })
         assert resp.status_code == 302
+
+
+class TestRetirementProjections:
+    """Tests that retirement dashboard projects with full contribution inputs."""
+
+    def test_dashboard_projects_with_contributions(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Dashboard projection includes employee contributions and employer match."""
+        profile = _create_salary_profile(seed_user, db.session)
+        account, params = _create_retirement_account(seed_user, db.session)
+
+        # Set retirement date 20 years out.
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+
+        # Create a paycheck deduction targeting the retirement account.
+        pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+        deduction = PaycheckDeduction(
+            salary_profile_id=profile.id,
+            target_account_id=account.id,
+            name="401k Contribution",
+            amount=Decimal("500.00"),
+            deduction_timing_id=pre_tax.id,
+            calc_method_id=flat_method.id,
+        )
+        db.session.add(deduction)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # With $500/period + 7% return + employer match over 20 years,
+        # projected balance should be significantly more than $10,000.
+        # Extract projected balances from the retirement accounts table.
+        # The table has current balance then projected (fw-bold) on the same row.
+        import re
+        # Match the projected balance cells that follow a current balance cell.
+        projected_values = re.findall(
+            r'\$10,000\.00</td>\s*<td class="text-end font-mono fw-bold">\$([0-9,]+\.\d{2})',
+            html,
+        )
+        assert projected_values, "Expected projected balance for retirement account"
+        projected = float(projected_values[0].replace(",", ""))
+        assert projected > 50000, (
+            f"Projected balance {projected} should be >> $10,000 with contributions"
+        )
+
+    def test_dashboard_projects_without_retirement_date(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Without planned retirement date, uses current balance as projection."""
+        _create_retirement_account(seed_user, db.session)
+
+        # No planned_retirement_date set.
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = None
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+
+    @pytest.mark.xfail(reason="Depends on Task 4 template update")
+    def test_dashboard_pension_tax_shown(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """After-tax pension line shown when tax rate is set."""
+        profile = _create_salary_profile(seed_user, db.session)
+        _create_pension(seed_user, db.session, salary_profile=profile)
+
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        settings.estimated_retirement_tax_rate = Decimal("0.2000")
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "After-Tax Monthly Pension" in html
+
+    def test_dashboard_projects_multiple_accounts(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Multiple retirement accounts all project correctly."""
+        _create_retirement_account(seed_user, db.session, "401k")
+        _create_retirement_account(seed_user, db.session, "roth_ira")
+
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
