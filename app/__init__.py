@@ -54,6 +54,9 @@ def create_app(config_name=None):
         """Load a user by ID for Flask-Login session hydration."""
         return db.session.get(User, int(user_id))
 
+    # --- Context Processors -----------------------------------------------
+    _register_context_processors(app)
+
     # --- Blueprints ------------------------------------------------------
     _register_blueprints(app)
 
@@ -71,6 +74,43 @@ def create_app(config_name=None):
 
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
+
+
+def _register_context_processors(app):
+    """Register Jinja2 context processors."""
+
+    @app.context_processor
+    def inject_onboarding():
+        """Inject onboarding status so base.html can show/hide the welcome banner."""
+        from flask_login import current_user  # pylint: disable=import-outside-toplevel
+
+        if not current_user.is_authenticated:
+            return {}
+
+        from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
+        from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+        uid = current_user.id
+        has_periods = db.session.query(
+            exists().where(PayPeriod.user_id == uid)
+        ).scalar()
+        has_salary = db.session.query(
+            exists().where(SalaryProfile.user_id == uid)
+        ).scalar()
+        has_templates = db.session.query(
+            exists().where(TransactionTemplate.user_id == uid)
+        ).scalar()
+
+        return {
+            "onboarding": {
+                "has_periods": has_periods,
+                "has_salary": has_salary,
+                "has_templates": has_templates,
+                "complete": has_periods and has_salary and has_templates,
+            }
+        }
 
 
 def _register_blueprints(app):

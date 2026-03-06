@@ -403,24 +403,3 @@ document.addEventListener('DOMContentLoaded', function() {
     new bootstrap.Toast(el).show();
   });
 });
-
-// --- Welcome Banner ---
-// Dismiss the onboarding banner and persist in localStorage.
-document.addEventListener('DOMContentLoaded', function() {
-  var banner = document.getElementById('welcome-banner');
-  if (!banner) return;
-
-  if (localStorage.getItem('shekel-welcome-dismissed')) {
-    banner.remove();
-    return;
-  }
-  banner.classList.remove('d-none');
-
-  var closeBtn = document.getElementById('welcome-dismiss');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', function() {
-      localStorage.setItem('shekel-welcome-dismissed', '1');
-      banner.remove();
-    });
-  }
-});
