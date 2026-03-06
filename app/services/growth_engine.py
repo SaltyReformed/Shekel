@@ -9,7 +9,9 @@ All functions are pure (no DB access) — data is passed in as arguments.
 """
 
 import logging
+from collections import namedtuple
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
@@ -170,3 +172,35 @@ def project_balance(
         ))
 
     return results
+
+
+SyntheticPeriod = namedtuple("SyntheticPeriod", ["id", "start_date", "end_date"])
+
+
+def generate_projection_periods(start_date, end_date, cadence_days=14):
+    """Generate synthetic biweekly periods for long-term projections.
+
+    Creates lightweight period objects compatible with project_balance().
+    No database interaction — pure function.
+
+    Args:
+        start_date:    date — first period start.
+        end_date:      date — generate periods until start_date would exceed this.
+        cadence_days:  int — days per period (default 14 for biweekly).
+
+    Returns:
+        List of SyntheticPeriod namedtuples with .id, .start_date, .end_date.
+    """
+    periods = []
+    current = start_date
+    period_id = 1
+    while current <= end_date:
+        period_end = current + timedelta(days=cadence_days - 1)
+        periods.append(SyntheticPeriod(
+            id=period_id,
+            start_date=current,
+            end_date=period_end,
+        ))
+        current += timedelta(days=cadence_days)
+        period_id += 1
+    return periods

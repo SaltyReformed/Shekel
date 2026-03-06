@@ -13,6 +13,7 @@ import pytest
 from app.services.growth_engine import (
     ProjectedBalance,
     calculate_employer_contribution,
+    generate_projection_periods,
     project_balance,
     ZERO,
     TWO_PLACES,
@@ -342,3 +343,68 @@ class TestProjectBalance:
             Decimal("10000"), Decimal("0.07"), long,
         )
         assert long_result[0].growth > short_result[0].growth
+
+
+class TestGenerateProjectionPeriods:
+    def test_basic_generation(self):
+        """Generates biweekly periods from start to end."""
+        periods = generate_projection_periods(date(2026, 3, 6), date(2026, 6, 1))
+        assert len(periods) > 0
+        for p in periods:
+            assert hasattr(p, "id")
+            assert hasattr(p, "start_date")
+            assert hasattr(p, "end_date")
+            assert (p.end_date - p.start_date).days == 13  # 14-day period
+
+    def test_period_count_one_year(self):
+        """One year produces ~26-27 biweekly periods."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 12, 31))
+        # 365 days / 14 = 26.07; last period starts day 365 (Dec 31), so 27
+        assert len(periods) == 27
+
+    def test_period_count_twenty_years(self):
+        """Twenty years produces ~520 biweekly periods."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2045, 12, 31))
+        assert 519 <= len(periods) <= 523
+
+    def test_sequential_ids(self):
+        """Period IDs are sequential starting from 1."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 3, 1))
+        for i, p in enumerate(periods):
+            assert p.id == i + 1
+
+    def test_no_gaps_between_periods(self):
+        """Each period starts the day after the previous one ends."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 6, 1))
+        for i in range(1, len(periods)):
+            expected_start = date.fromordinal(periods[i - 1].end_date.toordinal() + 1)
+            assert periods[i].start_date == expected_start
+
+    def test_end_before_start_returns_empty(self):
+        """End date before start returns empty list."""
+        periods = generate_projection_periods(date(2026, 6, 1), date(2026, 1, 1))
+        assert periods == []
+
+    def test_same_day_returns_one_period(self):
+        """Start equals end still returns one period."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 1, 1))
+        assert len(periods) == 1
+
+    def test_works_with_project_balance(self):
+        """Synthetic periods integrate with project_balance."""
+        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 12, 31))
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0.07"),
+            periods=periods,
+            periodic_contribution=Decimal("500"),
+        )
+        assert len(result) == len(periods)
+        assert result[-1].end_balance > Decimal("10000") + Decimal("500") * len(periods)
+
+    def test_year_boundaries_correct_for_limit_reset(self):
+        """Periods crossing year boundary have correct year in start_date."""
+        periods = generate_projection_periods(date(2026, 12, 20), date(2027, 1, 31))
+        years = [p.start_date.year for p in periods]
+        assert 2026 in years
+        assert 2027 in years
