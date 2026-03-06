@@ -45,3 +45,6 @@ logs/
 
 # Pylint
 .pylintrc_cache/
+
+# Worktrees
+.worktrees/
