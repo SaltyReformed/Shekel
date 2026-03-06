@@ -152,6 +152,19 @@ def dashboard():
         for ded in inv_deductions:
             deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
 
+    # Load active salary profile for employer contribution gross calculation.
+    salary_gross_biweekly = Decimal("0")
+    active_profile = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .first()
+    )
+    if active_profile:
+        salary_gross_biweekly = (
+            Decimal(str(active_profile.annual_salary))
+            / (active_profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+
     loan_params_map = {}
     if mortgage_type:
         mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type.id]
@@ -265,6 +278,7 @@ def dashboard():
                 all_transfers=all_transfers,
                 all_periods=all_periods,
                 current_period=current_period,
+                salary_gross_biweekly=salary_gross_biweekly,
             )
 
             future_periods = [

@@ -58,6 +58,19 @@ def dashboard(account_id):
     # Current balance from anchor.
     current_balance = account.current_anchor_balance or Decimal("0.00")
 
+    # Load active salary profile for employer contribution gross calculation.
+    salary_gross_biweekly = Decimal("0")
+    active_profile = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .first()
+    )
+    if active_profile:
+        salary_gross_biweekly = (
+            Decimal(str(active_profile.annual_salary))
+            / (active_profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+
     # Find paycheck deductions targeting this account.
     deductions = (
         db.session.query(PaycheckDeduction)
@@ -101,6 +114,7 @@ def dashboard(account_id):
         all_transfers=acct_transfers,
         all_periods=all_periods,
         current_period=current_period,
+        salary_gross_biweekly=salary_gross_biweekly,
     )
 
     periodic_contribution = inputs.periodic_contribution

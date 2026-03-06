@@ -317,6 +317,77 @@ class TestDashboard:
                 f"but found amounts: {amounts}. Contributions not being applied."
             )
 
+    def test_dashboard_employer_contribution_without_employee_deduction(
+        self, app, auth_client, seed_user,
+    ):
+        """Employer flat 5% works even when no paycheck deduction targets the account."""
+        import re
+        from app.services import pay_period_service
+
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                num_periods=40,
+                cadence_days=14,
+            )
+            db.session.flush()
+
+            # Create 401k with employer flat 5% but NO employee deduction.
+            acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=acct_type.id,
+                name="Employer Only 401k",
+                current_anchor_balance=Decimal("50000.00"),
+                current_anchor_period_id=periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+
+            params = InvestmentParams(
+                account_id=acct.id,
+                assumed_annual_return=Decimal("0.07000"),
+                annual_contribution_limit=Decimal("23500.00"),
+                contribution_limit_year=2026,
+                employer_contribution_type="flat_percentage",
+                employer_flat_percentage=Decimal("0.0500"),
+            )
+            db.session.add(params)
+
+            # Create salary profile (no deduction targeting the 401k).
+            filing_status = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing_status.id,
+                name="Main Job",
+                annual_salary=Decimal("100000.00"),
+                pay_periods_per_year=26,
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+
+            # With 5% employer on $3846/period (~$5k/yr) + 7% growth on $50k,
+            # 1-year should be ~$58k+. Without employer, growth-only ~$53.5k.
+            amounts = re.findall(r'\$([0-9,]+)', html)
+            amounts_int = [
+                int(a.replace(',', ''))
+                for a in amounts
+                if int(a.replace(',', '')) > 54000
+            ]
+
+            assert len(amounts_int) > 0, (
+                "Expected projected amount > $54,000 with employer 5% flat contribution, "
+                f"but found amounts: {amounts}. Employer contribution not applied."
+            )
+
     def test_dashboard_requires_login(self, app, client, seed_user):
         """Unauthenticated request redirects to login."""
         with app.app_context():
