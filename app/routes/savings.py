@@ -19,6 +19,8 @@ from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
 from app.models.investment_params import InvestmentParams
 from app.models.mortgage_params import MortgageParams
+from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -27,6 +29,7 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import amortization_engine, balance_calculator, growth_engine, pay_period_service, savings_goal_service
+from app.services.investment_projection import calculate_investment_inputs
 from app.services.account_resolver import resolve_grid_account
 
 logger = logging.getLogger(__name__)
@@ -131,6 +134,24 @@ def dashboard():
             ).all():
                 investment_params_map[ip.account_id] = ip
 
+    # Batch-load paycheck deductions targeting investment accounts.
+    deductions_by_account = {}
+    if investment_params_map:
+        inv_account_ids = list(investment_params_map.keys())
+        inv_deductions = (
+            db.session.query(PaycheckDeduction)
+            .join(SalaryProfile)
+            .filter(
+                SalaryProfile.user_id == user_id,
+                SalaryProfile.is_active.is_(True),
+                PaycheckDeduction.target_account_id.in_(inv_account_ids),
+                PaycheckDeduction.is_active.is_(True),
+            )
+            .all()
+        )
+        for ded in inv_deductions:
+            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+
     loan_params_map = {}
     if mortgage_type:
         mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type.id]
@@ -225,7 +246,27 @@ def dashboard():
                 acct_loan_params.term_months,
             )
         elif acct_investment_params and current_period:
-            # Investment/retirement: use growth engine for compound growth projections.
+            # Investment/retirement: full growth projection with contributions.
+            acct_deductions = deductions_by_account.get(acct.id, [])
+            adapted_deductions = []
+            for ded in acct_deductions:
+                profile = ded.salary_profile
+                adapted_deductions.append(type("D", (), {
+                    "amount": ded.amount,
+                    "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+                    "annual_salary": profile.annual_salary,
+                    "pay_periods_per_year": profile.pay_periods_per_year or 26,
+                })())
+
+            inputs = calculate_investment_inputs(
+                account_id=acct.id,
+                investment_params=acct_investment_params,
+                deductions=adapted_deductions,
+                all_transfers=all_transfers,
+                all_periods=all_periods,
+                current_period=current_period,
+            )
+
             future_periods = [
                 p for p in all_periods
                 if p.period_index >= current_period.period_index
@@ -235,8 +276,11 @@ def dashboard():
                     current_balance=anchor_balance,
                     assumed_annual_return=acct_investment_params.assumed_annual_return,
                     periods=future_periods,
+                    periodic_contribution=inputs.periodic_contribution,
+                    employer_params=inputs.employer_params,
+                    annual_contribution_limit=inputs.annual_contribution_limit,
+                    ytd_contributions_start=inputs.ytd_contributions,
                 )
-                # Build a period_index → end_balance map from projection results.
                 proj_by_idx = {
                     p.period_index: pb.end_balance
                     for pb in projection
