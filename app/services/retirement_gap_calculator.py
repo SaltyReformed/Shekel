@@ -23,6 +23,7 @@ class RetirementGapAnalysis:
     """Result of a retirement income gap calculation."""
     pre_retirement_net_monthly: Decimal
     monthly_pension_income: Decimal
+    after_tax_monthly_pension: Decimal  # None when no tax rate
     monthly_income_gap: Decimal
     required_retirement_savings: Decimal
     projected_total_savings: Decimal
@@ -70,9 +71,20 @@ def calculate_gap(
 
     # Step 2: Monthly pension income (passed in directly).
 
+    # Step 2b: After-tax pension income (when tax rate provided).
+    after_tax_monthly_pension = None
+    if estimated_tax_rate is not None:
+        estimated_tax_rate = Decimal(str(estimated_tax_rate))
+        after_tax_monthly_pension = (
+            monthly_pension_income * (1 - estimated_tax_rate)
+        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
     # Step 3: Monthly income gap.
+    # Use after-tax pension when available for apples-to-apples comparison
+    # with net (post-tax) current income.
+    effective_pension = after_tax_monthly_pension if after_tax_monthly_pension is not None else monthly_pension_income
     monthly_income_gap = max(
-        pre_retirement_net_monthly - monthly_pension_income,
+        pre_retirement_net_monthly - effective_pension,
         ZERO,
     )
 
@@ -96,7 +108,6 @@ def calculate_gap(
     after_tax_projected = None
     after_tax_surplus = None
     if estimated_tax_rate is not None:
-        estimated_tax_rate = Decimal(str(estimated_tax_rate))
         traditional_total = ZERO
         roth_total = ZERO
         for proj in retirement_account_projections:
@@ -113,6 +124,7 @@ def calculate_gap(
     return RetirementGapAnalysis(
         pre_retirement_net_monthly=pre_retirement_net_monthly,
         monthly_pension_income=monthly_pension_income,
+        after_tax_monthly_pension=after_tax_monthly_pension,
         monthly_income_gap=monthly_income_gap,
         required_retirement_savings=required_retirement_savings,
         projected_total_savings=projected_total_savings,

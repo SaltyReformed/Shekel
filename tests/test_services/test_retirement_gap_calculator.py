@@ -159,3 +159,51 @@ class TestCalculateGap:
             planned_retirement_date=dt,
         )
         assert result.planned_retirement_date == dt
+
+    def test_pension_taxed_when_tax_rate_provided(self):
+        """Pension income reduced by estimated tax rate when provided."""
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("5000"),
+            estimated_tax_rate=Decimal("0.20"),
+        )
+        # Net monthly = 2500 * 26 / 12 = 5416.67
+        # After-tax pension = 5000 * 0.80 = 4000
+        # Gap = 5416.67 - 4000 = 1416.67
+        assert result.after_tax_monthly_pension == Decimal("4000.00")
+        assert result.monthly_income_gap == Decimal("1416.67")
+        assert result.required_retirement_savings > ZERO
+
+    def test_pension_not_taxed_without_tax_rate(self):
+        """Without tax rate, pension used as-is (gross) — backward compatible."""
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("5000"),
+        )
+        # Net monthly = 5416.67
+        # Gap = 5416.67 - 5000 = 416.67 (using gross pension)
+        assert result.after_tax_monthly_pension is None
+        assert result.monthly_income_gap == Decimal("416.67")
+
+    def test_pension_tax_creates_gap_where_none_existed(self):
+        """Gross pension > net income, but after-tax pension < net income."""
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=Decimal("5000"),
+            estimated_tax_rate=Decimal("0.25"),
+        )
+        # Net monthly = 2000 * 26 / 12 = 4333.33
+        # After-tax pension = 5000 * 0.75 = 3750
+        # Gap = 4333.33 - 3750 = 583.33
+        assert result.monthly_income_gap == Decimal("583.33")
+        assert result.required_retirement_savings > ZERO
+
+    def test_pension_tax_zero_pension(self):
+        """Tax on zero pension is still zero — no division issues."""
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+            estimated_tax_rate=Decimal("0.20"),
+        )
+        assert result.after_tax_monthly_pension == ZERO
+        assert result.monthly_income_gap == result.pre_retirement_net_monthly
