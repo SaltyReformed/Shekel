@@ -236,6 +236,33 @@ def dashboard():
             "is_traditional": type_name in TRADITIONAL_TYPES,
         })
 
+    # Project salary to retirement for gap analysis comparison.
+    # Uses effective take-home rate from current paycheck applied to
+    # projected final salary, giving a better comparison than current income.
+    gap_net_biweekly = net_biweekly
+    if salary_profiles and planned_retirement_date and net_biweekly > 0:
+        profile = salary_profiles[0]
+        current_gross_biweekly = (
+            Decimal(str(profile.annual_salary))
+            / (profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+        if current_gross_biweekly > 0:
+            effective_take_home_rate = net_biweekly / current_gross_biweekly
+            projected_salaries = pension_calculator.project_salaries_by_year(
+                Decimal(str(profile.annual_salary)),
+                profile.raises,
+                date.today().year,
+                planned_retirement_date.year,
+            )
+            if projected_salaries:
+                final_salary = projected_salaries[-1][1]
+                final_gross_biweekly = (
+                    final_salary / (profile.pay_periods_per_year or 26)
+                ).quantize(Decimal("0.01"))
+                gap_net_biweekly = (
+                    final_gross_biweekly * effective_take_home_rate
+                ).quantize(Decimal("0.01"))
+
     # Calculate gap analysis.
     swr = Decimal(str(settings.safe_withdrawal_rate or "0.04")) if settings else Decimal("0.04")
     tax_rate = (
@@ -245,7 +272,7 @@ def dashboard():
     )
 
     gap_analysis = retirement_gap_calculator.calculate_gap(
-        net_biweekly_pay=net_biweekly,
+        net_biweekly_pay=gap_net_biweekly,
         monthly_pension_income=monthly_pension_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,

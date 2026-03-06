@@ -370,3 +370,36 @@ class TestRetirementProjections:
 
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
+
+    def test_dashboard_uses_projected_salary_for_gap(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Gap analysis uses projected pre-retirement income, not current."""
+        from app.models.salary_raise import SalaryRaise
+        from app.models.ref import RaiseType
+
+        profile = _create_salary_profile(seed_user, db.session)
+
+        # Add a recurring 3% annual raise.
+        merit = db.session.query(RaiseType).filter_by(name="merit").one()
+        raise_obj = SalaryRaise(
+            salary_profile_id=profile.id,
+            raise_type_id=merit.id,
+            percentage=Decimal("0.0300"),
+            effective_month=1,
+            effective_year=date.today().year + 1,
+            is_recurring=True,
+        )
+        db.session.add(raise_obj)
+
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Should show projected pre-retirement income, not current.
+        assert "Projected Pre-Retirement Income" in html
