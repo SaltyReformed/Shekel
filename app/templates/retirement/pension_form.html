@@ -45,6 +45,7 @@
             </a>
             <form method="POST" action="{{ url_for('retirement.delete_pension', pension_id=p.id) }}"
                   class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger">
                 <i class="bi bi-trash"></i>
               </button>
@@ -66,6 +67,7 @@
   <div class="card-body">
     <form method="POST"
           action="{{ url_for('retirement.update_pension', pension_id=pension.id) if pension else url_for('retirement.create_pension') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Name</label>
