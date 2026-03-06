@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.investment_params import InvestmentParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
@@ -106,6 +107,35 @@ def _create_other_user_with_goal():
     return {"user": other_user, "account": account, "goal": goal}
 
 
+def _create_investment_account_with_params(seed_user, seed_periods):
+    """Create a 401k account with investment params and anchor period.
+
+    Returns:
+        (Account, InvestmentParams)
+    """
+    acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+    acct = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=acct_type.id,
+        name="Test 401k",
+        current_anchor_balance=Decimal("50000.00"),
+        current_anchor_period_id=seed_periods[0].id,
+    )
+    db.session.add(acct)
+    db.session.flush()
+
+    params = InvestmentParams(
+        account_id=acct.id,
+        assumed_annual_return=Decimal("0.07000"),
+        annual_contribution_limit=Decimal("23500.00"),
+        contribution_limit_year=2026,
+        employer_contribution_type="none",
+    )
+    db.session.add(params)
+    db.session.commit()
+    return acct, params
+
+
 # ── Dashboard Tests ──────────────────────────────────────────────────
 
 
@@ -145,6 +175,38 @@ class TestDashboard:
             assert resp.status_code == 200
             # Should show savings account even without goals.
             assert b"Savings" in resp.data
+
+    def test_dashboard_investment_account_shows_growth_projections(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Investment account cards show projected balances with compound growth."""
+        import re
+
+        with app.app_context():
+            acct, params = _create_investment_account_with_params(
+                seed_user, seed_periods,
+            )
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+
+            # With 7% annual return on $50k, the 1-year projection should
+            # be notably higher than $50,000. If growth is NOT applied,
+            # the balance stays flat at $50,000 (the bug).
+            amounts = re.findall(r'\$([0-9,]+)', html)
+            amounts_int = [
+                int(a.replace(',', ''))
+                for a in amounts
+                if int(a.replace(',', '')) > 50000
+            ]
+
+            # With 7% growth, at least one projected amount should exceed $50,000.
+            assert len(amounts_int) > 0, (
+                "Expected at least one projected amount > $50,000 with 7% growth, "
+                "but all amounts were <= $50,000. Growth is not being applied."
+            )
 
     def test_dashboard_requires_login(self, app, client, seed_user):
         """Unauthenticated request redirects to login."""
