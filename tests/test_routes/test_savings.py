@@ -177,14 +177,25 @@ class TestDashboard:
             assert b"Savings" in resp.data
 
     def test_dashboard_investment_account_shows_growth_projections(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user,
     ):
         """Investment account cards show projected balances with compound growth."""
         import re
+        from app.services import pay_period_service
 
         with app.app_context():
+            # Need enough periods so milestone offsets (6, 13, 26) are reachable
+            # from the current period. Generate 40 periods starting well before today.
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                num_periods=40,
+                cadence_days=14,
+            )
+            db.session.flush()
+
             acct, params = _create_investment_account_with_params(
-                seed_user, seed_periods,
+                seed_user, periods,
             )
 
             resp = auth_client.get("/savings")

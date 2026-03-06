@@ -26,7 +26,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import amortization_engine, balance_calculator, pay_period_service, savings_goal_service
+from app.services import amortization_engine, balance_calculator, growth_engine, pay_period_service, savings_goal_service
 from app.services.account_resolver import resolve_grid_account
 
 logger = logging.getLogger(__name__)
@@ -192,6 +192,7 @@ def dashboard():
 
         # Get projected balance at current period and a few future milestones.
         acct_loan_params = loan_params_map.get(acct.id)
+        acct_investment_params = investment_params_map.get(acct.id)
         current_bal = balances.get(current_period.id) if current_period else anchor_balance
         projected = {}
 
@@ -223,6 +224,29 @@ def dashboard():
                 acct_loan_params.payment_day,
                 acct_loan_params.term_months,
             )
+        elif acct_investment_params and current_period:
+            # Investment/retirement: use growth engine for compound growth projections.
+            future_periods = [
+                p for p in all_periods
+                if p.period_index >= current_period.period_index
+            ]
+            if future_periods:
+                projection = growth_engine.project_balance(
+                    current_balance=anchor_balance,
+                    assumed_annual_return=acct_investment_params.assumed_annual_return,
+                    periods=future_periods,
+                )
+                # Build a period_index → end_balance map from projection results.
+                proj_by_idx = {
+                    p.period_index: pb.end_balance
+                    for pb in projection
+                    for p in all_periods
+                    if p.id == pb.period_id
+                }
+                for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
+                    target_idx = current_period.period_index + offset_count
+                    if target_idx in proj_by_idx:
+                        projected[offset_label] = proj_by_idx[target_idx]
         else:
             for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
                 if current_period:
@@ -240,7 +264,6 @@ def dashboard():
         if acct_hysa_params:
             ad["hysa_params"] = acct_hysa_params
 
-        acct_investment_params = investment_params_map.get(acct.id)
         if acct_investment_params:
             ad["investment_params"] = acct_investment_params
 
