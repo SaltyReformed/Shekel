@@ -38,6 +38,10 @@
                 <i class="bi bi-house text-warning"></i>
               {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
                 <i class="bi bi-car-front text-warning"></i>
+              {% elif ad.account.account_type and ad.account.account_type.category == 'retirement' %}
+                <i class="bi bi-briefcase text-info"></i>
+              {% elif ad.account.account_type and ad.account.account_type.category == 'investment' %}
+                <i class="bi bi-graph-up text-success"></i>
               {% else %}
                 <i class="bi bi-bank text-primary"></i>
               {% endif %}
@@ -59,6 +63,9 @@
               {% if ad.loan_params is defined and ad.loan_params %}
                 — {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
               {% endif %}
+              {% if ad.investment_params is defined and ad.investment_params %}
+                — Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|float * 100) }}%
+              {% endif %}
             </small>
           </div>
           {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
@@ -75,6 +82,11 @@
           <a href="{{ url_for('auto_loan.dashboard', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-warning" title="Auto Loan Detail">
             <i class="bi bi-car-front"></i>
+          </a>
+          {% elif ad.account.account_type and ad.account.account_type.category in ('retirement', 'investment') %}
+          <a href="{{ url_for('investment.dashboard', account_id=ad.account.id) }}"
+             class="btn btn-sm btn-outline-info" title="Investment Detail">
+            <i class="bi bi-graph-up"></i>
           </a>
           {% endif %}
         </div>

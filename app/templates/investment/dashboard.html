@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}{{ account.name }} — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4>
+    <i class="bi bi-graph-up"></i> {{ account.name }}
+    <small class="text-muted">
+      {% if account.account_type %}{{ account.account_type.name|replace('_', ' ')|title }}{% endif %}
+    </small>
+  </h4>
+  <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back
+  </a>
+</div>
+
+{# --- Account Summary Card --- #}
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="row text-center">
+      <div class="col-md-3">
+        <div class="text-muted small">Current Balance</div>
+        <div class="fs-4 fw-bold font-mono" style="color: var(--shekel-accent);">
+          ${{ "{:,.2f}".format(current_balance|float) }}
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="text-muted small">Assumed Return</div>
+        <div class="fs-4 fw-bold">
+          {% if params %}
+            {{ "%.2f"|format(params.assumed_annual_return|float * 100) }}%
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="text-muted small">Per-Period Contribution</div>
+        <div class="fs-4 fw-bold font-mono">
+          ${{ "{:,.2f}".format(periodic_contribution|float) }}
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="text-muted small">Employer Per Period</div>
+        <div class="fs-4 fw-bold font-mono">
+          ${{ "{:,.2f}".format(employer_contribution_per_period|float) }}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# --- YTD Contribution Limit Progress --- #}
+{% if limit_info %}
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span class="text-muted">{{ date.today().year if date is defined else '' }} Contributions</span>
+      <span class="font-mono fw-bold">
+        ${{ "{:,.2f}".format(limit_info.ytd|float) }} / ${{ "{:,.2f}".format(limit_info.limit|float) }}
+      </span>
+    </div>
+    <div class="progress" style="height: 10px;">
+      <div class="progress-bar {% if limit_info.pct >= 90 %}bg-warning{% elif limit_info.pct >= 100 %}bg-danger{% else %}bg-primary{% endif %}"
+           role="progressbar"
+           style="width: {{ limit_info.pct }}%"
+           aria-valuenow="{{ limit_info.pct }}"
+           aria-valuemin="0"
+           aria-valuemax="100">
+      </div>
+    </div>
+    <small class="text-muted">{{ limit_info.pct }}% of annual limit</small>
+  </div>
+</div>
+{% endif %}
+
+{# --- Employer Contribution Details --- #}
+{% if employer_params and employer_params.type != 'none' %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-building"></i> Employer Contribution</h6>
+  </div>
+  <div class="card-body">
+    {% if employer_params.type == 'flat_percentage' %}
+    <p class="mb-0">
+      Employer contributes <strong>{{ "%.2f"|format(employer_params.flat_percentage|float * 100) }}%</strong>
+      of gross salary each pay period, regardless of employee contribution.
+    </p>
+    {% elif employer_params.type == 'match' %}
+    <p class="mb-0">
+      Employer matches <strong>{{ "%.0f"|format(employer_params.match_percentage|float * 100) }}%</strong>
+      of employee contributions up to <strong>{{ "%.2f"|format(employer_params.match_cap_percentage|float * 100) }}%</strong>
+      of gross salary.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# --- Growth Projection Chart --- #}
+{% if projection %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Growth Projection</h6>
+  </div>
+  <div class="card-body">
+    <canvas id="growthChart"
+            data-labels='{{ chart_labels|tojson }}'
+            data-balances='{{ chart_balances|tojson }}'
+            data-contributions='{{ chart_contributions|tojson }}'
+            style="max-height: 350px;">
+    </canvas>
+  </div>
+</div>
+{% endif %}
+
+{# --- Parameters Form --- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('investment.update_params', account_id=account.id) }}">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label">Assumed Annual Return (%)</label>
+          <input type="number" step="0.01" name="assumed_annual_return"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.assumed_annual_return|float * 100) if params else '7.00' }}"
+                 required>
+          <small class="text-muted">Enter as percentage (e.g. 7 for 7%)</small>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Annual Contribution Limit</label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">$</span>
+            <input type="number" step="0.01" name="annual_contribution_limit"
+                   class="form-control"
+                   value="{{ params.annual_contribution_limit|float if params and params.annual_contribution_limit else '' }}">
+          </div>
+          <small class="text-muted">Leave blank for no limit</small>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Limit Year</label>
+          <input type="number" name="contribution_limit_year"
+                 class="form-control form-control-sm"
+                 value="{{ params.contribution_limit_year if params and params.contribution_limit_year else '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Employer Type</label>
+          <select name="employer_contribution_type" class="form-select form-select-sm">
+            <option value="none" {{ 'selected' if not params or params.employer_contribution_type == 'none' }}>None</option>
+            <option value="flat_percentage" {{ 'selected' if params and params.employer_contribution_type == 'flat_percentage' }}>Flat Percentage</option>
+            <option value="match" {{ 'selected' if params and params.employer_contribution_type == 'match' }}>Match</option>
+          </select>
+        </div>
+      </div>
+      <div class="row g-3 mt-1">
+        <div class="col-md-3">
+          <label class="form-label">Employer Flat %</label>
+          <input type="number" step="0.01" name="employer_flat_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.employer_flat_percentage|float * 100) if params and params.employer_flat_percentage else '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Match %</label>
+          <input type="number" step="0.01" name="employer_match_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.0f"|format(params.employer_match_percentage|float * 100) if params and params.employer_match_percentage else '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Match Cap %</label>
+          <input type="number" step="0.01" name="employer_match_cap_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.employer_match_cap_percentage|float * 100) if params and params.employer_match_cap_percentage else '' }}">
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check"></i> Save Parameters
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if projection %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+<script src="{{ url_for('static', filename='js/growth_chart.js') }}"></script>
+{% endif %}
+{% endblock %}

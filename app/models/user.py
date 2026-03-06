@@ -59,6 +59,9 @@ class UserSettings(db.Model):
     default_inflation_rate = db.Column(db.Numeric(5, 4), default=0.0300)
     grid_default_periods = db.Column(db.Integer, default=6)
     low_balance_threshold = db.Column(db.Integer, default=500)
+    safe_withdrawal_rate = db.Column(db.Numeric(5, 4), default=0.0400)
+    planned_retirement_date = db.Column(db.Date, nullable=True)
+    estimated_retirement_tax_rate = db.Column(db.Numeric(5, 4), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if pension else 'New' }} Pension — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4>
+    <i class="bi bi-shield-check"></i>
+    {% if pension %}Edit Pension: {{ pension.name }}{% else %}Pension Profiles{% endif %}
+  </h4>
+  <a href="{{ url_for('retirement.dashboard') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back
+  </a>
+</div>
+
+{# --- Existing Pensions List --- #}
+{% if pensions %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0">Active Pension Profiles</h6>
+  </div>
+  <div class="card-body">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Multiplier</th>
+          <th>High Years</th>
+          <th>Hire Date</th>
+          <th>Retirement Date</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in pensions %}
+        <tr>
+          <td>{{ p.name }}</td>
+          <td>{{ "%.3f"|format(p.benefit_multiplier|float * 100) }}%</td>
+          <td>{{ p.consecutive_high_years }}</td>
+          <td>{{ p.hire_date.strftime('%Y-%m-%d') }}</td>
+          <td>{{ p.planned_retirement_date.strftime('%Y-%m-%d') if p.planned_retirement_date else '—' }}</td>
+          <td class="text-end">
+            <a href="{{ url_for('retirement.edit_pension', pension_id=p.id) }}"
+               class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-pencil"></i>
+            </a>
+            <form method="POST" action="{{ url_for('retirement.delete_pension', pension_id=p.id) }}"
+                  class="d-inline">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# --- Pension Form --- #}
+<div class="card">
+  <div class="card-header">
+    <h6 class="mb-0">{{ 'Edit Pension' if pension else 'Add New Pension' }}</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST"
+          action="{{ url_for('retirement.update_pension', pension_id=pension.id) if pension else url_for('retirement.create_pension') }}">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Name</label>
+          <input type="text" name="name" class="form-control form-control-sm"
+                 value="{{ pension.name if pension else '' }}" required
+                 placeholder="e.g. State Pension">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Linked Salary Profile</label>
+          <select name="salary_profile_id" class="form-select form-select-sm">
+            <option value="">— None —</option>
+            {% for sp in salary_profiles %}
+            <option value="{{ sp.id }}"
+                    {{ 'selected' if pension and pension.salary_profile_id == sp.id }}>
+              {{ sp.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Benefit Multiplier (%)</label>
+          <input type="number" step="0.001" name="benefit_multiplier"
+                 class="form-control form-control-sm"
+                 value="{{ "%.3f"|format(pension.benefit_multiplier|float * 100) if pension else '' }}"
+                 required placeholder="e.g. 1.850">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">High Salary Years</label>
+          <input type="number" min="1" max="10" name="consecutive_high_years"
+                 class="form-control form-control-sm"
+                 value="{{ pension.consecutive_high_years if pension else 4 }}">
+        </div>
+      </div>
+      <div class="row g-3 mt-1">
+        <div class="col-md-3">
+          <label class="form-label">Hire Date</label>
+          <input type="date" name="hire_date" class="form-control form-control-sm"
+                 value="{{ pension.hire_date.isoformat() if pension else '' }}" required>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Earliest Retirement Date</label>
+          <input type="date" name="earliest_retirement_date" class="form-control form-control-sm"
+                 value="{{ pension.earliest_retirement_date.isoformat() if pension and pension.earliest_retirement_date else '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Planned Retirement Date</label>
+          <input type="date" name="planned_retirement_date" class="form-control form-control-sm"
+                 value="{{ pension.planned_retirement_date.isoformat() if pension and pension.planned_retirement_date else '' }}">
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check"></i> {{ 'Update' if pension else 'Create' }} Pension
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

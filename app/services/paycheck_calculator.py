@@ -24,6 +24,7 @@ class DeductionLine:
     """A single deduction line item in a paycheck breakdown."""
     name: str
     amount: Decimal
+    target_account_id: int = None
 
 
 @dataclass
@@ -360,7 +361,10 @@ def _calculate_deductions(profile, period, all_periods, gross_biweekly,
                     TWO_PLACES, rounding=ROUND_HALF_UP
                 )
 
-        deductions.append(DeductionLine(name=ded.name, amount=amount))
+        target_id = getattr(ded, "target_account_id", None)
+        deductions.append(DeductionLine(
+            name=ded.name, amount=amount, target_account_id=target_id
+        ))
 
     return deductions
 

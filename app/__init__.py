@@ -89,6 +89,8 @@ def _register_blueprints(app):
     from app.routes.savings import savings_bp
     from app.routes.mortgage import mortgage_bp
     from app.routes.auto_loan import auto_loan_bp
+    from app.routes.investment import investment_bp
+    from app.routes.retirement import retirement_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -103,6 +105,8 @@ def _register_blueprints(app):
     app.register_blueprint(savings_bp)
     app.register_blueprint(mortgage_bp)
     app.register_blueprint(auto_loan_bp)
+    app.register_blueprint(investment_bp)
+    app.register_blueprint(retirement_bp)
 
 
 def _register_error_handlers(app):

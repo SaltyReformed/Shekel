@@ -41,6 +41,11 @@ class PaycheckDeduction(db.Model):
     inflation_enabled = db.Column(db.Boolean, default=False)
     inflation_rate = db.Column(db.Numeric(5, 4))
     inflation_effective_month = db.Column(db.Integer)
+    target_account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
@@ -54,6 +59,7 @@ class PaycheckDeduction(db.Model):
     salary_profile = db.relationship("SalaryProfile", back_populates="deductions")
     deduction_timing = db.relationship("DeductionTiming", lazy="joined")
     calc_method = db.relationship("CalcMethod", lazy="joined")
+    target_account = db.relationship("Account", lazy="joined")
 
     def __repr__(self):
         return f"<PaycheckDeduction '{self.name}' ${self.amount}>"

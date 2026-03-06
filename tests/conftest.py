@@ -87,6 +87,7 @@ def db(app, setup_database):
         # Truncate budget and auth tables (order matters for FK constraints).
         _db.session.execute(_db.text(
             "TRUNCATE TABLE "
+            "salary.pension_profiles, "
             "salary.paycheck_deductions, "
             "salary.salary_raises, "
             "salary.salary_profiles, "
@@ -98,6 +99,7 @@ def db(app, setup_database):
             "budget.mortgage_rate_history, "
             "budget.mortgage_params, "
             "budget.auto_loan_params, "
+            "budget.investment_params, "
             "budget.hysa_params, "
             "budget.savings_goals, "
             "budget.transfers, "
@@ -244,7 +246,10 @@ def auth_client(app, db, client, seed_user):
 def _seed_ref_tables():
     """Populate reference tables for the test database."""
     ref_data = [
-        (AccountType, ["checking", "savings", "hysa", "mortgage", "auto_loan"]),
+        (AccountType, [
+            "checking", "savings", "hysa", "mortgage", "auto_loan",
+            "401k", "roth_401k", "traditional_ira", "roth_ira", "brokerage",
+        ]),
         (TransactionType, ["income", "expense"]),
         (Status, ["projected", "done", "received", "credit", "cancelled"]),
         (RecurrencePattern, [
@@ -274,6 +279,9 @@ def _seed_ref_tables():
     category_map = {
         "checking": "asset", "savings": "asset", "hysa": "asset",
         "mortgage": "liability", "auto_loan": "liability",
+        "401k": "retirement", "roth_401k": "retirement",
+        "traditional_ira": "retirement", "roth_ira": "retirement",
+        "brokerage": "investment",
     }
     for type_name, category in category_map.items():
         at = _db.session.query(AccountType).filter_by(name=type_name).first()

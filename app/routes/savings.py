@@ -17,6 +17,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
+from app.models.investment_params import InvestmentParams
 from app.models.mortgage_params import MortgageParams
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
@@ -110,6 +111,23 @@ def dashboard():
     # Load loan params for mortgage and auto loan accounts.
     mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").first()
     auto_loan_type = db.session.query(AccountType).filter_by(name="auto_loan").first()
+
+    # Load investment params for retirement/investment accounts.
+    investment_params_map = {}
+    retirement_types = [
+        db.session.query(AccountType).filter_by(name=n).first()
+        for n in ("401k", "roth_401k", "traditional_ira", "roth_ira", "brokerage")
+    ]
+    retirement_type_ids = {rt.id for rt in retirement_types if rt}
+    if retirement_type_ids:
+        inv_account_ids = [
+            a.id for a in accounts if a.account_type_id in retirement_type_ids
+        ]
+        if inv_account_ids:
+            for ip in db.session.query(InvestmentParams).filter(
+                InvestmentParams.account_id.in_(inv_account_ids)
+            ).all():
+                investment_params_map[ip.account_id] = ip
 
     loan_params_map = {}
     if mortgage_type:
@@ -219,6 +237,10 @@ def dashboard():
         }
         if acct_hysa_params:
             ad["hysa_params"] = acct_hysa_params
+
+        acct_investment_params = investment_params_map.get(acct.id)
+        if acct_investment_params:
+            ad["investment_params"] = acct_investment_params
 
         if acct_loan_params:
             ad["loan_params"] = acct_loan_params

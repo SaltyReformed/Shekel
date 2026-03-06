@@ -254,6 +254,7 @@ class DeductionCreateSchema(BaseSchema):
     inflation_effective_month = fields.Integer(
         validate=validate.Range(min=1, max=12), allow_none=True
     )
+    target_account_id = fields.Integer(allow_none=True)
 
 
 class TaxBracketSetSchema(BaseSchema):
@@ -594,3 +595,141 @@ class PayoffCalculatorSchema(BaseSchema):
     mode = fields.String(required=True, validate=validate.OneOf(["extra_payment", "target_date"]))
     extra_monthly = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     target_date = fields.Date()
+
+
+# ── Investment Schemas (Phase 5) ────────────────────────────────
+
+
+class InvestmentParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating investment parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    assumed_annual_return = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=-1, max=1),
+    )
+    annual_contribution_limit = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(min=0),
+    )
+    contribution_limit_year = fields.Integer(allow_none=True)
+    employer_contribution_type = fields.String(
+        load_default="none",
+        validate=validate.OneOf(["none", "flat_percentage", "match"]),
+    )
+    employer_flat_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    employer_match_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=10),
+    )
+    employer_match_cap_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )
+
+
+class InvestmentParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating investment parameters."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    assumed_annual_return = fields.Decimal(
+        places=5, as_string=True,
+        validate=validate.Range(min=-1, max=1),
+    )
+    annual_contribution_limit = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(min=0),
+    )
+    contribution_limit_year = fields.Integer(allow_none=True)
+    employer_contribution_type = fields.String(
+        validate=validate.OneOf(["none", "flat_percentage", "match"]),
+    )
+    employer_flat_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    employer_match_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=10),
+    )
+    employer_match_cap_percentage = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )
+
+
+# ── Pension Schemas (Phase 5) ──────────────────────────────────
+
+
+class PensionProfileCreateSchema(BaseSchema):
+    """Validates POST data for creating a pension profile."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    salary_profile_id = fields.Integer(allow_none=True)
+    name = fields.String(
+        required=True, validate=validate.Length(min=1, max=100)
+    )
+    benefit_multiplier = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    consecutive_high_years = fields.Integer(
+        load_default=4, validate=validate.Range(min=1, max=10),
+    )
+    hire_date = fields.Date(required=True)
+    earliest_retirement_date = fields.Date(allow_none=True)
+    planned_retirement_date = fields.Date(allow_none=True)
+
+
+class PensionProfileUpdateSchema(BaseSchema):
+    """Validates POST data for updating a pension profile."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    salary_profile_id = fields.Integer(allow_none=True)
+    name = fields.String(validate=validate.Length(min=1, max=100))
+    benefit_multiplier = fields.Decimal(
+        places=5, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    consecutive_high_years = fields.Integer(
+        validate=validate.Range(min=1, max=10),
+    )
+    hire_date = fields.Date()
+    earliest_retirement_date = fields.Date(allow_none=True)
+    planned_retirement_date = fields.Date(allow_none=True)
+
+
+# ── Retirement Settings Schema (Phase 5) ──────────────────────
+
+
+class RetirementSettingsSchema(BaseSchema):
+    """Validates POST data for updating retirement planning settings."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    safe_withdrawal_rate = fields.Decimal(
+        places=4, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    planned_retirement_date = fields.Date(allow_none=True)
+    estimated_retirement_tax_rate = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )

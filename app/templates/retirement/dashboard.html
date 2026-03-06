@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block title %}Retirement Planning — Shekel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-briefcase"></i> Retirement Planning</h4>
+  <a href="{{ url_for('retirement.pension_list') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-circle"></i> Manage Pensions
+  </a>
+</div>
+
+{# --- Income Gap Summary --- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-calculator"></i> Retirement Income Gap Analysis</h6>
+  </div>
+  <div class="card-body">
+    {% if gap_analysis %}
+    <table class="table table-sm mb-0">
+      <tbody>
+        <tr>
+          <td class="text-muted">Current Net Monthly Income</td>
+          <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(gap_analysis.pre_retirement_net_monthly|float) }}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">Projected Monthly Pension</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.monthly_pension_income|float) }}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">Monthly Income Gap</td>
+          <td class="text-end font-mono text-warning">${{ "{:,.2f}".format(gap_analysis.monthly_income_gap|float) }}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">Required Savings ({{ "%.0f"|format(gap_analysis.safe_withdrawal_rate|float * 100) }}% rule)</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.required_retirement_savings|float) }}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">Projected Retirement Savings</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.projected_total_savings|float) }}</td>
+        </tr>
+        <tr class="table-active">
+          <td class="fw-bold">
+            {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}
+              Surplus
+            {% else %}
+              Shortfall
+            {% endif %}
+          </td>
+          <td class="text-end font-mono fw-bold {{ 'text-success' if gap_analysis.savings_surplus_or_shortfall >= 0 else 'text-danger' }}">
+            {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.savings_surplus_or_shortfall|float) }}
+          </td>
+        </tr>
+        {% if gap_analysis.after_tax_projected_savings is not none %}
+        <tr>
+          <td class="text-muted" colspan="2"><small class="text-muted">After-tax view (estimated)</small></td>
+        </tr>
+        <tr>
+          <td class="text-muted">After-Tax Projected Savings</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_projected_savings|float) }}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">After-Tax Surplus/Shortfall</td>
+          <td class="text-end font-mono {{ 'text-success' if gap_analysis.after_tax_surplus_or_shortfall >= 0 else 'text-danger' }}">
+            {% if gap_analysis.after_tax_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.after_tax_surplus_or_shortfall|float) }}
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted mb-0">Configure your salary profile and retirement settings to see the gap analysis.</p>
+    {% endif %}
+  </div>
+</div>
+
+{# --- Gap Chart --- #}
+{% if gap_analysis and gap_analysis.pre_retirement_net_monthly > 0 %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Income Sources vs. Gap</h6>
+  </div>
+  <div class="card-body">
+    <canvas id="gapChart"
+            data-pension="{{ chart_data.pension }}"
+            data-investment="{{ chart_data.investment_income }}"
+            data-gap="{{ chart_data.gap }}"
+            data-pre-retirement="{{ chart_data.pre_retirement }}"
+            style="max-height: 300px;">
+    </canvas>
+  </div>
+</div>
+{% endif %}
+
+{# --- Pension Details --- #}
+{% if pension_benefit %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-shield-check"></i> Pension Benefit Details</h6>
+  </div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-6">
+        <table class="table table-sm mb-0">
+          <tr>
+            <td class="text-muted">Years of Service</td>
+            <td class="text-end font-mono">{{ pension_benefit.years_of_service }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">High Salary Average</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(pension_benefit.high_salary_average|float) }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Annual Benefit</td>
+            <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(pension_benefit.annual_benefit|float) }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Monthly Benefit</td>
+            <td class="text-end font-mono fw-bold" style="color: var(--shekel-accent);">
+              ${{ "{:,.2f}".format(pension_benefit.monthly_benefit|float) }}
+            </td>
+          </tr>
+        </table>
+      </div>
+      {% if pension_benefit.high_salary_years %}
+      <div class="col-md-6">
+        <small class="text-muted">Highest Consecutive Salary Years:</small>
+        <table class="table table-sm mb-0 mt-1">
+          {% for year, salary in pension_benefit.high_salary_years %}
+          <tr>
+            <td>{{ year }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(salary|float) }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# --- Retirement Accounts Summary --- #}
+{% if retirement_account_projections %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-graph-up"></i> Retirement & Investment Accounts</h6>
+  </div>
+  <div class="card-body">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Type</th>
+          <th class="text-end">Current Balance</th>
+          <th class="text-end">Projected at Retirement</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for proj in retirement_account_projections %}
+        <tr>
+          <td>
+            <a href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">
+              {{ proj.account.name }}
+            </a>
+          </td>
+          <td>
+            <span class="badge {{ 'bg-info' if proj.is_traditional else 'bg-success' }}">
+              {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
+            </span>
+          </td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(proj.account.current_anchor_balance|float if proj.account.current_anchor_balance else 0) }}</td>
+          <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance|float) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# --- Settings --- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-gear"></i> Retirement Settings</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('retirement.update_settings') }}">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label">Safe Withdrawal Rate (%)</label>
+          <input type="number" step="0.1" name="safe_withdrawal_rate"
+                 class="form-control form-control-sm"
+                 value="{{ "%.1f"|format(settings.safe_withdrawal_rate|float * 100) if settings and settings.safe_withdrawal_rate else '4.0' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Planned Retirement Date</label>
+          <input type="date" name="planned_retirement_date"
+                 class="form-control form-control-sm"
+                 value="{{ settings.planned_retirement_date.isoformat() if settings and settings.planned_retirement_date else '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Est. Retirement Tax Rate (%)</label>
+          <input type="number" step="0.1" name="estimated_retirement_tax_rate"
+                 class="form-control form-control-sm"
+                 value="{{ "%.1f"|format(settings.estimated_retirement_tax_rate|float * 100) if settings and settings.estimated_retirement_tax_rate else '' }}">
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check"></i> Save Settings
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="alert alert-secondary">
+  <i class="bi bi-info-circle"></i>
+  <small>Projections are estimates based on assumed rates of return and the safe withdrawal rate.
+  Actual results will vary with market performance, inflation, and tax law changes.</small>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if gap_analysis and gap_analysis.pre_retirement_net_monthly > 0 %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+<script src="{{ url_for('static', filename='js/retirement_gap_chart.js') }}"></script>
+{% endif %}
+{% endblock %}

@@ -266,6 +266,7 @@ def edit_profile(profile_id):
     raise_types = db.session.query(RaiseType).all()
     deduction_timings = db.session.query(DeductionTiming).all()
     calc_methods = db.session.query(CalcMethod).all()
+    investment_accounts = _get_investment_accounts(current_user.id)
 
     return render_template(
         "salary/form.html",
@@ -274,6 +275,7 @@ def edit_profile(profile_id):
         raise_types=raise_types,
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
+        investment_accounts=investment_accounts,
     )
 
 
@@ -734,9 +736,34 @@ def _render_deductions_partial(profile):
     db.session.refresh(profile)
     deduction_timings = db.session.query(DeductionTiming).all()
     calc_methods = db.session.query(CalcMethod).all()
+    investment_accounts = _get_investment_accounts(profile.user_id)
     return render_template(
         "salary/_deductions_section.html",
         profile=profile,
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
+        investment_accounts=investment_accounts,
+    )
+
+
+def _get_investment_accounts(user_id):
+    """Load retirement/investment accounts for the target account dropdown."""
+    from app.models.ref import AccountType as AT
+    retirement_types = (
+        db.session.query(AT)
+        .filter(AT.category.in_(["retirement", "investment"]))
+        .all()
+    )
+    type_ids = {rt.id for rt in retirement_types}
+    if not type_ids:
+        return []
+    return (
+        db.session.query(Account)
+        .filter(
+            Account.user_id == user_id,
+            Account.account_type_id.in_(type_ids),
+            Account.is_active.is_(True),
+        )
+        .order_by(Account.name)
+        .all()
     )
