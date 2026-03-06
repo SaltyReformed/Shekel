@@ -73,6 +73,7 @@ def dashboard():
     # Calculate pension benefit.
     pension_benefit = None
     monthly_pension_income = Decimal("0")
+    salary_by_year = None
     for pension in pensions:
         if pension.planned_retirement_date and pension.salary_profile:
             profile = pension.salary_profile
@@ -239,6 +240,7 @@ def dashboard():
     # Project salary to retirement for gap analysis comparison.
     # Uses effective take-home rate from current paycheck applied to
     # projected final salary, giving a better comparison than current income.
+    # Reuses salary_by_year from the pension loop when available.
     gap_net_biweekly = net_biweekly
     if salary_profiles and planned_retirement_date and net_biweekly > 0:
         profile = salary_profiles[0]
@@ -248,14 +250,16 @@ def dashboard():
         ).quantize(Decimal("0.01"))
         if current_gross_biweekly > 0:
             effective_take_home_rate = net_biweekly / current_gross_biweekly
-            projected_salaries = pension_calculator.project_salaries_by_year(
-                Decimal(str(profile.annual_salary)),
-                profile.raises,
-                date.today().year,
-                planned_retirement_date.year,
-            )
-            if projected_salaries:
-                final_salary = projected_salaries[-1][1]
+            # Compute salary projection only if pension loop didn't already.
+            if salary_by_year is None:
+                salary_by_year = pension_calculator.project_salaries_by_year(
+                    Decimal(str(profile.annual_salary)),
+                    profile.raises,
+                    date.today().year,
+                    planned_retirement_date.year,
+                )
+            if salary_by_year:
+                final_salary = salary_by_year[-1][1]
                 final_gross_biweekly = (
                     final_salary / (profile.pay_periods_per_year or 26)
                 ).quantize(Decimal("0.01"))
