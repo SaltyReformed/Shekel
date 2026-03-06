@@ -34,6 +34,7 @@ def calculate_investment_inputs(
     all_transfers,
     all_periods,
     current_period,
+    salary_gross_biweekly=None,
 ):
     """Compute projection inputs for an investment account.
 
@@ -63,6 +64,10 @@ def calculate_investment_inputs(
         if ded.calc_method_name == "percentage":
             amt = (gross * amt).quantize(TWO_PLACES)
         periodic_contribution += amt
+
+    # Use salary profile gross as fallback when no deductions provided one.
+    if gross_biweekly == ZERO and salary_gross_biweekly is not None:
+        gross_biweekly = Decimal(str(salary_gross_biweekly))
 
     # Step 2: Transfer-based contributions (average per period).
     acct_transfers = [

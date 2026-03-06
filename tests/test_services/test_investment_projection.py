@@ -194,6 +194,61 @@ class TestCalculateInvestmentInputs:
         )
         assert result.periodic_contribution == Decimal("700.00")
 
+    def test_employer_flat_uses_salary_gross_when_no_deductions(self):
+        """Employer flat_percentage works even without deductions targeting the account."""
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="flat_percentage",
+            employer_flat_percentage=Decimal("0.05"),
+        )
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+
+        result = calculate_investment_inputs(
+            account_id=10,
+            investment_params=params,
+            deductions=[],
+            all_transfers=[],
+            all_periods=[current_period],
+            current_period=current_period,
+            salary_gross_biweekly=Decimal("3846.15"),
+        )
+
+        assert result.employer_params is not None
+        assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
+        assert result.periodic_contribution == Decimal("0")
+
+    def test_deduction_gross_overrides_salary_gross(self):
+        """When deductions exist, their derived gross takes precedence."""
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="flat_percentage",
+            employer_flat_percentage=Decimal("0.05"),
+        )
+        deductions = [
+            FakeDeduction(
+                amount=Decimal("500.00"),
+                calc_method_name="flat",
+                annual_salary=Decimal("120000"),
+                pay_periods_per_year=26,
+            ),
+        ]
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+
+        result = calculate_investment_inputs(
+            account_id=10,
+            investment_params=params,
+            deductions=deductions,
+            all_transfers=[],
+            all_periods=[current_period],
+            current_period=current_period,
+            salary_gross_biweekly=Decimal("3846.15"),
+        )
+
+        expected_gross = (Decimal("120000") / 26).quantize(Decimal("0.01"))
+        assert result.employer_params["gross_biweekly"] == expected_gross
+
     def test_no_employer_when_type_none(self):
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
