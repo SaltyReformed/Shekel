@@ -4,7 +4,7 @@
    Expected context: periods, balances, txn_by_period, num_periods, start_offset, low_balance_threshold.
 #}
 <tfoot id="grid-summary"
-       hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
+       hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
        hx-trigger="balanceChanged from:body"
        hx-swap="outerHTML"
        aria-live="polite"

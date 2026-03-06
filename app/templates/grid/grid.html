@@ -6,7 +6,7 @@
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
   <div class="d-flex align-items-center gap-3">
     <div>
-      <h5 class="mb-0">Checking Balance</h5>
+      <h5 class="mb-0">{{ account.name if account else 'Account' }} Balance</h5>
       {% if account and account.updated_at %}
       <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at.strftime('%b %-d, %Y') }}</small>
       {% endif %}
@@ -271,7 +271,7 @@
     </tbody>
 
     <tfoot id="grid-summary"
-           hx-get="{{ url_for('grid.balance_row', periods=num_periods, offset=start_offset) }}"
+           hx-get="{{ url_for('grid.balance_row', periods=num_periods, offset=start_offset, account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods, offset=start_offset) }}"
            hx-trigger="balanceChanged from:body"
            hx-swap="outerHTML">
       {% include "grid/_balance_row.html" %}

@@ -28,6 +28,7 @@ from app.schemas.validation import (
     TransferUpdateSchema,
 )
 from app.services import transfer_recurrence, pay_period_service
+from app.services.account_resolver import resolve_grid_account
 from app.exceptions import RecurrenceConflict
 
 logger = logging.getLogger(__name__)
@@ -357,11 +358,7 @@ def get_cell(xfer_id):
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
     return render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )
@@ -415,11 +412,7 @@ def update_transfer(xfer_id):
     db.session.commit()
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer_id)
 
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )
@@ -458,11 +451,7 @@ def create_ad_hoc():
     db.session.commit()
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
     )
@@ -504,11 +493,7 @@ def mark_done(xfer_id):
     db.session.commit()
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
 
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )
@@ -529,11 +514,7 @@ def cancel_transfer(xfer_id):
     db.session.commit()
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
 
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )

@@ -11,6 +11,7 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.user import UserSettings
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,13 @@ def show():
         db.session.add(settings)
         db.session.commit()
 
-    return render_template("settings/settings.html", settings=settings)
+    accounts = (
+        db.session.query(Account)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+    return render_template("settings/settings.html", settings=settings, accounts=accounts)
 
 
 @settings_bp.route("/settings", methods=["POST"])
@@ -66,6 +73,23 @@ def update():
             settings.low_balance_threshold = int(low_bal)
         except (ValueError, TypeError):
             flash("Invalid number for low balance threshold.", "danger")
+            return redirect(url_for("settings.show"))
+
+    # Update default grid account.
+    grid_acct_raw = request.form.get("default_grid_account_id", "")
+    if grid_acct_raw == "":
+        settings.default_grid_account_id = None
+    else:
+        try:
+            acct_id = int(grid_acct_raw)
+            acct = db.session.get(Account, acct_id)
+            if acct and acct.user_id == current_user.id and acct.is_active:
+                settings.default_grid_account_id = acct_id
+            else:
+                flash("Invalid grid account.", "danger")
+                return redirect(url_for("settings.show"))
+        except (ValueError, TypeError):
+            flash("Invalid grid account.", "danger")
             return redirect(url_for("settings.show"))
 
     db.session.commit()

@@ -22,6 +22,7 @@ from app.models.transfer import Transfer
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import balance_calculator, pay_period_service
+from app.services.account_resolver import resolve_grid_account
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,10 @@ def index():
     if scenario is None:
         return render_template("grid/no_setup.html")
 
-    # Get the checking account.
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=user_id, is_active=True)
-        .first()
+    # Get the grid account (checking by default, or user preference).
+    account = resolve_grid_account(
+        user_id, current_user.settings,
+        request.args.get("account_id", type=int),
     )
 
     # Determine the visible period range.
@@ -185,10 +185,9 @@ def balance_row():
         .filter_by(user_id=user_id, is_baseline=True)
         .first()
     )
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=user_id, is_active=True)
-        .first()
+    account = resolve_grid_account(
+        user_id, current_user.settings,
+        request.args.get("account_id", type=int),
     )
 
     num_periods = int(request.args.get("periods", 6))

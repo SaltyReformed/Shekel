@@ -62,6 +62,11 @@ class UserSettings(db.Model):
     safe_withdrawal_rate = db.Column(db.Numeric(5, 4), default=0.0400)
     planned_retirement_date = db.Column(db.Date, nullable=True)
     estimated_retirement_tax_rate = db.Column(db.Numeric(5, 4), nullable=True)
+    default_grid_account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -71,6 +76,10 @@ class UserSettings(db.Model):
 
     # Back-reference to User
     user = db.relationship("User", back_populates="settings")
+    default_grid_account = db.relationship(
+        "Account", lazy="joined",
+        foreign_keys=[default_grid_account_id],
+    )
 
     def __repr__(self):
         return f"<UserSettings user_id={self.user_id}>"

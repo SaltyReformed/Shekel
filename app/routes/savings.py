@@ -27,6 +27,7 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import amortization_engine, balance_calculator, pay_period_service, savings_goal_service
+from app.services.account_resolver import resolve_grid_account
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +91,11 @@ def dashboard():
         .all()
     ) if scenario else {}
 
-    # The grid uses the first active account (by sort_order) for its balance
-    # view.  Ad-hoc transactions (no template) are created in that context,
-    # so attribute them to the same account.
-    grid_account_id = accounts[0].id if accounts else None
+    # The grid uses a resolved account for its balance view.  Ad-hoc
+    # transactions (no template) are created in that context, so
+    # attribute them to the same account.
+    grid_account = resolve_grid_account(user_id, current_user.settings)
+    grid_account_id = grid_account.id if grid_account else None
 
     # Load HYSA params for all HYSA accounts in one query.
     hysa_type = (

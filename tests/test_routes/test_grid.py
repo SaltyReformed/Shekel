@@ -30,6 +30,13 @@ class TestGridView:
             assert response.status_code == 200
             assert b"No Pay Periods" in response.data
 
+    def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods):
+        """GET / shows the resolved account name in the header."""
+        with app.app_context():
+            response = auth_client.get("/")
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+
     def test_grid_period_controls(self, app, auth_client, seed_user, seed_periods):
         """Grid respects the periods query parameter."""
         with app.app_context():
