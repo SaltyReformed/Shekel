@@ -24,6 +24,7 @@ from app.schemas.validation import (
     InvestmentParamsUpdateSchema,
 )
 from app.services import growth_engine, pay_period_service, paycheck_calculator
+from app.services.investment_projection import calculate_investment_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -70,60 +71,46 @@ def dashboard(account_id):
         .all()
     )
 
-    # Calculate per-period contribution from paycheck deductions.
-    periodic_contribution = Decimal("0")
-    gross_biweekly = Decimal("0")
+    # Adapt deductions for the shared helper.
+    adapted_deductions = []
     for ded in deductions:
         profile = ded.salary_profile
-        pay_per_year = profile.pay_periods_per_year or 26
-        salary = Decimal(str(profile.annual_salary))
-        gross = (salary / pay_per_year).quantize(Decimal("0.01"))
-        gross_biweekly = gross  # use the last one for employer calc
-        amt = Decimal(str(ded.amount))
-        if ded.calc_method and ded.calc_method.name == "percentage":
-            amt = (gross * amt).quantize(Decimal("0.01"))
-        periodic_contribution += amt
+        adapted_deductions.append(type("D", (), {
+            "amount": ded.amount,
+            "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+            "annual_salary": profile.annual_salary,
+            "pay_periods_per_year": profile.pay_periods_per_year or 26,
+        })())
 
-    # Also count transfers into this account as contributions.
-    if current_period:
-        period_ids = [p.id for p in all_periods]
-        transfer_contributions = (
-            db.session.query(Transfer)
-            .filter(
-                Transfer.to_account_id == account_id,
-                Transfer.pay_period_id.in_(period_ids),
-                Transfer.is_deleted.is_(False),
-            )
-            .all()
+    # Load transfers targeting this account (for contribution averaging and YTD).
+    period_ids = [p.id for p in all_periods]
+    acct_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.to_account_id == account_id,
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.is_deleted.is_(False),
         )
-        # Average transfer amount per period for projection.
-        if transfer_contributions:
-            total_xfer = sum(Decimal(str(t.amount)) for t in transfer_contributions)
-            num_periods_with_xfer = len(set(t.pay_period_id for t in transfer_contributions))
-            if num_periods_with_xfer > 0:
-                periodic_contribution += (total_xfer / num_periods_with_xfer).quantize(
-                    Decimal("0.01")
-                )
+        .all()
+    ) if period_ids else []
 
-    # YTD contributions.
-    ytd_contributions = _calculate_ytd_contributions(
-        account_id, all_periods, current_period
+    inputs = calculate_investment_inputs(
+        account_id=account_id,
+        investment_params=params,
+        deductions=adapted_deductions,
+        all_transfers=acct_transfers,
+        all_periods=all_periods,
+        current_period=current_period,
     )
 
-    # Build employer params.
-    employer_params = None
+    periodic_contribution = inputs.periodic_contribution
+    employer_params = inputs.employer_params
     employer_contribution_per_period = Decimal("0")
-    if params and params.employer_contribution_type != "none":
-        employer_params = {
-            "type": params.employer_contribution_type,
-            "flat_percentage": params.employer_flat_percentage or Decimal("0"),
-            "match_percentage": params.employer_match_percentage or Decimal("0"),
-            "match_cap_percentage": params.employer_match_cap_percentage or Decimal("0"),
-            "gross_biweekly": gross_biweekly,
-        }
+    if employer_params:
         employer_contribution_per_period = growth_engine.calculate_employer_contribution(
             employer_params, periodic_contribution
         )
+    ytd_contributions = inputs.ytd_contributions
 
     # Project balances forward.
     projection = []
@@ -255,34 +242,3 @@ def _convert_percentage_inputs(form):
             except Exception:
                 pass
     return data
-
-
-def _calculate_ytd_contributions(account_id, all_periods, current_period):
-    """Calculate year-to-date contributions to an investment account."""
-    if not current_period:
-        return Decimal("0")
-
-    current_year = current_period.start_date.year
-    ytd_period_ids = [
-        p.id for p in all_periods
-        if p.start_date.year == current_year
-        and p.start_date <= current_period.start_date
-    ]
-
-    if not ytd_period_ids:
-        return Decimal("0")
-
-    transfers = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.to_account_id == account_id,
-            Transfer.pay_period_id.in_(ytd_period_ids),
-            Transfer.is_deleted.is_(False),
-        )
-        .all()
-    )
-
-    return sum(
-        (Decimal(str(t.amount)) for t in transfers),
-        Decimal("0"),
-    )
