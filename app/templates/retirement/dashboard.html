@@ -26,6 +26,12 @@
           <td class="text-muted">Projected Monthly Pension</td>
           <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.monthly_pension_income|float) }}</td>
         </tr>
+        {% if gap_analysis.after_tax_monthly_pension is not none %}
+        <tr>
+          <td class="text-muted">After-Tax Monthly Pension</td>
+          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_monthly_pension|float) }}</td>
+        </tr>
+        {% endif %}
         <tr>
           <td class="text-muted">Monthly Income Gap</td>
           <td class="text-end font-mono text-warning">${{ "{:,.2f}".format(gap_analysis.monthly_income_gap|float) }}</td>

@@ -2,7 +2,6 @@
 Tests for retirement planning routes.
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 
@@ -337,7 +336,6 @@ class TestRetirementProjections:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
 
-    @pytest.mark.xfail(reason="Depends on Task 4 template update")
     def test_dashboard_pension_tax_shown(
         self, auth_client, seed_user, db, seed_periods
     ):
