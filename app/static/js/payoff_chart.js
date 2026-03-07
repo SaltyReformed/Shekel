@@ -1,11 +1,15 @@
+'use strict';
+
 /**
  * Shekel Budget App — Payoff Chart (Chart.js)
  *
  * Renders a line chart showing loan balance over time.
  * Data is read from data-* attributes on the canvas element (CSP-compliant).
  * Supports optional accelerated (extra payment) schedule overlay.
+ * Uses ShekelChart.create() for consistent theming.
+ *
+ * @param {string} canvasId - The canvas element ID.
  */
-
 function renderPayoffChart(canvasId) {
   var canvas = document.getElementById(canvasId);
   if (!canvas) return;
@@ -16,16 +20,11 @@ function renderPayoffChart(canvasId) {
 
   if (labels.length === 0 || standard.length === 0) return;
 
-  // Destroy existing chart instance if any.
-  if (canvas._chartInstance) {
-    canvas._chartInstance.destroy();
-  }
-
   var datasets = [{
     label: 'Standard Payments',
     data: standard,
-    borderColor: '#6c757d',
-    backgroundColor: 'rgba(108, 117, 125, 0.1)',
+    borderColor: ShekelChart.getColor(7),
+    backgroundColor: ShekelChart.getColor(7) + '1A',
     borderWidth: 2,
     fill: true,
     tension: 0.3,
@@ -36,8 +35,8 @@ function renderPayoffChart(canvasId) {
     datasets.push({
       label: 'With Extra Payments',
       data: accelerated,
-      borderColor: '#198754',
-      backgroundColor: 'rgba(25, 135, 84, 0.1)',
+      borderColor: ShekelChart.getColor(1),
+      backgroundColor: ShekelChart.getColor(1) + '1A',
       borderWidth: 2,
       fill: true,
       tension: 0.3,
@@ -45,7 +44,7 @@ function renderPayoffChart(canvasId) {
     });
   }
 
-  canvas._chartInstance = new Chart(canvas, {
+  ShekelChart.create(canvasId, {
     type: 'line',
     data: {
       labels: labels,
@@ -61,33 +60,18 @@ function renderPayoffChart(canvasId) {
       scales: {
         x: {
           display: true,
-          ticks: {
-            maxTicksLimit: 12,
-            color: '#adb5bd',
-          },
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)',
-          },
+          ticks: { maxTicksLimit: 12 },
         },
         y: {
           display: true,
           ticks: {
-            color: '#adb5bd',
             callback: function(value) {
               return '$' + value.toLocaleString();
             },
           },
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)',
-          },
         },
       },
       plugins: {
-        legend: {
-          labels: {
-            color: '#dee2e6',
-          },
-        },
         tooltip: {
           callbacks: {
             label: function(context) {
@@ -109,9 +93,8 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Re-render after HTMX swaps (for payoff calculator results).
-document.addEventListener('htmx:afterSwap', function(evt) {
-  var resultChart = document.getElementById('payoff-chart-results');
-  if (resultChart) {
+document.addEventListener('htmx:afterSwap', function() {
+  if (document.getElementById('payoff-chart-results')) {
     renderPayoffChart('payoff-chart-results');
   }
 });

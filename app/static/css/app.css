@@ -763,3 +763,26 @@ td.htmx-loading::after {
 .welcome-checklist .bi {
   font-size: 1.1rem;
 }
+
+/* =============================================
+   CHART CARDS
+   ============================================= */
+.chart-skeleton {
+  min-height: 200px;
+}
+
+@keyframes chart-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+.chart-skeleton .spinner-border {
+  animation: chart-pulse 1.5s ease-in-out infinite;
+}
+
+/* Chart control button groups */
+.chart-controls .btn-group .btn.active {
+  background-color: var(--shekel-accent);
+  border-color: var(--shekel-accent);
+  color: #fff;
+}

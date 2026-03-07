@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Charts{% endblock %}
+
+{% block content %}
+<h1 class="mb-4"><i class="bi bi-bar-chart-line"></i> Charts</h1>
+
+<div class="row g-4">
+  {# C1: Balance Over Time — full width #}
+  <div class="col-12">
+    <div class="card" aria-label="Balance Over Time chart">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-graph-up"></i> Balance Over Time</span>
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.balance_over_time', **request.args) }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# C2 + C3 side by side #}
+  <div class="col-lg-6">
+    <div class="card" aria-label="Spending by Category chart">
+      <div class="card-header">
+        <i class="bi bi-pie-chart"></i> Spending by Category
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.spending_by_category') }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card" aria-label="Budget vs Actuals chart">
+      <div class="card-header">
+        <i class="bi bi-bar-chart"></i> Budget vs. Actuals
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.budget_vs_actuals') }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# C4 + C5 side by side #}
+  <div class="col-lg-6">
+    <div class="card" aria-label="Amortization Breakdown chart">
+      <div class="card-header">
+        <i class="bi bi-building"></i> Amortization Breakdown
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.amortization') }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card" aria-label="Net Worth Over Time chart">
+      <div class="card-header">
+        <i class="bi bi-cash-stack"></i> Net Worth Over Time
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.net_worth') }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# C6: Net Pay Trajectory — full width #}
+  <div class="col-12">
+    <div class="card" aria-label="Net Pay Trajectory chart">
+      <div class="card-header">
+        <i class="bi bi-wallet2"></i> Net Pay Trajectory
+      </div>
+      <div class="card-body" style="min-height: 350px;"
+           hx-get="{{ url_for('charts.net_pay') }}"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="chart-skeleton d-flex align-items-center justify-content-center py-5">
+          <div class="spinner-border spinner-border-sm text-muted" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_balance.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_spending.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_budget.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_amortization.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_net_worth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_net_pay.js') }}"></script>
+{% endblock %}

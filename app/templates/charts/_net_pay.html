@@ -1,0 +1,28 @@
+{# HTMX fragment: net pay trajectory step line chart #}
+{% if salary_profiles|length > 1 %}
+<div class="chart-controls mb-2">
+  <select class="form-select form-select-sm" style="max-width: 250px;"
+          hx-get="{{ url_for('charts.net_pay') }}"
+          hx-target="closest .card-body"
+          hx-swap="innerHTML"
+          name="profile_id">
+    {% for prof in salary_profiles %}
+    <option value="{{ prof.id }}" {% if selected_profile_id == prof.id %}selected{% endif %}>
+      {{ prof.name }}
+    </option>
+    {% endfor %}
+  </select>
+</div>
+{% endif %}
+{% if chart_data.labels %}
+<canvas id="chart-net-pay"
+        data-labels='{{ chart_data.labels | tojson }}'
+        data-data='{{ chart_data.data | tojson }}'
+        data-gross='{{ chart_data.gross_data | tojson }}'
+        style="max-height: 400px;"></canvas>
+{% else %}
+<div class="text-muted text-center py-4">
+  <i class="bi bi-wallet2" style="font-size: 2rem;"></i>
+  <p class="mt-2">No salary profiles configured. Set up a salary profile to see net pay projections.</p>
+</div>
+{% endif %}

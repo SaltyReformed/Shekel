@@ -1,0 +1,24 @@
+{# HTMX fragment: budget vs. actuals grouped bar chart #}
+<div class="chart-controls mb-2">
+  <div class="btn-group btn-group-sm" role="group" aria-label="Period range">
+    {% for value, label in [('current', 'Current'), ('last_3', 'Last 3'), ('last_6', 'Last 6'), ('last_12', 'Last 12'), ('ytd', 'YTD')] %}
+    <button type="button"
+            class="btn btn-outline-secondary {% if selected_range == value %}active{% endif %}"
+            hx-get="{{ url_for('charts.budget_vs_actuals', range=value) }}"
+            hx-target="closest .card-body"
+            hx-swap="innerHTML">{{ label }}</button>
+    {% endfor %}
+  </div>
+</div>
+{% if chart_data.labels %}
+<canvas id="chart-budget-vs-actuals"
+        data-labels='{{ chart_data.labels | tojson }}'
+        data-estimated='{{ chart_data.estimated | tojson }}'
+        data-actual='{{ chart_data.actual | tojson }}'
+        style="max-height: 400px;"></canvas>
+{% else %}
+<div class="text-muted text-center py-4">
+  <i class="bi bi-bar-chart" style="font-size: 2rem;"></i>
+  <p class="mt-2">No budget data for the selected period.</p>
+</div>
+{% endif %}

@@ -32,6 +32,7 @@
       document.documentElement.setAttribute('data-bs-theme', next);
       localStorage.setItem('shekel-theme', next);
       updateIcon();
+      document.dispatchEvent(new CustomEvent('shekel:theme-changed', { detail: { theme: next } }));
     });
   });
 })();

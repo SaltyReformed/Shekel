@@ -1,0 +1,23 @@
+{# HTMX fragment: spending by category horizontal bar chart #}
+<div class="chart-controls mb-2">
+  <div class="btn-group btn-group-sm" role="group" aria-label="Period range">
+    {% for value, label in [('current', 'Current'), ('last_3', 'Last 3'), ('last_6', 'Last 6'), ('last_12', 'Last 12'), ('ytd', 'YTD')] %}
+    <button type="button"
+            class="btn btn-outline-secondary {% if selected_range == value %}active{% endif %}"
+            hx-get="{{ url_for('charts.spending_by_category', range=value) }}"
+            hx-target="closest .card-body"
+            hx-swap="innerHTML">{{ label }}</button>
+    {% endfor %}
+  </div>
+</div>
+{% if chart_data.labels %}
+<canvas id="chart-spending-category"
+        data-labels='{{ chart_data.labels | tojson }}'
+        data-data='{{ chart_data.data | tojson }}'
+        style="max-height: 400px;"></canvas>
+{% else %}
+<div class="text-muted text-center py-4">
+  <i class="bi bi-pie-chart" style="font-size: 2rem;"></i>
+  <p class="mt-2">No spending data for the selected period.</p>
+</div>
+{% endif %}

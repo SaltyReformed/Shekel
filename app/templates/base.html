@@ -19,6 +19,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+
   <!-- App CSS -->
   <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
 </head>
@@ -31,8 +34,8 @@
   {% if current_user.is_authenticated %}
   <nav class="navbar navbar-expand-md navbar-dark sticky-top">
     <div class="container-fluid">
-      <a class="navbar-brand fw-bold" href="{{ url_for('grid.index') }}">
-        <i class="bi bi-coin"></i> Shekel
+      <a class="navbar-brand" href="{{ url_for('grid.index') }}">
+        <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="38" style="width: auto;">
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain"
               aria-controls="navMain" aria-expanded="false" aria-label="Toggle navigation">
@@ -73,6 +76,11 @@
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('retirement.dashboard') }}">
               <i class="bi bi-briefcase"></i> Retirement
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('charts.dashboard') }}">
+              <i class="bi bi-bar-chart-line"></i> Charts
             </a>
           </li>
           <li class="nav-item">
