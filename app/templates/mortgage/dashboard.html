@@ -161,8 +161,10 @@
     </ul>
     <div class="tab-content">
       <div class="tab-pane fade show active" id="extra-tab" role="tabpanel">
-        <form hx-post="{{ url_for('mortgage.payoff_calculate', account_id=account.id) }}"
-              hx-target="#payoff-results" hx-swap="innerHTML">
+        <form id="payoff-form"
+              hx-post="{{ url_for('mortgage.payoff_calculate', account_id=account.id) }}"
+              hx-target="#payoff-results" hx-swap="innerHTML"
+              hx-trigger="submit, slider-changed">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="mode" value="extra_payment">
           <div class="row align-items-end">
@@ -171,7 +173,17 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" id="extra_monthly" name="extra_monthly"
-                       value="200" step="1" min="0">
+                       value="200" step="1" min="0"
+                       data-slider-group="payoff">
+              </div>
+              <input type="range" class="form-range mt-2" id="extra_monthly_slider"
+                     min="0" max="2000" step="25" value="200"
+                     data-slider-group="payoff"
+                     data-slider-target="payoff-form"
+                     data-slider-debounce="250">
+              <div class="d-flex justify-content-between">
+                <small class="text-muted">$0</small>
+                <small class="text-muted">$2,000</small>
               </div>
             </div>
             <div class="col-md-6">
@@ -221,5 +233,7 @@
 
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payoff_chart.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
 {% endblock %}

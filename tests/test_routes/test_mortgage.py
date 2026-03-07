@@ -328,6 +328,44 @@ class TestPayoffCalculator:
         assert b"Validation error" in resp.data
 
 
+class TestPayoffSlider:
+    """Tests for the payoff calculator slider (U1)."""
+
+    def test_dashboard_has_extra_payment_slider(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Mortgage dashboard renders a range slider for extra payment."""
+        from app.models.mortgage_params import MortgageParams
+
+        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
+        account = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=mortgage_type.id,
+            name="Home Mortgage",
+            current_anchor_balance=Decimal("250000.00"),
+        )
+        db.session.add(account)
+        db.session.flush()
+
+        params = MortgageParams(
+            account_id=account.id,
+            original_principal=Decimal("300000.00"),
+            current_principal=Decimal("250000.00"),
+            interest_rate=Decimal("0.06500"),
+            term_months=360,
+            origination_date=date(2023, 1, 1),
+            payment_day=1,
+        )
+        db.session.add(params)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/mortgage")
+        assert resp.status_code == 200
+        assert b'data-slider-group="payoff"' in resp.data
+        assert b'type="range"' in resp.data
+        assert b'chart_slider.js' in resp.data
+
+
 class TestCreateMortgageAccount:
     """Test creating a mortgage account redirects correctly."""
 
