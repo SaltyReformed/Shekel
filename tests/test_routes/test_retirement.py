@@ -403,3 +403,57 @@ class TestRetirementProjections:
         html = resp.data.decode()
         # Should show projected pre-retirement income, not current.
         assert "Projected Pre-Retirement Income" in html
+
+
+class TestGapAnalysisFragment:
+    """Tests for the retirement gap analysis HTMX fragment (U3)."""
+
+    def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods):
+        """GET /retirement/gap without HX-Request redirects to dashboard."""
+        resp = auth_client.get("/retirement/gap")
+        assert resp.status_code == 302
+
+    def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods):
+        """GET /retirement/gap with HX-Request returns gap analysis fragment."""
+        resp = auth_client.get(
+            "/retirement/gap",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"Configure your salary" in resp.data or b"Gap" in resp.data
+
+    def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods):
+        """SWR slider parameter is accepted and used."""
+        profile = _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        settings.safe_withdrawal_rate = Decimal("0.04")
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?swr=3.0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        # The fragment should show the 3% rate, not the stored 4%.
+        assert b"3" in resp.data
+
+    def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods):
+        """Return rate slider parameter is accepted."""
+        profile = _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        db.session.commit()
+
+        _create_retirement_account(seed_user, db.session, type_name="401k")
+
+        resp = auth_client.get(
+            "/retirement/gap?return_rate=10.0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"Gap" in resp.data or b"Surplus" in resp.data

@@ -9,93 +9,71 @@
   </a>
 </div>
 
-{# --- Income Gap Summary --- #}
+{# --- Sensitivity Sliders --- #}
+{% if gap_analysis %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-sliders"></i> Sensitivity Analysis</h6>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="swr_slider" class="form-label">
+          Safe Withdrawal Rate: <span id="swr-display">{{ "%.1f"|format(current_swr) }}%</span>
+        </label>
+        <input type="range" class="form-range" id="swr_slider"
+               min="2.0" max="6.0" step="0.25" value="{{ "%.2f"|format(current_swr) }}"
+               data-slider-group="gap-swr"
+               data-slider-target="gap-analysis-container"
+               data-slider-debounce="300">
+        <input type="number" class="gap-param" id="swr_input" name="swr"
+               step="0.25" min="2.0" max="6.0"
+               value="{{ "%.2f"|format(current_swr) }}"
+               data-slider-group="gap-swr"
+               style="display: none;">
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">2.0%</small>
+          <small class="text-muted">6.0%</small>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <label for="return_slider" class="form-label">
+          Assumed Annual Return: <span id="return-display">{{ "%.1f"|format(current_return) }}%</span>
+        </label>
+        <input type="range" class="form-range" id="return_slider"
+               min="3.0" max="12.0" step="0.5" value="{{ "%.1f"|format(current_return) }}"
+               data-slider-group="gap-return"
+               data-slider-target="gap-analysis-container"
+               data-slider-debounce="300">
+        <input type="number" class="gap-param" id="return_input" name="return_rate"
+               step="0.5" min="3.0" max="12.0"
+               value="{{ "%.1f"|format(current_return) }}"
+               data-slider-group="gap-return"
+               style="display: none;">
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">3.0%</small>
+          <small class="text-muted">12.0%</small>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# --- Income Gap Analysis (HTMX swappable) --- #}
 <div class="card mb-4">
   <div class="card-header">
     <h6 class="mb-0"><i class="bi bi-calculator"></i> Retirement Income Gap Analysis</h6>
   </div>
-  <div class="card-body">
-    {% if gap_analysis %}
-    <table class="table table-sm mb-0">
-      <tbody>
-        <tr>
-          <td class="text-muted">Projected Pre-Retirement Income</td>
-          <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(gap_analysis.pre_retirement_net_monthly|float) }}</td>
-        </tr>
-        <tr>
-          <td class="text-muted">Projected Monthly Pension</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.monthly_pension_income|float) }}</td>
-        </tr>
-        {% if gap_analysis.after_tax_monthly_pension is not none %}
-        <tr>
-          <td class="text-muted">After-Tax Monthly Pension</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_monthly_pension|float) }}</td>
-        </tr>
-        {% endif %}
-        <tr>
-          <td class="text-muted">Monthly Income Gap</td>
-          <td class="text-end font-mono text-warning">${{ "{:,.2f}".format(gap_analysis.monthly_income_gap|float) }}</td>
-        </tr>
-        <tr>
-          <td class="text-muted">Required Savings ({{ "%.0f"|format(gap_analysis.safe_withdrawal_rate|float * 100) }}% rule)</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.required_retirement_savings|float) }}</td>
-        </tr>
-        <tr>
-          <td class="text-muted">Projected Retirement Savings</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.projected_total_savings|float) }}</td>
-        </tr>
-        <tr class="table-active">
-          <td class="fw-bold">
-            {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}
-              Surplus
-            {% else %}
-              Shortfall
-            {% endif %}
-          </td>
-          <td class="text-end font-mono fw-bold {{ 'text-success' if gap_analysis.savings_surplus_or_shortfall >= 0 else 'text-danger' }}">
-            {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.savings_surplus_or_shortfall|float) }}
-          </td>
-        </tr>
-        {% if gap_analysis.after_tax_projected_savings is not none %}
-        <tr>
-          <td class="text-muted" colspan="2"><small class="text-muted">After-tax view (estimated)</small></td>
-        </tr>
-        <tr>
-          <td class="text-muted">After-Tax Projected Savings</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_projected_savings|float) }}</td>
-        </tr>
-        <tr>
-          <td class="text-muted">After-Tax Surplus/Shortfall</td>
-          <td class="text-end font-mono {{ 'text-success' if gap_analysis.after_tax_surplus_or_shortfall >= 0 else 'text-danger' }}">
-            {% if gap_analysis.after_tax_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.after_tax_surplus_or_shortfall|float) }}
-          </td>
-        </tr>
-        {% endif %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="text-muted mb-0">Configure your salary profile and retirement settings to see the gap analysis.</p>
-    {% endif %}
+  <div class="card-body"
+       id="gap-analysis-container"
+       hx-get="{{ url_for('retirement.gap_analysis') }}"
+       hx-trigger="slider-changed"
+       hx-swap="innerHTML"
+       hx-include=".gap-param">
+    {% include "retirement/_gap_analysis.html" %}
   </div>
 </div>
-
-{# --- Gap Chart --- #}
-{% if gap_analysis and gap_analysis.pre_retirement_net_monthly > 0 %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Income Sources vs. Gap</h6>
-  </div>
-  <div class="card-body">
-    <canvas id="gapChart"
-            data-pension="{{ chart_data.pension }}"
-            data-investment="{{ chart_data.investment_income }}"
-            data-gap="{{ chart_data.gap }}"
-            data-pre-retirement="{{ chart_data.pre_retirement }}"
-            style="max-height: 300px;">
-    </canvas>
-  </div>
-</div>
-{% endif %}
 
 {# --- Pension Details --- #}
 {% if pension_benefit %}
@@ -229,8 +207,28 @@
 {% endblock %}
 
 {% block scripts %}
-{% if gap_analysis and gap_analysis.pre_retirement_net_monthly > 0 %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/retirement_gap_chart.js') }}"></script>
-{% endif %}
+<script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
+<script>
+  // Update slider display labels on input.
+  document.addEventListener('DOMContentLoaded', function() {
+    var swrSlider = document.getElementById('swr_slider');
+    var swrDisplay = document.getElementById('swr-display');
+    var returnSlider = document.getElementById('return_slider');
+    var returnDisplay = document.getElementById('return-display');
+
+    if (swrSlider && swrDisplay) {
+      swrSlider.addEventListener('input', function() {
+        swrDisplay.textContent = parseFloat(swrSlider.value).toFixed(1) + '%';
+      });
+    }
+    if (returnSlider && returnDisplay) {
+      returnSlider.addEventListener('input', function() {
+        returnDisplay.textContent = parseFloat(returnSlider.value).toFixed(1) + '%';
+      });
+    }
+  });
+</script>
 {% endblock %}

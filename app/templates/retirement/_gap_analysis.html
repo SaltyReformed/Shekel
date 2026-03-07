@@ -1,0 +1,74 @@
+{# HTMX fragment: gap analysis table + chart #}
+{% if gap_analysis %}
+<table class="table table-sm mb-0">
+  <tbody>
+    <tr>
+      <td class="text-muted">Projected Pre-Retirement Income</td>
+      <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(gap_analysis.pre_retirement_net_monthly|float) }}</td>
+    </tr>
+    <tr>
+      <td class="text-muted">Projected Monthly Pension</td>
+      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.monthly_pension_income|float) }}</td>
+    </tr>
+    {% if gap_analysis.after_tax_monthly_pension is not none %}
+    <tr>
+      <td class="text-muted">After-Tax Monthly Pension</td>
+      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_monthly_pension|float) }}</td>
+    </tr>
+    {% endif %}
+    <tr>
+      <td class="text-muted">Monthly Income Gap</td>
+      <td class="text-end font-mono text-warning">${{ "{:,.2f}".format(gap_analysis.monthly_income_gap|float) }}</td>
+    </tr>
+    <tr>
+      <td class="text-muted">Required Savings ({{ "%.1f"|format(gap_analysis.safe_withdrawal_rate|float * 100) }}% rule)</td>
+      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.required_retirement_savings|float) }}</td>
+    </tr>
+    <tr>
+      <td class="text-muted">Projected Retirement Savings</td>
+      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.projected_total_savings|float) }}</td>
+    </tr>
+    <tr class="table-active">
+      <td class="fw-bold">
+        {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}
+          Surplus
+        {% else %}
+          Shortfall
+        {% endif %}
+      </td>
+      <td class="text-end font-mono fw-bold {{ 'text-success' if gap_analysis.savings_surplus_or_shortfall >= 0 else 'text-danger' }}">
+        {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.savings_surplus_or_shortfall|float) }}
+      </td>
+    </tr>
+    {% if gap_analysis.after_tax_projected_savings is not none %}
+    <tr>
+      <td class="text-muted" colspan="2"><small class="text-muted">After-tax view (estimated)</small></td>
+    </tr>
+    <tr>
+      <td class="text-muted">After-Tax Projected Savings</td>
+      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_projected_savings|float) }}</td>
+    </tr>
+    <tr>
+      <td class="text-muted">After-Tax Surplus/Shortfall</td>
+      <td class="text-end font-mono {{ 'text-success' if gap_analysis.after_tax_surplus_or_shortfall >= 0 else 'text-danger' }}">
+        {% if gap_analysis.after_tax_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.after_tax_surplus_or_shortfall|float) }}
+      </td>
+    </tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if gap_analysis.pre_retirement_net_monthly > 0 %}
+<div class="mt-3">
+  <canvas id="gapChart"
+          data-pension="{{ chart_data.pension }}"
+          data-investment="{{ chart_data.investment_income }}"
+          data-gap="{{ chart_data.gap }}"
+          data-pre-retirement="{{ chart_data.pre_retirement }}"
+          style="max-height: 300px;">
+  </canvas>
+</div>
+{% endif %}
+{% else %}
+<p class="text-muted mb-0">Configure your salary profile and retirement settings to see the gap analysis.</p>
+{% endif %}
