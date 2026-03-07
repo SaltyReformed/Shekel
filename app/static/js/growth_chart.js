@@ -1,41 +1,45 @@
+'use strict';
+
 /**
  * Shekel Budget App — Investment Growth Chart
  *
  * Renders a Chart.js line chart showing projected balance over time
  * with contributions overlaid. Reads data from data-* attributes
  * on the canvas element (CSP-compliant).
+ * Uses ShekelChart.create() for consistent theming.
+ *
+ * @param {string} [canvasId='growthChart'] - The canvas element ID.
  */
-(function () {
-  "use strict";
-
-  const canvas = document.getElementById("growthChart");
+function renderGrowthChart(canvasId) {
+  canvasId = canvasId || 'growthChart';
+  var canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  const labels = JSON.parse(canvas.dataset.labels || "[]");
-  const balances = JSON.parse(canvas.dataset.balances || "[]").map(Number);
-  const contributions = JSON.parse(canvas.dataset.contributions || "[]").map(Number);
+  var labels = JSON.parse(canvas.dataset.labels || '[]');
+  var balances = JSON.parse(canvas.dataset.balances || '[]').map(Number);
+  var contributions = JSON.parse(canvas.dataset.contributions || '[]').map(Number);
 
   if (labels.length === 0) return;
 
-  new Chart(canvas, {
-    type: "line",
+  ShekelChart.create(canvasId, {
+    type: 'line',
     data: {
       labels: labels,
       datasets: [
         {
-          label: "Projected Balance",
+          label: 'Projected Balance',
           data: balances,
-          borderColor: "#0d6efd",
-          backgroundColor: "rgba(13, 110, 253, 0.1)",
+          borderColor: ShekelChart.getColor(0),
+          backgroundColor: ShekelChart.getColor(0) + '1A',
           fill: true,
           tension: 0.3,
           pointRadius: 0,
           borderWidth: 2,
         },
         {
-          label: "Contributions Only",
+          label: 'Contributions Only',
           data: contributions,
-          borderColor: "#198754",
+          borderColor: ShekelChart.getColor(1),
           borderDash: [5, 5],
           fill: false,
           tension: 0.3,
@@ -47,34 +51,44 @@
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         tooltip: {
           callbacks: {
             label: function (ctx) {
-              return ctx.dataset.label + ": $" + ctx.parsed.y.toLocaleString(undefined, {
+              return ctx.dataset.label + ': $' + ctx.parsed.y.toLocaleString(undefined, {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
               });
             },
           },
         },
-        legend: { position: "top" },
+        legend: { position: 'top' },
       },
       scales: {
         x: {
           ticks: { maxTicksLimit: 12 },
-          grid: { color: "rgba(255,255,255,0.05)" },
         },
         y: {
           ticks: {
             callback: function (v) {
-              return "$" + v.toLocaleString();
+              return '$' + v.toLocaleString();
             },
           },
-          grid: { color: "rgba(255,255,255,0.05)" },
         },
       },
     },
   });
-})();
+}
+
+// Auto-initialize on page load.
+document.addEventListener('DOMContentLoaded', function () {
+  renderGrowthChart();
+});
+
+// Re-render after HTMX swaps.
+document.addEventListener('htmx:afterSwap', function () {
+  if (document.getElementById('growthChart')) {
+    renderGrowthChart();
+  }
+});

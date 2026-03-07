@@ -1,0 +1,13 @@
+{% if chart_labels %}
+<canvas id="growthChart"
+        data-labels='{{ chart_labels|tojson }}'
+        data-balances='{{ chart_balances|tojson }}'
+        data-contributions='{{ chart_contributions|tojson }}'
+        style="max-height: 350px;">
+</canvas>
+{% else %}
+<div class="text-center py-4 text-muted">
+  <i class="bi bi-graph-up fs-1"></i>
+  <p class="mt-2">No projection data available.</p>
+</div>
+{% endif %}

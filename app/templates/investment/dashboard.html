@@ -98,18 +98,40 @@
 {% endif %}
 
 {# --- Growth Projection Chart --- #}
-{% if projection %}
+{% if params %}
 <div class="card mb-4">
-  <div class="card-header">
+  <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Growth Projection</h6>
   </div>
   <div class="card-body">
-    <canvas id="growthChart"
-            data-labels='{{ chart_labels|tojson }}'
-            data-balances='{{ chart_balances|tojson }}'
-            data-contributions='{{ chart_contributions|tojson }}'
-            style="max-height: 350px;">
-    </canvas>
+    <div class="row align-items-center mb-3">
+      <div class="col-md-4">
+        <label for="horizon_years" class="form-label mb-0">Projection Horizon</label>
+      </div>
+      <div class="col-md-6">
+        <input type="range" class="form-range" id="horizon_slider"
+               min="1" max="40" step="1" value="{{ default_horizon }}"
+               data-slider-group="horizon"
+               data-slider-target="growth-chart-container"
+               data-slider-debounce="300">
+      </div>
+      <div class="col-md-2">
+        <div class="input-group input-group-sm">
+          <input type="number" class="form-control" id="horizon_years"
+                 name="horizon_years" min="1" max="40" step="1"
+                 value="{{ default_horizon }}"
+                 data-slider-group="horizon">
+          <span class="input-group-text">yr</span>
+        </div>
+      </div>
+    </div>
+    <div id="growth-chart-container"
+         hx-get="{{ url_for('investment.growth_chart', account_id=account.id) }}"
+         hx-trigger="slider-changed"
+         hx-swap="innerHTML"
+         hx-include="#horizon_years">
+      {% include "investment/_growth_chart.html" %}
+    </div>
   </div>
 </div>
 {% endif %}
@@ -187,8 +209,10 @@
 {% endblock %}
 
 {% block scripts %}
-{% if projection %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+{% if params %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/growth_chart.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
 {% endif %}
 {% endblock %}

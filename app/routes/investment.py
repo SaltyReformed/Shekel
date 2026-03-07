@@ -6,7 +6,7 @@ projection, contribution tracking, and employer contribution display.
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
@@ -19,6 +19,7 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
+from app.models.user import UserSettings
 from app.schemas.validation import (
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
@@ -174,6 +175,20 @@ def dashboard(account_id):
         if p:
             chart_date_labels.append(p.start_date.strftime("%b %d"))
 
+    # Default horizon for the growth chart slider.
+    settings = (
+        db.session.query(UserSettings)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
+    if settings and settings.planned_retirement_date:
+        default_horizon = max(1, (settings.planned_retirement_date.year - date.today().year))
+    elif all_periods:
+        last_period = all_periods[-1]
+        default_horizon = max(1, (last_period.end_date.year - date.today().year) + 1)
+    else:
+        default_horizon = 10
+
     return render_template(
         "investment/dashboard.html",
         account=account,
@@ -185,6 +200,136 @@ def dashboard(account_id):
         limit_info=limit_info,
         projection=projection,
         chart_labels=chart_date_labels,
+        chart_balances=chart_balances,
+        chart_contributions=chart_contributions,
+        default_horizon=default_horizon,
+    )
+
+
+@investment_bp.route("/accounts/<int:account_id>/investment/growth-chart")
+@login_required
+def growth_chart(account_id):
+    """HTMX fragment: growth projection chart with adjustable horizon."""
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("investment.dashboard", account_id=account_id))
+
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        return "", 404
+
+    params = (
+        db.session.query(InvestmentParams)
+        .filter_by(account_id=account_id)
+        .first()
+    )
+    empty = {"chart_labels": [], "chart_balances": [], "chart_contributions": []}
+
+    if not params:
+        return render_template("investment/_growth_chart.html", **empty)
+
+    horizon_years = request.args.get("horizon_years", type=int, default=2)
+    horizon_years = max(1, min(horizon_years, 40))
+
+    current_balance = account.current_anchor_balance or Decimal("0.00")
+
+    # Generate synthetic future periods for the requested horizon.
+    end_date = date.today() + timedelta(days=horizon_years * 365)
+    periods = growth_engine.generate_projection_periods(
+        start_date=date.today(),
+        end_date=end_date,
+    )
+
+    if not periods:
+        return render_template("investment/_growth_chart.html", **empty)
+
+    # Load contribution inputs.
+    all_periods = pay_period_service.get_all_periods(current_user.id)
+    current_period = pay_period_service.get_current_period(current_user.id)
+
+    salary_gross_biweekly = Decimal("0")
+    active_profile = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .first()
+    )
+    if active_profile:
+        salary_gross_biweekly = (
+            Decimal(str(active_profile.annual_salary))
+            / (active_profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+
+    deductions = (
+        db.session.query(PaycheckDeduction)
+        .join(SalaryProfile)
+        .filter(
+            SalaryProfile.user_id == current_user.id,
+            SalaryProfile.is_active.is_(True),
+            PaycheckDeduction.target_account_id == account_id,
+            PaycheckDeduction.is_active.is_(True),
+        )
+        .all()
+    )
+
+    adapted_deductions = []
+    for ded in deductions:
+        profile = ded.salary_profile
+        adapted_deductions.append(type("D", (), {
+            "amount": ded.amount,
+            "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+            "annual_salary": profile.annual_salary,
+            "pay_periods_per_year": profile.pay_periods_per_year or 26,
+        })())
+
+    period_ids = [p.id for p in all_periods]
+    acct_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.to_account_id == account_id,
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    ) if period_ids else []
+
+    inputs = calculate_investment_inputs(
+        account_id=account_id,
+        investment_params=params,
+        deductions=adapted_deductions,
+        all_transfers=acct_transfers,
+        all_periods=all_periods,
+        current_period=current_period,
+        salary_gross_biweekly=salary_gross_biweekly,
+    )
+
+    projection = growth_engine.project_balance(
+        current_balance=current_balance,
+        assumed_annual_return=params.assumed_annual_return,
+        periods=periods,
+        periodic_contribution=inputs.periodic_contribution,
+        employer_params=inputs.employer_params,
+        annual_contribution_limit=params.annual_contribution_limit,
+        ytd_contributions_start=inputs.ytd_contributions,
+    )
+
+    period_map = {p.id: p for p in periods}
+    chart_labels = []
+    chart_balances = []
+    chart_contributions = []
+    cumulative_contrib = Decimal("0")
+
+    for pb in projection:
+        p = period_map.get(pb.period_id)
+        if p:
+            chart_labels.append(p.start_date.strftime("%b %Y"))
+        chart_balances.append(str(pb.end_balance.quantize(Decimal("0.01"))))
+        cumulative_contrib += pb.contribution + pb.employer_contribution
+        chart_contributions.append(
+            str((current_balance + cumulative_contrib).quantize(Decimal("0.01")))
+        )
+
+    return render_template(
+        "investment/_growth_chart.html",
+        chart_labels=chart_labels,
         chart_balances=chart_balances,
         chart_contributions=chart_contributions,
     )

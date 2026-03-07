@@ -211,3 +211,61 @@ class TestInvestmentParams:
             },
         )
         assert resp.status_code == 302
+
+
+class TestGrowthChartFragment:
+    """Tests for the investment growth chart HTMX fragment (U2)."""
+
+    def test_growth_chart_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET without HX-Request header redirects to dashboard."""
+        acct = _create_investment_account(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/investment/growth-chart")
+        assert resp.status_code == 302
+
+    def test_growth_chart_empty_without_params(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Returns empty state when no investment params exist."""
+        acct = _create_investment_account(seed_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/investment/growth-chart",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"No projection data" in resp.data
+
+    def test_growth_chart_with_data(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Returns canvas element when projection data exists."""
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"growthChart" in resp.data
+
+    def test_growth_chart_idor(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Other user's account returns 404."""
+        other_user = _create_other_user(db.session)
+        acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+        other_acct = Account(
+            user_id=other_user.id,
+            account_type_id=acct_type.id,
+            name="Other 401k",
+            current_anchor_balance=Decimal("10000.00"),
+        )
+        db.session.add(other_acct)
+        db.session.commit()
+        resp = auth_client.get(
+            f"/accounts/{other_acct.id}/investment/growth-chart",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
