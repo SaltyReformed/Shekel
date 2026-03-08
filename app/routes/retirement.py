@@ -314,10 +314,29 @@ def dashboard():
     """Retirement planning dashboard with gap analysis."""
     data = _compute_gap_data(current_user.id)
 
-    # Compute current slider defaults from settings.
+    # Compute current slider defaults from settings / account data.
     settings = data["settings"]
     current_swr = float(settings.safe_withdrawal_rate or 0.04) * 100 if settings else 4.0
-    current_return = 7.0  # Default display value for return rate slider.
+
+    # Derive default return rate from weighted average of account return rates.
+    projections = data.get("retirement_account_projections", [])
+    total_balance = Decimal("0")
+    weighted_return = Decimal("0")
+    for proj in projections:
+        acct = proj["account"]
+        params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=acct.id)
+            .first()
+        )
+        if params and params.assumed_annual_return:
+            bal = acct.current_anchor_balance or Decimal("0")
+            total_balance += bal
+            weighted_return += bal * params.assumed_annual_return
+    if total_balance > 0:
+        current_return = float(weighted_return / total_balance) * 100
+    else:
+        current_return = 7.0
 
     return render_template(
         "retirement/dashboard.html",
