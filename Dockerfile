@@ -36,6 +36,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=shekel:shekel . .
 COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
+# Ensure writable directories exist (logs is excluded by .dockerignore).
+RUN mkdir -p /home/shekel/app/logs \
+    && chown -R shekel:shekel /home/shekel/app
+
 USER shekel
 EXPOSE 5000
 
