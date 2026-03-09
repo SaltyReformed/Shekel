@@ -58,9 +58,9 @@ DEFAULT_CATEGORIES = [
 
 def seed_user():
     """Create the seeded user and all associated default data."""
-    email = os.getenv("SEED_USER_EMAIL", "josh@saltyreformed.com")
-    password = os.getenv("SEED_USER_PASSWORD", "Tit4nnc4twaiCJ")
-    display_name = os.getenv("SEED_USER_DISPLAY_NAME", "Josh Grubb")
+    email = os.getenv("SEED_USER_EMAIL", "admin@shekel.local")
+    password = os.getenv("SEED_USER_PASSWORD", "changeme")
+    display_name = os.getenv("SEED_USER_DISPLAY_NAME", "Budget Admin")
 
     # Check if user already exists.
     existing = db.session.query(User).filter_by(email=email).first()
