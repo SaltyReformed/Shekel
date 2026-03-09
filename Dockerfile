@@ -33,11 +33,8 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code and entrypoint.
-COPY . .
-COPY entrypoint.sh /home/shekel/app/entrypoint.sh
-
-# Own everything as shekel user.
-RUN chown -R shekel:shekel /home/shekel
+COPY --chown=shekel:shekel . .
+COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
 USER shekel
 EXPOSE 5000
