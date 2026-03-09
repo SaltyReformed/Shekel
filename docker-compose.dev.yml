@@ -1,0 +1,69 @@
+# Shekel Budget App — Development Docker Compose
+#
+# Provides PostgreSQL for local development.
+# Usage:
+#   Database only:   docker compose -f docker-compose.dev.yml up db
+#   Full stack:      docker compose -f docker-compose.dev.yml up
+#   Then run Flask:  flask run
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: shekel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shekel_user
+      POSTGRES_PASSWORD: shekel_pass
+      POSTGRES_DB: shekel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  test-db:
+    image: postgres:16-alpine
+    container_name: shekel-test-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shekel_user
+      POSTGRES_PASSWORD: shekel_pass
+      POSTGRES_DB: shekel_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: shekel-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: production
+      SECRET_KEY: dev-secret-key-not-for-production
+      DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/shekel
+      DB_HOST: db
+      DB_USER: shekel_user
+      DB_PASSWORD: shekel_pass
+      DB_NAME: shekel
+      SEED_USER_EMAIL: admin@shekel.local
+      SEED_USER_PASSWORD: changeme
+      SEED_USER_DISPLAY_NAME: Budget Admin
+    ports:
+      - "5000:5000"
+
+volumes:
+  pgdata:
