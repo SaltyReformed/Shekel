@@ -76,7 +76,7 @@ def run_migrations_online():
             process_revision_directives=process_revision_directives,
             include_schemas=True,
             include_name=include_name,
-            # version_table_schema="public",
+            version_table_schema="public",
         )
 
         with context.begin_transaction():
