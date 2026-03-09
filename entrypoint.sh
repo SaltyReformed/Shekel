@@ -15,10 +15,9 @@ echo "Creating database schemas..."
 PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" -U "${DB_USER:-shekel_user}" -d "${DB_NAME:-shekel}" -f scripts/init_db.sql -q
 echo "Schemas ready."
 
-# ── 3. Run migrations ──────────────────────────────────────────
-echo "Running database migrations..."
-flask db upgrade
-echo "Migrations complete."
+# ── 3. Initialize database (fresh) or run migrations (existing) ─
+echo "Initializing database..."
+python scripts/init_database.py
 
 # ── 4. Seed reference data ─────────────────────────────────────
 echo "Seeding reference data..."
