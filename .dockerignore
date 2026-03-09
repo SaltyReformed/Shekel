@@ -1,0 +1,40 @@
+# Version control
+.git
+.gitignore
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Test suite
+tests/
+
+# Logs & data
+logs/
+pgdata/
+
+# Documentation
+docs/
+*.md
+
+# CI/CD & IDE
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker files (don't nest)
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Linting config
+.pylintrc
