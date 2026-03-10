@@ -146,7 +146,7 @@ def create_profile():
     """Create a new salary profile with auto-linked template."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.new_profile"))
 
     data = _create_schema.load(request.form)
@@ -290,7 +290,7 @@ def update_profile(profile_id):
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _update_schema.load(request.form)
@@ -360,7 +360,7 @@ def add_raise(profile_id):
 
     errors = _raise_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _raise_schema.load(request.form)
@@ -433,7 +433,7 @@ def add_deduction(profile_id):
 
     errors = _deduction_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _deduction_schema.load(request.form)
@@ -575,38 +575,8 @@ def projection(profile_id):
 @salary_bp.route("/salary/tax-config")
 @login_required
 def tax_config():
-    """Display tax bracket and FICA configuration."""
-    filing_statuses = db.session.query(FilingStatus).all()
-    tax_types = db.session.query(TaxType).all()
-
-    bracket_sets = (
-        db.session.query(TaxBracketSet)
-        .filter_by(user_id=current_user.id)
-        .order_by(TaxBracketSet.tax_year.desc(), TaxBracketSet.filing_status_id)
-        .all()
-    )
-
-    fica_configs = (
-        db.session.query(FicaConfig)
-        .filter_by(user_id=current_user.id)
-        .order_by(FicaConfig.tax_year.desc())
-        .all()
-    )
-
-    state_configs = (
-        db.session.query(StateTaxConfig)
-        .filter_by(user_id=current_user.id)
-        .all()
-    )
-
-    return render_template(
-        "salary/tax_config.html",
-        filing_statuses=filing_statuses,
-        tax_types=tax_types,
-        bracket_sets=bracket_sets,
-        fica_configs=fica_configs,
-        state_configs=state_configs,
-    )
+    """Redirect to settings dashboard tax configuration section."""
+    return redirect(url_for("settings.show", section="tax"))
 
 
 @salary_bp.route("/salary/tax-config", methods=["POST"])
@@ -618,7 +588,7 @@ def update_tax_config():
 
     if not state_code or len(state_code) != 2:
         flash("Invalid state code.", "danger")
-        return redirect(url_for("salary.tax_config"))
+        return redirect(url_for("settings.show", section="tax"))
 
     state_config = (
         db.session.query(StateTaxConfig)
@@ -644,7 +614,7 @@ def update_tax_config():
 
     db.session.commit()
     logger.info("user_id=%d updated state tax config for %s", current_user.id, state_code)
-    return redirect(url_for("salary.tax_config"))
+    return redirect(url_for("settings.show", section="tax"))
 
 
 @salary_bp.route("/salary/fica-config", methods=["POST"])
@@ -653,8 +623,8 @@ def update_fica_config():
     """Update FICA configuration."""
     errors = _fica_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("salary.tax_config"))
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="tax"))
 
     data = _fica_schema.load(request.form)
     tax_year = data.pop("tax_year")
@@ -676,7 +646,7 @@ def update_fica_config():
 
     db.session.commit()
     logger.info("user_id=%d updated FICA config for %d", current_user.id, tax_year)
-    return redirect(url_for("salary.tax_config"))
+    return redirect(url_for("settings.show", section="tax"))
 
 
 # ── Private Helpers ────────────────────────────────────────────────

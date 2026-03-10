@@ -235,7 +235,7 @@ class TestProfileCreate:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_create_profile_no_baseline_scenario(self, app, auth_client, seed_user):
         """POST /salary with no baseline scenario flashes danger."""
@@ -483,7 +483,7 @@ class TestRaises:
             )
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_add_raise_profile_not_found(self, app, auth_client, seed_user):
         """POST /salary/<id>/raises for non-existent profile flashes danger."""
@@ -589,7 +589,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_delete_other_users_deduction_redirects(
         self, app, auth_client, seed_user
@@ -742,12 +742,14 @@ class TestBreakdown:
 class TestTaxConfig:
     """Tests for tax config page, state tax, and FICA config endpoints."""
 
-    def test_tax_config_page_renders(self, app, auth_client, seed_user):
-        """GET /salary/tax-config renders the tax configuration page."""
+    def test_tax_config_redirects_to_settings(self, app, auth_client, seed_user):
+        """GET /salary/tax-config returns 302 redirect to settings dashboard."""
         with app.app_context():
             response = auth_client.get("/salary/tax-config")
 
-            assert response.status_code == 200
+            assert response.status_code == 302
+            assert "/settings" in response.headers["Location"]
+            assert "section=tax" in response.headers["Location"]
 
     def test_update_state_tax_config(self, app, auth_client, seed_user):
         """POST /salary/tax-config creates/updates a state tax config."""
@@ -810,4 +812,4 @@ class TestTaxConfig:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data

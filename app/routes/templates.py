@@ -84,7 +84,7 @@ def create_template():
     """Create a new transaction template with optional recurrence rule."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("templates.new_template"))
 
     data = _create_schema.load(request.form)
@@ -162,7 +162,7 @@ def create_template():
             )
 
     db.session.commit()
-    flash(f"Template '{template.name}' created.", "success")
+    flash(f"Recurring transaction '{template.name}' created.", "success")
     return redirect(url_for("templates.list_templates"))
 
 
@@ -172,7 +172,7 @@ def edit_template(template_id):
     """Display the template edit form."""
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Template not found.", "danger")
+        flash("Recurring transaction not found.", "danger")
         return redirect(url_for("templates.list_templates"))
 
     categories = (
@@ -210,12 +210,12 @@ def update_template(template_id):
     """
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Template not found.", "danger")
+        flash("Recurring transaction not found.", "danger")
         return redirect(url_for("templates.list_templates"))
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("templates.edit_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
@@ -294,7 +294,7 @@ def update_template(template_id):
             )
 
     db.session.commit()
-    flash(f"Template '{template.name}' updated.", "success")
+    flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
 
@@ -304,7 +304,7 @@ def delete_template(template_id):
     """Deactivate a template (stops future generation, keeps history)."""
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Template not found.", "danger")
+        flash("Recurring transaction not found.", "danger")
         return redirect(url_for("templates.list_templates"))
 
     template.is_active = False
@@ -320,7 +320,7 @@ def delete_template(template_id):
     db.session.commit()
 
     flash(
-        f"Template '{template.name}' deactivated. "
+        f"Recurring transaction '{template.name}' deactivated. "
         f"{deleted_count} projected transaction(s) removed.",
         "info",
     )
@@ -333,7 +333,7 @@ def reactivate_template(template_id):
     """Reactivate a deactivated template and restore projected transactions."""
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Template not found.", "danger")
+        flash("Recurring transaction not found.", "danger")
         return redirect(url_for("templates.list_templates"))
 
     template.is_active = True
@@ -362,7 +362,7 @@ def reactivate_template(template_id):
     db.session.commit()
 
     flash(
-        f"Template '{template.name}' reactivated. "
+        f"Recurring transaction '{template.name}' reactivated. "
         f"{restored_count} projected transaction(s) restored.",
         "success",
     )

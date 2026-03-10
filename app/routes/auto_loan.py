@@ -119,7 +119,7 @@ def create_params(account_id):
 
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return render_template("auto_loan/setup.html", account=account)
 
     data = _create_schema.load(request.form)
@@ -143,7 +143,7 @@ def update_params(account_id):
 
     errors = _params_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("auto_loan.dashboard", account_id=account_id))
 
     data = _params_schema.load(request.form)

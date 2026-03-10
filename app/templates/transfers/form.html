@@ -1,16 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ 'Edit' if template else 'New' }} Transfer — Shekel{% endblock %}
 
-{% set pattern_labels = {
-  'every_period': 'Every paycheck',
-  'every_n_periods': 'Every N paychecks',
-  'monthly': 'Monthly (specific day)',
-  'monthly_first': 'Monthly (first paycheck of month)',
-  'quarterly': 'Quarterly',
-  'semi_annual': 'Every 6 months',
-  'annual': 'Yearly',
-  'once': 'One-time',
-} %}
+
+{% set prefill_from = prefill_from | default(None) %}
+{% set prefill_to = prefill_to | default(None) %}
 
 {% set month_names = {
   1: 'January', 2: 'February', 3: 'March', 4: 'April',
@@ -21,8 +14,8 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('transfers.list_transfer_templates') }}">Transfers</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Transfer' if template else 'New Transfer' }}</li>
+    <li class="breadcrumb-item"><a href="{{ url_for('transfers.list_transfer_templates') }}">Recurring Transfers</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Recurring Transfer' if template else 'New Recurring Transfer' }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -32,7 +25,7 @@
   <div class="col-md-8 col-lg-6">
     <h4>
       <i class="bi bi-arrow-left-right"></i>
-      {{ 'Edit' if template else 'New' }} Transfer Template
+      {{ 'Edit' if template else 'New' }} Recurring Transfer
     </h4>
 
     <form method="POST"
@@ -62,7 +55,7 @@
           <select id="from_account_id" name="from_account_id" class="form-select" required>
             {% for acct in accounts %}
             <option value="{{ acct.id }}"
-              {{ 'selected' if template and template.from_account_id == acct.id else '' }}>
+              {{ 'selected' if (template and template.from_account_id == acct.id) or (not template and prefill_from == acct.id) else '' }}>
               {{ acct.name }} ({{ acct.account_type.name|format_account_type if acct.account_type else '' }})
             </option>
             {% endfor %}
@@ -76,7 +69,7 @@
           <select id="to_account_id" name="to_account_id" class="form-select" required>
             {% for acct in accounts %}
             <option value="{{ acct.id }}"
-              {{ 'selected' if template and template.to_account_id == acct.id else '' }}>
+              {{ 'selected' if (template and template.to_account_id == acct.id) or (not template and prefill_to == acct.id) else '' }}>
               {{ acct.name }} ({{ acct.account_type.name|format_account_type if acct.account_type else '' }})
             </option>
             {% endfor %}
@@ -96,7 +89,7 @@
           {% for p in patterns %}
           <option value="{{ p.name }}"
             {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern.name == p.name else '' }}>
-            {{ pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+            {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
           </option>
           {% endfor %}
         </select>

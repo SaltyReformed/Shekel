@@ -1,0 +1,53 @@
+<h5 class="mb-3"><i class="bi bi-tags"></i> Categories</h5>
+
+<div class="row">
+  <div class="col-md-8">
+    {% for group_name, cats in grouped.items() %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold category-group-header">{{ group_name }}</div>
+      <ul class="list-group list-group-flush">
+        {% for cat in cats %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          {{ cat.item_name }}
+          <form method="POST"
+                action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
+                class="d-inline"
+                data-confirm="Delete this category?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% else %}
+    <div class="alert alert-info">No categories yet.</div>
+    {% endfor %}
+  </div>
+
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header fw-semibold">Add Category</div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('categories.create_category') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="group_name" class="form-label">Group</label>
+            <input type="text" id="group_name" name="group_name" class="form-control"
+                   required placeholder="e.g. Auto, Home, Family">
+          </div>
+          <div class="mb-3">
+            <label for="item_name" class="form-label">Item Name</label>
+            <input type="text" id="item_name" name="item_name" class="form-control"
+                   required placeholder="e.g. Car Payment, Electricity">
+          </div>
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-plus-circle"></i> Add
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

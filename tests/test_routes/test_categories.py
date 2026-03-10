@@ -58,14 +58,13 @@ def _create_other_user_category():
 class TestCategoryList:
     """Tests for GET /categories."""
 
-    def test_list_categories(self, app, auth_client, seed_user):
-        """GET /categories renders the category list grouped by group_name."""
+    def test_list_categories_redirects_to_settings(self, app, auth_client, seed_user):
+        """GET /categories returns 302 redirect to settings dashboard."""
         with app.app_context():
             resp = auth_client.get("/categories")
-            assert resp.status_code == 200
-            # seed_user creates categories: Income/Salary, Home/Rent, etc.
-            assert b"Income" in resp.data
-            assert b"Rent" in resp.data
+            assert resp.status_code == 302
+            assert "/settings" in resp.headers["Location"]
+            assert "section=categories" in resp.headers["Location"]
 
 
 # ── Create Tests ─────────────────────────────────────────────────────
@@ -111,7 +110,7 @@ class TestCategoryCreate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Validation error" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_create_category_duplicate(self, app, auth_client, seed_user):
         """POST /categories with existing group+item shows duplicate warning."""

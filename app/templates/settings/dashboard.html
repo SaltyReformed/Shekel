@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Settings — Shekel{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('grid.index') }}">Home</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Settings</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-gear"></i> Settings</h4>
+
+<div class="row">
+  {# ── Sidebar ── #}
+  <div class="col-md-3 mb-3">
+    <div class="list-group">
+      <a href="{{ url_for('settings.show', section='general') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'general' }}">
+        <i class="bi bi-gear"></i> General
+      </a>
+      <a href="{{ url_for('settings.show', section='categories') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'categories' }}">
+        <i class="bi bi-tags"></i> Categories
+      </a>
+      <a href="{{ url_for('settings.show', section='pay-periods') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'pay-periods' }}">
+        <i class="bi bi-calendar-range"></i> Pay Periods
+      </a>
+      <a href="{{ url_for('settings.show', section='tax') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'tax' }}">
+        <i class="bi bi-sliders"></i> Tax Config
+      </a>
+      <a href="{{ url_for('settings.show', section='account-types') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'account-types' }}">
+        <i class="bi bi-bank"></i> Account Types
+      </a>
+      <a href="{{ url_for('settings.show', section='retirement') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'retirement' }}">
+        <i class="bi bi-briefcase"></i> Retirement
+      </a>
+    </div>
+    <small class="text-muted d-block mt-2">
+      Account-specific settings (interest rates, loan terms, investment parameters)
+      are configured on each account's detail page.
+    </small>
+  </div>
+
+  {# ── Content Area ── #}
+  <div class="col-md-9">
+    {% if active_section == 'general' %}
+      {% include 'settings/_general.html' %}
+    {% elif active_section == 'categories' %}
+      {% include 'settings/_categories.html' %}
+    {% elif active_section == 'pay-periods' %}
+      {% include 'settings/_pay_periods.html' %}
+    {% elif active_section == 'tax' %}
+      {% include 'settings/_tax_config.html' %}
+    {% elif active_section == 'account-types' %}
+      {% include 'settings/_account_types.html' %}
+    {% elif active_section == 'retirement' %}
+      {% include 'settings/_retirement.html' %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

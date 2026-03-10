@@ -438,7 +438,7 @@ class TestGoalCreate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Validation error" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_create_goal_invalid_account(self, app, auth_client, seed_user):
         """POST /savings/goals with another user's account is rejected."""
@@ -523,7 +523,7 @@ class TestGoalUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Validation error" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_edit_goal_idor(self, app, auth_client, seed_user):
         """GET /savings/goals/<id>/edit for another user's goal redirects."""

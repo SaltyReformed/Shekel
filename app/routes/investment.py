@@ -356,7 +356,7 @@ def update_params(account_id):
     if params:
         errors = _update_schema.validate(form_data)
         if errors:
-            flash(f"Validation error: {errors}", "danger")
+            flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
         data = _update_schema.load(form_data)
         _PARAM_FIELDS = {
@@ -372,7 +372,7 @@ def update_params(account_id):
     else:
         errors = _create_schema.validate(form_data)
         if errors:
-            flash(f"Validation error: {errors}", "danger")
+            flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
         data = _create_schema.load(form_data)
         params = InvestmentParams(account_id=account_id, **data)

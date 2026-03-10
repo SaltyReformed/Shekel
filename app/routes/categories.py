@@ -23,20 +23,8 @@ _create_schema = CategoryCreateSchema()
 @categories_bp.route("/categories")
 @login_required
 def list_categories():
-    """Display all categories grouped by group_name."""
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id)
-        .order_by(Category.sort_order, Category.group_name, Category.item_name)
-        .all()
-    )
-
-    # Group categories by group_name for display.
-    grouped = {}
-    for cat in categories:
-        grouped.setdefault(cat.group_name, []).append(cat)
-
-    return render_template("categories/list.html", grouped=grouped)
+    """Redirect to settings dashboard categories section."""
+    return redirect(url_for("settings.show", section="categories"))
 
 
 @categories_bp.route("/categories", methods=["POST"])
@@ -47,8 +35,8 @@ def create_category():
     if errors:
         if request.headers.get("HX-Request"):
             return jsonify(errors=errors), 400
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("categories.list_categories"))
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
 
     data = _create_schema.load(request.form)
 
@@ -64,7 +52,7 @@ def create_category():
     )
     if existing:
         flash("Category already exists.", "warning")
-        return redirect(url_for("categories.list_categories"))
+        return redirect(url_for("settings.show", section="categories"))
 
     category = Category(user_id=current_user.id, **data)
     db.session.add(category)
@@ -76,7 +64,7 @@ def create_category():
         return render_template("categories/_category_row.html", category=category)
 
     flash(f"Category '{category.display_name}' created.", "success")
-    return redirect(url_for("categories.list_categories"))
+    return redirect(url_for("settings.show", section="categories"))
 
 
 @categories_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
@@ -86,7 +74,7 @@ def delete_category(category_id):
     category = db.session.get(Category, category_id)
     if category is None or category.user_id != current_user.id:
         flash("Category not found.", "danger")
-        return redirect(url_for("categories.list_categories"))
+        return redirect(url_for("settings.show", section="categories"))
 
     # Check if the category is referenced by templates or transactions.
     from app.models.transaction_template import TransactionTemplate
@@ -104,9 +92,9 @@ def delete_category(category_id):
 
     if in_use:
         flash("Cannot delete a category that is in use by templates or transactions.", "warning")
-        return redirect(url_for("categories.list_categories"))
+        return redirect(url_for("settings.show", section="categories"))
 
     db.session.delete(category)
     db.session.commit()
     flash(f"Category '{category.display_name}' deleted.", "info")
-    return redirect(url_for("categories.list_categories"))
+    return redirect(url_for("settings.show", section="categories"))

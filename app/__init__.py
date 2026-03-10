@@ -139,6 +139,22 @@ def _register_context_processors(app):
             }
         }
 
+    @app.context_processor
+    def inject_recurrence_labels():
+        """Inject recurrence pattern labels into all template contexts."""
+        return {
+            "recurrence_pattern_labels": {
+                "every_period": "Every paycheck",
+                "every_n_periods": "Every N paychecks",
+                "monthly": "Monthly (specific day)",
+                "monthly_first": "Monthly (first paycheck of month)",
+                "quarterly": "Quarterly",
+                "semi_annual": "Every 6 months",
+                "annual": "Yearly",
+                "once": "One-time",
+            }
+        }
+
 
 def _register_blueprints(app):
     """Import and register all route blueprints."""

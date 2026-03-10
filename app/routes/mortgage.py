@@ -157,10 +157,13 @@ def create_params(account_id):
 
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return render_template("mortgage/setup.html", account=account)
 
     data = _create_schema.load(request.form)
+    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
+    if "interest_rate" in data:
+        data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
     params = MortgageParams(account_id=account.id, **data)
     db.session.add(params)
     db.session.commit()
@@ -181,10 +184,14 @@ def update_params(account_id):
 
     errors = _params_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("mortgage.dashboard", account_id=account_id))
 
     data = _params_schema.load(request.form)
+
+    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
+    if "interest_rate" in data:
+        data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
 
     _PARAM_FIELDS = {
         "current_principal", "interest_rate", "payment_day",
@@ -210,9 +217,12 @@ def add_rate_change(account_id):
 
     errors = _rate_schema.validate(request.form)
     if errors:
-        return f"Validation error: {errors}", 400
+        return "Please correct the highlighted errors and try again.", 400
 
     data = _rate_schema.load(request.form)
+
+    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
+    data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
 
     entry = MortgageRateHistory(
         account_id=account.id,
@@ -251,7 +261,7 @@ def add_escrow(account_id):
 
     errors = _escrow_schema.validate(request.form)
     if errors:
-        return f"Validation error: {errors}", 400
+        return "Please correct the highlighted errors and try again.", 400
 
     data = _escrow_schema.load(request.form)
 
@@ -327,7 +337,7 @@ def payoff_calculate(account_id):
     if errors:
         return render_template(
             "mortgage/_payoff_results.html",
-            error=f"Validation error: {errors}",
+            error="Please correct the highlighted errors and try again.",
         )
 
     data = _payoff_schema.load(request.form)

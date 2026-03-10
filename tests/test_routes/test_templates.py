@@ -226,7 +226,7 @@ class TestTemplateCreate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Validation error" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_create_template_invalid_account(self, app, auth_client, seed_user):
         """POST /templates with another user's account is rejected."""
@@ -306,7 +306,7 @@ class TestTemplateUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Validation error" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_update_template_idor(self, app, auth_client, seed_user):
         """POST /templates/<id> for another user's template redirects."""
@@ -319,7 +319,7 @@ class TestTemplateUpdate:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"Template not found" in resp.data
+            assert b"Recurring transaction not found" in resp.data
 
             # Verify original unchanged.
             db.session.refresh(other["template"])
@@ -335,7 +335,7 @@ class TestTemplateUpdate:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"Template not found" in resp.data
+            assert b"Recurring transaction not found" in resp.data
 
     def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods):
         """POST /templates/<id> flashes warning when recurrence conflict occurs."""
@@ -416,7 +416,7 @@ class TestTemplateDelete:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"Template not found" in resp.data
+            assert b"Recurring transaction not found" in resp.data
 
             # Verify template still active.
             db.session.refresh(other["template"])
@@ -430,7 +430,7 @@ class TestTemplateDelete:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"Template not found" in resp.data
+            assert b"Recurring transaction not found" in resp.data
 
 
 # ── Reactivate Tests ─────────────────────────────────────────────────
@@ -484,7 +484,7 @@ class TestTemplateReactivate:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"Template not found" in resp.data
+            assert b"Recurring transaction not found" in resp.data
 
 
 # ── Preview Recurrence Tests ─────────────────────────────────────────

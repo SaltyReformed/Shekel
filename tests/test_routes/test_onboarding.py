@@ -72,7 +72,7 @@ class TestOnboardingBanner:
 
         # Salary and templates don't exist, so should show links
         assert 'href="/salary"' in html or "Set up a salary profile" in html
-        assert "Create transaction templates" in html
+        assert "Set up recurring transactions" in html
 
     def test_banner_not_shown_to_anonymous_user(self, client):
         """Anonymous users should not see the banner (redirected to login)."""

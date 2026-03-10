@@ -180,6 +180,28 @@ class TestTemplateList:
             assert b"form" in response.data
 
 
+class TestTemplatePrefill:
+    """Tests for GET /transfers/new with pre-filled account query params."""
+
+    def test_new_transfer_prefills_from_account(self, app, auth_client, seed_user):
+        """GET /transfers/new?from_account=<id> pre-selects the source account."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+            resp = auth_client.get(f"/transfers/new?from_account={account_id}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'value="{account_id}"' in html
+
+    def test_new_transfer_prefills_to_account(self, app, auth_client, seed_user):
+        """GET /transfers/new?to_account=<id> pre-selects the destination account."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            resp = auth_client.get(f"/transfers/new?to_account={savings.id}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'value="{savings.id}"' in html
+
+
 class TestTemplateCreate:
     """Tests for POST /transfers."""
 
@@ -215,7 +237,7 @@ class TestTemplateCreate:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_create_template_same_accounts(self, app, auth_client, seed_user):
         """POST /transfers with from == to account shows a validation error."""
@@ -230,7 +252,7 @@ class TestTemplateCreate:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods):
         """POST /transfers twice with the same name triggers unique constraint."""
@@ -349,7 +371,7 @@ class TestTemplateUpdate:
             )
 
             assert response.status_code == 200
-            assert b"Transfer template not found." in response.data
+            assert b"Recurring transfer not found." in response.data
 
     def test_delete_other_users_template_redirects(
         self, app, auth_client, seed_user
@@ -364,7 +386,7 @@ class TestTemplateUpdate:
             )
 
             assert response.status_code == 200
-            assert b"Transfer template not found." in response.data
+            assert b"Recurring transfer not found." in response.data
 
 
 # ── Grid Cell Routes ───────────────────────────────────────────────

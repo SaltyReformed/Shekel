@@ -1,0 +1,30 @@
+{% from "_form_macros.html" import render_field, render_errors %}
+
+<h5 class="mb-3"><i class="bi bi-calendar-range"></i> Generate Pay Periods</h5>
+
+<p class="text-muted">
+  Enter your next (or first) payday and the app will generate biweekly
+  pay periods forward.
+</p>
+
+{{ render_errors(errors) }}
+
+<form method="POST" action="{{ url_for('pay_periods.generate') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  {{ render_field("start_date", "First Payday", type="date", required=true, errors=errors) }}
+
+  {{ render_field("num_periods", "Number of Periods", type="number",
+                   value="52", input_attrs='min="1" max="260"',
+                   help_text="52 periods = 2 years of biweekly pay.",
+                   errors=errors) }}
+
+  {{ render_field("cadence_days", "Days Between Paydays", type="number",
+                   value="14", input_attrs='min="1" max="365"',
+                   help_text="14 = biweekly (most common).",
+                   errors=errors) }}
+
+  <button type="submit" class="btn btn-primary w-100">
+    <i class="bi bi-calendar-plus"></i> Generate
+  </button>
+</form>

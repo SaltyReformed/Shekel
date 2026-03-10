@@ -18,11 +18,13 @@ from app.models.pay_period import PayPeriod
 class TestPayPeriodGenerate:
     """Tests for GET/POST /pay-periods/generate."""
 
-    def test_generate_form_renders(self, app, auth_client, seed_user):
-        """GET /pay-periods/generate renders the generation form."""
+    def test_generate_form_redirects_to_settings(self, app, auth_client, seed_user):
+        """GET /pay-periods/generate returns 302 redirect to settings dashboard."""
         with app.app_context():
             resp = auth_client.get("/pay-periods/generate")
-            assert resp.status_code == 200
+            assert resp.status_code == 302
+            assert "/settings" in resp.headers["Location"]
+            assert "section=pay-periods" in resp.headers["Location"]
 
     def test_generate_periods_success(self, app, auth_client, seed_user):
         """POST /pay-periods/generate creates periods and redirects to grid."""

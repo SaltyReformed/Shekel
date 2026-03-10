@@ -71,6 +71,10 @@ def new_transfer_template():
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
 
+    # Pre-fill account selection from query params (for quick-action links).
+    prefill_from = request.args.get("from_account", type=int)
+    prefill_to = request.args.get("to_account", type=int)
+
     return render_template(
         "transfers/form.html",
         template=None,
@@ -78,6 +82,8 @@ def new_transfer_template():
         patterns=patterns,
         periods=periods,
         current_period=current_period,
+        prefill_from=prefill_from,
+        prefill_to=prefill_to,
     )
 
 
@@ -87,7 +93,7 @@ def create_transfer_template():
     """Create a new transfer template with optional recurrence rule."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("transfers.new_transfer_template"))
 
     data = _create_schema.load(request.form)
@@ -161,7 +167,7 @@ def create_transfer_template():
             )
 
     db.session.commit()
-    flash(f"Transfer template '{template.name}' created.", "success")
+    flash(f"Recurring transfer '{template.name}' created.", "success")
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
@@ -171,7 +177,7 @@ def edit_transfer_template(template_id):
     """Display the transfer template edit form."""
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Transfer template not found.", "danger")
+        flash("Recurring transfer not found.", "danger")
         return redirect(url_for("transfers.list_transfer_templates"))
 
     accounts = (
@@ -198,12 +204,12 @@ def update_transfer_template(template_id):
     """Update a transfer template and regenerate future transfers."""
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Transfer template not found.", "danger")
+        flash("Recurring transfer not found.", "danger")
         return redirect(url_for("transfers.list_transfer_templates"))
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
@@ -277,7 +283,7 @@ def update_transfer_template(template_id):
             )
 
     db.session.commit()
-    flash(f"Transfer template '{template.name}' updated.", "success")
+    flash(f"Recurring transfer '{template.name}' updated.", "success")
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
@@ -287,7 +293,7 @@ def delete_transfer_template(template_id):
     """Deactivate a transfer template (stops future generation, keeps history)."""
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Transfer template not found.", "danger")
+        flash("Recurring transfer not found.", "danger")
         return redirect(url_for("transfers.list_transfer_templates"))
 
     template.is_active = False
@@ -302,7 +308,7 @@ def delete_transfer_template(template_id):
     db.session.commit()
 
     flash(
-        f"Transfer template '{template.name}' deactivated. "
+        f"Recurring transfer '{template.name}' deactivated. "
         f"{deleted_count} projected transfer(s) removed.",
         "info",
     )
@@ -315,7 +321,7 @@ def reactivate_transfer_template(template_id):
     """Reactivate a deactivated transfer template."""
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
-        flash("Transfer template not found.", "danger")
+        flash("Recurring transfer not found.", "danger")
         return redirect(url_for("transfers.list_transfer_templates"))
 
     template.is_active = True
@@ -341,7 +347,7 @@ def reactivate_transfer_template(template_id):
 
     db.session.commit()
     flash(
-        f"Transfer template '{template.name}' reactivated. "
+        f"Recurring transfer '{template.name}' reactivated. "
         f"{restored_count} projected transfer(s) restored.",
         "success",
     )

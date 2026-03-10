@@ -101,7 +101,7 @@ class TestAccountCreate:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Validation error" in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_create_account_duplicate_name(self, app, auth_client, seed_user):
         """POST /accounts with a duplicate name shows a warning flash."""

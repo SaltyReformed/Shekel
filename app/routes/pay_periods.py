@@ -24,8 +24,8 @@ _generate_schema = PayPeriodGenerateSchema()
 @pay_periods_bp.route("/pay-periods/generate", methods=["GET"])
 @login_required
 def generate_form():
-    """Display the pay period generation form."""
-    return render_template("pay_periods/generate.html")
+    """Redirect to settings dashboard pay periods section."""
+    return redirect(url_for("settings.show", section="pay-periods"))
 
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["POST"])

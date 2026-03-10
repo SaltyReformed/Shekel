@@ -1,16 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if template else 'New' }} Template — Shekel{% endblock %}
+{% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction — Shekel{% endblock %}
 
-{% set pattern_labels = {
-  'every_period': 'Every paycheck',
-  'every_n_periods': 'Every N paychecks',
-  'monthly': 'Monthly (specific day)',
-  'monthly_first': 'Monthly (first paycheck of month)',
-  'quarterly': 'Quarterly',
-  'semi_annual': 'Every 6 months',
-  'annual': 'Yearly',
-  'once': 'One-time',
-} %}
 
 {% set month_names = {
   1: 'January', 2: 'February', 3: 'March', 4: 'April',
@@ -21,8 +11,8 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('templates.list_templates') }}">Templates</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Template' if template else 'New Template' }}</li>
+    <li class="breadcrumb-item"><a href="{{ url_for('templates.list_templates') }}">Recurring Transactions</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Recurring Transaction' if template else 'New Recurring Transaction' }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -31,8 +21,8 @@
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
     <h4>
-      <i class="bi bi-file-earmark-ruled"></i>
-      {{ 'Edit' if template else 'New' }} Transaction Template
+      <i class="bi bi-arrow-repeat"></i>
+      {{ 'Edit' if template else 'New' }} Recurring Transaction
     </h4>
 
     <form method="POST"
@@ -47,7 +37,7 @@
       </div>
 
       <div class="mb-3">
-        <label for="default_amount" class="form-label">Default Amount</label>
+        <label for="default_amount" class="form-label">Amount</label>
         <div class="input-group">
           <span class="input-group-text">$</span>
           <input type="number" step="0.01" id="default_amount" name="default_amount"
@@ -105,7 +95,7 @@
           {% for p in patterns %}
           <option value="{{ p.name }}"
             {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern.name == p.name else '' }}>
-            {{ pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+            {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
           </option>
           {% endfor %}
         </select>
@@ -163,7 +153,7 @@
         <label for="effective_from" class="form-label">Regenerate effective from</label>
         <input type="date" id="effective_from" name="effective_from" class="form-control"
                aria-describedby="effective-from-help">
-        <div id="effective-from-help" class="form-text">Leave blank to use today's date.</div>
+        <div id="effective-from-help" class="form-text">Changes take effect from this date. Future budget entries will be regenerated. Leave blank to apply immediately.</div>
       </div>
       {% endif %}
 

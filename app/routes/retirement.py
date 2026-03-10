@@ -377,7 +377,7 @@ def create_pension():
     """Create a new pension profile."""
     errors = _pension_create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("retirement.pension_list"))
 
     data = _pension_create_schema.load(request.form)
@@ -428,7 +428,7 @@ def update_pension(pension_id):
 
     errors = _pension_update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("retirement.edit_pension", pension_id=pension_id))
 
     data = _pension_update_schema.load(request.form)
@@ -520,8 +520,8 @@ def update_settings():
 
     errors = _settings_schema.validate(form_data)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("retirement.dashboard"))
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="retirement"))
 
     data = _settings_schema.load(form_data)
 
@@ -532,7 +532,7 @@ def update_settings():
     )
     if not settings:
         flash("Settings not found.", "danger")
-        return redirect(url_for("retirement.dashboard"))
+        return redirect(url_for("settings.show", section="retirement"))
 
     _SETTINGS_FIELDS = {
         "safe_withdrawal_rate", "planned_retirement_date",
@@ -545,4 +545,4 @@ def update_settings():
     db.session.commit()
     logger.info("user_id=%d updated retirement settings", current_user.id)
     flash("Retirement settings updated.", "success")
-    return redirect(url_for("retirement.dashboard"))
+    return redirect(url_for("settings.show", section="retirement"))

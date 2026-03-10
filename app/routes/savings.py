@@ -483,7 +483,7 @@ def create_goal():
     """Create a new savings goal."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("savings.new_goal"))
 
     data = _create_schema.load(request.form)
@@ -532,7 +532,7 @@ def update_goal(goal_id):
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     data = _update_schema.load(request.form)

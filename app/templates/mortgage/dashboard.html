@@ -4,7 +4,7 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts & Savings</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
     <li class="breadcrumb-item active" aria-current="page">{{ account.name }} Mortgage</li>
   </ol>
 </nav>
@@ -99,8 +99,8 @@
               <label for="interest_rate" class="form-label">Interest Rate</label>
               <div class="input-group">
                 <input type="number" class="form-control" id="interest_rate" name="interest_rate"
-                       value="{{ "%.5f"|format(params.interest_rate|float) }}" step="0.00001" min="0" max="1">
-                <span class="input-group-text">{{ "%.3f"|format(params.interest_rate|float * 100) }}%</span>
+                       value="{{ "%.3f"|format(params.interest_rate|float * 100) }}" step="0.001" min="0" max="100">
+                <span class="input-group-text">%</span>
               </div>
             </div>
           </div>

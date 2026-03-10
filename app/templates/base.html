@@ -52,7 +52,13 @@
           <li class="nav-item">
             <a class="nav-link{{ ' active' if request.path.startswith('/templates') else '' }}" href="{{ url_for('templates.list_templates') }}"
                {% if request.path.startswith('/templates') %}aria-current="page"{% endif %}>
-              <i class="bi bi-file-earmark-ruled"></i> Templates
+              <i class="bi bi-arrow-repeat"></i> Recurring
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link{{ ' active' if request.path == '/savings' or request.path.startswith('/savings/') or request.path == '/accounts' or request.path.startswith('/accounts/') else '' }}" href="{{ url_for('savings.dashboard') }}"
+               {% if request.path == '/savings' or request.path.startswith('/savings/') or request.path == '/accounts' or request.path.startswith('/accounts/') %}aria-current="page"{% endif %}>
+              <i class="bi bi-wallet2"></i> Accounts
             </a>
           </li>
           <li class="nav-item">
@@ -62,21 +68,9 @@
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path == '/accounts' or request.path.startswith('/accounts/') else '' }}" href="{{ url_for('accounts.list_accounts') }}"
-               {% if request.path == '/accounts' or request.path.startswith('/accounts/') %}aria-current="page"{% endif %}>
-              <i class="bi bi-bank"></i> Accounts
-            </a>
-          </li>
-          <li class="nav-item">
             <a class="nav-link{{ ' active' if request.path.startswith('/transfers') else '' }}" href="{{ url_for('transfers.list_transfer_templates') }}"
                {% if request.path.startswith('/transfers') %}aria-current="page"{% endif %}>
               <i class="bi bi-arrow-left-right"></i> Transfers
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path == '/savings' or request.path.startswith('/savings/') else '' }}" href="{{ url_for('savings.dashboard') }}"
-               {% if request.path == '/savings' or request.path.startswith('/savings/') %}aria-current="page"{% endif %}>
-              <i class="bi bi-wallet2"></i> Accounts & Savings
             </a>
           </li>
           <li class="nav-item">
@@ -92,20 +86,8 @@
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path.startswith('/categories') else '' }}" href="{{ url_for('categories.list_categories') }}"
-               {% if request.path.startswith('/categories') %}aria-current="page"{% endif %}>
-              <i class="bi bi-tags"></i> Categories
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path.startswith('/pay-periods') else '' }}" href="{{ url_for('pay_periods.generate_form') }}"
-               {% if request.path.startswith('/pay-periods') %}aria-current="page"{% endif %}>
-              <i class="bi bi-calendar-range"></i> Pay Periods
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path.startswith('/settings') else '' }}" href="{{ url_for('settings.show') }}"
-               {% if request.path.startswith('/settings') %}aria-current="page"{% endif %}>
+            <a class="nav-link{{ ' active' if request.path.startswith('/settings') or request.path == '/categories' or request.path.startswith('/pay-periods') else '' }}" href="{{ url_for('settings.show') }}"
+               {% if request.path.startswith('/settings') or request.path == '/categories' or request.path.startswith('/pay-periods') %}aria-current="page"{% endif %}>
               <i class="bi bi-gear"></i> Settings
             </a>
           </li>
@@ -174,17 +156,17 @@
             <i class="bi bi-check-circle-fill text-success"></i>
             <span class="text-muted text-decoration-line-through">Set up a salary profile</span>
             {% else %}
-            <i class="bi bi-wallet2 text-primary"></i>
+            <i class="bi bi-cash-coin text-primary"></i>
             <a href="{{ url_for('salary.list_profiles') }}">Set up a salary profile</a>
             {% endif %}
           </li>
           <li>
             {% if onboarding.has_templates %}
             <i class="bi bi-check-circle-fill text-success"></i>
-            <span class="text-muted text-decoration-line-through">Create transaction templates</span>
+            <span class="text-muted text-decoration-line-through">Set up recurring transactions</span>
             {% else %}
-            <i class="bi bi-file-earmark-ruled text-primary"></i>
-            <a href="{{ url_for('templates.list_templates') }}">Create transaction templates</a>
+            <i class="bi bi-arrow-repeat text-primary"></i>
+            <a href="{{ url_for('templates.list_templates') }}">Set up recurring transactions</a>
             {% endif %}
           </li>
         </ul>

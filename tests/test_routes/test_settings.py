@@ -176,3 +176,74 @@ class TestGridAccountSetting:
 
             assert resp.status_code == 200
             assert b"Invalid grid account" in resp.data
+
+
+class TestSettingsDashboard:
+    """Tests for the settings dashboard sections and redirects."""
+
+    def test_settings_dashboard_default_section(self, app, auth_client, seed_user):
+        """GET /settings renders the dashboard with General section by default."""
+        with app.app_context():
+            resp = auth_client.get("/settings")
+            assert resp.status_code == 200
+            assert b"Settings" in resp.data
+            assert b"General" in resp.data
+
+    def test_settings_dashboard_categories_section(self, app, auth_client, seed_user):
+        """GET /settings?section=categories renders category management."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=categories")
+            assert resp.status_code == 200
+            assert b"Categories" in resp.data
+
+    def test_settings_dashboard_tax_section(self, app, auth_client, seed_user):
+        """GET /settings?section=tax renders tax configuration."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=tax")
+            assert resp.status_code == 200
+            assert b"Tax" in resp.data
+
+    def test_settings_dashboard_retirement_section(self, app, auth_client, seed_user):
+        """GET /settings?section=retirement renders retirement settings."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=retirement")
+            assert resp.status_code == 200
+            assert b"Retirement" in resp.data
+
+    def test_settings_dashboard_account_types_section(self, app, auth_client, seed_user):
+        """GET /settings?section=account-types renders account type management."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=account-types")
+            assert resp.status_code == 200
+            assert b"Account Types" in resp.data
+
+    def test_settings_dashboard_pay_periods_section(self, app, auth_client, seed_user):
+        """GET /settings?section=pay-periods renders pay period generation form."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            assert b"Pay Periods" in resp.data
+
+    def test_settings_dashboard_invalid_section_defaults_to_general(self, app, auth_client, seed_user):
+        """GET /settings?section=bogus defaults to the General section."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=bogus")
+            assert resp.status_code == 200
+            assert b"General" in resp.data
+
+    def test_categories_get_redirects_to_settings(self, app, auth_client, seed_user):
+        """GET /categories returns 302 redirect to settings dashboard."""
+        with app.app_context():
+            resp = auth_client.get("/categories")
+            assert resp.status_code == 302
+            assert "section=categories" in resp.headers["Location"]
+
+    def test_categories_post_still_works(self, app, auth_client, seed_user):
+        """POST /categories still processes form submission (not redirected)."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "TestGroup",
+                "item_name": "TestItem",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"TestItem" in resp.data

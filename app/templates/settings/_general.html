@@ -1,0 +1,40 @@
+{% from "_form_macros.html" import render_field, render_select, render_input_group, render_errors %}
+
+<h5 class="mb-3"><i class="bi bi-gear"></i> General Settings</h5>
+
+{{ render_errors(errors) }}
+
+<form method="POST" action="{{ url_for('settings.update') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  {{ render_field("grid_default_periods", "Default Grid Periods",
+                   type="number", value=settings.grid_default_periods,
+                   help_text="Number of pay period columns shown by default.",
+                   input_attrs='min="1" max="52"', errors=errors) }}
+
+  {{ render_input_group("default_inflation_rate", "Default Inflation Rate",
+                         value=settings.default_inflation_rate, suffix="%",
+                         step="0.0001",
+                         help_text="Annual inflation rate used for long-term expense projections.",
+                         errors=errors) }}
+
+  {{ render_input_group("low_balance_threshold", "Low Balance Threshold",
+                         value=settings.low_balance_threshold or 500, prefix="$",
+                         input_attrs='min="0"',
+                         help_text="Balance cells turn yellow when projected balance falls below this amount.",
+                         errors=errors) }}
+
+  {% set account_options = [("", "-- Auto (first checking account) --")] %}
+  {% for acct in accounts %}
+    {% if account_options.append((acct.id, acct.name)) %}{% endif %}
+  {% endfor %}
+  {{ render_select("default_grid_account_id", "Default Grid Account",
+                    account_options,
+                    selected_value=settings.default_grid_account_id or "",
+                    help_text="Account used for the budget grid balance display.",
+                    errors=errors) }}
+
+  <button type="submit" class="btn btn-primary w-100">
+    <i class="bi bi-check-circle"></i> Save Settings
+  </button>
+</form>

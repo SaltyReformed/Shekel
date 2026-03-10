@@ -102,7 +102,7 @@ def create_account():
     """Create a new account."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("accounts.new_account"))
 
     data = _create_schema.load(request.form)
@@ -182,7 +182,7 @@ def update_account(account_id):
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("accounts.edit_account", account_id=account_id))
 
     data = _update_schema.load(request.form)
@@ -251,8 +251,8 @@ def deactivate_account(account_id):
     )
     if active_transfers:
         flash(
-            "Cannot deactivate this account — it is used by active transfer templates. "
-            "Deactivate those templates first.",
+            "Cannot deactivate this account — it is used by active recurring transfers. "
+            "Deactivate those recurring transfers first.",
             "warning",
         )
         return redirect(url_for("accounts.list_accounts"))
@@ -358,8 +358,8 @@ def create_account_type():
     """Create a new account type."""
     errors = _type_create_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="account-types"))
 
     data = _type_create_schema.load(request.form)
 
@@ -371,7 +371,7 @@ def create_account_type():
     )
     if existing:
         flash("An account type with that name already exists.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("settings.show", section="account-types"))
 
     account_type = AccountType(**data)
     db.session.add(account_type)
@@ -379,7 +379,7 @@ def create_account_type():
 
     logger.info("Created account type: %s (id=%d)", account_type.name, account_type.id)
     flash(f"Account type '{account_type.name}' created.", "success")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("settings.show", section="account-types"))
 
 
 @accounts_bp.route("/accounts/types/<int:type_id>", methods=["POST"])
@@ -389,12 +389,12 @@ def update_account_type(type_id):
     account_type = db.session.get(AccountType, type_id)
     if account_type is None:
         flash("Account type not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("settings.show", section="account-types"))
 
     errors = _type_update_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="account-types"))
 
     data = _type_update_schema.load(request.form)
 
@@ -406,14 +406,14 @@ def update_account_type(type_id):
     )
     if existing:
         flash("An account type with that name already exists.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("settings.show", section="account-types"))
 
     account_type.name = data["name"]
     db.session.commit()
 
     logger.info("Updated account type: %s (id=%d)", account_type.name, account_type.id)
     flash(f"Account type renamed to '{account_type.name}'.", "success")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("settings.show", section="account-types"))
 
 
 @accounts_bp.route("/accounts/types/<int:type_id>/delete", methods=["POST"])
@@ -423,7 +423,7 @@ def delete_account_type(type_id):
     account_type = db.session.get(AccountType, type_id)
     if account_type is None:
         flash("Account type not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("settings.show", section="account-types"))
 
     in_use = (
         db.session.query(Account)
@@ -435,14 +435,14 @@ def delete_account_type(type_id):
             "Cannot delete this account type — it is in use by one or more accounts.",
             "warning",
         )
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("settings.show", section="account-types"))
 
     db.session.delete(account_type)
     db.session.commit()
 
     logger.info("Deleted account type: %s (id=%d)", account_type.name, type_id)
     flash(f"Account type '{account_type.name}' deleted.", "info")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("settings.show", section="account-types"))
 
 
 # ── Anchor Balance True-up ─────────────────────────────────────────
@@ -671,7 +671,7 @@ def update_hysa_params(account_id):
 
     errors = _hysa_params_schema.validate(request.form)
     if errors:
-        flash(f"Validation error: {errors}", "danger")
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("accounts.hysa_detail", account_id=account_id))
 
     data = _hysa_params_schema.load(request.form)

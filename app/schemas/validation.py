@@ -507,7 +507,7 @@ class MortgageParamsCreateSchema(BaseSchema):
 
     original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
     term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=600))
     origination_date = fields.Date(required=True)
     payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
@@ -524,7 +524,7 @@ class MortgageParamsUpdateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=100))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
     is_arm = fields.Boolean()
     arm_first_adjustment_months = fields.Integer(allow_none=True)
@@ -539,7 +539,7 @@ class MortgageRateChangeSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     effective_date = fields.Date(required=True)
-    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 

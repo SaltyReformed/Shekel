@@ -118,13 +118,13 @@ class TestMortgageParamsUpdate:
     """Tests for updating mortgage parameters."""
 
     def test_params_update(self, auth_client, seed_user, db, seed_periods):
-        """POST valid params → updates."""
+        """POST valid params → updates (percentage input converted to decimal)."""
         acct = _create_mortgage_account(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/params",
             data={
                 "current_principal": "240000.00",
-                "interest_rate": "0.06000",
+                "interest_rate": "6.000",
                 "payment_day": "15",
             },
         )
@@ -167,7 +167,7 @@ class TestRateChange:
     """Tests for ARM rate change recording."""
 
     def test_rate_change_create(self, auth_client, seed_user, db, seed_periods):
-        """POST rate change → creates history row."""
+        """POST rate change → creates history row (percentage input converted to decimal)."""
         acct = _create_mortgage_account(seed_user, db.session)
         params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
         params.is_arm = True
@@ -177,7 +177,7 @@ class TestRateChange:
             f"/accounts/{acct.id}/mortgage/rate",
             data={
                 "effective_date": "2026-04-01",
-                "interest_rate": "0.07000",
+                "interest_rate": "7.000",
                 "notes": "Rate adjustment",
             },
         )
@@ -196,9 +196,26 @@ class TestRateChange:
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/rate",
-            data={"interest_rate": "2.0"},  # > 1, invalid
+            data={"interest_rate": "200.0"},  # > 100, invalid
         )
         assert resp.status_code == 400
+
+
+    def test_percentage_input_stored_as_decimal(self, auth_client, seed_user, db, seed_periods):
+        """Submitting 6.5 as interest rate stores 0.065 in the database."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/params",
+            data={
+                "interest_rate": "6.5",
+                "current_principal": "250000.00",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+
+        params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
+        assert params.interest_rate == Decimal("0.065")
 
 
 class TestEscrow:
@@ -325,7 +342,7 @@ class TestPayoffCalculator:
             data={"mode": "invalid_mode"},
         )
         assert resp.status_code == 200
-        assert b"Validation error" in resp.data
+        assert b"Please correct the highlighted errors" in resp.data
 
 
 class TestPayoffSlider:
