@@ -72,8 +72,8 @@
           <form hx-post="{{ url_for('transactions.carry_forward', period_id=period.id) }}"
                 hx-swap="none" class="mt-1"
                 hx-disabled-elt="find button[type=submit]">
-            <button type="submit" class="btn btn-warning btn-xs"
-                    title="Carry forward unpaid items to current period">
+            <button type="submit" class="btn btn-warning btn-sm"
+                    title="Carry forward unpaid items from this period">
               <i class="bi bi-arrow-right-circle"></i> Carry Fwd
             </button>
           </form>

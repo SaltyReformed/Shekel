@@ -187,7 +187,7 @@
           </select>
         </div>
       </div>
-      <div class="row g-3 mt-1">
+      <div class="row g-3 mt-1" id="employer-fields-container">
         <div class="col-md-3">
           <label class="form-label">Employer Flat %</label>
           <input type="number" step="0.01" name="employer_flat_percentage"
@@ -206,6 +206,8 @@
                  class="form-control form-control-sm"
                  value="{{ "%.2f"|format(params.employer_match_cap_percentage|float * 100) if params and params.employer_match_cap_percentage else '' }}">
         </div>
+      </div>
+      <div class="row g-3 mt-1">
         <div class="col-md-3 d-flex align-items-end">
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-check"></i> Save Parameters
@@ -224,4 +226,18 @@
 <script src="{{ url_for('static', filename='js/growth_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
 {% endif %}
+<script>
+(function() {
+  var typeSelect = document.querySelector('select[name="employer_contribution_type"]');
+  var container = document.getElementById('employer-fields-container');
+  if (!typeSelect || !container) return;
+
+  function toggle() {
+    container.style.display = (!typeSelect.value || typeSelect.value === 'none') ? 'none' : '';
+  }
+
+  typeSelect.addEventListener('change', toggle);
+  toggle();
+})();
+</script>
 {% endblock %}

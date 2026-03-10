@@ -448,6 +448,14 @@ thead .sticky-col {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
 }
 
+.txn-empty-cell {
+  cursor: cell;
+}
+
+.txn-empty-cell:hover {
+  background-color: rgba(var(--shekel-accent-rgb), 0.15);
+}
+
 .txn-edit-form {
   min-width: 180px;
 }

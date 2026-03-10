@@ -162,7 +162,7 @@ def create_template():
             )
 
     db.session.commit()
-    flash(f"Recurring transaction '{template.name}' created.", "success")
+    flash(f"Recurring transaction '{template.name}' created. View it on the Budget grid.", "success")
     return redirect(url_for("templates.list_templates"))
 
 
