@@ -28,7 +28,7 @@
       {{ render_input_group("default_inflation_rate", "Default Inflation Rate",
                              value=settings.default_inflation_rate, suffix="%",
                              step="0.0001",
-                             help_text="Used for Phase 7 expense inflation adjustments.",
+                             help_text="Annual inflation rate used for long-term expense projections.",
                              errors=errors) }}
 
       {{ render_input_group("low_balance_threshold", "Low Balance Threshold",

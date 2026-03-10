@@ -28,12 +28,13 @@
 
     {# Quick-select buttons #}
     {% set range_options = [
-      ("3P", 3), ("6P", 6), ("6M", 13), ("1Y", 26), ("2Y", 52)
+      ("3P", 3, "3 pay periods"), ("6P", 6, "6 pay periods"), ("6M", 13, "6 months"), ("1Y", 26, "1 year"), ("2Y", 52, "2 years")
     ] %}
     <div class="btn-group period-btn-group">
-    {% for label, count in range_options %}
+    {% for label, count, tooltip in range_options %}
     <a href="{{ url_for('grid.index', periods=count, offset=0) }}"
-       class="btn btn-sm {{ 'btn-primary' if num_periods == count else 'btn-outline-secondary' }}">
+       class="btn btn-sm {{ 'btn-primary' if num_periods == count else 'btn-outline-secondary' }}"
+       title="{{ tooltip }}">
       {{ label }}
     </a>
     {% endfor %}

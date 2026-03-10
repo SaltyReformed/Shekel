@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}{{ 'Edit' if pension else 'New' }} Pension — Shekel{% endblock %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('retirement.dashboard') }}">Retirement</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Pensions</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4>
@@ -19,8 +28,8 @@
     <h6 class="mb-0">Active Pension Profiles</h6>
   </div>
   <div class="card-body">
-    <table class="table table-sm mb-0">
-      <thead>
+    <table class="table table-hover table-sm mb-0">
+      <thead class="table-light">
         <tr>
           <th>Name</th>
           <th>Multiplier</th>

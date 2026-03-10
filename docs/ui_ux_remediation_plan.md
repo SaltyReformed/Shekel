@@ -18,7 +18,7 @@ This plan addresses all findings from the Shekel UI/UX audit (`docs/ui_ux_audit.
 
 3. **Old URLs redirect.** When a page is absorbed into the settings dashboard, its old URL redirects (302) to the corresponding settings section. Test updates for redirected URLs are deferred to a follow-up phase after the new settings page is confirmed functional.
 
-4. **Test gates are mandatory.** Every phase ends with `pytest` — all 470+ existing tests must pass. If a phase changes flash message text or page content that tests assert on, those test updates are part of the same phase.
+4. **Test gates are mandatory.** Every phase ends with `pytest` — all 770+ existing tests must pass. If a phase changes flash message text or page content that tests assert on, those test updates are part of the same phase.
 
 5. **Lower risk first.** Phases are ordered from lowest to highest risk. Early phases touch only templates and CSS; later phases restructure navigation and consolidate settings.
 
@@ -95,7 +95,7 @@ None.
 
 ### Test Gate
 
-- [ ] `pytest` passes (all 470+ existing tests)
+- [ ] `pytest` passes (all 770+ existing tests)
 - [ ] Manual verification: navbar icons are unique (Salary = `bi-cash-coin`, Accounts & Savings = `bi-wallet2`)
 - [ ] Manual verification: active navbar item is highlighted on each page
 - [ ] Manual verification: breadcrumbs appear on all list/dashboard pages
@@ -231,7 +231,7 @@ Phase 1 (breadcrumbs reference the new labels).
 
 ### Test Gate
 
-- [ ] `pytest` passes (all 470+ existing tests, with the 7 updated assertions)
+- [ ] `pytest` passes (all 770+ existing tests, with the 7 updated assertions)
 - [ ] New test: mortgage rate percentage conversion stores correct decimal
 - [ ] Manual verification: all "Template" references replaced with "Recurring Transaction" in user-facing text
 - [ ] Manual verification: all "Transfer Template" references replaced with "Recurring Transfer"
@@ -395,7 +395,7 @@ Phase 3 (settings dashboard must exist before removing setup pages from the navb
 
 ### Test Gate
 
-- [ ] `pytest` passes (all 470+ existing tests)
+- [ ] `pytest` passes (all 770+ existing tests)
 - [ ] New test: `GET /transfers/new?from_account=<id>` pre-selects the source account dropdown
 - [ ] Manual verification: navbar displays 8 items correctly at desktop width (>992px)
 - [ ] Manual verification: navbar displays correctly at tablet width (768–992px)
@@ -472,7 +472,7 @@ The following workflow friction points are noted but do not require changes:
 
 ### Test Gate
 
-- [ ] `pytest` passes (all 470+ existing tests)
+- [ ] `pytest` passes (all 770+ existing tests)
 - [ ] Manual verification: target account field is more prominent in deduction form
 - [ ] Manual verification: employer fields hide when employer type is "None" on investment dashboard
 - [ ] Manual verification: empty grid cells show tooltip on hover
@@ -525,7 +525,7 @@ Phase 4 (navbar restructure must be complete before adding scenario UI elements)
 
 ### Test Gate
 
-- [ ] `pytest` passes (all 470+ existing tests)
+- [ ] `pytest` passes (all 770+ existing tests)
 - [ ] Manual verification: navbar still renders correctly with reserved slots
 - [ ] Manual verification: grid header still renders correctly with reserved slots
 

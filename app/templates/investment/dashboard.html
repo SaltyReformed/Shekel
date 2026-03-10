@@ -1,12 +1,21 @@
 {% extends "base.html" %}
 {% block title %}{{ account.name }} — Shekel{% endblock %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts & Savings</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }} Investment</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4>
     <i class="bi bi-graph-up"></i> {{ account.name }}
     <small class="text-muted">
-      {% if account.account_type %}{{ account.account_type.name|replace('_', ' ')|title }}{% endif %}
+      {% if account.account_type %}{{ account.account_type.name|format_account_type }}{% endif %}
     </small>
   </h4>
   <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">

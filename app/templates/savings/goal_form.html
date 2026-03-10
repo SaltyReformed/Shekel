@@ -28,7 +28,7 @@
           {% for acct in accounts %}
           <option value="{{ acct.id }}"
             {{ 'selected' if goal and goal.account_id == acct.id else '' }}>
-            {{ acct.name }} ({{ acct.account_type.name|capitalize if acct.account_type else '' }})
+            {{ acct.name }} ({{ acct.account_type.name|format_account_type if acct.account_type else '' }})
           </option>
           {% endfor %}
         </select>

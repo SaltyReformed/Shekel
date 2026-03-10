@@ -8,7 +8,7 @@
           name="account_id">
     {% for acct in loan_accounts %}
     <option value="{{ acct.id }}" {% if selected_account_id == acct.id %}selected{% endif %}>
-      {{ acct.name }} ({{ acct.type | replace('_', ' ') | title }})
+      {{ acct.name }} ({{ acct.type|format_account_type }})
     </option>
     {% endfor %}
   </select>

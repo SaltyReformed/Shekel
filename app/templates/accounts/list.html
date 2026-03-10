@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Accounts — Shekel{% endblock %}
 
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('grid.index') }}">Home</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Accounts</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="row">
   <div class="col-md-8">
@@ -27,7 +36,7 @@
         {% for acct in accounts %}
         <tr class="{{ 'text-muted' if not acct.is_active else '' }}">
           <td>{{ acct.name }}</td>
-          <td>{{ acct.account_type.name|capitalize if acct.account_type else '—' }}</td>
+          <td>{{ acct.account_type.name|format_account_type if acct.account_type else '—' }}</td>
           <td class="text-end">
             {% set editing = false %}
             {% include "accounts/_anchor_cell.html" %}

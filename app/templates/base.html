@@ -44,57 +44,68 @@
       <div class="collapse navbar-collapse" id="navMain">
         <ul class="navbar-nav me-auto">
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('grid.index') }}">
+            <a class="nav-link{{ ' active' if request.path == '/' else '' }}" href="{{ url_for('grid.index') }}"
+               {% if request.path == '/' %}aria-current="page"{% endif %}>
               <i class="bi bi-grid-3x3"></i> Budget
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('templates.list_templates') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/templates') else '' }}" href="{{ url_for('templates.list_templates') }}"
+               {% if request.path.startswith('/templates') %}aria-current="page"{% endif %}>
               <i class="bi bi-file-earmark-ruled"></i> Templates
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('salary.list_profiles') }}">
-              <i class="bi bi-wallet2"></i> Salary
+            <a class="nav-link{{ ' active' if request.path.startswith('/salary') else '' }}" href="{{ url_for('salary.list_profiles') }}"
+               {% if request.path.startswith('/salary') %}aria-current="page"{% endif %}>
+              <i class="bi bi-cash-coin"></i> Salary
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('accounts.list_accounts') }}">
+            <a class="nav-link{{ ' active' if request.path == '/accounts' or request.path.startswith('/accounts/') else '' }}" href="{{ url_for('accounts.list_accounts') }}"
+               {% if request.path == '/accounts' or request.path.startswith('/accounts/') %}aria-current="page"{% endif %}>
               <i class="bi bi-bank"></i> Accounts
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('transfers.list_transfer_templates') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/transfers') else '' }}" href="{{ url_for('transfers.list_transfer_templates') }}"
+               {% if request.path.startswith('/transfers') %}aria-current="page"{% endif %}>
               <i class="bi bi-arrow-left-right"></i> Transfers
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('savings.dashboard') }}">
+            <a class="nav-link{{ ' active' if request.path == '/savings' or request.path.startswith('/savings/') else '' }}" href="{{ url_for('savings.dashboard') }}"
+               {% if request.path == '/savings' or request.path.startswith('/savings/') %}aria-current="page"{% endif %}>
               <i class="bi bi-wallet2"></i> Accounts & Savings
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('retirement.dashboard') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/retirement') else '' }}" href="{{ url_for('retirement.dashboard') }}"
+               {% if request.path.startswith('/retirement') %}aria-current="page"{% endif %}>
               <i class="bi bi-briefcase"></i> Retirement
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('charts.dashboard') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/charts') else '' }}" href="{{ url_for('charts.dashboard') }}"
+               {% if request.path.startswith('/charts') %}aria-current="page"{% endif %}>
               <i class="bi bi-bar-chart-line"></i> Charts
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('categories.list_categories') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/categories') else '' }}" href="{{ url_for('categories.list_categories') }}"
+               {% if request.path.startswith('/categories') %}aria-current="page"{% endif %}>
               <i class="bi bi-tags"></i> Categories
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('pay_periods.generate_form') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/pay-periods') else '' }}" href="{{ url_for('pay_periods.generate_form') }}"
+               {% if request.path.startswith('/pay-periods') %}aria-current="page"{% endif %}>
               <i class="bi bi-calendar-range"></i> Pay Periods
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('settings.show') }}">
+            <a class="nav-link{{ ' active' if request.path.startswith('/settings') else '' }}" href="{{ url_for('settings.show') }}"
+               {% if request.path.startswith('/settings') %}aria-current="page"{% endif %}>
               <i class="bi bi-gear"></i> Settings
             </a>
           </li>

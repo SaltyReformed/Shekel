@@ -54,6 +54,33 @@ def create_app(config_name=None):
         """Load a user by ID for Flask-Login session hydration."""
         return db.session.get(User, int(user_id))
 
+    # --- Template Filters --------------------------------------------------
+    @app.template_filter("format_account_type")
+    def format_account_type(value):
+        """Convert a raw account type name to a user-friendly display string.
+
+        Uses an explicit mapping for names that need special formatting
+        (e.g. acronyms, parenthetical notation) and falls back to
+        replacing underscores with spaces and title-casing.
+        """
+        if value is None:
+            return ""
+
+        # Explicit mapping for known account types
+        display_names = {
+            "checking": "Checking",
+            "savings": "Savings",
+            "hysa": "HYSA",
+            "mortgage": "Mortgage",
+            "auto_loan": "Auto Loan",
+            "401k": "401(k)",
+            "roth_401k": "Roth 401(k)",
+            "traditional_ira": "Traditional IRA",
+            "roth_ira": "Roth IRA",
+            "brokerage": "Brokerage",
+        }
+        return display_names.get(value, value.replace("_", " ").title())
+
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)
 
