@@ -42,6 +42,8 @@
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse" id="navMain">
+        {# Phase 7: Scenario selector will go here. When implemented, this slot will contain a dropdown showing the active scenario name with a switcher to change scenarios. It should be visible on all pages. #}
+        <div class="d-none" id="scenario-selector-slot"></div>
         <ul class="navbar-nav me-auto">
           <li class="nav-item">
             <a class="nav-link{{ ' active' if request.path == '/' else '' }}" href="{{ url_for('grid.index') }}"
