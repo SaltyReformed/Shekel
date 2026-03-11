@@ -290,13 +290,63 @@ def regenerate_backup_codes():
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
 
-@auth_bp.route("/mfa/disable")
+@auth_bp.route("/mfa/disable", methods=["GET"])
 @login_required
 def mfa_disable():
-    """Placeholder route for MFA disable (WU-6).
+    """Display the MFA disable confirmation page.
 
-    Returns a redirect to security settings until the disable flow
-    is implemented in Work Unit 6.
+    Requires MFA to be currently enabled. Redirects to security
+    settings if MFA is not enabled.
     """
-    flash("MFA disable is not yet implemented.", "info")
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
+    if not mfa_config or not mfa_config.is_enabled:
+        flash("Two-factor authentication is not enabled.", "info")
+        return redirect(url_for("settings.show", section="security"))
+
+    return render_template("auth/mfa_disable.html")
+
+
+@auth_bp.route("/mfa/disable", methods=["POST"])
+@login_required
+def mfa_disable_confirm():
+    """Process MFA disable after verifying password and TOTP code.
+
+    Clears the TOTP secret, backup codes, and sets is_enabled to False.
+    """
+    current_password = request.form.get("current_password", "")
+    totp_code = request.form.get("totp_code", "").strip()
+
+    # Verify the user's current password first.
+    if not auth_service.verify_password(current_password, current_user.password_hash):
+        flash("Invalid password.", "danger")
+        return redirect(url_for("auth.mfa_disable"))
+
+    # Load MFA config and verify TOTP code.
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
+    if not mfa_config or not mfa_config.is_enabled:
+        flash("Two-factor authentication is not enabled.", "danger")
+        return redirect(url_for("settings.show", section="security"))
+
+    secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    if not mfa_service.verify_totp_code(secret, totp_code):
+        flash("Invalid authentication code.", "danger")
+        return redirect(url_for("auth.mfa_disable"))
+
+    # Clear all MFA fields.
+    mfa_config.totp_secret_encrypted = None
+    mfa_config.is_enabled = False
+    mfa_config.backup_codes = None
+    mfa_config.confirmed_at = None
+    db.session.commit()
+
+    logger.info("action=mfa_disabled user_id=%s", current_user.id)
+    flash("Two-factor authentication has been disabled.", "success")
     return redirect(url_for("settings.show", section="security"))

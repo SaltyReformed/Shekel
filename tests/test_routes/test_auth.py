@@ -580,3 +580,113 @@ class TestMfaLogin:
             # User is logged in.
             grid_resp = client.get("/", follow_redirects=False)
             assert grid_resp.status_code == 200
+
+
+class TestMfaDisable:
+    """Tests for the MFA disable flow."""
+
+    def _enable_mfa(self, user_id):
+        """Helper to enable MFA for a user with a known secret and backup codes.
+
+        Args:
+            user_id: The user's primary key.
+
+        Returns:
+            tuple: (plaintext_secret, MfaConfig instance)
+        """
+        secret = "JBSWY3DPEHPK3PXP"
+        known_codes = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
+        mfa_config = MfaConfig(
+            user_id=user_id,
+            is_enabled=True,
+            totp_secret_encrypted=mfa_service.encrypt_secret(secret),
+            backup_codes=mfa_service.hash_backup_codes(known_codes),
+        )
+        db.session.add(mfa_config)
+        db.session.commit()
+        return secret, mfa_config
+
+    def test_mfa_disable_page_renders(self, app, auth_client, seed_user):
+        """GET /mfa/disable renders the confirmation form when MFA is enabled."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            response = auth_client.get("/mfa/disable")
+            assert response.status_code == 200
+            assert b"Disable Two-Factor Authentication" in response.data
+            assert b"current_password" in response.data
+
+    def test_mfa_disable_redirects_if_not_enabled(self, app, auth_client, seed_user):
+        """GET /mfa/disable redirects if MFA is not enabled."""
+        with app.app_context():
+            response = auth_client.get("/mfa/disable", follow_redirects=False)
+            assert response.status_code == 302
+            assert "security" in response.headers.get("Location", "")
+
+    def test_mfa_disable_success(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/disable with valid password + TOTP disables MFA."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            response = auth_client.post("/mfa/disable", data={
+                "current_password": "testpass",
+                "totp_code": "123456",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Two-factor authentication has been disabled" in response.data
+
+            # Verify MFA is fully cleared in the database.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.is_enabled is False
+            assert config.totp_secret_encrypted is None
+            assert config.backup_codes is None
+            assert config.confirmed_at is None
+
+    def test_mfa_disable_wrong_password(self, app, auth_client, seed_user):
+        """POST /mfa/disable with wrong password shows error."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            response = auth_client.post("/mfa/disable", data={
+                "current_password": "wrongpassword",
+                "totp_code": "123456",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid password" in response.data
+
+            # MFA should still be enabled.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.is_enabled is True
+
+    def test_mfa_disable_wrong_totp(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/disable with wrong TOTP code shows error."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+
+            response = auth_client.post("/mfa/disable", data={
+                "current_password": "testpass",
+                "totp_code": "000000",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid authentication code" in response.data
+
+            # MFA should still be enabled.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.is_enabled is True
