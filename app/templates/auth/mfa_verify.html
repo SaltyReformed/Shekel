@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Verify — Shekel{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-4 col-lg-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="text-center mb-4">
+          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" style="width: auto;">
+        </div>
+        <h5 class="text-center mb-3">Two-Factor Verification</h5>
+
+        <!-- TOTP code form -->
+        <form method="POST" action="{{ url_for('auth.mfa_verify') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="totp_code" class="form-label">Authentication Code</label>
+            <input type="text" class="form-control" id="totp_code" name="totp_code"
+                   maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
+                   autocomplete="one-time-code" required autofocus
+                   placeholder="000000">
+          </div>
+          <button type="submit" class="btn btn-primary w-100">Verify</button>
+        </form>
+
+        <hr>
+
+        <!-- Backup code form -->
+        <form method="POST" action="{{ url_for('auth.mfa_verify') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="backup_code" class="form-label">Or use a backup code</label>
+            <input type="text" class="form-control" id="backup_code" name="backup_code"
+                   maxlength="8" autocomplete="off"
+                   placeholder="Backup code">
+          </div>
+          <button type="submit" class="btn btn-outline-secondary w-100">Use Backup Code</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

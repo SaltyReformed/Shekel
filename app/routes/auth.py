@@ -12,7 +12,7 @@ from flask import Blueprint, flash, redirect, render_template, request, session 
 from flask_login import current_user, login_required, login_user, logout_user
 
 from app.extensions import db, limiter
-from app.models.user import MfaConfig
+from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ValidationError
 
@@ -36,6 +36,21 @@ def login():
 
         try:
             user = auth_service.authenticate(email, password)
+
+            # Check if MFA is enabled for this user.
+            mfa_config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=user.id, is_enabled=True)
+                .first()
+            )
+            if mfa_config:
+                # Store pending auth state in session (user is NOT logged in yet).
+                flask_session["_mfa_pending_user_id"] = user.id
+                flask_session["_mfa_pending_remember"] = remember
+                flask_session["_mfa_pending_next"] = request.args.get("next")
+                return redirect(url_for("auth.mfa_verify"))
+
+            # No MFA — complete login immediately.
             login_user(user, remember=remember)
             flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
             logger.info("User %s logged in", email)
@@ -106,6 +121,79 @@ def invalidate_sessions():
     logger.info("action=sessions_invalidated user_id=%s", current_user.id)
     flash("All other sessions have been logged out.", "success")
     return redirect(url_for("settings.show", section="security"))
+
+
+@auth_bp.route("/mfa/verify", methods=["GET", "POST"])
+@limiter.limit("5 per 15 minutes", methods=["POST"])
+def mfa_verify():
+    """Display the MFA verification form and handle code submission.
+
+    Requires a pending MFA user_id in the session (set by the login
+    route after successful password verification). Completes the login
+    on valid TOTP or backup code.
+    """
+    pending_user_id = flask_session.get("_mfa_pending_user_id")
+    if not pending_user_id:
+        return redirect(url_for("auth.login"))
+
+    if request.method == "GET":
+        return render_template("auth/mfa_verify.html")
+
+    # POST — verify the submitted code.
+    totp_code = request.form.get("totp_code", "").strip()
+    backup_code = request.form.get("backup_code", "").strip()
+
+    user = db.session.get(User, pending_user_id)
+    if not user:
+        # User was deleted between login steps — clear pending state.
+        flask_session.pop("_mfa_pending_user_id", None)
+        flask_session.pop("_mfa_pending_remember", None)
+        flask_session.pop("_mfa_pending_next", None)
+        return redirect(url_for("auth.login"))
+
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=user.id, is_enabled=True)
+        .first()
+    )
+    if not mfa_config:
+        # MFA was disabled between login steps — clear pending state.
+        flask_session.pop("_mfa_pending_user_id", None)
+        flask_session.pop("_mfa_pending_remember", None)
+        flask_session.pop("_mfa_pending_next", None)
+        return redirect(url_for("auth.login"))
+
+    secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    valid = False
+
+    if totp_code:
+        # Verify the 6-digit TOTP code from an authenticator app.
+        valid = mfa_service.verify_totp_code(secret, totp_code)
+    elif backup_code:
+        # Verify the 8-character backup code against stored hashes.
+        idx = mfa_service.verify_backup_code(backup_code, mfa_config.backup_codes)
+        if idx >= 0:
+            # Remove the consumed backup code hash from the list.
+            mfa_config.backup_codes = [
+                h for i, h in enumerate(mfa_config.backup_codes) if i != idx
+            ]
+            db.session.commit()
+            valid = True
+
+    if not valid:
+        flash("Invalid verification code.", "danger")
+        return render_template("auth/mfa_verify.html")
+
+    # Login completion — both password and TOTP/backup code are verified.
+    remember = flask_session.pop("_mfa_pending_remember", False)
+    next_page = flask_session.pop("_mfa_pending_next", None)
+    flask_session.pop("_mfa_pending_user_id", None)
+
+    login_user(user, remember=remember)
+    flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+    logger.info("action=mfa_login_success user_id=%s", user.id)
+
+    return redirect(next_page or url_for("grid.index"))
 
 
 @auth_bp.route("/mfa/setup", methods=["GET"])

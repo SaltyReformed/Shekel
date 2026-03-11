@@ -360,3 +360,223 @@ class TestMfaSetup:
             )
             assert response.status_code == 200
             assert b"Two-factor authentication is not enabled" in response.data
+
+
+class TestMfaLogin:
+    """Tests for the two-step MFA login flow."""
+
+    def _enable_mfa(self, user_id, known_codes=None):
+        """Helper to enable MFA for a user with a known secret and backup codes.
+
+        Args:
+            user_id: The user's primary key.
+            known_codes: Optional list of plaintext backup codes. Defaults to
+                         a standard set of 3 codes.
+
+        Returns:
+            tuple: (plaintext_secret, plaintext_backup_codes)
+        """
+        secret = "JBSWY3DPEHPK3PXP"
+        if known_codes is None:
+            known_codes = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
+        mfa_config = MfaConfig(
+            user_id=user_id,
+            is_enabled=True,
+            totp_secret_encrypted=mfa_service.encrypt_secret(secret),
+            backup_codes=mfa_service.hash_backup_codes(known_codes),
+        )
+        db.session.add(mfa_config)
+        db.session.commit()
+        return secret, known_codes
+
+    def test_login_with_mfa_redirects_to_verify(self, app, client, seed_user):
+        """POST /login with MFA enabled redirects to /mfa/verify instead of grid."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            assert "mfa/verify" in response.headers.get("Location", "")
+
+            # User should NOT be logged in — a protected page should redirect.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 302
+            assert "login" in grid_resp.headers.get("Location", "")
+
+    def test_mfa_verify_page_renders(self, app, client, seed_user):
+        """GET /mfa/verify renders the verification form when pending user exists."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            # POST to /login to set up pending state.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            response = client.get("/mfa/verify")
+            assert response.status_code == 200
+            assert b"Two-Factor Verification" in response.data
+
+    def test_mfa_verify_no_pending_redirects_to_login(self, app, client):
+        """GET /mfa/verify without pending user redirects to login."""
+        with app.app_context():
+            response = client.get("/mfa/verify", follow_redirects=False)
+            assert response.status_code == 302
+            assert "login" in response.headers.get("Location", "")
+
+    def test_mfa_verify_valid_totp(self, app, client, seed_user, monkeypatch):
+        """POST /mfa/verify with valid TOTP code completes login."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Step 1: enter pending state.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Step 2: submit TOTP code.
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            # Should redirect to grid, not back to login or verify.
+            location = response.headers.get("Location", "")
+            assert "login" not in location
+            assert "mfa" not in location
+
+            # User is now logged in — protected page should return 200.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 200
+
+    def test_mfa_verify_invalid_totp(self, app, client, seed_user, monkeypatch):
+        """POST /mfa/verify with invalid TOTP code shows generic error."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            response = client.post("/mfa/verify", data={
+                "totp_code": "000000",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid verification code." in response.data
+
+            # User should NOT be logged in.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 302
+            assert "login" in grid_resp.headers.get("Location", "")
+
+    def test_mfa_verify_valid_backup_code(self, app, client, seed_user):
+        """POST /mfa/verify with valid backup code completes login and consumes the code."""
+        with app.app_context():
+            _, known_codes = self._enable_mfa(seed_user["user"].id)
+
+            # Step 1: enter pending state.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Step 2: submit the first backup code.
+            response = client.post("/mfa/verify", data={
+                "backup_code": known_codes[0],
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "login" not in location
+            assert "mfa" not in location
+
+            # User is logged in.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 200
+
+            # The used code should be removed from the database.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert len(config.backup_codes) == len(known_codes) - 1
+
+    def test_mfa_verify_invalid_backup_code(self, app, client, seed_user):
+        """POST /mfa/verify with invalid backup code shows generic error."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            response = client.post("/mfa/verify", data={
+                "backup_code": "zzzzzzzz",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid verification code." in response.data
+
+            # User should NOT be logged in.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 302
+            assert "login" in grid_resp.headers.get("Location", "")
+
+    def test_mfa_verify_backup_code_consumed(self, app, client, seed_user):
+        """A used backup code cannot be reused."""
+        with app.app_context():
+            _, known_codes = self._enable_mfa(seed_user["user"].id)
+
+            # First login cycle: use the first backup code.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+            client.post("/mfa/verify", data={
+                "backup_code": known_codes[0],
+            })
+
+            # Log out.
+            client.get("/logout")
+
+            # Second login cycle: try the same backup code again.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+            response = client.post("/mfa/verify", data={
+                "backup_code": known_codes[0],
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid verification code." in response.data
+
+    def test_login_without_mfa_unchanged(self, app, client, seed_user):
+        """POST /login without MFA enabled completes in one step (existing behavior)."""
+        with app.app_context():
+            # No MFA enabled for seed_user.
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Should redirect to grid, not to /mfa/verify.
+            assert "mfa" not in location
+
+            # User is logged in.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 200
