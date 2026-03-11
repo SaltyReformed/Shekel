@@ -27,6 +27,9 @@ class User(UserMixin, db.Model):
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
+    # Timestamp of most recent "log out all sessions" or password change event.
+    # The user loader compares this against the session creation time to reject stale sessions.
+    session_invalidated_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     # Relationships
     settings = db.relationship(
