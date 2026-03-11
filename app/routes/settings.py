@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 settings_bp = Blueprint("settings", __name__)
 
-_VALID_SECTIONS = ["general", "categories", "pay-periods", "tax", "account-types", "retirement"]
+_VALID_SECTIONS = ["general", "categories", "pay-periods", "tax", "account-types", "retirement", "security"]
 
 
 @settings_bp.route("/settings", methods=["GET"])
@@ -104,6 +104,14 @@ def show():
             .all()
         )
     # elif section == "retirement": settings already loaded above.
+    elif section == "security":
+        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
+        mfa_config = (
+            db.session.query(MfaConfig)
+            .filter_by(user_id=current_user.id)
+            .first()
+        )
+        mfa_enabled = mfa_config.is_enabled if mfa_config else False
 
     return render_template(
         "settings/dashboard.html",
@@ -119,6 +127,7 @@ def show():
         state_configs=state_configs,
         account_types=account_types,
         types_in_use=types_in_use,
+        mfa_enabled=mfa_enabled if section == "security" else False,
     )
 
 

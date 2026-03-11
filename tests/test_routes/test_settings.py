@@ -247,3 +247,10 @@ class TestSettingsDashboard:
             }, follow_redirects=True)
             assert resp.status_code == 200
             assert b"TestItem" in resp.data
+
+    def test_settings_dashboard_security_section(self, app, auth_client, seed_user):
+        """GET /settings?section=security renders the Security section."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=security")
+            assert resp.status_code == 200
+            assert b"Change Password" in resp.data

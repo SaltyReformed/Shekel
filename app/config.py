@@ -20,6 +20,9 @@ class BaseConfig:
     # Flask core
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me-in-production")
 
+    # MFA — Fernet key for encrypting TOTP secrets at rest.
+    TOTP_ENCRYPTION_KEY = os.getenv("TOTP_ENCRYPTION_KEY")
+
     # SQLAlchemy
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -68,6 +71,8 @@ class ProdConfig(BaseConfig):
             )
         if not self.SQLALCHEMY_DATABASE_URI:
             raise ValueError("DATABASE_URL must be set in production.")
+        if not os.getenv("TOTP_ENCRYPTION_KEY"):
+            raise ValueError("TOTP_ENCRYPTION_KEY must be set in production.")
 
 
 # Map environment names to config classes for the factory.

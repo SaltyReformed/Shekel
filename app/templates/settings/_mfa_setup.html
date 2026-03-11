@@ -1,0 +1,28 @@
+{% if mfa_enabled %}
+<h6>Two-Factor Authentication</h6>
+<span class="badge bg-success mb-2">Enabled</span>
+<p class="text-muted small">
+  Your account is protected with two-factor authentication.
+  You can regenerate your backup codes or disable MFA below.
+</p>
+<div class="d-flex gap-2">
+  <form method="POST" action="{{ url_for('auth.regenerate_backup_codes') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-arrow-repeat"></i> Regenerate Backup Codes
+    </button>
+  </form>
+  <a href="{{ url_for('auth.mfa_disable') }}" class="btn btn-outline-danger btn-sm">
+    <i class="bi bi-shield-x"></i> Disable Two-Factor Authentication
+  </a>
+</div>
+{% else %}
+<h6>Two-Factor Authentication</h6>
+<p class="text-muted small">
+  Add an extra layer of security to your account by requiring a code from
+  your authenticator app when you sign in.
+</p>
+<a href="{{ url_for('auth.mfa_setup') }}" class="btn btn-outline-primary btn-sm">
+  <i class="bi bi-shield-plus"></i> Set Up Two-Factor Authentication
+</a>
+{% endif %}

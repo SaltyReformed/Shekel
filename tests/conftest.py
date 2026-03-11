@@ -34,6 +34,13 @@ from app.services.auth_service import hash_password
 # --- App & DB Fixtures ---------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def set_totp_key(monkeypatch):
+    """Set a test TOTP encryption key for all tests."""
+    from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+    monkeypatch.setenv("TOTP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+
 @pytest.fixture(scope="session")
 def app():
     """Create the Flask application configured for testing."""

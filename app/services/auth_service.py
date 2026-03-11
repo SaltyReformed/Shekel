@@ -9,7 +9,7 @@ import bcrypt
 
 from app.extensions import db
 from app.models.user import User
-from app.exceptions import AuthError
+from app.exceptions import AuthError, ValidationError
 
 
 def hash_password(plain_password):
@@ -61,3 +61,25 @@ def authenticate(email, password):
     if not user.is_active:
         raise AuthError("Account is disabled.")
     return user
+
+
+def change_password(user, current_password, new_password):
+    """Change a user's password after verifying the current one.
+
+    Args:
+        user: The User object whose password is being changed.
+        current_password: The user's current plaintext password.
+        new_password: The new plaintext password (must be >= 12 chars).
+
+    Returns:
+        None on success.
+
+    Raises:
+        AuthError: If current_password does not match the stored hash.
+        ValidationError: If new_password is shorter than 12 characters.
+    """
+    if not verify_password(current_password, user.password_hash):
+        raise AuthError("Current password is incorrect.")
+    if len(new_password) < 12:
+        raise ValidationError("New password must be at least 12 characters.")
+    user.password_hash = hash_password(new_password)

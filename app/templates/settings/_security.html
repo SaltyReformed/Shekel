@@ -1,0 +1,40 @@
+<h5 class="mb-3"><i class="bi bi-shield-lock"></i> Security</h5>
+<hr>
+
+<h6>Change Password</h6>
+<form method="POST" action="{{ url_for('auth.change_password') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="mb-3">
+    <label for="current_password" class="form-label">Current Password</label>
+    <input type="password" class="form-control form-control-sm" id="current_password"
+           name="current_password" required>
+  </div>
+  <div class="mb-3">
+    <label for="new_password" class="form-label">New Password</label>
+    <input type="password" class="form-control form-control-sm" id="new_password"
+           name="new_password" required minlength="12">
+  </div>
+  <div class="mb-3">
+    <label for="confirm_password" class="form-label">Confirm New Password</label>
+    <input type="password" class="form-control form-control-sm" id="confirm_password"
+           name="confirm_password" required>
+    <div class="form-text">Minimum 12 characters.</div>
+  </div>
+  <button type="submit" class="btn btn-primary">
+    <i class="bi bi-key"></i> Change Password
+  </button>
+</form>
+
+<hr>
+{% include 'settings/_mfa_setup.html' %}
+
+<h6>Active Sessions</h6>
+<p class="text-muted small">
+  Log out of all other browser sessions. Your current session will remain active.
+</p>
+<form method="POST" action="{{ url_for('auth.invalidate_sessions') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="btn btn-outline-warning btn-sm">
+    <i class="bi bi-box-arrow-right"></i> Log Out All Other Sessions
+  </button>
+</form>

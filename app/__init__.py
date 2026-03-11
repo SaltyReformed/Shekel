@@ -51,8 +51,25 @@ def create_app(config_name=None):
 
     @login_manager.user_loader
     def load_user(user_id):
-        """Load a user by ID for Flask-Login session hydration."""
-        return db.session.get(User, int(user_id))
+        """Load a user by ID for Flask-Login session hydration.
+
+        Returns None (forcing re-login) if the user's sessions have been
+        invalidated after the current session was created.
+        """
+        user = db.session.get(User, int(user_id))
+        if user is None:
+            return None
+        # Check whether this session was created before the most recent
+        # "log out all sessions" or password change event.
+        if user.session_invalidated_at is not None:
+            from flask import session  # pylint: disable=import-outside-toplevel
+            session_created = session.get("_session_created_at")
+            if session_created is not None:
+                from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+                created_dt = datetime.fromisoformat(session_created)
+                if created_dt < user.session_invalidated_at:
+                    return None
+        return user
 
     # --- Template Filters --------------------------------------------------
     @app.template_filter("format_account_type")

@@ -10,7 +10,7 @@ import pytest
 from app.extensions import db
 from app.models.user import User
 from app.services import auth_service
-from app.exceptions import AuthError
+from app.exceptions import AuthError, ValidationError
 
 
 class TestHashPassword:
@@ -82,3 +82,32 @@ class TestAuthenticate:
 
             with pytest.raises(AuthError, match="Account is disabled"):
                 auth_service.authenticate("test@shekel.local", "testpass")
+
+
+class TestChangePassword:
+    """Tests for auth_service.change_password()."""
+
+    def test_change_password_success(self, app, db, seed_user):
+        """change_password() updates the password hash."""
+        with app.app_context():
+            user = seed_user["user"]
+            auth_service.change_password(user, "testpass", "newpassword12")
+            db.session.flush()
+
+            # Verify the new password works and old one does not.
+            assert auth_service.verify_password("newpassword12", user.password_hash)
+            assert not auth_service.verify_password("testpass", user.password_hash)
+
+    def test_change_password_wrong_current_raises(self, app, db, seed_user):
+        """change_password() raises AuthError for wrong current password."""
+        with app.app_context():
+            user = seed_user["user"]
+            with pytest.raises(AuthError, match="Current password is incorrect"):
+                auth_service.change_password(user, "wrongpass", "newpassword12")
+
+    def test_change_password_too_short_raises(self, app, db, seed_user):
+        """change_password() raises ValidationError for short password."""
+        with app.app_context():
+            user = seed_user["user"]
+            with pytest.raises(ValidationError, match="at least 12 characters"):
+                auth_service.change_password(user, "testpass", "short")

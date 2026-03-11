@@ -41,6 +41,10 @@
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'retirement' }}">
         <i class="bi bi-briefcase"></i> Retirement
       </a>
+      <a href="{{ url_for('settings.show', section='security') }}"
+         class="list-group-item list-group-item-action{{ ' active' if active_section == 'security' }}">
+        <i class="bi bi-shield-lock"></i> Security
+      </a>
     </div>
     <small class="text-muted d-block mt-2">
       Account-specific settings (interest rates, loan terms, investment parameters)
@@ -62,6 +66,8 @@
       {% include 'settings/_account_types.html' %}
     {% elif active_section == 'retirement' %}
       {% include 'settings/_retirement.html' %}
+    {% elif active_section == 'security' %}
+      {% include 'settings/_security.html' %}
     {% endif %}
   </div>
 </div>
