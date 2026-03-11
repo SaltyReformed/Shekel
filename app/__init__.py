@@ -220,7 +220,13 @@ def _register_error_handlers(app):
 
     @app.errorhandler(429)
     def rate_limit_exceeded(e):
-        return render_template("errors/429.html"), 429
+        """Return the 429 error page with a Retry-After header."""
+        response = app.make_response(
+            (render_template("errors/429.html"), 429)
+        )
+        # 900 seconds = 15 minutes, matching the rate limit window.
+        response.headers["Retry-After"] = "900"
+        return response
 
     @app.errorhandler(500)
     def internal_server_error(e):
