@@ -91,19 +91,27 @@
       <div class="col-md-6">
         <table class="table table-sm mb-0">
           <tr>
-            <td class="text-muted">Years of Service</td>
+            <td class="text-muted">Years of Service
+              <i class="bi bi-info-circle text-muted" title="Calculated from your hire date to planned retirement date."></i>
+            </td>
             <td class="text-end font-mono">{{ pension_benefit.years_of_service }}</td>
           </tr>
           <tr>
-            <td class="text-muted">High Salary Average</td>
+            <td class="text-muted">High Salary Average
+              <i class="bi bi-info-circle text-muted" title="Average of your highest consecutive salary years, determined by the pension's high-years window."></i>
+            </td>
             <td class="text-end font-mono">${{ "{:,.2f}".format(pension_benefit.high_salary_average|float) }}</td>
           </tr>
           <tr>
-            <td class="text-muted">Annual Benefit</td>
+            <td class="text-muted">Annual Benefit
+              <i class="bi bi-info-circle text-muted" title="Benefit multiplier × years of service × high salary average."></i>
+            </td>
             <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(pension_benefit.annual_benefit|float) }}</td>
           </tr>
           <tr>
-            <td class="text-muted">Monthly Benefit</td>
+            <td class="text-muted">Monthly Benefit
+              <i class="bi bi-info-circle text-muted" title="Annual benefit divided by 12."></i>
+            </td>
             <td class="text-end font-mono fw-bold" style="color: var(--shekel-accent);">
               ${{ "{:,.2f}".format(pension_benefit.monthly_benefit|float) }}
             </td>
@@ -140,8 +148,12 @@
         <tr>
           <th>Account</th>
           <th>Type</th>
-          <th class="text-end">Current Balance</th>
-          <th class="text-end">Projected at Retirement</th>
+          <th class="text-end">Current Balance
+            <i class="bi bi-info-circle text-muted" title="Current balance from your account records."></i>
+          </th>
+          <th class="text-end">Projected at Retirement
+            <i class="bi bi-info-circle text-muted" title="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
+          </th>
         </tr>
       </thead>
       <tbody>
