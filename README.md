@@ -168,11 +168,18 @@ The core interaction loop the app supports:
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| 1 | ✅ Built | Replace the spreadsheet — grid, templates, recurrence, balance calc |
-| 2 | Planned | Paycheck calculator — salary, raises, deductions, taxes |
-| 3 | Planned | Scenarios — clone, compare, what-if analysis |
-| 4 | Planned | Savings & accounts — savings goals, transfers |
-| 5 | Planned | Visualization — Chart.js balance, spending, comparison charts |
-| 6 | Planned | Hardening — audit logging, MFA, backups, CSV export |
-| 7 | Planned | Smart features — rolling averages, inflation adjustment |
-| 8 | Planned | Notifications — alerts for low balances, milestones |
+| 1 | ✅ Complete | Core budget grid — templates, recurrence, balance calc, status workflow |
+| 2 | ✅ Complete | Paycheck calculator — salary, raises, deductions, federal/state/FICA taxes |
+| 3 | Deferred | Scenarios — clone, compare, what-if analysis |
+| 4 | ✅ Complete | Accounts & transfers — HYSA, mortgage, auto loan, savings goals, transfers |
+| 5 | ✅ Complete | Investments & retirement — 401(k), IRA, pensions, gap analysis |
+| 6 | ✅ Complete | Visualization — charts dashboard, interactive sliders, Chart.js theming |
+| 7 | Not Started | Smart features — rolling averages, inflation adjustment, scenario overlays |
+| 8A | ✅ Complete | Security hardening — MFA/TOTP, rate limiting, session mgmt, error pages |
+| 8B | Not Started | Audit & structured logging |
+| 8C | Not Started | Backups & disaster recovery |
+| 8D | Partial | Production deployment — Docker done, Nginx/Cloudflare/CI remaining |
+| 8E | Not Started | Multi-user groundwork |
+| UI/UX | ✅ Complete | Remediation — nav restructure, settings consolidation, visual polish |
+
+See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
