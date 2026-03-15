@@ -35,6 +35,14 @@ class BaseConfig:
     DEFAULT_PAY_PERIOD_HORIZON = 52  # ~2 years of biweekly periods
     DEFAULT_PAY_CADENCE_DAYS = 14  # biweekly
 
+    # Logging
+    SLOW_REQUEST_THRESHOLD_MS = int(
+        os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500")
+    )
+
+    # Audit
+    AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
+
 
 class DevConfig(BaseConfig):
     """Development configuration — debug mode, local PostgreSQL."""

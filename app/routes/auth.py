@@ -15,6 +15,7 @@ from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ValidationError
+from app.utils.log_events import log_event, AUTH
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +54,16 @@ def login():
             # No MFA — complete login immediately.
             login_user(user, remember=remember)
             flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-            logger.info("User %s logged in", email)
+            log_event(logger, logging.INFO, "login_success", AUTH,
+                      "User logged in", user_id=user.id, email=email)
 
             # Redirect to the page they originally wanted, or the grid.
             next_page = request.args.get("next")
             return redirect(next_page or url_for("grid.index"))
 
         except AuthError:
-            logger.warning("action=login_failed email=%s ip=%s", email, request.remote_addr)
+            log_event(logger, logging.WARNING, "login_failed", AUTH,
+                      "Login failed", email=email, ip=request.remote_addr)
             flash("Invalid email or password.", "danger")
 
     return render_template("auth/login.html")
@@ -70,7 +73,8 @@ def login():
 @login_required
 def logout():
     """End the user's session and redirect to login."""
-    logger.info("User %s logged out", current_user.email)
+    log_event(logger, logging.INFO, "logout", AUTH,
+              "User logged out", user_id=current_user.id)
     logout_user()
     flash("You have been logged out.", "info")
     return redirect(url_for("auth.login"))
@@ -95,7 +99,8 @@ def change_password():
         current_user.session_invalidated_at = datetime.now(timezone.utc)
         db.session.commit()
         flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-        logger.info("action=password_changed user_id=%s", current_user.id)
+        log_event(logger, logging.INFO, "password_changed", AUTH,
+                  "Password changed", user_id=current_user.id)
         flash("Password changed successfully.", "success")
     except AuthError as e:
         flash(str(e), "danger")
@@ -118,7 +123,8 @@ def invalidate_sessions():
     db.session.commit()
     # Refresh the current session so it survives the invalidation.
     flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-    logger.info("action=sessions_invalidated user_id=%s", current_user.id)
+    log_event(logger, logging.INFO, "sessions_invalidated", AUTH,
+              "All sessions invalidated", user_id=current_user.id)
     flash("All other sessions have been logged out.", "success")
     return redirect(url_for("settings.show", section="security"))
 
@@ -191,7 +197,8 @@ def mfa_verify():
 
     login_user(user, remember=remember)
     flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-    logger.info("action=mfa_login_success user_id=%s", user.id)
+    log_event(logger, logging.INFO, "mfa_login_success", AUTH,
+              "MFA login succeeded", user_id=user.id)
 
     return redirect(next_page or url_for("grid.index"))
 
@@ -265,7 +272,8 @@ def mfa_confirm():
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
     db.session.commit()
 
-    logger.info("action=mfa_enabled user_id=%s", current_user.id)
+    log_event(logger, logging.INFO, "mfa_enabled", AUTH,
+              "MFA enabled", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
 
@@ -286,7 +294,8 @@ def regenerate_backup_codes():
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
     db.session.commit()
 
-    logger.info("action=backup_codes_regenerated user_id=%s", current_user.id)
+    log_event(logger, logging.INFO, "backup_codes_regenerated", AUTH,
+              "Backup codes regenerated", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
 
@@ -347,6 +356,7 @@ def mfa_disable_confirm():
     mfa_config.confirmed_at = None
     db.session.commit()
 
-    logger.info("action=mfa_disabled user_id=%s", current_user.id)
+    log_event(logger, logging.INFO, "mfa_disabled", AUTH,
+              "MFA disabled", user_id=current_user.id)
     flash("Two-factor authentication has been disabled.", "success")
     return redirect(url_for("settings.show", section="security"))

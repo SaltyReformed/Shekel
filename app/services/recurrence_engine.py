@@ -31,6 +31,7 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.exceptions import RecurrenceConflict
 from app.models.salary_profile import SalaryProfile
+from app.utils.log_events import log_event, BUSINESS
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +139,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         created.append(txn)
 
     db.session.flush()
-    logger.info(
-        "Generated %d transactions for template '%s' (id=%d)",
-        len(created), template.name, template.id,
-    )
+    log_event(logger, logging.INFO, "recurrence_generated", BUSINESS,
+              "Transactions generated from template",
+              template_id=template.id, count=len(created))
     return created
 
 

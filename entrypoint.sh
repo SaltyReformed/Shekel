@@ -35,4 +35,10 @@ python scripts/seed_tax_brackets.py
 echo "Seeding complete."
 
 echo "=== Starting Gunicorn ==="
-exec gunicorn --bind 0.0.0.0:5000 --workers "${GUNICORN_WORKERS:-2}" --access-logfile - run:app
+exec gunicorn \
+    --bind 0.0.0.0:5000 \
+    --workers "${GUNICORN_WORKERS:-2}" \
+    --access-logfile "" \
+    --error-logfile - \
+    --log-level info \
+    run:app

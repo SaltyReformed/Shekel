@@ -12,6 +12,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.ref import Status
 from app.exceptions import NotFoundError
+from app.utils.log_events import log_event, BUSINESS
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,8 @@ def carry_forward_unpaid(source_period_id, target_period_id):
         count += 1
 
     db.session.flush()
-    logger.info(
-        "Carried forward %d unpaid items from period %d to period %d",
-        count, source_period_id, target_period_id,
-    )
+    log_event(logger, logging.INFO, "carry_forward", BUSINESS,
+              "Carried forward unpaid items",
+              count=count, from_period_id=source_period_id,
+              to_period_id=target_period_id)
     return count

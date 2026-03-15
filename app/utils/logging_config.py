@@ -102,20 +102,63 @@ def setup_logging(app: Flask) -> None:
         g.request_id = str(uuid.uuid4())
         g.request_start = time.perf_counter()
 
+        # Propagate the application user_id into the PostgreSQL session
+        # so audit triggers can capture who made the change.
+        # Uses SET LOCAL (transaction-scoped, not session-scoped).
+        try:
+            from flask_login import current_user  # pylint: disable=import-outside-toplevel
+            if current_user.is_authenticated:
+                from app.extensions import db  # pylint: disable=import-outside-toplevel
+                db.session.execute(
+                    db.text("SET LOCAL app.current_user_id = :uid"),
+                    {"uid": str(current_user.id)},
+                )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    # Slow request threshold in milliseconds (configurable via env var).
+    slow_threshold_ms = float(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500"))
+
     @app.after_request
     def _log_request_summary(response):
         duration_ms = (time.perf_counter() - g.request_start) * 1000
-        logger = logging.getLogger(__name__)
-        logger.info(
+        lgr = logging.getLogger(__name__)
+
+        # Return request_id to the client for debugging.
+        response.headers["X-Request-Id"] = g.request_id
+
+        # Determine log level based on request duration.
+        if duration_ms >= slow_threshold_ms:
+            level = logging.WARNING
+            event = "slow_request"
+        else:
+            level = logging.DEBUG
+            event = "request_complete"
+
+        # Build structured extra fields.
+        extra_fields = {
+            "event": event,
+            "category": "performance",
+            "method": request.method,
+            "path": request.path,
+            "status": response.status_code,
+            "request_duration": round(duration_ms, 2),
+            "remote_addr": request.remote_addr,
+        }
+
+        try:
+            from flask_login import current_user  # pylint: disable=import-outside-toplevel
+            if current_user.is_authenticated:
+                extra_fields["user_id"] = current_user.id
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        lgr.log(
+            level,
             "%s %s %s",
             request.method,
             request.path,
             response.status_code,
-            extra={
-                "method": request.method,
-                "path": request.path,
-                "status": response.status_code,
-                "request_duration": round(duration_ms, 2),
-            },
+            extra=extra_fields,
         )
         return response
