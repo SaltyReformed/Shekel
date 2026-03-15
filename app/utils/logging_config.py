@@ -99,6 +99,13 @@ def setup_logging(app: Flask) -> None:
 
     @app.before_request
     def _attach_request_id():
+        # Skip request tracking for health checks (avoid log noise
+        # from frequent Docker/monitoring polls).
+        if request.path == "/health":
+            g.skip_request_logging = True
+            return
+        g.skip_request_logging = False
+
         g.request_id = str(uuid.uuid4())
         g.request_start = time.perf_counter()
 
@@ -121,6 +128,10 @@ def setup_logging(app: Flask) -> None:
 
     @app.after_request
     def _log_request_summary(response):
+        # Skip logging for health checks and other excluded paths.
+        if getattr(g, "skip_request_logging", False):
+            return response
+
         duration_ms = (time.perf_counter() - g.request_start) * 1000
         lgr = logging.getLogger(__name__)
 

@@ -34,11 +34,15 @@ echo "Seeding tax configuration..."
 python scripts/seed_tax_brackets.py
 echo "Seeding complete."
 
-echo "=== Starting Gunicorn ==="
-exec gunicorn \
-    --bind 0.0.0.0:5000 \
-    --workers "${GUNICORN_WORKERS:-2}" \
-    --access-logfile "" \
-    --error-logfile - \
-    --log-level info \
-    run:app
+# ── 7. Copy static files to shared volume ────────────────────────
+# Nginx serves /static/ directly from this volume.  Copying on every
+# start ensures files are current after image updates.
+echo "Copying static files to shared volume..."
+cp -r /home/shekel/app/app/static/* /var/www/static/ 2>/dev/null || true
+echo "Static files ready."
+
+# ── 8. Start the application server ──────────────────────────────
+# exec "$@" runs the Dockerfile CMD (gunicorn in production, or the
+# docker-compose command override in development).
+echo "=== Starting Application ==="
+exec "$@"

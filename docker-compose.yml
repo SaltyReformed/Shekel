@@ -1,14 +1,22 @@
 # Shekel Budget App — Production Docker Compose
 #
+# Architecture:
+#   [Client] --> [Nginx :80] --> [Gunicorn :8000] --> [PostgreSQL :5432]
+#
+# Networks:
+#   frontend: Nginx (externally accessible)
+#   backend:  Nginx + App + DB (internal only)
+#
 # Quick start:
 #   1. Copy .env.example to .env and fill in values
 #   2. docker compose up -d
-#   3. Open http://localhost:5000
+#   3. Open http://localhost (via Nginx)
 #
 # Update:
-#   docker compose pull && docker compose up -d
+#   docker compose build && docker compose up -d
 
 services:
+  # ── PostgreSQL Database ──────────────────────────────────────────
   db:
     image: postgres:16-alpine
     container_name: shekel-db
@@ -19,14 +27,17 @@ services:
       POSTGRES_DB: shekel
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ── Flask Application (Gunicorn) ─────────────────────────────────
   app:
-    image: ghcr.io/saltyreformed/shekel:latest
+    build: .
     container_name: shekel-app
     restart: unless-stopped
     depends_on:
@@ -48,11 +59,59 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-500}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
-    ports:
-      - "${APP_PORT:-5000}:5000"
     volumes:
       - applogs:/home/shekel/app/logs
+      # Shared volume: app copies static files here for Nginx to serve.
+      - static_files:/var/www/static
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # ── Nginx Reverse Proxy ──────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: shekel-nginx
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      # External access: host port 80 → Nginx port 80.
+      # Override with NGINX_PORT in .env if port 80 is in use.
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      # Nginx configuration file (read-only).
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Static files served directly by Nginx (populated by app).
+      - static_files:/var/www/static:ro
+    networks:
+      - frontend
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
+  # PostgreSQL data persistence.
   pgdata:
+  # Application log files.
   applogs:
+  # Static files shared between app and Nginx containers.
+  static_files:
+
+networks:
+  # Frontend network: Nginx only.  Externally accessible via port mapping.
+  frontend:
+    driver: bridge
+  # Backend network: all services.  Internal only — not reachable from host.
+  backend:
+    driver: bridge
+    internal: true

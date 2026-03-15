@@ -36,11 +36,19 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=shekel:shekel . .
 COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
-# Ensure writable directories exist (logs is excluded by .dockerignore).
-RUN mkdir -p /home/shekel/app/logs \
-    && chown -R shekel:shekel /home/shekel/app
+# Ensure writable directories exist for logs and shared static files.
+# /var/www/static is a shared volume mount point — Nginx reads from it.
+RUN mkdir -p /home/shekel/app/logs /var/www/static \
+    && chown -R shekel:shekel /home/shekel/app /var/www/static
 
 USER shekel
-EXPOSE 5000
+EXPOSE 8000
+
+# Health check: verify the app is responding and database is reachable.
+# Uses Python's built-in urllib (curl/wget are not in the slim image).
+# --start-period gives entrypoint.sh time to run migrations and seeding.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 ENTRYPOINT ["/home/shekel/app/entrypoint.sh"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]

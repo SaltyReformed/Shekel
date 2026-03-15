@@ -1,10 +1,16 @@
 # Shekel Budget App — Development Docker Compose
 #
 # Provides PostgreSQL for local development.
-# Usage:
-#   Database only:   docker compose -f docker-compose.dev.yml up db
-#   Full stack:      docker compose -f docker-compose.dev.yml up
-#   Then run Flask:  flask run
+#
+# Primary workflow (recommended):
+#   1. docker compose -f docker-compose.dev.yml up db
+#   2. flask run    (from host, connects to containerized Postgres)
+#
+# Full stack (containerized dev app with live reload):
+#   docker compose -f docker-compose.dev.yml up
+#
+# Both workflows:
+#   docker compose -f docker-compose.dev.yml up db test-db
 
 services:
   db:
@@ -46,13 +52,14 @@ services:
 
   app:
     build: .
-    container_name: shekel-app
-    restart: unless-stopped
+    container_name: shekel-app-dev
     depends_on:
       db:
         condition: service_healthy
     environment:
-      FLASK_ENV: production
+      FLASK_APP: run.py
+      FLASK_ENV: development
+      FLASK_DEBUG: "1"
       SECRET_KEY: dev-secret-key-not-for-production
       DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/shekel
       DB_HOST: db
@@ -62,8 +69,19 @@ services:
       SEED_USER_EMAIL: admin@shekel.local
       SEED_USER_PASSWORD: changeme
       SEED_USER_DISPLAY_NAME: Budget Admin
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
     ports:
+      # Flask dev server on port 5000, mapped directly to host.
+      # No Nginx in development.
       - "5000:5000"
+    volumes:
+      # Mount source code for live reload.  Flask's reloader detects
+      # file changes and restarts automatically.
+      - .:/home/shekel/app
+    # Override: use Flask dev server instead of Gunicorn.
+    # The entrypoint.sh still runs (DB init, seeding), then exec's
+    # this command instead of the Dockerfile CMD (gunicorn).
+    command: ["flask", "run", "--host=0.0.0.0", "--port=5000"]
 
 volumes:
   pgdata:

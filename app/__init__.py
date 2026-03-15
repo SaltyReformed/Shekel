@@ -192,6 +192,7 @@ def _register_blueprints(app):
     from app.routes.investment import investment_bp
     from app.routes.retirement import retirement_bp
     from app.routes.charts import charts_bp
+    from app.routes.health import health_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -209,6 +210,7 @@ def _register_blueprints(app):
     app.register_blueprint(investment_bp)
     app.register_blueprint(retirement_bp)
     app.register_blueprint(charts_bp)
+    app.register_blueprint(health_bp)
 
 
 def _register_error_handlers(app):
