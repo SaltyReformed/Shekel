@@ -131,19 +131,24 @@ shekel/
 ├── app/
 │   ├── __init__.py              # Application factory (create_app)
 │   ├── config.py                # Dev / Test / Prod configuration
-│   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager
+│   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager, Limiter
 │   ├── exceptions.py            # Domain-specific exceptions
-│   ├── models/                  # SQLAlchemy models (mirror DB schemas)
-│   ├── routes/                  # Flask Blueprints (HTTP layer)
-│   ├── services/                # Business logic (no Flask imports)
+│   ├── models/                  # SQLAlchemy models (22 files, 5 PG schemas)
+│   ├── routes/                  # Flask Blueprints (16 route modules)
+│   ├── services/                # Business logic (21 service modules)
 │   ├── schemas/                 # Marshmallow validation
-│   ├── templates/               # Jinja2 HTML templates
-│   └── static/                  # CSS and JS
-├── migrations/                  # Alembic database migrations
-├── scripts/                     # Seed scripts and utilities
-├── tests/                       # pytest test suite
-├── docker-compose.yml           # PostgreSQL + app services
-├── Dockerfile                   # Production container
+│   ├── utils/                   # Logging config, structured log events
+│   ├── templates/               # Jinja2 HTML templates (~83 files)
+│   └── static/                  # CSS, JS (13 chart/grid scripts), images
+├── migrations/                  # Alembic database migrations (15 versions)
+├── monitoring/                  # Promtail config and Grafana/Loki runbook
+├── scripts/                     # Seed scripts, MFA reset, audit cleanup, benchmarks
+├── tests/                       # pytest test suite (889 tests)
+├── docs/                        # Plans, progress tracking, UI specs
+├── docker-compose.yml           # Production Docker Compose
+├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
+├── Dockerfile                   # Multi-stage production container
+├── entrypoint.sh                # Container startup (DB init, migrate, seed)
 ├── requirements.txt             # Python dependencies
 └── run.py                       # Entry point
 ```
@@ -166,20 +171,24 @@ The core interaction loop the app supports:
 
 ## Phase Roadmap
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1 | ✅ Complete | Core budget grid — templates, recurrence, balance calc, status workflow |
-| 2 | ✅ Complete | Paycheck calculator — salary, raises, deductions, federal/state/FICA taxes |
-| 3 | Deferred | Scenarios — clone, compare, what-if analysis |
-| 4 | ✅ Complete | Accounts & transfers — HYSA, mortgage, auto loan, savings goals, transfers |
-| 5 | ✅ Complete | Investments & retirement — 401(k), IRA, pensions, gap analysis |
-| 6 | ✅ Complete | Visualization — charts dashboard, interactive sliders, Chart.js theming |
-| 7 | Not Started | Smart features — rolling averages, inflation adjustment, scenario overlays |
-| 8A | ✅ Complete | Security hardening — MFA/TOTP, rate limiting, session mgmt, error pages |
-| 8B | Not Started | Audit & structured logging |
-| 8C | Not Started | Backups & disaster recovery |
-| 8D | Partial | Production deployment — Docker done, Nginx/Cloudflare/CI remaining |
-| 8E | Not Started | Multi-user groundwork |
-| UI/UX | ✅ Complete | Remediation — nav restructure, settings consolidation, visual polish |
+Last evaluated: 2026-03-15
+
+| Phase | Status         | Description                                                               |
+| ----- | -------------- | ------------------------------------------------------------------------- |
+| 1     | Complete       | Core budget grid -- templates, recurrence, balance calc, status workflow  |
+| 2     | Complete       | Paycheck calculator -- salary, raises, deductions, federal/state/FICA    |
+| 3     | Deferred       | Scenarios -- clone, compare, what-if analysis                            |
+| 4     | Complete       | Accounts & transfers -- HYSA, mortgage, auto loan, savings goals         |
+| 5     | Complete       | Investments & retirement -- 401(k), IRA, pensions, gap analysis          |
+| 6     | Complete       | Visualization -- charts dashboard, interactive sliders, Chart.js theming |
+| 7     | Not Started    | Smart features -- rolling averages, inflation adjustment                 |
+| 8A    | Complete       | Security hardening -- MFA/TOTP, rate limiting, session mgmt, error pages |
+| 8B    | Complete       | Audit & structured logging -- PG triggers, JSON logs, Promtail config    |
+| 8C    | Not Started    | Backups & disaster recovery                                              |
+| 8D    | Partial        | Production deployment -- Docker done, Nginx/Cloudflare/CI remaining      |
+| 8E    | Not Started    | Multi-user groundwork                                                    |
+| UI/UX | Complete       | Remediation -- nav restructure, settings consolidation, visual polish    |
+
+**Test suite:** 889 tests passing (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
