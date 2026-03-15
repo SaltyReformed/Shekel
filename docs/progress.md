@@ -122,15 +122,47 @@ projection adjustment is not implemented.
 - [x] 47 new tests (23 audit trigger, 9 log events, 9 logging config, 6 audit cleanup)
 - [x] 3 performance benchmark tests (excluded from default pytest run)
 
-889 tests passing after 8B completion.
+### Phase 8C: Backups & Disaster Recovery -- COMPLETE
 
-### Phase 8C: Backups & Disaster Recovery -- NOT STARTED
+- [x] Automated pg_dump backup script (scripts/backup.sh)
+- [x] Gzip compression with timestamped filenames (shekel_backup_YYYYMMDD_HHMMSS.sql.gz)
+- [x] Local and NAS destination copy with NAS failure handling (warning, not fatal)
+- [x] Optional GPG symmetric encryption (AES-256 via BACKUP_ENCRYPTION_PASSPHRASE)
+- [x] Tiered retention pruning (scripts/backup_retention.sh)
+    - Daily: 7 days, Weekly/Sunday: 4 weeks, Monthly/1st: 6 months
+    - Classification based on filename date, not file modification time
+    - Dry-run mode for previewing deletions
+- [x] Restore script (scripts/restore.sh)
+    - Interactive confirmation prompt defaulting to No ([y/N])
+    - Drop/recreate database with schema recreation
+    - Atomic restore via psql --single-transaction
+    - Automatic Alembic migration on app container restart
+    - Encrypted backup auto-detection and decryption
+    - Post-restore verification (user count, period count, table count)
+    - Dev mode support (graceful handling when app container absent)
+- [x] Database integrity check script (scripts/integrity_check.py)
+    - 33 checks across 4 categories (13 referential, 6 orphan, 5 balance, 9 consistency)
+    - Runnable standalone (CLI), importable (verify_backup.sh), and testable (pytest)
+    - Category filtering (--category) and database URL override (--database-url)
+    - Exit codes: 0 (pass), 1 (critical), 2 (warnings), 3 (error)
+- [x] Backup verification script (scripts/verify_backup.sh)
+    - Restores to temporary database (shekel_verify), never touches production
+    - 7 sanity checks (users, periods, accounts, ref data, audit_log, alembic_version)
+    - Runs full integrity check suite against temporary database
+    - Trap handler ensures cleanup even on failure
+    - Early validation for encrypted backups without passphrase
+- [x] Backup & DR runbook (docs/backup_runbook.md)
+    - Cron configuration (daily backup, daily retention, weekly verify, weekly integrity)
+    - NAS mount documentation (NFS and CIFS/SMB options with fstab examples)
+    - Encryption setup instructions
+    - Complete restore procedure with NAS fallback
+    - Troubleshooting guide with common issues table
+    - Environment variables reference
+- [x] .env.example updated with backup environment variables
+- [x] Implementation plan (docs/phase_8c_implementation_plan.md)
+- [x] 24 new pytest tests for integrity_check.py (all 4 check categories + orchestration)
 
-- [ ] Automated pg_dump backup script (scripts/backup.sh)
-- [ ] Tiered retention (7 days daily, 4 weeks weekly, 6 months monthly)
-- [ ] Restore script with DB recreation and verification
-- [ ] NAS backup copy
-- [ ] Cron configuration (daily 2 AM)
+913 tests passing after 8C completion (889 from 8B + 24 new).
 
 ### Phase 8D: Production Deployment -- PARTIAL
 

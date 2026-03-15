@@ -134,17 +134,17 @@ shekel/
 │   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager, Limiter
 │   ├── exceptions.py            # Domain-specific exceptions
 │   ├── models/                  # SQLAlchemy models (22 files, 5 PG schemas)
-│   ├── routes/                  # Flask Blueprints (16 route modules)
-│   ├── services/                # Business logic (21 service modules)
+│   ├── routes/                  # Flask Blueprints (17 route modules)
+│   ├── services/                # Business logic (22 service modules)
 │   ├── schemas/                 # Marshmallow validation
 │   ├── utils/                   # Logging config, structured log events
-│   ├── templates/               # Jinja2 HTML templates (~83 files)
-│   └── static/                  # CSS, JS (13 chart/grid scripts), images
+│   ├── templates/               # Jinja2 HTML templates (~85 files)
+│   └── static/                  # CSS, JS (14 chart/grid scripts), images
 ├── migrations/                  # Alembic database migrations (15 versions)
 ├── monitoring/                  # Promtail config and Grafana/Loki runbook
-├── scripts/                     # Seed scripts, MFA reset, audit cleanup, benchmarks
-├── tests/                       # pytest test suite (889 tests)
-├── docs/                        # Plans, progress tracking, UI specs
+├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
+├── tests/                       # pytest test suite (913 tests)
+├── docs/                        # Plans, progress tracking, runbooks
 ├── docker-compose.yml           # Production Docker Compose
 ├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
 ├── Dockerfile                   # Multi-stage production container
@@ -184,11 +184,11 @@ Last evaluated: 2026-03-15
 | 7     | Not Started    | Smart features -- rolling averages, inflation adjustment                 |
 | 8A    | Complete       | Security hardening -- MFA/TOTP, rate limiting, session mgmt, error pages |
 | 8B    | Complete       | Audit & structured logging -- PG triggers, JSON logs, Promtail config    |
-| 8C    | Not Started    | Backups & disaster recovery                                              |
+| 8C    | Complete       | Backups & DR -- pg_dump, retention, restore, integrity checks, runbook   |
 | 8D    | Partial        | Production deployment -- Docker done, Nginx/Cloudflare/CI remaining      |
 | 8E    | Not Started    | Multi-user groundwork                                                    |
 | UI/UX | Complete       | Remediation -- nav restructure, settings consolidation, visual polish    |
 
-**Test suite:** 889 tests passing (+ 3 performance benchmarks run separately)
+**Test suite:** 913 tests passing (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
