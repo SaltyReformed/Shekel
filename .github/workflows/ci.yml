@@ -1,0 +1,89 @@
+# Shekel Budget App — Continuous Integration
+#
+# Runs linting (pylint) and the full test suite (pytest) on every push
+# to main and on pull requests.  Uses a PostgreSQL 16 service container
+# to match the production database version.
+#
+# Python version matches the production Dockerfile (3.14).
+
+name: CI
+
+# ── Triggers ──────────────────────────────────────────────────────
+# Run on pushes to main and on all pull requests.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# ── Jobs ──────────────────────────────────────────────────────────
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    # PostgreSQL service container for the test suite.
+    # conftest.py creates schemas, tables, and seed data automatically.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shekel_test
+          POSTGRES_PASSWORD: shekel_test
+          POSTGRES_DB: shekel_test
+        ports:
+          # Map container port 5432 to host port 5432.
+          - 5432:5432
+        # Wait for PostgreSQL to accept connections before starting steps.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Environment variables available to all steps in this job.
+    env:
+      # Connection string for the test database.  Matches the PostgreSQL
+      # service container credentials above.
+      TEST_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/shekel_test
+      # TOTP_ENCRYPTION_KEY is auto-generated per test by conftest.py.
+      # No need to set it here.
+
+    steps:
+      # ── 1. Check out the repository ──────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────
+      # Use the same Python version as the production Dockerfile.
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      # ── 3. Cache pip dependencies ────────────────────────────────
+      # Speeds up subsequent runs by caching downloaded packages.
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ── 4. Install Python dependencies ───────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 5. Run pylint ────────────────────────────────────────────
+      # Fail only on errors (E) and fatal (F) messages.
+      # Full score is displayed for visibility.
+      - name: Lint with pylint
+        run: pylint app/ --fail-on=E,F --output-format=colorized
+
+      # ── 6. Run pytest ────────────────────────────────────────────
+      # The test suite creates schemas, tables, and seed data via
+      # conftest.py fixtures.  No manual database setup is needed.
+      - name: Run tests
+        run: pytest --tb=short -q
