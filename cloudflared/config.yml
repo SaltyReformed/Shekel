@@ -1,0 +1,73 @@
+# Cloudflare Tunnel Configuration for Shekel Budget App
+#
+# Routes traffic from a Cloudflare subdomain through an encrypted
+# tunnel to the local Nginx reverse proxy.  Cloudflare handles TLS
+# termination; Nginx listens on plain HTTP.
+#
+# ── Prerequisites ────────────────────────────────────────────────
+#   1. cloudflared installed on the Proxmox host
+#   2. Authenticated:  cloudflared tunnel login
+#   3. Tunnel created: cloudflared tunnel create shekel
+#   4. DNS record:     cloudflared tunnel route dns shekel <DOMAIN>
+#
+# ── Setup ────────────────────────────────────────────────────────
+#   1. Copy this file to the cloudflared config directory:
+#        sudo mkdir -p /etc/cloudflared
+#        sudo cp cloudflared/config.yml /etc/cloudflared/config.yml
+#
+#   2. Replace all <PLACEHOLDER> values with your actual values.
+#
+#   3. Test in the foreground first:
+#        cloudflared tunnel --config /etc/cloudflared/config.yml run shekel
+#
+#   4. Install as a systemd service:
+#        sudo cloudflared service install
+#        sudo systemctl enable cloudflared
+#        sudo systemctl start cloudflared
+#
+# ── Placeholder Reference ────────────────────────────────────────
+#   <TUNNEL_ID>       — UUID from `cloudflared tunnel create shekel`
+#                       Find it with: cloudflared tunnel list
+#   <DOMAIN>          — Production subdomain (e.g., budget.example.com)
+#   <STAGING_DOMAIN>  — Staging subdomain for pre-production testing
+#                       (e.g., staging-budget.example.com)
+#
+# See docs/runbook.md for the full step-by-step setup procedure.
+
+# ── Tunnel Identity ──────────────────────────────────────────────
+# The tunnel UUID, assigned when the tunnel is created.
+tunnel: <TUNNEL_ID>
+
+# Path to the tunnel credentials JSON file.
+# Created automatically by `cloudflared tunnel create`.
+credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+
+# ── Ingress Rules ────────────────────────────────────────────────
+# Ingress rules map hostnames to local services.  Rules are
+# evaluated top-to-bottom; the first match wins.  A catch-all
+# rule at the bottom is required by cloudflared.
+ingress:
+  # Production: route all traffic for the domain to Nginx.
+  # Nginx handles static files and proxies application requests
+  # to Gunicorn on the backend Docker network.
+  - hostname: <DOMAIN>
+    service: http://localhost:80
+    originRequest:
+      # Nginx listens on plain HTTP — no TLS on the origin.
+      noTLSVerify: true
+
+  # Staging: uncomment during initial setup to test with a
+  # separate subdomain before cutting over to production.
+  # Remove or re-comment once production is verified.
+  #
+  # Create the DNS record first:
+  #   cloudflared tunnel route dns shekel <STAGING_DOMAIN>
+  #
+  # - hostname: <STAGING_DOMAIN>
+  #   service: http://localhost:80
+  #   originRequest:
+  #     noTLSVerify: true
+
+  # Catch-all (required).  Returns 404 for requests that do not
+  # match any hostname above.
+  - service: http_status:404

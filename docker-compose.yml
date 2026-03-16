@@ -65,6 +65,7 @@ services:
       - static_files:/var/www/static
     networks:
       - backend
+      - monitoring
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -115,3 +116,9 @@ networks:
   backend:
     driver: bridge
     internal: true
+  # Monitoring network: shared with the Loki/Grafana/Promtail stack.
+  # Created externally: docker network create monitoring
+  # The app service joins this network so Promtail can discover and
+  # scrape its container logs via Docker socket service discovery.
+  monitoring:
+    external: true
