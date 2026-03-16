@@ -246,11 +246,105 @@ def auth_client(app, db, client, seed_user):
 
     Logs in via the login form to get a proper session.
     """
-    client.post("/login", data={
+    resp = client.post("/login", data={
         "email": "test@shekel.local",
         "password": "testpass",
     })
+    assert resp.status_code == 302, (
+        f"auth_client login failed with status {resp.status_code}"
+    )
     return client
+
+
+@pytest.fixture()
+def second_user(app, db):
+    """Create a second user for IDOR and cross-user isolation testing.
+
+    Mirrors the shape of seed_user so the two can be used interchangeably.
+
+    Returns:
+        dict with keys: user, settings, account, scenario, categories.
+    """
+    user = User(
+        email="other@shekel.local",
+        password_hash=hash_password("otherpass"),
+        display_name="Other User",
+    )
+    db.session.add(user)
+    db.session.flush()
+
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+
+    checking_type = (
+        db.session.query(AccountType).filter_by(name="checking").one()
+    )
+    account = Account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Other Checking",
+        current_anchor_balance=Decimal("500.00"),
+    )
+    db.session.add(account)
+
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.flush()
+
+    categories = []
+    for group, item in [
+        ("Income", "Salary"),
+        ("Home", "Rent"),
+    ]:
+        cat = Category(
+            user_id=user.id,
+            group_name=group,
+            item_name=item,
+        )
+        db.session.add(cat)
+        categories.append(cat)
+    db.session.flush()
+
+    db.session.commit()
+
+    return {
+        "user": user,
+        "settings": settings,
+        "account": account,
+        "scenario": scenario,
+        "categories": {c.item_name: c for c in categories},
+    }
+
+
+@pytest.fixture()
+def seed_periods_52(app, db, seed_user):
+    """Generate 52 pay periods (2-year projection) starting from 2026-01-02.
+
+    Sets anchor to the first period.  Use for FIN tests that require
+    production-scale data volumes.
+
+    Returns:
+        List of PayPeriod objects.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_user["user"].id,
+        start_date=date(2026, 1, 2),
+        num_periods=52,
+        cadence_days=14,
+    )
+    db.session.flush()
+
+    account = seed_user["account"]
+    account.current_anchor_period_id = periods[0].id
+    db.session.commit()
+
+    return periods
 
 
 # --- Helpers --------------------------------------------------------------

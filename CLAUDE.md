@@ -47,6 +47,7 @@ Routes (Blueprints)  →  Services (pure logic, no Flask imports)  →  Models (
 ### PostgreSQL Schemas
 
 Five database schemas separate concerns:
+
 - **ref** — Lookup/reference tables (AccountType, Status, TransactionType, FilingStatus, etc.)
 - **auth** — Users, sessions, MFA, user settings
 - **budget** — Pay periods, transactions, categories, scenarios, accounts, templates
