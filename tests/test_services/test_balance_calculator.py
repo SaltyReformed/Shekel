@@ -459,3 +459,534 @@ class TestBalanceCalculatorEdgeCases:
         assert balances[4] == Decimal("3400.00")
         # Period 5: 3400 + 2000 - 1000 = 4400
         assert balances[5] == Decimal("4400.00")
+
+
+# -------------------------------------------------------------------
+# FIN tests — Financial accuracy (penny-level precision)
+# -------------------------------------------------------------------
+
+
+class TestBalanceCalculatorFIN:
+    """Financial accuracy tests for calculate_balances.
+
+    Verify penny-level accuracy over production-scale projection
+    windows using independent Decimal oracles that never call
+    any function from balance_calculator.py.
+    """
+
+    def test_52_period_penny_accuracy(  # pylint: disable=too-many-statements
+        self,
+    ):
+        """Verify calculate_balances across 52 periods.
+
+        Uses a deterministic dataset covering scenarios S1-S10
+        with mixed statuses (projected, done, cancelled, credit,
+        received) and an independent Decimal oracle. Proves
+        cumulative accuracy does not drift over a full 2-year
+        projection window.
+        """
+        # 52 synthetic periods with integer IDs 0-51.
+        periods = [FakePeriod(i) for i in range(52)]
+        # Non-round anchor to expose truncation bugs.
+        anchor_balance = Decimal("3245.67")
+
+        txns = []
+
+        # --- Period 0 (S10 + S1): anchor with standard mix ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(0, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(0, "projected", "expense", "850.00")
+        )
+        # Projected utilities.
+        txns.append(
+            FakeTxn(0, "projected", "expense", "125.50")
+        )
+        # Projected groceries.
+        txns.append(
+            FakeTxn(0, "projected", "expense", "200.00")
+        )
+
+        # --- Period 1 (S2): done expense — excluded ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(1, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(1, "projected", "expense", "850.00")
+        )
+        # Done expense (actual would be 275.50); service
+        # excludes done entirely — never reads actual_amount.
+        txns.append(
+            FakeTxn(1, "done", "expense", "300.00")
+        )
+
+        # --- Period 2 (S3): cancelled expense — excluded ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(2, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(2, "projected", "expense", "850.00")
+        )
+        # Cancelled: would subtract 500 if counted.
+        txns.append(
+            FakeTxn(2, "cancelled", "expense", "500.00")
+        )
+
+        # --- Period 3 (S4): credit expense — excluded ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(3, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(3, "projected", "expense", "850.00")
+        )
+        # Credit: on credit card, not checking — excluded.
+        txns.append(
+            FakeTxn(3, "credit", "expense", "450.00")
+        )
+
+        # --- Period 4 (S5): only cancelled + credit ---
+        # No projected items; balance carries forward unchanged.
+        txns.append(
+            FakeTxn(4, "cancelled", "expense", "600.00")
+        )
+        txns.append(
+            FakeTxn(4, "credit", "expense", "350.00")
+        )
+
+        # --- Period 5 (S6): done income + done expense ---
+        # Both excluded; only the projected expense counts.
+        txns.append(
+            FakeTxn(5, "done", "income", "2500.00")
+        )
+        txns.append(
+            FakeTxn(5, "done", "expense", "850.00")
+        )
+        # Only projected item in this period.
+        txns.append(
+            FakeTxn(5, "projected", "expense", "150.00")
+        )
+
+        # --- Period 6 (S7): received income — excluded ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(6, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(6, "projected", "expense", "850.00")
+        )
+        # Received: already settled — excluded.
+        txns.append(
+            FakeTxn(6, "received", "income", "100.00")
+        )
+
+        # --- Period 7 (S8): zero-amount projected expense ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(7, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(7, "projected", "expense", "850.00")
+        )
+        # Zero expense: included in sum but adds nothing.
+        txns.append(
+            FakeTxn(7, "projected", "expense", "0.00")
+        )
+
+        # --- Period 8 (S9): fractional-cent expenses ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(8, "projected", "income", "2500.00")
+        )
+        # Three 33.33 expenses; sum = 99.99, NOT 100.00.
+        txns.append(
+            FakeTxn(8, "projected", "expense", "33.33")
+        )
+        txns.append(
+            FakeTxn(8, "projected", "expense", "33.33")
+        )
+        txns.append(
+            FakeTxn(8, "projected", "expense", "33.33")
+        )
+
+        # --- Period 9 (S2 repeat): done income — excluded ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(9, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(9, "projected", "expense", "850.00")
+        )
+        # Done income (actual would be 520.00) — excluded.
+        txns.append(
+            FakeTxn(9, "done", "income", "500.00")
+        )
+
+        # --- Period 10 (S3 repeat): cancelled expense ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(10, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(10, "projected", "expense", "850.00")
+        )
+        # Cancelled expense — excluded.
+        txns.append(
+            FakeTxn(10, "cancelled", "expense", "200.00")
+        )
+
+        # --- Period 11 (S4 repeat): credit expense ---
+        # Projected paycheck.
+        txns.append(
+            FakeTxn(11, "projected", "income", "2500.00")
+        )
+        # Projected rent.
+        txns.append(
+            FakeTxn(11, "projected", "expense", "850.00")
+        )
+        # Credit expense — excluded.
+        txns.append(
+            FakeTxn(11, "credit", "expense", "175.00")
+        )
+
+        # --- Periods 12-51 (S1): standard mix each period ---
+        # Each: income 2500 - rent 850 - utilities 125.50
+        #   - groceries 200 = net +1324.50.
+        for p in range(12, 52):
+            # Paycheck.
+            txns.append(
+                FakeTxn(p, "projected", "income", "2500.00")
+            )
+            # Rent.
+            txns.append(
+                FakeTxn(p, "projected", "expense", "850.00")
+            )
+            # Utilities.
+            txns.append(
+                FakeTxn(p, "projected", "expense", "125.50")
+            )
+            # Groceries.
+            txns.append(
+                FakeTxn(p, "projected", "expense", "200.00")
+            )
+
+        # -------------------------------------------------------
+        # Oracle: independent balance computation.
+        # Only "projected" status contributes. Income added,
+        # expense subtracted. No rounding applied (service does
+        # not quantize). Does NOT call any balance_calculator
+        # function.
+        # -------------------------------------------------------
+        oracle_expected = {}
+        running = anchor_balance
+        for i in range(52):
+            period_inc = Decimal("0.00")
+            period_exp = Decimal("0.00")
+            for txn in txns:
+                if txn.pay_period_id != i:
+                    continue
+                # Exclude all non-projected statuses.
+                if txn.status.name != "projected":
+                    continue
+                # Classify by raw attribute, not service prop.
+                if txn.transaction_type.name == "income":
+                    period_inc += txn.estimated_amount
+                elif txn.transaction_type.name == "expense":
+                    period_exp += txn.estimated_amount
+            running = running + period_inc - period_exp
+            oracle_expected[i] = running
+
+        # --- Call the service under test ---
+        result = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Verify all 52 periods returned.
+        assert len(result) == 52, (
+            f"Expected 52 balances, got {len(result)}"
+        )
+
+        # Assert each period individually.
+        for i, period in enumerate(periods):
+            assert result[period.id] == oracle_expected[period.id], (
+                f"Period {i} (id={period.id}): "
+                f"expected {oracle_expected[period.id]}, "
+                f"got {result[period.id]}, "
+                f"diff="
+                f"{result[period.id] - oracle_expected[period.id]}"
+            )
+
+        # Cumulative cross-check: anchor + total projected net
+        # must equal the final period balance. Uses a separate
+        # summation path to catch accumulation drift.
+        total_net = Decimal("0.00")
+        for txn in txns:
+            if txn.status.name != "projected":
+                continue
+            if txn.transaction_type.name == "income":
+                total_net += txn.estimated_amount
+            elif txn.transaction_type.name == "expense":
+                total_net -= txn.estimated_amount
+        cumulative_expected = anchor_balance + total_net
+        assert result[periods[51].id] == cumulative_expected, (
+            f"Cumulative check: "
+            f"expected {cumulative_expected}, "
+            f"got {result[periods[51].id]}, "
+            f"diff="
+            f"{result[periods[51].id] - cumulative_expected}"
+        )
+
+    def test_negative_anchor_balance_overdraft(self):
+        """Verify calculate_balances handles negative anchor.
+
+        Uses anchor_balance=-500.00 with 3 periods. Each period
+        has income of 2500.00 and two expenses of 850.00. Proves
+        income covers the overdraft and balances accumulate
+        correctly from a negative starting point.
+        """
+        periods = [FakePeriod(i) for i in range(3)]
+        anchor_balance = Decimal("-500.00")
+
+        txns = []
+        for p in range(3):
+            # Income: 2500.00 each period.
+            txns.append(
+                FakeTxn(p, "projected", "income", "2500.00")
+            )
+            # Expense 1: 850.00 each period.
+            txns.append(
+                FakeTxn(p, "projected", "expense", "850.00")
+            )
+            # Expense 2: 850.00 each period.
+            txns.append(
+                FakeTxn(p, "projected", "expense", "850.00")
+            )
+
+        result = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Period 0: -500 + 2500 - 850 - 850 = 300.00
+        # (positive — overdraft covered by income)
+        assert result[0] == Decimal("300.00"), (
+            f"Period 0: expected 300.00, got {result[0]}, "
+            f"diff={result[0] - Decimal('300.00')}"
+        )
+        # Period 1: 300 + 2500 - 850 - 850 = 1100.00
+        assert result[1] == Decimal("1100.00"), (
+            f"Period 1: expected 1100.00, got {result[1]}, "
+            f"diff={result[1] - Decimal('1100.00')}"
+        )
+        # Period 2: 1100 + 2500 - 850 - 850 = 1900.00
+        assert result[2] == Decimal("1900.00"), (
+            f"Period 2: expected 1900.00, got {result[2]}, "
+            f"diff={result[2] - Decimal('1900.00')}"
+        )
+
+    def test_large_values_no_overflow(self):
+        """Verify calculate_balances with large values near DB limits.
+
+        Uses anchor_balance=999999.99 with 3 periods. Income of
+        50000.00 and expense of 49999.99 per period (net +0.01).
+        Tests precision near Numeric(12,2) boundary without
+        overflow.
+        """
+        periods = [FakePeriod(i) for i in range(3)]
+        anchor_balance = Decimal("999999.99")
+
+        txns = []
+        for p in range(3):
+            # Large income: 50000.00.
+            txns.append(
+                FakeTxn(p, "projected", "income", "50000.00")
+            )
+            # Large expense: 49999.99 (net +0.01 per period).
+            txns.append(
+                FakeTxn(p, "projected", "expense", "49999.99")
+            )
+
+        result = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Period 0: 999999.99 + 50000.00 - 49999.99 = 1000000.00
+        assert result[0] == Decimal("1000000.00"), (
+            f"Period 0: expected 1000000.00, "
+            f"got {result[0]}, "
+            f"diff={result[0] - Decimal('1000000.00')}"
+        )
+        # Period 1: 1000000.00 + 0.01 = 1000000.01
+        assert result[1] == Decimal("1000000.01"), (
+            f"Period 1: expected 1000000.01, "
+            f"got {result[1]}, "
+            f"diff={result[1] - Decimal('1000000.01')}"
+        )
+        # Period 2: 1000000.01 + 0.01 = 1000000.02
+        assert result[2] == Decimal("1000000.02"), (
+            f"Period 2: expected 1000000.02, "
+            f"got {result[2]}, "
+            f"diff={result[2] - Decimal('1000000.02')}"
+        )
+
+    def test_idempotent_same_inputs_same_outputs(self):
+        """Verify calculate_balances is idempotent.
+
+        Calls the function twice with identical inputs (5 periods,
+        standard transactions). Proves repeated calls produce
+        exactly the same Decimal results with no hidden state
+        mutation.
+        """
+        periods = [FakePeriod(i) for i in range(5)]
+        anchor_balance = Decimal("1000.00")
+
+        txns = []
+        for p in range(5):
+            # Standard mix: income 2500, expense 850.
+            txns.append(
+                FakeTxn(p, "projected", "income", "2500.00")
+            )
+            txns.append(
+                FakeTxn(p, "projected", "expense", "850.00")
+            )
+
+        # First call.
+        result_1 = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+        # Second call with identical inputs.
+        result_2 = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Full dict equality.
+        assert result_1 == result_2, (
+            "Idempotency violated: result_1 != result_2"
+        )
+        # Per-period equality with descriptive messages.
+        for i, period in enumerate(periods):
+            assert result_1[period.id] == result_2[period.id], (
+                f"Period {i} (id={period.id}): "
+                f"call 1={result_1[period.id]}, "
+                f"call 2={result_2[period.id]}"
+            )
+
+    def test_zero_estimated_amount_does_not_affect_balance(self):
+        """Verify a zero-amount expense does not alter balance.
+
+        Uses 3 periods; period 1 has an extra expense with
+        estimated_amount=0.00. Proves the zero amount is processed
+        (not skipped) and produces the same net effect as a period
+        without it.
+        """
+        periods = [FakePeriod(i) for i in range(3)]
+        anchor_balance = Decimal("1000.00")
+
+        txns = [
+            # --- Period 0: income 2500, expense 850 ---
+            FakeTxn(0, "projected", "income", "2500.00"),
+            FakeTxn(0, "projected", "expense", "850.00"),
+            # --- Period 1: same + zero-amount expense ---
+            FakeTxn(1, "projected", "income", "2500.00"),
+            FakeTxn(1, "projected", "expense", "850.00"),
+            # Zero expense: included but contributes nothing.
+            FakeTxn(1, "projected", "expense", "0.00"),
+            # --- Period 2: same as period 0 (no zero exp) ---
+            FakeTxn(2, "projected", "income", "2500.00"),
+            FakeTxn(2, "projected", "expense", "850.00"),
+        ]
+
+        result = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Period 0: 1000 + 2500 - 850 = 2650.00
+        assert result[0] == Decimal("2650.00"), (
+            f"Period 0: expected 2650.00, got {result[0]}, "
+            f"diff={result[0] - Decimal('2650.00')}"
+        )
+        # Period 1: 2650 + 2500 - 850 - 0.00 = 4300.00
+        # Net is +1650 — same as without the zero expense.
+        assert result[1] == Decimal("4300.00"), (
+            f"Period 1: expected 4300.00, got {result[1]}, "
+            f"diff={result[1] - Decimal('4300.00')}"
+        )
+        # Period 2: 4300 + 2500 - 850 = 5950.00
+        # Confirms period 2 net (+1650) matches period 1 net.
+        assert result[2] == Decimal("5950.00"), (
+            f"Period 2: expected 5950.00, got {result[2]}, "
+            f"diff={result[2] - Decimal('5950.00')}"
+        )
+
+    def test_received_status_handling(self):
+        """Verify received-status transactions are excluded.
+
+        Uses 3 periods, each with one received transaction.
+        Received is in SETTLED_STATUSES and must not affect
+        the projected balance. Proves zero net effect across
+        all periods.
+        """
+        periods = [FakePeriod(i) for i in range(3)]
+        anchor_balance = Decimal("1000.00")
+
+        txns = [
+            # Period 0: received income — excluded from anchor.
+            FakeTxn(0, "received", "income", "5000.00"),
+            # Period 1: received expense — excluded post-anchor.
+            FakeTxn(1, "received", "expense", "500.00"),
+            # Period 2: received income — excluded post-anchor.
+            FakeTxn(2, "received", "income", "3000.00"),
+        ]
+
+        result = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=0,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # All transactions received — every period equals anchor.
+        # Period 0: 1000 + 0 - 0 = 1000.00
+        assert result[0] == Decimal("1000.00"), (
+            f"Period 0: expected 1000.00, got {result[0]}, "
+            f"diff={result[0] - Decimal('1000.00')}"
+        )
+        # Period 1: 1000 + 0 - 0 = 1000.00
+        assert result[1] == Decimal("1000.00"), (
+            f"Period 1: expected 1000.00, got {result[1]}, "
+            f"diff={result[1] - Decimal('1000.00')}"
+        )
+        # Period 2: 1000 + 0 - 0 = 1000.00
+        assert result[2] == Decimal("1000.00"), (
+            f"Period 2: expected 1000.00, got {result[2]}, "
+            f"diff={result[2] - Decimal('1000.00')}"
+        )
