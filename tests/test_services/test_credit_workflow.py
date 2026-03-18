@@ -5,6 +5,7 @@ Tests the credit card workflow (§4.5) and carry forward (§4.6)
 services that are central to the payday workflow.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -43,7 +44,7 @@ class TestCreditWorkflow:
         with app.app_context():
             txn = self._create_expense(seed_user, seed_periods)
 
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.flush()
 
             # Original is now 'credit' status.
@@ -59,11 +60,11 @@ class TestCreditWorkflow:
         """Reverting credit status deletes the auto-generated payback."""
         with app.app_context():
             txn = self._create_expense(seed_user, seed_periods)
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.flush()
             payback_id = payback.id
 
-            credit_workflow.unmark_credit(txn.id)
+            credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
             db.session.flush()
 
             # Original reverted to projected.
@@ -91,7 +92,7 @@ class TestCreditWorkflow:
             db.session.flush()
 
             with pytest.raises(ValidationError):
-                credit_workflow.mark_as_credit(txn.id)
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_payback_uses_actual_amount_when_set(
         self, app, db, seed_user, seed_periods
@@ -102,7 +103,7 @@ class TestCreditWorkflow:
             txn.actual_amount = Decimal("75.00")
             db.session.flush()
 
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.flush()
 
             assert payback.estimated_amount == Decimal("75.00")
@@ -121,7 +122,7 @@ class TestCreditWorkflow:
             db.session.flush()
 
             txn = self._create_expense(seed_user, seed_periods)
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.flush()
 
             # A new category should have been created.
@@ -159,7 +160,58 @@ class TestCreditWorkflow:
             db.session.flush()
 
             with pytest.raises(ValidationError):
-                credit_workflow.mark_as_credit(txn.id)
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+
+    def test_mark_as_credit_wrong_user_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Defense-in-depth: mark_as_credit with wrong user_id raises NotFoundError."""
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            db.session.flush()
+
+            with pytest.raises(NotFoundError):
+                credit_workflow.mark_as_credit(txn.id, user_id=999999)
+
+            # Transaction status must be unchanged -- no partial modification.
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+
+    def test_unmark_credit_wrong_user_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Defense-in-depth: unmark_credit with wrong user_id raises NotFoundError."""
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+            payback_id = payback.id
+
+            with pytest.raises(NotFoundError):
+                credit_workflow.unmark_credit(txn.id, user_id=999999)
+
+            # Transaction status must be unchanged -- still 'credit'.
+            db.session.refresh(txn)
+            assert txn.status.name == "credit"
+
+            # Payback transaction must still exist.
+            assert db.session.get(Transaction, payback_id) is not None
+
+    def test_mark_as_credit_nonexistent_txn_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """mark_as_credit on a nonexistent transaction raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                credit_workflow.mark_as_credit(999999, seed_user["user"].id)
+
+    def test_unmark_credit_nonexistent_txn_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """unmark_credit on a nonexistent transaction raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                credit_workflow.unmark_credit(999999, seed_user["user"].id)
 
 
 class TestCarryForward:
@@ -186,7 +238,7 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -238,7 +290,7 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -290,7 +342,7 @@ class TestCarryForward:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -328,7 +380,7 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -375,7 +427,7 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -411,7 +463,7 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.flush()
 
@@ -420,26 +472,100 @@ class TestCarryForward:
             # Item stays in source period, untouched.
             assert txn.pay_period_id == seed_periods[0].id
 
-    def test_carry_forward_source_not_found(self, app, db, seed_periods):
+    def test_carry_forward_source_not_found(self, app, db, seed_user, seed_periods):
         """NotFoundError is raised when the source period does not exist."""
         with app.app_context():
             with pytest.raises(NotFoundError):
-                carry_forward_service.carry_forward_unpaid(999999, seed_periods[1].id)
+                carry_forward_service.carry_forward_unpaid(
+                    999999, seed_periods[1].id, seed_user["user"].id,
+                )
 
-    def test_carry_forward_target_not_found(self, app, db, seed_periods):
+    def test_carry_forward_target_not_found(self, app, db, seed_user, seed_periods):
         """NotFoundError is raised when the target period does not exist."""
         with app.app_context():
             with pytest.raises(NotFoundError):
-                carry_forward_service.carry_forward_unpaid(seed_periods[0].id, 999999)
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, 999999, seed_user["user"].id,
+                )
 
-    def test_carry_forward_empty_source_returns_zero(self, app, db, seed_periods):
+    def test_carry_forward_empty_source_returns_zero(self, app, db, seed_user, seed_periods):
         """Carry forward returns 0 when the source period has no transactions."""
         with app.app_context():
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
 
             assert count == 0
+
+    def test_carry_forward_wrong_user_source_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Defense-in-depth: wrong user_id on source raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id, user_id=999999,
+                )
+
+    def test_carry_forward_wrong_user_target_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Defense-in-depth: source passes but target belongs to another user."""
+        with app.app_context():
+            from app.models.user import User, UserSettings
+            from app.models.scenario import Scenario
+            from app.services.auth_service import hash_password
+            from app.services import pay_period_service
+
+            # Create a second user with their own pay period.
+            user2 = User(
+                email="second@shekel.local",
+                password_hash=hash_password("secondpass1234"),
+                display_name="Second User",
+            )
+            db.session.add(user2)
+            db.session.flush()
+
+            settings2 = UserSettings(user_id=user2.id)
+            scenario2 = Scenario(
+                user_id=user2.id, name="Baseline", is_baseline=True,
+            )
+            db.session.add_all([settings2, scenario2])
+            db.session.flush()
+
+            periods2 = pay_period_service.generate_pay_periods(
+                user_id=user2.id,
+                start_date=date(2026, 6, 1),
+                num_periods=2,
+                cadence_days=14,
+            )
+            db.session.flush()
+
+            # Source belongs to seed_user (passes), target belongs to user2 (fails).
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, periods2[0].id, seed_user["user"].id,
+                )
+
+    def test_carry_forward_nonexistent_source_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Nonexistent source period raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(
+                    999999, seed_periods[0].id, seed_user["user"].id,
+                )
+
+    def test_carry_forward_nonexistent_target_raises_not_found(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Nonexistent target period raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, 999999, seed_user["user"].id,
+                )
 
 
 # Import at the bottom to avoid circular issues in the test helpers.

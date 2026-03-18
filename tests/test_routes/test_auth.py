@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 from app import create_app
 from app.extensions import db
-from app.models.user import MfaConfig, User
+from app.models.user import MfaConfig, User, UserSettings
+from app.models.scenario import Scenario
 from app.services import mfa_service
 from app.services.auth_service import hash_password
 
@@ -694,3 +695,280 @@ class TestMfaDisable:
                 .first()
             )
             assert config.is_enabled is True
+
+
+class TestRegistration:
+    """Tests for the /register endpoint (GET and POST)."""
+
+    def test_get_register_renders_form(self, app, client):
+        """GET /register returns the registration form with all expected fields."""
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"Create Account" in response.data
+            assert b'name="email"' in response.data
+            assert b'name="display_name"' in response.data
+            assert b'name="password"' in response.data
+            assert b'name="confirm_password"' in response.data
+            assert b"csrf_token" in response.data
+
+    def test_get_register_has_login_link(self, app, client):
+        """GET /register includes a link back to the login page."""
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"Already have an account?" in response.data
+            assert b"/login" in response.data
+
+    def test_get_login_has_register_link(self, app, client):
+        """GET /login includes a link to the registration page."""
+        with app.app_context():
+            response = client.get("/login")
+            assert response.status_code == 200
+            assert b"Create an account" in response.data
+            assert b"/register" in response.data
+
+    def test_register_success_creates_all_records(self, app, client):
+        """POST /register with valid data creates User, UserSettings, and Scenario.
+
+        Verifies the redirect to /login, the success flash message, and
+        that all three database records exist with correct values.
+        """
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "NewUser@Example.com",
+                "display_name": "New User",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            assert "/login" in response.headers.get("Location", "")
+
+            # Follow the redirect and check for flash message.
+            follow = client.get(response.headers["Location"])
+            assert b"Account created" in follow.data
+
+            # Verify database records (email should be lowercased).
+            user = db.session.query(User).filter_by(
+                email="newuser@example.com"
+            ).first()
+            assert user is not None
+
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=user.id
+            ).first()
+            assert settings is not None
+
+            scenario = db.session.query(Scenario).filter_by(
+                user_id=user.id, is_baseline=True
+            ).first()
+            assert scenario is not None
+
+    def test_register_success_user_can_login(self, app, client):
+        """A newly registered user can log in with their credentials.
+
+        Verifies the full registration-to-login flow works end to end.
+        """
+        with app.app_context():
+            # Register.
+            client.post("/register", data={
+                "email": "logintest@example.com",
+                "display_name": "Login Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+
+            # Log in with the same credentials.
+            login_resp = client.post("/login", data={
+                "email": "logintest@example.com",
+                "password": "securepass123",
+            }, follow_redirects=False)
+
+            assert login_resp.status_code == 302
+            # Should redirect to grid, not back to login.
+            location = login_resp.headers.get("Location", "")
+            assert "login" not in location
+
+    def test_register_success_new_user_sees_empty_grid(
+        self, app, client, seed_user, seed_periods
+    ):
+        """A newly registered user sees an empty grid with no seed user data.
+
+        Verifies complete data isolation: the new user's grid does not
+        contain transactions from the seed user.
+        """
+        with app.app_context():
+            # Register a new user.
+            client.post("/register", data={
+                "email": "isolated@example.com",
+                "display_name": "Isolated User",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+
+            # Log in as the new user.
+            client.post("/login", data={
+                "email": "isolated@example.com",
+                "password": "securepass123",
+            })
+
+            # Access the grid.
+            grid_resp = client.get("/")
+            assert grid_resp.status_code == 200
+            # Should NOT contain seed user data.
+            assert b"Rent Payment" not in grid_resp.data
+
+    def test_register_duplicate_email_shows_error(
+        self, app, client, seed_user
+    ):
+        """POST /register with an existing email shows the conflict error.
+
+        Uses the seed_user fixture (test@shekel.local) to trigger a
+        duplicate email conflict.
+        """
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "test@shekel.local",
+                "display_name": "Dup Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"already exists" in response.data
+
+    def test_register_duplicate_email_preserves_form_input(
+        self, app, client, seed_user
+    ):
+        """POST /register with a duplicate email preserves the submitted values.
+
+        After a conflict error, the form should be re-rendered with the
+        email and display_name fields pre-filled so the user does not
+        have to re-type them.
+        """
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "test@shekel.local",
+                "display_name": "Keep This Name",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"test@shekel.local" in response.data
+            assert b"Keep This Name" in response.data
+
+    def test_register_short_password_shows_error(self, app, client):
+        """POST /register with a short password shows a validation error."""
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "short@example.com",
+                "display_name": "Short Test",
+                "password": "12345678901",
+                "confirm_password": "12345678901",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"at least 12 characters" in response.data
+
+    def test_register_password_mismatch_shows_error(self, app, client):
+        """POST /register with mismatched passwords shows an error."""
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "mismatch@example.com",
+                "display_name": "Mismatch Test",
+                "password": "validpassword1",
+                "confirm_password": "validpassword2",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"do not match" in response.data
+
+    def test_register_invalid_email_shows_error(self, app, client):
+        """POST /register with an invalid email shows a validation error."""
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "notvalid",
+                "display_name": "Invalid Email Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid email format" in response.data
+
+    def test_register_empty_display_name_shows_error(self, app, client):
+        """POST /register with an empty display name shows a validation error."""
+        with app.app_context():
+            response = client.post("/register", data={
+                "email": "noname@example.com",
+                "display_name": "",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Display name is required" in response.data
+
+    def test_register_get_redirects_when_authenticated(
+        self, app, auth_client
+    ):
+        """GET /register redirects to the grid when already logged in."""
+        with app.app_context():
+            response = auth_client.get("/register", follow_redirects=False)
+            assert response.status_code == 302
+            # Should redirect to grid, not stay on register.
+            location = response.headers.get("Location", "")
+            assert "register" not in location
+
+    def test_register_post_redirects_when_authenticated(
+        self, app, auth_client, seed_user
+    ):
+        """POST /register redirects when already logged in, creating no new user.
+
+        Verifies that authenticated users cannot create additional
+        accounts via POST.
+        """
+        with app.app_context():
+            user_count_before = db.session.query(User).count()
+
+            response = auth_client.post("/register", data={
+                "email": "sneaky@example.com",
+                "display_name": "Sneaky",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+
+            # No new user should have been created.
+            user_count_after = db.session.query(User).count()
+            assert user_count_after == user_count_before
+
+    def test_register_success_has_baseline_scenario(self, app, client):
+        """POST /register creates exactly one baseline Scenario for the new user.
+
+        Verifies the scenario has the correct name, is_baseline flag,
+        and user_id.
+        """
+        with app.app_context():
+            client.post("/register", data={
+                "email": "scenario@example.com",
+                "display_name": "Scenario Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+
+            user = db.session.query(User).filter_by(
+                email="scenario@example.com"
+            ).first()
+            assert user is not None
+
+            scenarios = db.session.query(Scenario).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(scenarios) == 1
+            assert scenarios[0].is_baseline is True
+            assert scenarios[0].name == "Baseline"
+            assert scenarios[0].user_id == user.id

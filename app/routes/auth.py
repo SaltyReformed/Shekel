@@ -1,8 +1,7 @@
 """
 Shekel Budget App — Auth Routes
 
-Handles login and logout with Flask-Login session management.
-Phase 1 uses a single seeded user — no registration route.
+Handles login, registration, and logout with Flask-Login session management.
 """
 
 import logging
@@ -14,7 +13,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
-from app.exceptions import AuthError, ValidationError
+from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.log_events import log_event, AUTH
 
 logger = logging.getLogger(__name__)
@@ -67,6 +66,43 @@ def login():
             flash("Invalid email or password.", "danger")
 
     return render_template("auth/login.html")
+
+
+@auth_bp.route("/register", methods=["GET"])
+def register_form():
+    """Display the registration form."""
+    if current_user.is_authenticated:
+        return redirect(url_for("grid.index"))
+    return render_template("auth/register.html")
+
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    """Process a new user registration."""
+    if current_user.is_authenticated:
+        return redirect(url_for("grid.index"))
+
+    email = request.form.get("email", "")
+    display_name = request.form.get("display_name", "")
+    password = request.form.get("password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if password != confirm_password:
+        flash("Password and confirmation do not match.", "danger")
+        return render_template("auth/register.html")
+
+    try:
+        auth_service.register_user(email, password, display_name)
+        db.session.commit()
+        logger.info("action=user_registered email=%s", email)
+        flash("Account created. Please sign in.", "success")
+        return redirect(url_for("auth.login"))
+    except ConflictError as e:
+        flash(str(e), "danger")
+        return render_template("auth/register.html")
+    except ValidationError as e:
+        flash(str(e), "danger")
+        return render_template("auth/register.html")
 
 
 @auth_bp.route("/logout")

@@ -301,7 +301,7 @@ class TestCreditWorkflowEdgeCases:
             db.session.commit()
 
             # Mark as credit — creates payback in next period.
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.commit()
             payback_id = payback.id
 
@@ -312,7 +312,7 @@ class TestCreditWorkflowEdgeCases:
             db.session.commit()
 
             # Unmark credit — payback is deleted even though it was done.
-            credit_workflow.unmark_credit(txn.id)
+            credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
             db.session.commit()
 
             # Current behavior: done payback is deleted. Data loss.
@@ -332,7 +332,7 @@ class TestCreditWorkflowEdgeCases:
 
             from app.exceptions import ValidationError
             with pytest.raises(ValidationError, match="Cannot mark income as credit"):
-                credit_workflow.mark_as_credit(txn.id)
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_mark_credit_on_last_period(self, app, auth_client, seed_user, seed_periods):
         """Mark credit on a transaction in the last period — no next period.
@@ -349,7 +349,7 @@ class TestCreditWorkflowEdgeCases:
 
             from app.exceptions import ValidationError
             with pytest.raises(ValidationError, match="No next pay period"):
-                credit_workflow.mark_as_credit(txn.id)
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -387,7 +387,7 @@ class TestCarryForwardEdgeCases:
 
             # Carry forward from period 0 to period 0.
             period_id = seed_periods[0].id
-            count = carry_forward_service.carry_forward_unpaid(period_id, period_id)
+            count = carry_forward_service.carry_forward_unpaid(period_id, period_id, seed_user["user"].id)
             db.session.commit()
 
             # Current behavior: moves 1 item (to itself), sets is_override.
@@ -407,7 +407,7 @@ class TestCarryForwardEdgeCases:
             # Create a transaction and mark it as credit.
             txn = _make_transaction(seed_user, seed_periods, period_index=0)
             db.session.commit()
-            credit_workflow.mark_as_credit(txn.id)
+            credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.commit()
 
             # Also create a projected transaction in the same period.
@@ -419,7 +419,7 @@ class TestCarryForwardEdgeCases:
 
             # Carry forward from period 0 to period 2.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["user"].id,
             )
             db.session.commit()
 

@@ -22,27 +22,36 @@ CC_PAYBACK_GROUP = "Credit Card"
 CC_PAYBACK_ITEM = "Payback"
 
 
-def mark_as_credit(transaction_id):
+def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
     Steps:
-      1. Set the transaction's status to 'credit'.
-      2. Find or create the CC payback category.
-      3. Find the next pay period.
-      4. Create a payback expense in the next period linked to the original.
+      1. Verify ownership via the transaction's pay period.
+      2. Set the transaction's status to 'credit'.
+      3. Find or create the CC payback category.
+      4. Find the next pay period.
+      5. Create a payback expense in the next period linked to the original.
 
     Args:
         transaction_id: The ID of the transaction to mark as credit.
+        user_id: The ID of the user who owns the transaction.
+            Defense-in-depth: ownership is verified via the
+            transaction's pay period even if the caller already
+            checked at the route level.
 
     Returns:
         The newly created payback Transaction.
 
     Raises:
-        NotFoundError:  If the transaction doesn't exist.
+        NotFoundError:  If the transaction doesn't exist or doesn't
+            belong to *user_id*.
         ValidationError: If the transaction is income (can't credit income).
     """
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # Defense-in-depth: verify ownership via pay period.
+    if txn.pay_period.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
@@ -67,10 +76,8 @@ def mark_as_credit(transaction_id):
     txn.status = credit_status
 
     # Find or create the CC Payback category for this user.
-    # We need to determine the user_id from the transaction's pay period.
     from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, txn.pay_period_id)
-    user_id = period.user_id
 
     category = _get_or_create_cc_category(user_id)
 
@@ -106,17 +113,24 @@ def mark_as_credit(transaction_id):
     return payback
 
 
-def unmark_credit(transaction_id):
+def unmark_credit(transaction_id, user_id):
     """Revert a transaction from 'credit' back to 'projected' and delete its payback.
 
     Args:
         transaction_id: The ID of the credited transaction.
+        user_id: The ID of the user who owns the transaction.
+            Defense-in-depth: ownership is verified via the
+            transaction's pay period.
 
     Raises:
-        NotFoundError: If the transaction doesn't exist.
+        NotFoundError: If the transaction doesn't exist or doesn't
+            belong to *user_id*.
     """
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # Defense-in-depth: verify ownership via pay period.
+    if txn.pay_period.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     projected_status = db.session.query(Status).filter_by(name="projected").one()

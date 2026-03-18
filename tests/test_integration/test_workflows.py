@@ -190,7 +190,7 @@ class TestCreditPaybackBalance:
             db.session.commit()
 
             # Mark as credit — creates payback in next period.
-            payback = credit_workflow.mark_as_credit(txn.id)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.commit()
 
             db.session.refresh(txn)
@@ -290,7 +290,7 @@ class TestCarryForwardWorkflow:
 
             # Carry forward from period 0 → period 1.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
             )
             db.session.commit()
 

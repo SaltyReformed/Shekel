@@ -163,7 +163,7 @@ def mark_credit(txn_id):
         return "Not found", 404
 
     try:
-        payback = credit_workflow.mark_as_credit(txn_id)
+        payback = credit_workflow.mark_as_credit(txn_id, current_user.id)
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
@@ -180,7 +180,7 @@ def unmark_credit(txn_id):
         return "Not found", 404
 
     try:
-        credit_workflow.unmark_credit(txn_id)
+        credit_workflow.unmark_credit(txn_id, current_user.id)
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
@@ -415,7 +415,7 @@ def carry_forward(period_id):
         return "No current period found", 400
 
     try:
-        count = carry_forward_service.carry_forward_unpaid(period_id, current_period.id)
+        count = carry_forward_service.carry_forward_unpaid(period_id, current_period.id, current_user.id)
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404

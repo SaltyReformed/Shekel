@@ -24,6 +24,9 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.salary_profile import SalaryProfile
+from app.models.savings_goal import SavingsGoal
+from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RaiseType, RecurrencePattern, Status, TaxType, TransactionType,
@@ -348,6 +351,368 @@ def seed_periods_52(app, db, seed_user):
     db.session.commit()
 
     return periods
+
+
+# --- Two-User Isolation Fixtures ------------------------------------------
+
+
+@pytest.fixture()
+def seed_second_user(app, db):
+    """Create an independent second user for multi-user isolation testing.
+
+    Mirrors seed_user in structure but creates entirely separate objects
+    with distinguishable names and amounts.
+
+    Returns:
+        dict with keys: user, settings, account, scenario, categories.
+    """
+    user = User(
+        email="second@shekel.local",
+        password_hash=hash_password("secondpass12"),
+        display_name="Second User",
+    )
+    db.session.add(user)
+    db.session.flush()
+
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+
+    checking_type = (
+        db.session.query(AccountType).filter_by(name="checking").one()
+    )
+    account = Account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Checking",
+        current_anchor_balance=Decimal("2000.00"),
+    )
+    db.session.add(account)
+
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.flush()
+
+    categories = []
+    for group, item in [
+        ("Income", "Salary"),
+        ("Home", "Rent"),
+        ("Auto", "Car Payment"),
+        ("Family", "Groceries"),
+        ("Credit Card", "Payback"),
+    ]:
+        cat = Category(
+            user_id=user.id,
+            group_name=group,
+            item_name=item,
+        )
+        db.session.add(cat)
+        categories.append(cat)
+    db.session.flush()
+
+    db.session.commit()
+
+    return {
+        "user": user,
+        "settings": settings,
+        "account": account,
+        "scenario": scenario,
+        "categories": {c.item_name: c for c in categories},
+    }
+
+
+@pytest.fixture()
+def seed_second_periods(app, db, seed_second_user):
+    """Generate 10 pay periods for the second user starting 2026-01-02.
+
+    Sets the anchor period to the first period.
+
+    Returns:
+        List of PayPeriod objects.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_second_user["user"].id,
+        start_date=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.flush()
+
+    account = seed_second_user["account"]
+    account.current_anchor_period_id = periods[0].id
+    db.session.commit()
+
+    return periods
+
+
+@pytest.fixture()
+def second_auth_client(app, db, seed_second_user):
+    """Provide an authenticated test client for the second user.
+
+    Creates a NEW test client instance to avoid session conflicts
+    with the primary auth_client.
+    """
+    second_client = app.test_client()
+    resp = second_client.post("/login", data={
+        "email": "second@shekel.local",
+        "password": "secondpass12",
+    })
+    assert resp.status_code == 302, (
+        f"second_auth_client login failed with status {resp.status_code}"
+    )
+    return second_client
+
+
+@pytest.fixture()
+def seed_full_user_data(app, db, seed_user, seed_periods):
+    """Create a rich dataset for User A (the primary test user).
+
+    Includes transaction template, transaction, savings goal, savings
+    account, transfer template, and salary profile. All objects have
+    distinguishable names and amounts for use in isolation testing.
+
+    Returns:
+        dict merging seed_user keys plus: periods, template, transaction,
+        savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    user = seed_user["user"]
+    account = seed_user["account"]
+    scenario = seed_user["scenario"]
+    periods = seed_periods
+
+    # Look up reference data.
+    every_period = (
+        db.session.query(RecurrencePattern)
+        .filter_by(name="every_period").one()
+    )
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="expense").one()
+    )
+    projected_status = (
+        db.session.query(Status).filter_by(name="projected").one()
+    )
+    savings_acct_type = (
+        db.session.query(AccountType).filter_by(name="savings").one()
+    )
+    filing_single = (
+        db.session.query(FilingStatus).filter_by(name="single").one()
+    )
+
+    # a) Recurrence rule + transaction template + transaction.
+    rule = RecurrenceRule(
+        user_id=user.id,
+        pattern_id=every_period.id,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    template = TransactionTemplate(
+        user_id=user.id,
+        account_id=account.id,
+        category_id=seed_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type.id,
+        name="Rent Payment",
+        default_amount=Decimal("1200.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=periods[0].id,
+        scenario_id=scenario.id,
+        status_id=projected_status.id,
+        name="Rent Payment",
+        category_id=seed_user["categories"]["Rent"].id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=Decimal("1200.00"),
+    )
+    db.session.add(txn)
+
+    # b) Savings goal.
+    goal = SavingsGoal(
+        user_id=user.id,
+        account_id=account.id,
+        name="Emergency Fund",
+        target_amount=Decimal("10000.00"),
+    )
+    db.session.add(goal)
+
+    # c) Savings account + transfer template.
+    savings_account = Account(
+        user_id=user.id,
+        account_type_id=savings_acct_type.id,
+        name="Savings",
+        current_anchor_balance=Decimal("500.00"),
+    )
+    db.session.add(savings_account)
+    db.session.flush()
+
+    savings_account.current_anchor_period_id = periods[0].id
+
+    transfer_tpl = TransferTemplate(
+        user_id=user.id,
+        from_account_id=account.id,
+        to_account_id=savings_account.id,
+        name="Monthly Savings",
+        default_amount=Decimal("200.00"),
+    )
+    db.session.add(transfer_tpl)
+
+    # d) Salary profile.
+    salary_profile = SalaryProfile(
+        user_id=user.id,
+        scenario_id=scenario.id,
+        filing_status_id=filing_single.id,
+        name="Day Job",
+        annual_salary=Decimal("75000.00"),
+        state_code="NC",
+    )
+    db.session.add(salary_profile)
+
+    db.session.commit()
+
+    return {
+        **seed_user,
+        "periods": periods,
+        "template": template,
+        "transaction": txn,
+        "savings_goal": goal,
+        "recurrence_rule": rule,
+        "savings_account": savings_account,
+        "transfer_template": transfer_tpl,
+        "salary_profile": salary_profile,
+    }
+
+
+@pytest.fixture()
+def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
+    """Create a rich dataset for User B (the second test user).
+
+    Mirrors seed_full_user_data but with distinguishable names and
+    amounts so isolation tests can verify data separation.
+
+    Returns:
+        dict merging seed_second_user keys plus: periods, template,
+        transaction, savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    user = seed_second_user["user"]
+    account = seed_second_user["account"]
+    scenario = seed_second_user["scenario"]
+    periods = seed_second_periods
+
+    # Look up reference data.
+    every_period = (
+        db.session.query(RecurrencePattern)
+        .filter_by(name="every_period").one()
+    )
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="expense").one()
+    )
+    projected_status = (
+        db.session.query(Status).filter_by(name="projected").one()
+    )
+    savings_acct_type = (
+        db.session.query(AccountType).filter_by(name="savings").one()
+    )
+    filing_single = (
+        db.session.query(FilingStatus).filter_by(name="single").one()
+    )
+
+    # a) Recurrence rule + transaction template + transaction.
+    rule = RecurrenceRule(
+        user_id=user.id,
+        pattern_id=every_period.id,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    template = TransactionTemplate(
+        user_id=user.id,
+        account_id=account.id,
+        category_id=seed_second_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type.id,
+        name="Second User Rent",
+        default_amount=Decimal("900.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=periods[0].id,
+        scenario_id=scenario.id,
+        status_id=projected_status.id,
+        name="Second User Rent",
+        category_id=seed_second_user["categories"]["Rent"].id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=Decimal("900.00"),
+    )
+    db.session.add(txn)
+
+    # b) Savings goal.
+    goal = SavingsGoal(
+        user_id=user.id,
+        account_id=account.id,
+        name="Vacation Fund",
+        target_amount=Decimal("5000.00"),
+    )
+    db.session.add(goal)
+
+    # c) Savings account + transfer template.
+    savings_account = Account(
+        user_id=user.id,
+        account_type_id=savings_acct_type.id,
+        name="Savings",
+        current_anchor_balance=Decimal("300.00"),
+    )
+    db.session.add(savings_account)
+    db.session.flush()
+
+    savings_account.current_anchor_period_id = periods[0].id
+
+    transfer_tpl = TransferTemplate(
+        user_id=user.id,
+        from_account_id=account.id,
+        to_account_id=savings_account.id,
+        name="Bi-Weekly Savings",
+        default_amount=Decimal("150.00"),
+    )
+    db.session.add(transfer_tpl)
+
+    # d) Salary profile.
+    salary_profile = SalaryProfile(
+        user_id=user.id,
+        scenario_id=scenario.id,
+        filing_status_id=filing_single.id,
+        name="Second Job",
+        annual_salary=Decimal("60000.00"),
+        state_code="NC",
+    )
+    db.session.add(salary_profile)
+
+    db.session.commit()
+
+    return {
+        **seed_second_user,
+        "periods": periods,
+        "template": template,
+        "transaction": txn,
+        "savings_goal": goal,
+        "recurrence_rule": rule,
+        "savings_account": savings_account,
+        "transfer_template": transfer_tpl,
+        "salary_profile": salary_profile,
+    }
 
 
 # --- Helpers --------------------------------------------------------------
