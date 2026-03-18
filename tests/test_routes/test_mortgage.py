@@ -37,23 +37,36 @@ def _create_mortgage_account(seed_user, db_session, name="My Mortgage"):
     return account
 
 
-def _create_other_user(db_session):
-    """Create a second user for IDOR tests."""
-    from app.services.auth_service import hash_password
-    from app.models.user import User, UserSettings
+def _create_other_mortgage(second_user, db_session):
+    """Create a mortgage account owned by the second user.
 
-    user = User(
-        email="other@shekel.local",
-        password_hash=hash_password("otherpass"),
-        display_name="Other User",
+    Builds on the shared second_user fixture. Returns the Account
+    with MortgageParams already attached.
+    """
+    mortgage_type = db_session.query(AccountType).filter_by(
+        name="mortgage"
+    ).one()
+    account = Account(
+        user_id=second_user["user"].id,
+        account_type_id=mortgage_type.id,
+        name="Other Mortgage",
+        current_anchor_balance=Decimal("100000.00"),
     )
-    db_session.add(user)
+    db_session.add(account)
     db_session.flush()
 
-    settings = UserSettings(user_id=user.id)
-    db_session.add(settings)
+    params = MortgageParams(
+        account_id=account.id,
+        original_principal=Decimal("100000.00"),
+        current_principal=Decimal("100000.00"),
+        interest_rate=Decimal("0.05000"),
+        term_months=360,
+        origination_date=date(2024, 1, 1),
+        payment_day=1,
+    )
+    db_session.add(params)
     db_session.commit()
-    return user
+    return account
 
 
 class TestMortgageDashboard:
@@ -67,32 +80,22 @@ class TestMortgageDashboard:
         assert b"Loan Summary" in resp.data
         assert b"250,000.00" in resp.data
 
-    def test_dashboard_idor(self, auth_client, seed_user, db, seed_periods):
-        """Other user's mortgage → redirect."""
-        other_user = _create_other_user(db.session)
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=mortgage_type.id,
-            name="Other Mortgage",
-            current_anchor_balance=Decimal("100000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.flush()
-        params = MortgageParams(
-            account_id=other_acct.id,
-            original_principal=Decimal("100000.00"),
-            current_principal=Decimal("100000.00"),
-            interest_rate=Decimal("0.05000"),
-            term_months=360,
-            origination_date=date(2024, 1, 1),
-            payment_day=1,
-        )
-        db.session.add(params)
-        db.session.commit()
+    def test_dashboard_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """GET another user's mortgage dashboard is rejected
+        and does not leak victim data."""
+        other_acct = _create_other_mortgage(second_user, db.session)
 
         resp = auth_client.get(f"/accounts/{other_acct.id}/mortgage")
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/savings" in location, (
+            f"IDOR redirect went to {location}, expected /savings"
+        )
+        assert b"Other Mortgage" not in resp.data, (
+            "IDOR response leaked victim's account name"
+        )
 
     def test_dashboard_wrong_type(self, auth_client, seed_user, db, seed_periods):
         """Non-mortgage account → redirect."""
@@ -135,32 +138,94 @@ class TestMortgageParamsUpdate:
         assert params.interest_rate == Decimal("0.06000")
         assert params.payment_day == 15
 
-    def test_params_update_validation(self, auth_client, seed_user, db, seed_periods):
-        """POST invalid → error."""
+    def test_params_update_validation(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST invalid data is rejected and leaves DB unchanged."""
         acct = _create_mortgage_account(seed_user, db.session)
+
+        # Snapshot mutable fields before the request.
+        original = db.session.query(MortgageParams).filter_by(
+            account_id=acct.id
+        ).one()
+        orig_principal = original.current_principal
+        orig_rate = original.interest_rate
+        orig_day = original.payment_day
+        orig_arm = original.is_arm
+
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/params",
             data={"payment_day": "32"},  # Invalid
         )
         assert resp.status_code == 302
 
-    def test_params_update_idor(self, auth_client, seed_user, db, seed_periods):
-        """Other user → redirect."""
-        other_user = _create_other_user(db.session)
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=mortgage_type.id,
-            name="Other Mortgage",
+        # Verify DB unchanged after invalid submission.
+        db.session.expire_all()
+        after = db.session.query(MortgageParams).filter_by(
+            account_id=acct.id
+        ).one()
+        assert after.current_principal == orig_principal, (
+            "Validation failure modified current_principal!"
         )
-        db.session.add(other_acct)
-        db.session.commit()
+        assert after.interest_rate == orig_rate, (
+            "Validation failure modified interest_rate!"
+        )
+        assert after.payment_day == orig_day, (
+            "Validation failure modified payment_day!"
+        )
+        assert after.is_arm == orig_arm, (
+            "Validation failure modified is_arm!"
+        )
 
+    def test_params_update_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """POST to another user's mortgage params is rejected
+        and leaves the victim's data completely unchanged."""
+        # Phase A: Setup victim's data with known values.
+        other_acct = _create_other_mortgage(second_user, db.session)
+        original = db.session.query(MortgageParams).filter_by(
+            account_id=other_acct.id
+        ).one()
+        orig_principal = original.current_principal
+        orig_rate = original.interest_rate
+        orig_day = original.payment_day
+        orig_arm = original.is_arm
+
+        # Phase B: Attack.
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/mortgage/params",
-            data={"current_principal": "100"},
+            data={
+                "current_principal": "1.00",
+                "interest_rate": "99.000",
+                "payment_day": "28",
+                "is_arm": "true",
+            },
         )
+
+        # Phase C: Verify no state change.
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/savings" in location, (
+            f"IDOR redirect went to {location}, expected /savings"
+        )
+
+        db.session.expire_all()
+        after = db.session.query(MortgageParams).filter_by(
+            account_id=other_acct.id
+        ).one()
+        assert after.current_principal == orig_principal, (
+            "IDOR attack modified current_principal!"
+        )
+        assert after.interest_rate == orig_rate, (
+            "IDOR attack modified interest_rate!"
+        )
+        assert after.payment_day == orig_day, (
+            "IDOR attack modified payment_day!"
+        )
+        assert after.is_arm == orig_arm, (
+            "IDOR attack modified is_arm!"
+        )
 
 
 class TestRateChange:
@@ -277,27 +342,12 @@ class TestEscrow:
         db.session.refresh(comp)
         assert comp.is_active is False
 
-    def test_escrow_delete_idor(self, auth_client, seed_user, db, seed_periods):
-        """Other user's escrow → error."""
-        other_user = _create_other_user(db.session)
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=mortgage_type.id,
-            name="Other Mortgage",
-        )
-        db.session.add(other_acct)
-        db.session.flush()
-        params = MortgageParams(
-            account_id=other_acct.id,
-            original_principal=Decimal("100000.00"),
-            current_principal=Decimal("100000.00"),
-            interest_rate=Decimal("0.05000"),
-            term_months=360,
-            origination_date=date(2024, 1, 1),
-            payment_day=1,
-        )
-        db.session.add(params)
+    def test_escrow_delete_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """DELETE another user's escrow returns 404
+        and leaves the component active."""
+        other_acct = _create_other_mortgage(second_user, db.session)
         comp = EscrowComponent(
             account_id=other_acct.id,
             name="Tax",
@@ -310,6 +360,19 @@ class TestEscrow:
             f"/accounts/{other_acct.id}/mortgage/escrow/{comp.id}/delete",
         )
         assert resp.status_code == 404
+
+        # Verify the escrow component is still active.
+        db.session.expire_all()
+        after = db.session.get(EscrowComponent, comp.id)
+        assert after.is_active is True, (
+            "IDOR attack deactivated victim's escrow component!"
+        )
+        assert after.name == "Tax", (
+            "IDOR attack modified victim's escrow name!"
+        )
+        assert after.annual_amount == Decimal("3000.00"), (
+            "IDOR attack modified victim's escrow amount!"
+        )
 
 
 class TestPayoffCalculator:

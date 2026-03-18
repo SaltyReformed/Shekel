@@ -146,11 +146,32 @@ class TestTransactionOwnership:
             assert other["transaction"].status.name == "projected"
 
     def test_mark_credit_blocked(self, app, auth_client, seed_user, seed_periods):
-        """POST /transactions/<id>/mark-credit returns 404 for another user's txn."""
+        """POST /transactions/<id>/mark-credit returns 404 for another
+        user's txn and leaves the transaction status unchanged."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
-            resp = auth_client.post(f"/transactions/{other['transaction'].id}/mark-credit")
+            txn_id = other["transaction"].id
+            resp = auth_client.post(f"/transactions/{txn_id}/mark-credit")
             assert resp.status_code == 404
+
+            # Verify status unchanged and no payback transaction created.
+            db.session.expire_all()
+            txn_after = db.session.get(Transaction, txn_id)
+            assert txn_after.status.name == "projected", (
+                "IDOR attack changed transaction status!"
+            )
+            # Credit workflow creates a payback txn; verify none exist.
+            payback = (
+                db.session.query(Transaction)
+                .filter_by(
+                    pay_period_id=txn_after.pay_period_id,
+                    name="Other User Rent (payback)",
+                )
+                .first()
+            )
+            assert payback is None, (
+                "IDOR attack created a payback transaction!"
+            )
 
     def test_cancel_blocked(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/cancel returns 404 for another user's txn."""
@@ -176,13 +197,24 @@ class TestTransactionOwnership:
             assert txn.is_deleted is False
 
     def test_unmark_credit_blocked(self, app, auth_client, seed_user, seed_periods):
-        """DELETE /transactions/<id>/unmark-credit returns 404 for another user's txn."""
+        """DELETE /transactions/<id>/unmark-credit returns 404 for another
+        user's txn and leaves the transaction status unchanged."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            txn_id = other["transaction"].id
+            orig_status = other["transaction"].status.name
+
             resp = auth_client.delete(
-                f"/transactions/{other['transaction'].id}/unmark-credit"
+                f"/transactions/{txn_id}/unmark-credit"
             )
             assert resp.status_code == 404
+
+            # Verify status unchanged.
+            db.session.expire_all()
+            txn_after = db.session.get(Transaction, txn_id)
+            assert txn_after.status.name == orig_status, (
+                "IDOR attack changed transaction status!"
+            )
 
 
 class TestCreateOwnership:

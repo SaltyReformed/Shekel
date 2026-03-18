@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from collections import OrderedDict
 
@@ -496,7 +497,17 @@ def create_goal():
 
     goal = SavingsGoal(user_id=current_user.id, **data)
     db.session.add(goal)
-    db.session.commit()
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash(
+            "A savings goal with that name already exists for this account.",
+            "warning",
+        )
+        return redirect(url_for("savings.dashboard"))
+
     logger.info("user_id=%d created savings goal (id=%d)", current_user.id, goal.id)
 
     flash(f"Savings goal '{goal.name}' created.", "success")

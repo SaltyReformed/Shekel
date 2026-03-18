@@ -2,14 +2,12 @@
 Tests for HYSA routes (detail view and params update).
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
 from app.models.hysa_params import HysaParams
 from app.models.ref import AccountType
-from app.services import pay_period_service
 
 
 def _create_hysa_account(seed_user, db_session, name="My HYSA"):
@@ -20,6 +18,27 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
         account_type_id=hysa_type.id,
         name=name,
         current_anchor_balance=Decimal("10000.00"),
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    params = HysaParams(account_id=account.id)
+    db_session.add(params)
+    db_session.commit()
+    return account, params
+
+
+def _create_other_hysa(second_user, db_session):
+    """Create a HYSA account owned by the second user.
+
+    Builds on the shared second_user fixture. Returns (Account, HysaParams).
+    """
+    hysa_type = db_session.query(AccountType).filter_by(name="hysa").one()
+    account = Account(
+        user_id=second_user["user"].id,
+        account_type_id=hysa_type.id,
+        name="Other HYSA",
+        current_anchor_balance=Decimal("5000.00"),
     )
     db_session.add(account)
     db_session.flush()
@@ -44,27 +63,20 @@ class TestHysaDetailView:
         assert b"HYSA" in resp.data
         assert b"APY" in resp.data
 
-    def test_hysa_detail_idor(self, app, auth_client, seed_user, db):
-        """Other user's HYSA account → redirect."""
-        from app.models.user import User
-        from app.services.auth_service import hash_password
-
-        other = User(email="other@test.com", password_hash=hash_password("pass"))
-        db.session.add(other)
-        db.session.flush()
-
-        hysa_type = db.session.query(AccountType).filter_by(name="hysa").one()
-        other_acct = Account(
-            user_id=other.id,
-            account_type_id=hysa_type.id,
-            name="Other HYSA",
-            current_anchor_balance=Decimal("5000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.commit()
+    def test_hysa_detail_idor(self, auth_client, second_user, db):
+        """GET another user's HYSA account is rejected
+        and does not leak victim data."""
+        other_acct, _ = _create_other_hysa(second_user, db.session)
 
         resp = auth_client.get(f"/accounts/{other_acct.id}/hysa")
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/accounts" in location, (
+            f"IDOR redirect went to {location}, expected /accounts"
+        )
+        assert b"Other HYSA" not in resp.data, (
+            "IDOR response leaked victim's account name"
+        )
 
     def test_hysa_detail_nonexistent(self, auth_client, seed_user, db):
         """Bad account ID → redirect."""
@@ -122,33 +134,40 @@ class TestHysaParamsUpdate:
         params = db.session.query(HysaParams).filter_by(account_id=account.id).one()
         assert params.apy == Decimal("0.04500")
 
-    def test_hysa_params_update_idor(self, app, auth_client, seed_user, db):
-        """POST to other user's account → redirect."""
-        from app.models.user import User
-        from app.services.auth_service import hash_password
+    def test_hysa_params_update_idor(self, auth_client, second_user, db):
+        """POST to another user's HYSA params is rejected
+        and leaves the victim's data completely unchanged."""
+        # Phase A: Setup victim's data with known values.
+        other_acct, _ = _create_other_hysa(second_user, db.session)
+        original = db.session.query(HysaParams).filter_by(
+            account_id=other_acct.id
+        ).one()
+        orig_apy = original.apy
+        orig_freq = original.compounding_frequency
 
-        other = User(email="other2@test.com", password_hash=hash_password("pass"))
-        db.session.add(other)
-        db.session.flush()
-
-        hysa_type = db.session.query(AccountType).filter_by(name="hysa").one()
-        other_acct = Account(
-            user_id=other.id,
-            account_type_id=hysa_type.id,
-            name="Other HYSA 2",
-            current_anchor_balance=Decimal("5000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.flush()
-        other_params = HysaParams(account_id=other_acct.id)
-        db.session.add(other_params)
-        db.session.commit()
-
+        # Phase B: Attack.
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/hysa/params",
-            data={"apy": "0.05000", "compounding_frequency": "daily"},
+            data={"apy": "0.09000", "compounding_frequency": "monthly"},
         )
+
+        # Phase C: Verify no state change.
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/accounts" in location, (
+            f"IDOR redirect went to {location}, expected /accounts"
+        )
+
+        db.session.expire_all()
+        after = db.session.query(HysaParams).filter_by(
+            account_id=other_acct.id
+        ).one()
+        assert after.apy == orig_apy, (
+            "IDOR attack modified apy!"
+        )
+        assert after.compounding_frequency == orig_freq, (
+            "IDOR attack modified compounding_frequency!"
+        )
 
 
 class TestCreateHysaAccount:

@@ -88,23 +88,6 @@ def _create_pension(seed_user, db_session, salary_profile=None):
     return pension
 
 
-def _create_other_user(db_session):
-    """Create a second user for IDOR tests."""
-    from app.services.auth_service import hash_password
-    from app.models.user import User, UserSettings
-
-    user = User(
-        email="other@shekel.local",
-        password_hash=hash_password("otherpass"),
-        display_name="Other User",
-    )
-    db_session.add(user)
-    db_session.flush()
-
-    settings = UserSettings(user_id=user.id)
-    db_session.add(settings)
-    db_session.commit()
-    return user
 
 
 def _create_retirement_account(seed_user, db_session, type_name="401k"):
@@ -212,11 +195,13 @@ class TestPensionCRUD:
         db.session.refresh(pension)
         assert pension.is_active is False
 
-    def test_edit_pension_idor(self, auth_client, seed_user, db, seed_periods):
-        """Cannot edit another user's pension."""
-        other_user = _create_other_user(db.session)
+    def test_edit_pension_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """GET another user's pension edit form is rejected
+        and does not leak victim data."""
         pension = PensionProfile(
-            user_id=other_user.id,
+            user_id=second_user["user"].id,
             name="Other Pension",
             benefit_multiplier=Decimal("0.01850"),
             consecutive_high_years=4,
@@ -224,14 +209,24 @@ class TestPensionCRUD:
         )
         db.session.add(pension)
         db.session.commit()
+
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/retirement" in location, (
+            f"IDOR redirect went to {location}, expected /retirement"
+        )
+        assert b"Other Pension" not in resp.data, (
+            "IDOR response leaked victim's pension name"
+        )
 
-    def test_delete_pension_idor(self, auth_client, seed_user, db, seed_periods):
-        """Cannot delete another user's pension."""
-        other_user = _create_other_user(db.session)
+    def test_delete_pension_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """POST delete on another user's pension is rejected
+        and leaves all fields unchanged."""
         pension = PensionProfile(
-            user_id=other_user.id,
+            user_id=second_user["user"].id,
             name="Other Pension",
             benefit_multiplier=Decimal("0.01850"),
             consecutive_high_years=4,
@@ -239,10 +234,30 @@ class TestPensionCRUD:
         )
         db.session.add(pension)
         db.session.commit()
+
+        # Snapshot mutable fields.
+        orig_name = pension.name
+        orig_multiplier = pension.benefit_multiplier
+        orig_active = pension.is_active
+
         resp = auth_client.post(f"/retirement/pension/{pension.id}/delete")
         assert resp.status_code == 302
-        db.session.refresh(pension)
-        assert pension.is_active is True  # Should NOT be deactivated
+        location = resp.headers.get("Location", "")
+        assert "/retirement" in location, (
+            f"IDOR redirect went to {location}, expected /retirement"
+        )
+
+        db.session.expire_all()
+        after = db.session.get(PensionProfile, pension.id)
+        assert after.is_active == orig_active, (
+            "IDOR attack deactivated victim's pension!"
+        )
+        assert after.name == orig_name, (
+            "IDOR attack modified victim's pension name!"
+        )
+        assert after.benefit_multiplier == orig_multiplier, (
+            "IDOR attack modified victim's benefit_multiplier!"
+        )
 
 
 class TestRetirementSettings:
@@ -263,12 +278,37 @@ class TestRetirementSettings:
         assert settings.planned_retirement_date == date(2055, 1, 1)
         assert settings.estimated_retirement_tax_rate == Decimal("0.2000")
 
-    def test_update_settings_partial(self, auth_client, seed_user, db, seed_periods):
-        """POST with only SWR still works."""
+    def test_update_settings_partial(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with only SWR persists the value and leaves
+        other retirement fields unchanged."""
+        # Snapshot pre-request values.
+        settings_before = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).one()
+        orig_retirement_date = settings_before.planned_retirement_date
+        orig_tax_rate = settings_before.estimated_retirement_tax_rate
+
         resp = auth_client.post("/retirement/settings", data={
             "safe_withdrawal_rate": "3.5",
         })
         assert resp.status_code == 302
+
+        # Verify SWR was persisted.
+        db.session.expire_all()
+        settings_after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).one()
+        assert settings_after.safe_withdrawal_rate == Decimal("0.0350"), (
+            "SWR was not persisted correctly"
+        )
+        assert settings_after.planned_retirement_date == orig_retirement_date, (
+            "Partial update modified planned_retirement_date!"
+        )
+        assert settings_after.estimated_retirement_tax_rate == orig_tax_rate, (
+            "Partial update modified estimated_retirement_tax_rate!"
+        )
 
 
 class TestRetirementProjections:

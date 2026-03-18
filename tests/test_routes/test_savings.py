@@ -27,8 +27,12 @@ from app.services.auth_service import hash_password
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_savings_account(seed_user):
+def _create_savings_account(seed_user, name="Savings"):
     """Create a savings account for the test user.
+
+    Args:
+        seed_user: The seed user fixture dict.
+        name: Account display name (default "Savings").
 
     Returns:
         Account: the new savings account.
@@ -37,7 +41,7 @@ def _create_savings_account(seed_user):
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
-        name="Savings",
+        name=name,
         current_anchor_balance=Decimal("5000.00"),
     )
     db.session.add(acct)
@@ -610,21 +614,91 @@ class TestGoalDelete:
 class TestGoalIdempotency:
     """Tests for unique constraint on savings goals."""
 
-    def test_duplicate_goal_name_same_account(self, app, auth_client, seed_user):
-        """Creating two goals with the same name+account raises IntegrityError."""
-        from sqlalchemy.exc import IntegrityError
-        import pytest
-
+    def test_duplicate_goal_name_same_account(self, app, auth_client, seed_user, seed_periods):
+        """POST /savings/goals twice with the same name+account returns a
+        flash warning on the second attempt, and creating the same name
+        on a different account still succeeds."""
         with app.app_context():
             acct = _create_savings_account(seed_user)
-            _create_goal(seed_user, acct, name="Emergency Fund")
+            form_data = {
+                "account_id": str(acct.id),
+                "name": "Emergency Fund",
+                "target_amount": "5000.00",
+            }
 
-            # Second goal with same name+account should violate unique constraint.
-            # The route doesn't catch IntegrityError, so it bubbles up.
-            with pytest.raises(IntegrityError, match="uq_savings_goals_user_acct_name"):
-                auth_client.post("/savings/goals", data={
-                    "account_id": acct.id,
-                    "name": "Emergency Fund",
-                    "target_amount": "5000.00",
-                })
-            db.session.rollback()
+            # -- First submission: succeeds --
+            resp1 = auth_client.post("/savings/goals", data=form_data)
+            assert resp1.status_code == 302, (
+                f"First submit returned {resp1.status_code}, expected 302"
+            )
+
+            goal = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="Emergency Fund",
+            ).one()
+            assert goal.target_amount == Decimal("5000.00")
+            original_goal_id = goal.id
+
+            # -- Second submission: duplicate, handled gracefully --
+            resp2 = auth_client.post("/savings/goals", data=form_data)
+            assert resp2.status_code == 302, (
+                f"Duplicate submit returned {resp2.status_code}, expected 302"
+            )
+
+            location = resp2.headers.get("Location", "")
+            assert "/savings" in location, (
+                f"Redirect went to {location}, expected /savings"
+            )
+
+            # Follow redirect and verify flash warning.
+            resp3 = auth_client.get(location)
+            assert resp3.status_code == 200
+            assert b"already exists" in resp3.data, (
+                "Flash warning about duplicate goal not found"
+            )
+
+            # -- DB state: exactly 1 goal, unchanged --
+            goal_count = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="Emergency Fund",
+            ).count()
+            assert goal_count == 1, (
+                f"Expected 1 goal, found {goal_count}"
+            )
+
+            # Original goal not modified.
+            db.session.expire_all()
+            original_goal = db.session.get(SavingsGoal, original_goal_id)
+            assert original_goal.target_amount == Decimal("5000.00")
+
+            # Session health check.
+            total_goals = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert total_goals >= 1
+
+            # -- Same name on DIFFERENT account must still succeed --
+            acct2 = _create_savings_account(seed_user, "Second Savings")
+            db.session.commit()
+            resp4 = auth_client.post("/savings/goals", data={
+                "account_id": str(acct2.id),
+                "name": "Emergency Fund",
+                "target_amount": "3000.00",
+            })
+            assert resp4.status_code == 302, (
+                f"Same name on different account returned {resp4.status_code}, "
+                "expected 302 (should succeed)"
+            )
+
+            # Now 2 goals named "Emergency Fund" exist, on different accounts.
+            all_ef_goals = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+                name="Emergency Fund",
+            ).all()
+            assert len(all_ef_goals) == 2, (
+                f"Expected 2 goals named 'Emergency Fund', found {len(all_ef_goals)}"
+            )
+            account_ids = {g.account_id for g in all_ef_goals}
+            assert account_ids == {acct.id, acct2.id}

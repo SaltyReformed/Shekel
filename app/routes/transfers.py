@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.transfer_template import TransferTemplate
@@ -151,7 +152,13 @@ def create_transfer_template():
         **data,
     )
     db.session.add(template)
-    db.session.flush()
+
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        flash("A recurring transfer with that name already exists.", "warning")
+        return redirect(url_for("transfers.list_transfer_templates"))
 
     # Auto-generate transfers from the rule into future periods.
     if rule:

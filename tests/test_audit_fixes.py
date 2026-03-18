@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.user import User, UserSettings
@@ -449,7 +450,7 @@ class TestUniqueConstraints:
             default_amount=Decimal("200.00"),
         )
         db.session.add(t2)
-        with pytest.raises(Exception):  # IntegrityError
+        with pytest.raises(IntegrityError, match="uq_transfer_templates_user_name"):
             db.session.flush()
         db.session.rollback()
 
@@ -473,6 +474,6 @@ class TestUniqueConstraints:
             target_amount=Decimal("10000.00"),
         )
         db.session.add(g2)
-        with pytest.raises(Exception):  # IntegrityError
+        with pytest.raises(IntegrityError, match="uq_savings_goals_user_acct_name"):
             db.session.flush()
         db.session.rollback()

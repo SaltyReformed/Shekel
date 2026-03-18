@@ -42,23 +42,22 @@ def _create_investment_params(db_session, account_id, **overrides):
     return params
 
 
-def _create_other_user(db_session):
-    """Create a second user for IDOR tests."""
-    from app.services.auth_service import hash_password
-    from app.models.user import User, UserSettings
+def _create_other_investment(second_user, db_session):
+    """Create an investment account owned by the second user.
 
-    user = User(
-        email="other@shekel.local",
-        password_hash=hash_password("otherpass"),
-        display_name="Other User",
+    Builds on the shared second_user fixture. Returns the Account
+    (no InvestmentParams -- IDOR tests verify none get created).
+    """
+    acct_type = db_session.query(AccountType).filter_by(name="401k").one()
+    account = Account(
+        user_id=second_user["user"].id,
+        account_type_id=acct_type.id,
+        name="Other 401k",
+        current_anchor_balance=Decimal("10000.00"),
     )
-    db_session.add(user)
-    db_session.flush()
-
-    settings = UserSettings(user_id=user.id)
-    db_session.add(settings)
+    db_session.add(account)
     db_session.commit()
-    return user
+    return account
 
 
 class TestInvestmentDashboard:
@@ -80,20 +79,22 @@ class TestInvestmentDashboard:
         assert resp.status_code == 200
         assert b"50,000.00" in resp.data
 
-    def test_dashboard_idor(self, auth_client, seed_user, db, seed_periods):
-        """Other user's account → redirect."""
-        other_user = _create_other_user(db.session)
-        acct_type = db.session.query(AccountType).filter_by(name="401k").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=acct_type.id,
-            name="Other 401k",
-            current_anchor_balance=Decimal("10000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.commit()
+    def test_dashboard_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """GET another user's investment dashboard is rejected
+        and does not leak victim data."""
+        other_acct = _create_other_investment(second_user, db.session)
+
         resp = auth_client.get(f"/accounts/{other_acct.id}/investment")
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/savings" in location, (
+            f"IDOR redirect went to {location}, expected /savings"
+        )
+        assert b"Other 401k" not in resp.data, (
+            "IDOR response leaked victim's account name"
+        )
 
     def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods):
         """Nonexistent account → redirect."""
@@ -179,18 +180,15 @@ class TestInvestmentParams:
         assert params.employer_match_percentage == Decimal("1.0000")
         assert params.employer_match_cap_percentage == Decimal("0.0600")
 
-    def test_params_idor(self, auth_client, seed_user, db, seed_periods):
-        """Cannot update params on another user's account."""
-        other_user = _create_other_user(db.session)
-        acct_type = db.session.query(AccountType).filter_by(name="401k").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=acct_type.id,
-            name="Other 401k",
-            current_anchor_balance=Decimal("10000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.commit()
+    def test_params_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """POST to another user's investment params is rejected
+        and does not create any InvestmentParams row."""
+        # Phase A: Setup victim's account with no params.
+        other_acct = _create_other_investment(second_user, db.session)
+
+        # Phase B: Attack.
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/investment/params",
             data={
@@ -198,10 +196,24 @@ class TestInvestmentParams:
                 "employer_contribution_type": "none",
             },
         )
+
+        # Phase C: Verify no state change.
         assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "/savings" in location, (
+            f"IDOR redirect went to {location}, expected /savings"
+        )
+
+        db.session.expire_all()
+        created = db.session.query(InvestmentParams).filter_by(
+            account_id=other_acct.id
+        ).first()
+        assert created is None, (
+            "IDOR attack created InvestmentParams on victim's account!"
+        )
 
     def test_validation_error(self, auth_client, seed_user, db, seed_periods):
-        """Invalid data flashes error and redirects."""
+        """Invalid data flashes error, redirects, and creates no params."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/investment/params",
@@ -211,6 +223,15 @@ class TestInvestmentParams:
             },
         )
         assert resp.status_code == 302
+
+        # Verify no InvestmentParams row was created.
+        db.session.expire_all()
+        created = db.session.query(InvestmentParams).filter_by(
+            account_id=acct.id
+        ).first()
+        assert created is None, (
+            "Invalid data created an InvestmentParams row!"
+        )
 
 
 class TestGrowthChartFragment:
@@ -251,21 +272,17 @@ class TestGrowthChartFragment:
         assert b"growthChart" in resp.data
 
     def test_growth_chart_idor(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods,
     ):
-        """Other user's account returns 404."""
-        other_user = _create_other_user(db.session)
-        acct_type = db.session.query(AccountType).filter_by(name="401k").one()
-        other_acct = Account(
-            user_id=other_user.id,
-            account_type_id=acct_type.id,
-            name="Other 401k",
-            current_anchor_balance=Decimal("10000.00"),
-        )
-        db.session.add(other_acct)
-        db.session.commit()
+        """GET another user's growth chart returns 404
+        and does not leak victim data."""
+        other_acct = _create_other_investment(second_user, db.session)
+
         resp = auth_client.get(
             f"/accounts/{other_acct.id}/investment/growth-chart",
             headers={"HX-Request": "true"},
         )
         assert resp.status_code == 404
+        assert b"Other 401k" not in resp.data, (
+            "IDOR response leaked victim's account name"
+        )

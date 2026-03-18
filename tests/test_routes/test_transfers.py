@@ -255,25 +255,92 @@ class TestTemplateCreate:
             assert b"Please correct the highlighted errors" in response.data
 
     def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods):
-        """POST /transfers twice with the same name triggers unique constraint."""
+        """POST /transfers twice with the same name returns a flash warning
+        on the second attempt instead of a 500 error, and creates exactly
+        one template in the database."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            data = {
+            form_data = {
                 "name": "Duplicate Transfer",
                 "default_amount": "100.00",
-                "from_account_id": seed_user["account"].id,
-                "to_account_id": savings.id,
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": "every_period",
             }
 
-            # First submit succeeds.
-            response1 = auth_client.post("/transfers", data=data, follow_redirects=True)
-            assert b"created" in response1.data
+            # -- First submission: succeeds --
+            resp1 = auth_client.post("/transfers", data=form_data)
+            assert resp1.status_code == 302, (
+                f"First submit returned {resp1.status_code}, expected 302"
+            )
 
-            # Second submit hits unique constraint (unhandled → IntegrityError).
-            from sqlalchemy.exc import IntegrityError
-            import pytest
-            with pytest.raises(IntegrityError, match="uq_transfer_templates_user_name"):
-                auth_client.post("/transfers", data=data, follow_redirects=True)
+            # Verify creation via DB.
+            template = db.session.query(TransferTemplate).filter_by(
+                user_id=seed_user["user"].id,
+                name="Duplicate Transfer",
+            ).one()
+            assert template.default_amount == Decimal("100.00")
+
+            # Record how many transfers were generated.
+            first_submit_transfer_count = db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count()
+            assert first_submit_transfer_count > 0, (
+                "Recurrence should have generated at least one transfer"
+            )
+
+            # -- Second submission: duplicate name, handled gracefully --
+            resp2 = auth_client.post("/transfers", data=form_data)
+            assert resp2.status_code == 302, (
+                f"Second submit returned {resp2.status_code}, expected 302 "
+                "(not 500 -- IntegrityError should be caught)"
+            )
+
+            # Verify redirect target.
+            location = resp2.headers.get("Location", "")
+            assert "/transfers" in location, (
+                f"Redirect went to {location}, expected /transfers list"
+            )
+
+            # Follow redirect and verify flash warning.
+            resp3 = auth_client.get(location)
+            assert resp3.status_code == 200
+            assert b"already exists" in resp3.data, (
+                "Flash warning about duplicate name not found in response"
+            )
+
+            # -- Verify database state: exactly 1 template, no orphans --
+            template_count = db.session.query(TransferTemplate).filter_by(
+                user_id=seed_user["user"].id,
+                name="Duplicate Transfer",
+            ).count()
+            assert template_count == 1, (
+                f"Expected exactly 1 template, found {template_count}"
+            )
+
+            # Transfer count unchanged (second submit was rolled back).
+            final_transfer_count = db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count()
+            assert final_transfer_count == first_submit_transfer_count, (
+                f"Transfer count changed from {first_submit_transfer_count} "
+                f"to {final_transfer_count} after rolled-back duplicate"
+            )
+
+            # RecurrenceRule count: exactly 1 for this template.
+            rule_count = db.session.query(RecurrenceRule).filter_by(
+                id=template.recurrence_rule_id,
+            ).count()
+            assert rule_count == 1, (
+                f"Expected 1 recurrence rule, found {rule_count}"
+            )
+
+            # Session health check: a subsequent query must not raise
+            # InvalidRequestError (proves rollback was effective).
+            total_templates = db.session.query(TransferTemplate).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert total_templates >= 1
 
 
 class TestTemplateUpdate:
