@@ -134,8 +134,11 @@ def db(app, setup_database):
 
         yield _db
 
-        # Clean up after each test.
-        _db.session.rollback()
+        # Clean up after each test: rollback any uncommitted work,
+        # then close the session and return the connection.  Using
+        # remove() instead of just rollback() ensures cleanup even
+        # when nested app_context() blocks already called remove().
+        _db.session.remove()
 
 
 @pytest.fixture()

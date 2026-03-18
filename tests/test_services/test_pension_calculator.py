@@ -124,7 +124,14 @@ class TestCalculateBenefit:
         assert result.monthly_benefit == expected_monthly
 
     def test_very_short_service(self):
-        """Less than 1 year of service."""
+        """Less than 1 year of service.
+
+        days = (2026-06-01 - 2026-01-01) = 151
+        years = (151 / 365.25).quantize(0.01) = 0.41
+        high_salary_avg = 80000.00 (window min(4,1)=1)
+        annual = 0.0185 * 0.41 * 80000 = 606.80
+        monthly = 606.80 / 12 = 50.57
+        """
         salary_by_year = [(2026, Decimal("80000"))]
         result = calculate_benefit(
             benefit_multiplier=Decimal("0.0185"),
@@ -133,8 +140,15 @@ class TestCalculateBenefit:
             planned_retirement_date=date(2026, 6, 1),
             salary_by_year=salary_by_year,
         )
-        assert result.years_of_service < Decimal("1.00")
-        assert result.annual_benefit > ZERO
+        assert result.years_of_service == Decimal("0.41"), (
+            f"Expected 0.41 years, got {result.years_of_service}"
+        )
+        assert result.annual_benefit == Decimal("606.80"), (
+            f"Expected annual 606.80, got {result.annual_benefit}"
+        )
+        assert result.monthly_benefit == Decimal("50.57"), (
+            f"Expected monthly 50.57, got {result.monthly_benefit}"
+        )
 
 
 class TestYearsOfService:
@@ -185,6 +199,13 @@ class TestProjectSalariesByYear:
             assert salary == Decimal("80000.00")
 
     def test_with_recurring_raise(self):
+        """Recurring 3% raise compounds each year.
+
+        FakePeriod uses month=12, so month >= effective_month=3 always.
+        2026: 1 application  → 80000 * 1.03   = 82400.00
+        2027: 2 applications → 80000 * 1.03^2 = 84872.00
+        2028: 3 applications → 80000 * 1.03^3 = 87418.16
+        """
         raises = [
             FakeRaise(percentage="0.03", effective_month=3,
                       effective_year=2026, is_recurring=True),
@@ -192,7 +213,15 @@ class TestProjectSalariesByYear:
         result = project_salaries_by_year(
             Decimal("80000"), raises, 2026, 2028,
         )
-        # 2026: 80000 * 1.03, 2027: * 1.03^2, 2028: * 1.03^3
-        assert result[0][1] > Decimal("80000")
-        assert result[1][1] > result[0][1]
-        assert result[2][1] > result[1][1]
+        # 80000 * 1.03 = 82400.00
+        assert result[0][1] == Decimal("82400.00"), (
+            f"2026 salary: expected 82400.00, got {result[0][1]}"
+        )
+        # 80000 * 1.03^2 = 84872.00
+        assert result[1][1] == Decimal("84872.00"), (
+            f"2027 salary: expected 84872.00, got {result[1][1]}"
+        )
+        # 80000 * 1.03^3 = 87418.16
+        assert result[2][1] == Decimal("87418.16"), (
+            f"2028 salary: expected 87418.16, got {result[2][1]}"
+        )

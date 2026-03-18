@@ -12,6 +12,7 @@ from app.services.amortization_engine import (
     AmortizationSummary,
     calculate_monthly_payment,
     calculate_payoff_by_date,
+    calculate_remaining_months,
     calculate_summary,
     generate_schedule,
 )
@@ -231,7 +232,18 @@ class TestCalculateSummary:
         assert summary.interest_saved == Decimal("0.00")
 
     def test_summary_with_extra(self):
-        """Extra payment → months saved, interest saved > 0."""
+        """Extra $200/mo on $200k at 6.5% over 30 years.
+
+        REGRESSION LOCK: months_saved and interest_saved values
+        were derived from running generate_schedule (360-month
+        independent computation is impractical to hand-verify).
+        The spot-checks below independently verify the first 3
+        months of the accelerated schedule to anchor trust in
+        the regression values.
+
+        months_saved = 360 - 250 = 110
+        interest_saved = 255085.82 - 165011.16 = 90074.66
+        """
         summary = calculate_summary(
             current_principal=Decimal("200000"),
             annual_rate=Decimal("0.065"),
@@ -241,9 +253,64 @@ class TestCalculateSummary:
             term_months=360,
             extra_monthly=Decimal("200"),
         )
-        assert summary.months_saved > 0
-        assert summary.interest_saved > 0
+        assert summary.monthly_payment == Decimal("1264.14"), (
+            f"Expected payment 1264.14, got {summary.monthly_payment}"
+        )
+        assert summary.months_saved == 110, (
+            f"Expected 110 months saved, got {summary.months_saved}"
+        )
+        assert summary.interest_saved == Decimal("90074.66"), (
+            f"Expected interest saved 90074.66, "
+            f"got {summary.interest_saved}"
+        )
         assert summary.payoff_date_with_extra < summary.payoff_date
+
+        # --- Independent spot-checks of accelerated schedule ---
+        accel = generate_schedule(
+            Decimal("200000"), Decimal("0.065"), 360,
+            extra_monthly=Decimal("200"),
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+
+        # Month 1: interest = (200000 * 0.065/12).Q = 1083.33
+        # principal = 1264.14 - 1083.33 = 180.81
+        # extra = 200, balance = 200000 - 180.81 - 200 = 199619.19
+        assert accel[0].interest == Decimal("1083.33"), (
+            f"Month 1 interest: expected 1083.33, "
+            f"got {accel[0].interest}"
+        )
+        assert accel[0].principal == Decimal("180.81"), (
+            f"Month 1 principal: expected 180.81, "
+            f"got {accel[0].principal}"
+        )
+        assert accel[0].remaining_balance == Decimal("199619.19"), (
+            f"Month 1 balance: expected 199619.19, "
+            f"got {accel[0].remaining_balance}"
+        )
+
+        # Month 2: interest = (199619.19 * 0.065/12).Q = 1081.27
+        # principal = 1264.14 - 1081.27 = 182.87
+        # balance = 199619.19 - 182.87 - 200 = 199236.32
+        assert accel[1].interest == Decimal("1081.27"), (
+            f"Month 2 interest: expected 1081.27, "
+            f"got {accel[1].interest}"
+        )
+        assert accel[1].remaining_balance == Decimal("199236.32"), (
+            f"Month 2 balance: expected 199236.32, "
+            f"got {accel[1].remaining_balance}"
+        )
+
+        # Month 3: interest = (199236.32 * 0.065/12).Q = 1079.20
+        # principal = 1264.14 - 1079.20 = 184.94
+        # balance = 199236.32 - 184.94 - 200 = 198851.38
+        assert accel[2].interest == Decimal("1079.20"), (
+            f"Month 3 interest: expected 1079.20, "
+            f"got {accel[2].interest}"
+        )
+        assert accel[2].remaining_balance == Decimal("198851.38"), (
+            f"Month 3 balance: expected 198851.38, "
+            f"got {accel[2].remaining_balance}"
+        )
 
     def test_summary_no_extra(self):
         """No extra → months_saved = 0, interest_saved = 0."""
@@ -264,7 +331,13 @@ class TestPayoffByDate:
     """Tests for payoff-by-date calculations."""
 
     def test_achievable_target(self):
-        """Target 15 years → returns required extra monthly."""
+        """Target 15 years on $200k at 6.5% → $478.08 extra/mo.
+
+        REGRESSION LOCK: Value determined by running the
+        deterministic binary search to convergence
+        (hi - lo <= 0.01). Verified below by proving $478.08
+        achieves the target and $478.07 does not.
+        """
         result = calculate_payoff_by_date(
             current_principal=Decimal("200000"),
             annual_rate=Decimal("0.065"),
@@ -273,8 +346,31 @@ class TestPayoffByDate:
             origination_date=date(2026, 1, 1),
             payment_day=1,
         )
-        assert result is not None
-        assert result > Decimal("0.00")
+        assert result == Decimal("478.08"), (
+            f"Expected extra payment 478.08, got {result}"
+        )
+
+        # Verify $478.08 actually achieves the 15-year target.
+        schedule_at = generate_schedule(
+            Decimal("200000"), Decimal("0.065"), 360,
+            extra_monthly=Decimal("478.08"),
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        assert schedule_at[-1].payment_date <= date(2041, 1, 1), (
+            f"$478.08 extra should pay off by 2041-01-01, "
+            f"but last payment is {schedule_at[-1].payment_date}"
+        )
+
+        # Verify $478.07 (one penny less) does NOT achieve it.
+        schedule_under = generate_schedule(
+            Decimal("200000"), Decimal("0.065"), 360,
+            extra_monthly=Decimal("478.07"),
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        assert schedule_under[-1].payment_date > date(2041, 1, 1), (
+            f"$478.07 extra should NOT pay off by 2041-01-01, "
+            f"but last payment is {schedule_under[-1].payment_date}"
+        )
 
     def test_target_too_soon(self):
         """Target in past → returns None."""
@@ -311,3 +407,58 @@ class TestPayoffByDate:
             payment_day=1,
         )
         assert result == Decimal("0.00")
+
+
+class TestCalculateRemainingMonths:
+    """Tests for calculate_remaining_months date arithmetic."""
+
+    def test_remaining_months_basic(self):
+        """360-month loan, 60 months elapsed = 300 remaining.
+
+        months_elapsed = (2025-2020)*12 + (1-1) = 60
+        remaining = max(0, 360-60) = 300
+        """
+        result = calculate_remaining_months(
+            date(2020, 1, 1), 360, as_of=date(2025, 1, 1),
+        )
+        assert result == 300, (
+            f"Expected 300 remaining, got {result}"
+        )
+
+    def test_remaining_months_past_term(self):
+        """12-month loan, 60 months elapsed = 0 remaining.
+
+        months_elapsed = (2025-2020)*12 + (1-1) = 60
+        remaining = max(0, 12-60) = 0
+        """
+        result = calculate_remaining_months(
+            date(2020, 1, 1), 12, as_of=date(2025, 1, 1),
+        )
+        assert result == 0, (
+            f"Expected 0 remaining, got {result}"
+        )
+
+    def test_remaining_months_same_month(self):
+        """as_of same month as origination = full term remaining.
+
+        months_elapsed = (2025-2025)*12 + (1-1) = 0
+        remaining = max(0, 360-0) = 360
+        """
+        result = calculate_remaining_months(
+            date(2025, 1, 1), 360, as_of=date(2025, 1, 15),
+        )
+        assert result == 360, (
+            f"Expected 360 remaining, got {result}"
+        )
+
+    def test_remaining_months_none_as_of(self):
+        """Default as_of=today returns a non-negative int."""
+        result = calculate_remaining_months(
+            date(2020, 1, 1), 360,
+        )
+        assert isinstance(result, int), (
+            f"Expected int, got {type(result)}"
+        )
+        assert result >= 0, (
+            f"Expected >= 0, got {result}"
+        )

@@ -118,17 +118,28 @@ class TestEmployerContribution:
 
 class TestProjectBalance:
     def test_basic_growth_no_contributions(self, biweekly_periods):
-        """Balance grows at assumed rate with no contributions."""
+        """Balance grows at assumed rate with no contributions.
+
+        period_return = (1.07)^(13/365) - 1
+        growth = (10000 * period_return).quantize(0.01) = 24.13
+        end_balance = 10000 + 24.13 = 10024.13
+        """
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
             periods=biweekly_periods[:1],
         )
         assert len(result) == 1
-        assert result[0].end_balance > Decimal("10000")
         assert result[0].contribution == ZERO
         assert result[0].employer_contribution == ZERO
-        assert result[0].growth > ZERO
+        # (1.07)^(13/365) - 1 ≈ 0.002413; 10000 * 0.002413 = 24.13
+        assert result[0].growth == Decimal("24.13"), (
+            f"Period 0 growth: expected 24.13, got {result[0].growth}"
+        )
+        assert result[0].end_balance == Decimal("10024.13"), (
+            f"Period 0 end_balance: expected 10024.13, "
+            f"got {result[0].end_balance}"
+        )
 
     def test_growth_compounds_over_periods(self, biweekly_periods):
         """Growth compounds across multiple periods."""
@@ -143,7 +154,14 @@ class TestProjectBalance:
             assert result[i].start_balance == result[i - 1].end_balance
 
     def test_with_periodic_contributions(self, biweekly_periods):
-        """Contributions added each period."""
+        """Contributions added each period.
+
+        Each period has 13 days. Growth compounds on starting balance,
+        then $500 contribution is added.
+        P0: 10000 + 24.13 + 500 = 10524.13
+        P1: 10524.13 + 25.39 + 500 = 11049.52
+        P2: 11049.52 + 26.66 + 500 = 11576.18
+        """
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
@@ -151,9 +169,30 @@ class TestProjectBalance:
             periodic_contribution=Decimal("500"),
         )
         for pb in result:
-            assert pb.contribution == Decimal("500")
-        # End balance should reflect growth + contributions.
-        assert result[-1].end_balance > Decimal("10000") + Decimal("1500")
+            assert pb.contribution == Decimal("500"), (
+                f"Expected contribution 500, got {pb.contribution}"
+            )
+        # Period 0: growth on 10000
+        assert result[0].growth == Decimal("24.13"), (
+            f"P0 growth: expected 24.13, got {result[0].growth}"
+        )
+        assert result[0].end_balance == Decimal("10524.13"), (
+            f"P0 end: expected 10524.13, got {result[0].end_balance}"
+        )
+        # Period 1: growth on 10524.13
+        assert result[1].growth == Decimal("25.39"), (
+            f"P1 growth: expected 25.39, got {result[1].growth}"
+        )
+        assert result[1].end_balance == Decimal("11049.52"), (
+            f"P1 end: expected 11049.52, got {result[1].end_balance}"
+        )
+        # Period 2: growth on 11049.52
+        assert result[2].growth == Decimal("26.66"), (
+            f"P2 growth: expected 26.66, got {result[2].growth}"
+        )
+        assert result[2].end_balance == Decimal("11576.18"), (
+            f"P2 end: expected 11576.18, got {result[2].end_balance}"
+        )
 
     def test_contribution_limit_caps_contributions(self, biweekly_periods):
         """Contributions capped at annual limit."""
@@ -262,14 +301,24 @@ class TestProjectBalance:
         assert total == Decimal("2000")
 
     def test_negative_return_rate(self, biweekly_periods):
-        """Balance decreases with negative return."""
+        """Balance decreases with negative return.
+
+        period_return = (0.90)^(13/365) - 1
+        growth = (10000 * period_return).quantize(0.01) = -37.46
+        end_balance = 10000 - 37.46 = 9962.54
+        """
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("-0.10"),
             periods=biweekly_periods[:1],
         )
-        assert result[0].growth < ZERO
-        assert result[0].end_balance < Decimal("10000")
+        # (0.90)^(13/365) - 1 ≈ -0.003746; 10000 * -0.003746 = -37.46
+        assert result[0].growth == Decimal("-37.46"), (
+            f"Expected growth -37.46, got {result[0].growth}"
+        )
+        assert result[0].end_balance == Decimal("9962.54"), (
+            f"Expected end_balance 9962.54, got {result[0].end_balance}"
+        )
 
     def test_employer_does_not_count_against_limit(self, biweekly_periods):
         """Employer contributions don't reduce employee contribution limit."""

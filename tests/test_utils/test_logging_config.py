@@ -93,6 +93,11 @@ class TestRequestDurationLogLevel:
         assert summaries[-1].levelno == logging.WARNING
         assert summaries[-1].event == "slow_request"
 
+        # Dispose engines from secondary apps to release connections.
+        for secondary_app in (test_app, slow_app):
+            with secondary_app.app_context():
+                db.engine.dispose()
+
 
 class TestRequestLogFields:
     """Tests for standard fields in request summary logs."""

@@ -18,8 +18,14 @@ from app.services.retirement_gap_calculator import (
 
 
 class TestCalculateGap:
-    def test_surplus(self):
-        """Projected savings exceed required savings."""
+    def test_shortfall_when_projected_below_required(self):
+        """Projected savings of $500k fall short of ~$1.025M required.
+
+        net_monthly = 2500 * 26 / 12 = 5416.67
+        gap = 5416.67 - 2000 (pension) = 3416.67
+        required = 3416.67 * 12 / 0.04 = 1,025,001.00
+        shortfall = 500000 - 1025001 = -525,001.00
+        """
         result = calculate_gap(
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("2000"),
@@ -29,14 +35,28 @@ class TestCalculateGap:
             safe_withdrawal_rate=Decimal("0.04"),
             planned_retirement_date=date(2050, 1, 1),
         )
-        # Net monthly = 2500 * 26 / 12 = 5416.67
-        # Gap = 5416.67 - 2000 = 3416.67
-        # Required = 3416.67 * 12 / 0.04 = 1,025,001
-        # Projected = 500000
-        assert result.pre_retirement_net_monthly == Decimal("5416.67")
-        assert result.monthly_income_gap == Decimal("3416.67")
-        assert result.projected_total_savings == Decimal("500000")
-        assert result.savings_surplus_or_shortfall < ZERO  # actually shortfall
+        assert result.pre_retirement_net_monthly == Decimal("5416.67"), (
+            f"Expected net monthly 5416.67, "
+            f"got {result.pre_retirement_net_monthly}"
+        )
+        assert result.monthly_income_gap == Decimal("3416.67"), (
+            f"Expected gap 3416.67, "
+            f"got {result.monthly_income_gap}"
+        )
+        assert result.projected_total_savings == Decimal("500000"), (
+            f"Expected projected 500000, "
+            f"got {result.projected_total_savings}"
+        )
+        # 3416.67 * 12 / 0.04 = 1025001.00
+        assert result.required_retirement_savings == Decimal("1025001.00"), (
+            f"Expected required 1025001.00, "
+            f"got {result.required_retirement_savings}"
+        )
+        # 500000 - 1025001 = -525001.00
+        assert result.savings_surplus_or_shortfall == Decimal("-525001.00"), (
+            f"Expected shortfall -525001.00, "
+            f"got {result.savings_surplus_or_shortfall}"
+        )
 
     def test_shortfall(self):
         """Projected savings less than required."""
@@ -68,7 +88,13 @@ class TestCalculateGap:
         assert result.required_retirement_savings == ZERO
 
     def test_after_tax_view_traditional(self):
-        """Tax rate applied to traditional account balances."""
+        """Tax rate applied to traditional account balances.
+
+        after_tax_projected = 400000*0.80 + 100000 = 420000.00
+        net_monthly = 2000*26/12 = 4333.33, pension=0
+        required = 4333.33*12/0.04 = 1299999.00
+        after_tax_surplus = 420000 - 1299999 = -879999.00
+        """
         result = calculate_gap(
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
@@ -79,8 +105,17 @@ class TestCalculateGap:
             estimated_tax_rate=Decimal("0.20"),
         )
         # After-tax: 400000 * 0.80 + 100000 = 420000
-        assert result.after_tax_projected_savings == Decimal("420000.00")
-        assert result.after_tax_surplus_or_shortfall is not None
+        assert result.after_tax_projected_savings == Decimal("420000.00"), (
+            f"Expected after-tax projected 420000.00, "
+            f"got {result.after_tax_projected_savings}"
+        )
+        # net_monthly = 2000*26/12 = 4333.33, gap = 4333.33
+        # required = 4333.33*12/0.04 = 1299999.00
+        # after_tax_surplus = 420000 - 1299999 = -879999.00
+        assert result.after_tax_surplus_or_shortfall == Decimal("-879999.00"), (
+            f"Expected after-tax shortfall -879999.00, "
+            f"got {result.after_tax_surplus_or_shortfall}"
+        )
 
     def test_after_tax_all_roth(self):
         """All Roth → no tax impact."""
@@ -172,7 +207,11 @@ class TestCalculateGap:
         # Gap = 5416.67 - 4000 = 1416.67
         assert result.after_tax_monthly_pension == Decimal("4000.00")
         assert result.monthly_income_gap == Decimal("1416.67")
-        assert result.required_retirement_savings > ZERO
+        # required = gap * 12 / swr = 1416.67 * 12 / 0.04 = 425001.00
+        assert result.required_retirement_savings == Decimal("425001.00"), (
+            f"Expected required savings 425001.00, "
+            f"got {result.required_retirement_savings}"
+        )
 
     def test_pension_not_taxed_without_tax_rate(self):
         """Without tax rate, pension used as-is (gross) — backward compatible."""
@@ -196,7 +235,11 @@ class TestCalculateGap:
         # After-tax pension = 5000 * 0.75 = 3750
         # Gap = 4333.33 - 3750 = 583.33
         assert result.monthly_income_gap == Decimal("583.33")
-        assert result.required_retirement_savings > ZERO
+        # required = gap * 12 / swr = 583.33 * 12 / 0.04 = 174999.00
+        assert result.required_retirement_savings == Decimal("174999.00"), (
+            f"Expected required savings 174999.00, "
+            f"got {result.required_retirement_savings}"
+        )
 
     def test_pension_tax_zero_pension(self):
         """Tax on zero pension is still zero — no division issues."""

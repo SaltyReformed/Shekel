@@ -379,16 +379,12 @@ class TestHysaBalanceWithInterest:
             expected_balances[period.id] = running + interest
             expected_interest[period.id] = interest
 
-        # Compounding verification: period 25 interest should
-        # exceed period 0 because the balance has grown.
-        assert (
-            expected_interest[periods[25].id]
-            > expected_interest[periods[0].id]
-        ), (
-            "Oracle sanity: period 25 interest "
-            f"{expected_interest[periods[25].id]} should exceed "
-            f"period 0 interest "
-            f"{expected_interest[periods[0].id]}"
+        # Oracle sanity: verify period 0 (id=1) interest matches
+        # the independently verified value from other tests.
+        # interest = Q(10000 * ((1 + 0.045/365)^14 - 1)) = 17.27
+        assert expected_interest[periods[0].id] == Decimal("17.27"), (
+            f"Oracle sanity: period 0 interest expected 17.27, "
+            f"got {expected_interest[periods[0].id]}"
         )
 
         # --- Call the service under test ---

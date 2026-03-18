@@ -9,6 +9,7 @@ import os
 from datetime import timedelta
 
 from dotenv import load_dotenv
+from sqlalchemy.pool import NullPool
 
 # Load .env file if present (development convenience).
 load_dotenv()
@@ -59,6 +60,13 @@ class TestConfig(BaseConfig):
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = False
     RATELIMIT_ENABLED = False
+
+    # NullPool closes connections immediately after use — no pooling.
+    # Prevents stale/leaked connections from holding locks that block
+    # TRUNCATE between tests.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "poolclass": NullPool,
+    }
 
 
 class ProdConfig(BaseConfig):

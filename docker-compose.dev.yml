@@ -44,6 +44,18 @@ services:
       - "5433:5432"
     volumes:
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    # Kill zombie transactions from crashed test runs after 30s,
+    # and keep TCP connections alive so the OS detects dead clients.
+    command:
+      - postgres
+      - -c
+      - idle_in_transaction_session_timeout=30000
+      - -c
+      - tcp_keepalives_idle=60
+      - -c
+      - tcp_keepalives_interval=10
+      - -c
+      - tcp_keepalives_count=3
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel_test"]
       interval: 10s

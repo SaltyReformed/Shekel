@@ -129,6 +129,15 @@ class TestRecurrenceGeneration:
                 assert txn.estimated_amount == Decimal("100.00")
                 assert txn.name == "Test Recurring"
 
+            # Verify 1:1 mapping between transactions and periods.
+            period_ids = {txn.pay_period_id for txn in created}
+            expected_ids = {p.id for p in seed_periods}
+            assert period_ids == expected_ids, (
+                f"Period ID mismatch: "
+                f"missing={expected_ids - period_ids}, "
+                f"extra={period_ids - expected_ids}"
+            )
+
     def test_every_n_periods_with_offset(self, app, db, seed_user, seed_periods):
         """every_n_periods with n=2, offset=1 generates every other period."""
         with app.app_context():
@@ -473,6 +482,296 @@ class TestMatchPeriodsFull:
                                  date(2026, 1, 1))
 
         assert matched == []
+
+
+class TestMatchPeriodsEdgeCaseSafety:
+    """Safety guard tests for invalid inputs to _match_periods.
+
+    These tests verify the engine's behavior when given values that
+    are prevented at the DB level by CHECK constraints but could
+    reach the service via FakeRule objects, direct function calls,
+    or a bypassed validation layer.
+    """
+
+    # -- interval_n edge cases (every_n_periods) --
+
+    def test_every_n_periods_interval_zero_defaults_to_one(
+        self, biweekly_periods
+    ):
+        """interval_n=0 is falsy: 'rule.interval_n or 1' = 1.
+
+        Expected: matches every period (same as interval_n=1).
+        DB constraint ck_recurrence_rules_positive_interval
+        prevents interval_n <= 0 from being stored.
+        This test verifies the service-level fallback behavior.
+        """
+        # NOTE: If this test hangs, interval_n=0 may cause
+        # ZeroDivisionError or infinite loop. The 'or 1' fallback
+        # should prevent this.
+        rule = FakeRule(
+            pattern_name="every_n_periods",
+            interval_n=0,
+            offset_periods=0,
+        )
+        matched = _match_periods(
+            rule, "every_n_periods", biweekly_periods,
+            biweekly_periods[0].start_date,
+        )
+        # 0 or 1 = 1 in Python (0 is falsy), so n=1 and every
+        # period matches.
+        # Prevented in production by
+        # ck_recurrence_rules_positive_interval.
+        assert len(matched) == len(biweekly_periods), (
+            f"Expected {len(biweekly_periods)} periods, "
+            f"got {len(matched)}. interval_n=0 should default "
+            f"to 1 via 'or 1' fallback."
+        )
+
+    def test_every_n_periods_interval_none_defaults_to_one(
+        self, biweekly_periods
+    ):
+        """interval_n=None (DB NULL): 'None or 1' = 1.
+
+        Expected: matches every period (same as interval_n=1).
+        Different failure mode than interval_n=0 — None means
+        the DB column default (1) was not applied.
+        """
+        rule = FakeRule(
+            pattern_name="every_n_periods",
+            interval_n=None,
+            offset_periods=0,
+        )
+        matched = _match_periods(
+            rule, "every_n_periods", biweekly_periods,
+            biweekly_periods[0].start_date,
+        )
+        # None or 1 = 1 in Python, so every period matches.
+        assert len(matched) == len(biweekly_periods), (
+            f"Expected {len(biweekly_periods)} periods, "
+            f"got {len(matched)}. interval_n=None should "
+            f"default to 1 via 'or 1' fallback."
+        )
+
+    # -- day_of_month edge cases (monthly) --
+
+    def test_day_of_month_zero_via_match_periods(
+        self, biweekly_periods
+    ):
+        """day_of_month=0 via _match_periods: '0 or 1' = 1.
+
+        Expected: behaves identically to day_of_month=1.
+        DB constraint ck_recurrence_rules_dom prevents
+        day_of_month < 1 from being stored.
+        """
+        rule_zero = FakeRule(
+            pattern_name="monthly", day_of_month=0,
+        )
+        rule_one = FakeRule(
+            pattern_name="monthly", day_of_month=1,
+        )
+        effective = biweekly_periods[0].start_date
+
+        matched_zero = _match_periods(
+            rule_zero, "monthly", biweekly_periods, effective,
+        )
+        matched_one = _match_periods(
+            rule_one, "monthly", biweekly_periods, effective,
+        )
+        # 0 or 1 = 1 in Python (0 is falsy).
+        # Prevented in production by ck_recurrence_rules_dom.
+        assert len(matched_zero) == len(matched_one), (
+            f"day_of_month=0 matched {len(matched_zero)} "
+            f"periods, day_of_month=1 matched "
+            f"{len(matched_one)}"
+        )
+        assert (
+            [p.id for p in matched_zero]
+            == [p.id for p in matched_one]
+        ), (
+            "day_of_month=0 should produce identical matches "
+            "to day_of_month=1 via 'or 1' fallback"
+        )
+
+    def test_day_of_month_zero_direct_raises(
+        self, biweekly_periods
+    ):
+        """_match_monthly(periods, 0) bypasses 'or 1' fallback.
+
+        Expected: raises ValueError from date(year, month, 0).
+        Two layers of defense: DB constraint
+        ck_recurrence_rules_dom prevents storage, _match_periods
+        'or 1' prevents the crash. Direct call bypasses both.
+        """
+        # Prevented in production by ck_recurrence_rules_dom.
+        # _match_periods applies 'or 1' for falsy values.
+        # Direct call bypasses both — date(y, m, 0) raises.
+        with pytest.raises(ValueError):
+            _match_monthly(biweekly_periods, day_of_month=0)
+
+    def test_day_of_month_32_clamped_to_last_day(
+        self, biweekly_periods
+    ):
+        """day_of_month=32 clamped by min(32, last_day).
+
+        Expected: identical to day_of_month=31 since both clamp
+        to the last day of each month.
+        DB constraint ck_recurrence_rules_dom prevents
+        day_of_month > 31 from being stored.
+        """
+        matched_32 = _match_monthly(
+            biweekly_periods, day_of_month=32,
+        )
+        matched_31 = _match_monthly(
+            biweekly_periods, day_of_month=31,
+        )
+        # min(32, last_day) == min(31, last_day) for all months
+        # since max(last_day) is 31.
+        # Prevented in production by ck_recurrence_rules_dom.
+        assert (
+            [p.id for p in matched_32]
+            == [p.id for p in matched_31]
+        ), (
+            "day_of_month=32 should clamp identically to 31 "
+            "via min(day_of_month, last_day)"
+        )
+
+    def test_day_of_month_none_in_monthly_defaults_to_one(
+        self, biweekly_periods
+    ):
+        """day_of_month=None (DB NULL): 'None or 1' = 1.
+
+        Expected: matches identically to day_of_month=1.
+        DB column allows NULL (optional for non-monthly
+        patterns), so None is a valid state the fallback handles.
+        """
+        rule_none = FakeRule(
+            pattern_name="monthly", day_of_month=None,
+        )
+        rule_one = FakeRule(
+            pattern_name="monthly", day_of_month=1,
+        )
+        effective = biweekly_periods[0].start_date
+
+        matched_none = _match_periods(
+            rule_none, "monthly", biweekly_periods, effective,
+        )
+        matched_one = _match_periods(
+            rule_one, "monthly", biweekly_periods, effective,
+        )
+        # None or 1 = 1 in Python.
+        assert (
+            [p.id for p in matched_none]
+            == [p.id for p in matched_one]
+        ), (
+            "day_of_month=None should produce identical matches "
+            "to day_of_month=1 via 'or 1' fallback"
+        )
+
+    # -- month_of_year edge cases (quarterly, annual) --
+
+    def test_month_of_year_zero_defaults_to_one(
+        self, biweekly_periods
+    ):
+        """month_of_year=0 via _match_periods: '0 or 1' = 1.
+
+        Expected via _match_periods: targets Jan/Apr/Jul/Oct.
+        Expected via direct _match_quarterly: targets
+        Dec/Mar/Jun/Sep (different due to modular arithmetic).
+        DB constraint ck_recurrence_rules_moy prevents
+        month_of_year < 1 from being stored.
+        """
+        effective = biweekly_periods[0].start_date
+
+        # Path (a): via _match_periods — 0 or 1 = 1.
+        # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
+        # Prevented in production by ck_recurrence_rules_moy.
+        rule_zero = FakeRule(
+            pattern_name="quarterly",
+            month_of_year=0,
+            day_of_month=15,
+        )
+        rule_one = FakeRule(
+            pattern_name="quarterly",
+            month_of_year=1,
+            day_of_month=15,
+        )
+        matched_zero = _match_periods(
+            rule_zero, "quarterly",
+            biweekly_periods, effective,
+        )
+        matched_one = _match_periods(
+            rule_one, "quarterly",
+            biweekly_periods, effective,
+        )
+        # 0 or 1 = 1 in Python (0 is falsy).
+        assert (
+            [p.id for p in matched_zero]
+            == [p.id for p in matched_one]
+        ), (
+            "month_of_year=0 via _match_periods should behave "
+            "identically to month_of_year=1"
+        )
+
+        # Path (b): direct _match_quarterly(start_month=0).
+        # No 'or 1' fallback applies.
+        # Formula: ((0-1 + i*3) % 12) + 1 for i=0..3
+        #   i=0: ((-1)%12)+1=12  i=1: (2%12)+1=3
+        #   i=2: (5%12)+1=6     i=3: (8%12)+1=9
+        # Target months = {12, 3, 6, 9} != {1, 4, 7, 10}.
+        direct_zero = _match_quarterly(
+            biweekly_periods, start_month=0,
+            day_of_month=15,
+        )
+        assert len(direct_zero) == 4, (
+            f"Expected 4 quarterly matches for "
+            f"start_month=0, got {len(direct_zero)}"
+        )
+        # Verify which months the direct call targets.
+        direct_months = set()
+        for period in direct_zero:
+            for dt in (period.start_date, period.end_date):
+                target = date(dt.year, dt.month, 15)
+                if period.start_date <= target <= period.end_date:
+                    direct_months.add(dt.month)
+        assert direct_months == {3, 6, 9, 12}, (
+            f"start_month=0 direct should target "
+            f"{{3, 6, 9, 12}}, got {direct_months}. "
+            f"Discrepancy: _match_periods converts 0->1 "
+            f"but direct call uses modular arithmetic."
+        )
+
+    def test_month_of_year_13_annual_raises(
+        self, biweekly_periods
+    ):
+        """month_of_year=13 is truthy: 'or 1' does NOT apply.
+
+        Expected: ValueError from calendar.monthrange(year, 13).
+        The crash propagates through _match_periods since there
+        is no try/except wrapper. Note: quarterly and semi_annual
+        safely wrap month=13 via modular arithmetic to
+        {1,4,7,10}.
+        DB constraint ck_recurrence_rules_moy prevents
+        month_of_year > 12 from being stored.
+        """
+        # Direct call — crashes on monthrange(year, 13).
+        # Prevented in production by ck_recurrence_rules_moy.
+        with pytest.raises(ValueError):
+            _match_annual(
+                biweekly_periods, month=13, day=15,
+            )
+
+        # Via _match_periods — 13 or 1 = 13 (truthy).
+        # No fallback; passes 13 to _match_annual.
+        rule = FakeRule(
+            pattern_name="annual",
+            month_of_year=13,
+            day_of_month=15,
+        )
+        with pytest.raises(ValueError):
+            _match_periods(
+                rule, "annual", biweekly_periods,
+                biweekly_periods[0].start_date,
+            )
 
 
 # --- DB Integration Tests ----------------------------------------------------
@@ -822,3 +1121,98 @@ class TestResolveConflicts:
             assert txn.is_deleted is False
             # Amount unchanged since new_amount was None.
             assert txn.estimated_amount == Decimal("999.99")
+
+
+class TestCrossUserIsolation:
+    """IDOR tests for the recurrence engine."""
+
+    def _make_template_with_rule(
+        self, seed_user, pattern_name, **rule_kwargs
+    ):
+        """Helper: create a template + recurrence rule."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="expense")
+            .one()
+        )
+
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+        )
+        db.session.add(rule)
+        db.session.flush()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Test Recurring",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        db.session.refresh(template)
+        return template
+
+    @pytest.mark.xfail(
+        reason=(
+            "SECURITY: No ownership check in "
+            "generate_for_template. Template from user A "
+            "generates transactions into user B's scenario. "
+            "See recurrence_engine.py:42."
+        ),
+        strict=True,
+    )
+    def test_cross_user_isolation(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """Template owned by user A must not generate into B's scenario.
+
+        generate_for_template receives scenario_id as a trusted
+        parameter with no ownership validation. If user A's
+        template is used with user B's scenario_id, transactions
+        are created in user B's scenario — a real IDOR
+        vulnerability.
+
+        This test asserts the CORRECT behavior (no cross-user
+        generation). Marked xfail because the engine currently
+        lacks this check.
+        """
+        with app.app_context():
+            # Template belongs to seed_user (user A).
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+
+            # SECURITY: Attempt to generate into user B's
+            # scenario using user A's template. This should
+            # be rejected but currently is not.
+            created = recurrence_engine.generate_for_template(
+                template,
+                seed_periods,
+                second_user["scenario"].id,
+            )
+
+            # Correct behavior: no transactions should be
+            # created across user boundaries.
+            assert len(created) == 0, (
+                f"IDOR: Template (user_id="
+                f"{seed_user['user'].id}) generated "
+                f"{len(created)} transactions into scenario "
+                f"(user_id={second_user['user'].id}). "
+                f"generate_for_template needs an ownership "
+                f"check."
+            )

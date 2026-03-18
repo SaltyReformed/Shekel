@@ -50,7 +50,11 @@ class TestErrorPages:
                 html = response.data.decode()
                 assert "Too Many Requests" in html
 
-            # Reset limiter for other tests.
+            # Clean up: dispose the secondary app's engine to release
+            # connections, and reset limiter for other tests.
+            with rate_app.app_context():
+                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                _db.engine.dispose()
             limiter.enabled = False
 
     def test_429_includes_retry_after_header(self, app, seed_user):
@@ -75,6 +79,11 @@ class TestErrorPages:
                 assert response.status_code == 429
                 assert response.headers["Retry-After"] == "900"
 
+            # Clean up: dispose the secondary app's engine to release
+            # connections, and reset limiter for other tests.
+            with rate_app.app_context():
+                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                _db.engine.dispose()
             limiter.enabled = False
 
     def test_500_renders_custom_page(self):
@@ -96,6 +105,11 @@ class TestErrorPages:
             assert response.status_code == 500
             html = response.data.decode()
             assert "Something Went Wrong" in html
+
+        # Dispose the secondary app's engine to release connections.
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
 
     def test_production_debug_false(self, monkeypatch):
         """ProdConfig has DEBUG=False."""

@@ -12,6 +12,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import pytest
 
+from app.services.exceptions import InvalidGrossPayError
+from app.services.tax_calculator import calculate_fica
 from app.services.paycheck_calculator import (
     _apply_raises,
     _is_third_paycheck,
@@ -389,23 +391,68 @@ class TestPaycheckBreakdownProperties:
 class TestCalculatePaycheckPipeline:
     """End-to-end tests for calculate_paycheck()."""
 
-    def test_basic_paycheck_no_deductions(self, base_profile, simple_tax_configs):
-        """Gross, taxes, and net verified end-to-end."""
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+    def test_basic_paycheck_no_deductions(
+        self, base_profile, simple_tax_configs
+    ):
+        """Full pipeline: $60k salary, no deductions, all exact.
+
+        Pipeline trace:
+          gross = 60000/26 = $2,307.69
+          federal: annual 59999.94 - 15k std ded = 44999.94
+            10% bracket: 44999.94*0.10 = 4499.994->4499.99
+            per-period: 4499.99/26 = 173.08
+          state: 59999.94*0.045 = 2700.00, /26 = 103.85
+          SS: 2307.69*0.062 = 143.08
+          Medicare: 2307.69*0.0145 = 33.46
+          net: 2307.69 - 173.08 - 103.85 - 143.08 - 33.46
+             = 1854.22
+        """
+        period = FakePeriod(
+            start_date=date(2026, 1, 16), period_id=1
+        )
         all_periods = [period]
 
-        result = calculate_paycheck(base_profile, period, all_periods,
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            base_profile, period, all_periods,
+            simple_tax_configs
+        )
 
-        assert result.annual_salary == Decimal("60000.00")
-        # 60000 / 26
-        assert result.gross_biweekly == Decimal("2307.69")
-        assert result.federal_tax > ZERO
-        assert result.state_tax > ZERO
-        assert result.social_security > ZERO
-        assert result.medicare > ZERO
-        assert result.net_pay > ZERO
-        assert result.net_pay < result.gross_biweekly
+        assert result.annual_salary == Decimal("60000.00"), (
+            f"annual_salary: expected 60000.00, "
+            f"got {result.annual_salary}"
+        )
+        # 60000 / 26 = 2307.692307... -> 2307.69
+        assert result.gross_biweekly == Decimal("2307.69"), (
+            f"gross_biweekly: expected 2307.69, "
+            f"got {result.gross_biweekly}"
+        )
+        # Pub 15-T: annual=59999.94, taxable=44999.94
+        # 44999.94*0.10=4499.994->4499.99, /26=173.08
+        assert result.federal_tax == Decimal("173.08"), (
+            f"federal_tax: expected 173.08, "
+            f"got {result.federal_tax}"
+        )
+        # state: 59999.94*0.045=2699.9973->2700.00
+        # 2700.00/26=103.846...->103.85
+        assert result.state_tax == Decimal("103.85"), (
+            f"state_tax: expected 103.85, "
+            f"got {result.state_tax}"
+        )
+        # SS: 2307.69*0.062=143.07678->143.08
+        assert result.social_security == Decimal("143.08"), (
+            f"social_security: expected 143.08, "
+            f"got {result.social_security}"
+        )
+        # Medicare: 2307.69*0.0145=33.461505->33.46
+        assert result.medicare == Decimal("33.46"), (
+            f"medicare: expected 33.46, "
+            f"got {result.medicare}"
+        )
+        # net = 2307.69 - 173.08 - 103.85 - 143.08 - 33.46
+        assert result.net_pay == Decimal("1854.22"), (
+            f"net_pay: expected 1854.22, "
+            f"got {result.net_pay}"
+        )
 
     def test_net_pay_formula(self, base_profile, simple_tax_configs):
         """net = gross - pre_tax - fed - state - ss - medicare - post_tax."""
@@ -415,6 +462,15 @@ class TestCalculatePaycheckPipeline:
         r = calculate_paycheck(base_profile, period, all_periods,
                                simple_tax_configs)
 
+        # Hardcoded correctness anchor: base_profile=$60k salary,
+        # same setup as test_basic_paycheck_no_deductions.
+        # gross=2307.69 - fed=173.08 - state=103.85
+        #   - SS=143.08 - med=33.46 = 1854.22
+        assert r.net_pay == Decimal("1854.22"), (
+            f"net_pay: expected 1854.22, got {r.net_pay}"
+        )
+
+        # Secondary: internal consistency check (formula holds).
         expected_net = (
             r.gross_biweekly
             - r.total_pre_tax
@@ -424,7 +480,10 @@ class TestCalculatePaycheckPipeline:
             - r.medicare
             - r.total_post_tax
         ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-        assert r.net_pay == expected_net
+        assert r.net_pay == expected_net, (
+            f"Consistency check: net_pay={r.net_pay}, "
+            f"formula result={expected_net}"
+        )
 
     def test_gross_biweekly_calculation(self, simple_tax_configs):
         """annual / 26, quantized to 2 places."""
@@ -516,21 +575,48 @@ class TestCalculatePaycheckPipeline:
         assert result.net_pay == result.gross_biweekly
 
     def test_w4_fields_passed_to_federal(self, simple_tax_configs):
-        """additional_income and extra_withholding affect the result."""
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        """W-4 fields increase federal withholding exactly.
 
-        base = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        base_result = calculate_paycheck(base, period, [period],
-                                         simple_tax_configs)
+        Base: $60k, no W-4.
+          annual=59999.94, taxable=44999.94
+          tax=4499.99, /26=173.08
+        W-4: additional_income=10000, extra_withholding=50.
+          annual=69999.94, taxable=54999.94
+          50000*0.10+4999.94*0.22=6099.99
+          (6099.99/26)+50=284.615->284.62
+        """
+        period = FakePeriod(
+            start_date=date(2026, 1, 16), period_id=1
+        )
+
+        base = FakeProfile(
+            annual_salary=60000,
+            created_at=date(2026, 1, 1),
+        )
+        base_result = calculate_paycheck(
+            base, period, [period], simple_tax_configs
+        )
 
         with_w4 = FakeProfile(
-            annual_salary=60000, created_at=date(2026, 1, 1),
-            additional_income=10000, extra_withholding=50,
+            annual_salary=60000,
+            created_at=date(2026, 1, 1),
+            additional_income=10000,
+            extra_withholding=50,
         )
-        w4_result = calculate_paycheck(with_w4, period, [period],
-                                       simple_tax_configs)
+        w4_result = calculate_paycheck(
+            with_w4, period, [period], simple_tax_configs
+        )
 
-        assert w4_result.federal_tax > base_result.federal_tax
+        # Base: 4499.99/26=173.076923->173.08
+        assert base_result.federal_tax == Decimal("173.08"), (
+            f"base federal_tax: expected 173.08, "
+            f"got {base_result.federal_tax}"
+        )
+        # W-4: (6099.99/26)+50=234.615+50=284.615->284.62
+        assert w4_result.federal_tax == Decimal("284.62"), (
+            f"w4 federal_tax: expected 284.62, "
+            f"got {w4_result.federal_tax}"
+        )
 
 
 class TestDeductionCalculation:
@@ -874,3 +960,480 @@ class TestProjectSalary:
         """[] → []."""
         result = project_salary(base_profile, [], simple_tax_configs)
         assert result == []
+
+
+# ── FICA Wage Cap Tests ─────────────────────────────────────────
+
+
+class TestFICAWageCapBoundary:
+    """Tests for FICA Social Security wage cap boundary."""
+
+    def test_fica_ss_wage_cap_boundary(
+        self, biweekly_periods, simple_tax_configs
+    ):
+        """SS tax transitions across 26 periods for $200k salary.
+
+        gross = 200000/26 = $7,692.31
+        SS cap = $168,600, rate = 6.2%
+        Full SS = 7692.31*0.062 = $476.92
+        Transition at period 22:
+          cumulative = 21*7692.31 = $161,538.51
+          ss_taxable = 168600 - 161538.51 = $7,061.49
+          ss = 7061.49*0.062 = $437.81
+        Periods 23-26: cumulative >= $168,600, SS = $0.00
+        Total SS = 21*476.92 + 437.81 = $10,453.13
+
+        Medicare surtax note: at period 26, cumul+gross =
+        $200,000.06 triggers surtax condition but
+        (0.06*0.009) rounds to $0.00, so Medicare stays
+        $111.54 for all 26 periods.
+        """
+        profile = FakeProfile(
+            annual_salary=200000,
+            created_at=date(2026, 1, 1),
+        )
+        results = project_salary(
+            profile, biweekly_periods, simple_tax_configs
+        )
+
+        # gross = 200000/26 = 7692.307692->7692.31
+        # full SS = 7692.31*0.062 = 476.92322->476.92
+        full_ss = Decimal("476.92")
+        # partial at period 22:
+        # cumul=161538.51, taxable=7061.49
+        # 7061.49*0.062 = 437.81238->437.81
+        partial_ss = Decimal("437.81")
+        # Medicare = 7692.31*0.0145 = 111.538495->111.54
+        expected_medicare = Decimal("111.54")
+
+        assert len(results) == 26, (
+            f"expected 26 results, got {len(results)}"
+        )
+
+        # Periods 1-21: full SS (under cap)
+        for i in range(21):
+            assert results[i].social_security == full_ss, (
+                f"period {i+1}: SS expected {full_ss}, "
+                f"got {results[i].social_security}"
+            )
+
+        # Period 22: partial SS (crosses cap this period)
+        # cumulative = 21*7692.31 = 161538.51
+        # cumul + gross = 169230.82 > 168600
+        assert results[21].social_security == partial_ss, (
+            f"period 22 (transition): SS expected "
+            f"{partial_ss}, got {results[21].social_security}"
+        )
+
+        # Periods 23-26: zero SS (already over cap)
+        for i in range(22, 26):
+            assert results[i].social_security == Decimal("0.00"), (
+                f"period {i+1}: SS expected 0.00, "
+                f"got {results[i].social_security}"
+            )
+
+        # Medicare: constant across all 26 periods (no cap)
+        for i in range(26):
+            assert results[i].medicare == expected_medicare, (
+                f"period {i+1}: medicare expected "
+                f"{expected_medicare}, "
+                f"got {results[i].medicare}"
+            )
+
+        # Cumulative SS verification
+        # 21*476.92 + 437.81 + 4*0.00 = 10453.13
+        total_ss = sum(
+            r.social_security for r in results
+        )
+        assert total_ss == Decimal("10453.13"), (
+            f"total SS: expected 10453.13, got {total_ss}"
+        )
+
+
+# ── FICA Direct Boundary Tests ─────────────────────────────────
+
+
+class TestFICADirectBoundary:
+    """Direct unit tests of calculate_fica at exact SS wage cap.
+
+    Tests all three SS branches in tax_calculator.calculate_fica():
+      1. cumulative >= ss_wage_base  -> SS = 0
+      2. cumulative + gross > ss_wage_base  -> partial SS
+      3. cumulative + gross <= ss_wage_base  -> full SS
+    """
+
+    @pytest.fixture
+    def fica_config(self):
+        """Standard FICA config with ss_wage_base=168600."""
+        return FakeFicaConfig()
+
+    def test_ss_at_cap_zero(self, fica_config):
+        """cumulative == ss_wage_base exactly: SS = 0.00.
+
+        Branch 1: cumulative(168600) >= ss_wage_base(168600).
+        """
+        result = calculate_fica(
+            Decimal("1000.00"), fica_config,
+            cumulative_wages=Decimal("168600"),
+        )
+        assert result["ss"] == Decimal("0.00"), (
+            f"SS at cap: expected 0.00, "
+            f"got {result['ss']}"
+        )
+
+    def test_ss_above_cap_zero(self, fica_config):
+        """cumulative > ss_wage_base: SS = 0.00.
+
+        Branch 1: cumulative(170000) >= ss_wage_base(168600).
+        """
+        result = calculate_fica(
+            Decimal("1000.00"), fica_config,
+            cumulative_wages=Decimal("170000"),
+        )
+        assert result["ss"] == Decimal("0.00"), (
+            f"SS above cap: expected 0.00, "
+            f"got {result['ss']}"
+        )
+
+    def test_ss_partial_one_dollar_under(self, fica_config):
+        """cumulative = 168599, gross = 100: partial SS.
+
+        Branch 2: cumulative(168599) + gross(100) = 168699
+        > ss_wage_base(168600).
+        ss_taxable = 168600 - 168599 = 1.00
+        SS = 1.00 * 0.062 = 0.062 -> 0.06
+        """
+        result = calculate_fica(
+            Decimal("100.00"), fica_config,
+            cumulative_wages=Decimal("168599"),
+        )
+        assert result["ss"] == Decimal("0.06"), (
+            f"SS partial ($1 under cap): expected 0.06, "
+            f"got {result['ss']}"
+        )
+
+    def test_ss_full_well_under_cap(self, fica_config):
+        """cumulative = 0, gross = 1000: full SS.
+
+        Branch 3: cumulative(0) + gross(1000) = 1000
+        <= ss_wage_base(168600).
+        SS = 1000 * 0.062 = 62.00
+        """
+        result = calculate_fica(
+            Decimal("1000.00"), fica_config,
+            cumulative_wages=Decimal("0"),
+        )
+        assert result["ss"] == Decimal("62.00"), (
+            f"SS full: expected 62.00, "
+            f"got {result['ss']}"
+        )
+
+    def test_ss_partial_straddle(self, fica_config):
+        """cumulative = 168000, gross = 1000: partial SS.
+
+        Branch 2: cumulative(168000) + gross(1000) = 169000
+        > ss_wage_base(168600).
+        ss_taxable = 168600 - 168000 = 600
+        SS = 600 * 0.062 = 37.20
+        """
+        result = calculate_fica(
+            Decimal("1000.00"), fica_config,
+            cumulative_wages=Decimal("168000"),
+        )
+        assert result["ss"] == Decimal("37.20"), (
+            f"SS partial (straddle): expected 37.20, "
+            f"got {result['ss']}"
+        )
+
+
+# ── Medicare Surtax Tests ───────────────────────────────────────
+
+
+class TestMedicareSurtax:
+    """Tests for Medicare surtax at high income levels."""
+
+    def test_medicare_surtax_high_income(
+        self, biweekly_periods, simple_tax_configs
+    ):
+        """Medicare surtax across 26 periods for $300k salary.
+
+        gross = 300000/26 = $11,538.46
+        base Medicare = 11538.46*0.0145 = $167.31
+        surtax threshold = $200,000, rate = 0.9%
+
+        Transition at period 18:
+          cumulative = 17*11538.46 = $196,153.82
+          cumul+gross = $207,692.28 > $200,000
+          surtax_income = 207692.28 - 200000 = $7,692.28
+          surtax = 7692.28*0.009 = $69.23
+          medicare = 167.31 + 69.23 = $236.54
+
+        Periods 19-26: cumulative >= $200,000
+          surtax = 11538.46*0.009 = $103.85
+          medicare = 167.31 + 103.85 = $271.16
+        """
+        profile = FakeProfile(
+            annual_salary=300000,
+            created_at=date(2026, 1, 1),
+        )
+        results = project_salary(
+            profile, biweekly_periods, simple_tax_configs
+        )
+
+        # base Medicare = 11538.46*0.0145 = 167.30767->167.31
+        base_med = Decimal("167.31")
+        # transition: 167.31 + 69.23 = 236.54
+        trans_med = Decimal("236.54")
+        # full surtax: 167.31 + 103.85 = 271.16
+        full_surtax_med = Decimal("271.16")
+
+        assert len(results) == 26, (
+            f"expected 26 results, got {len(results)}"
+        )
+
+        # Periods 1-17: base Medicare only (under threshold)
+        for i in range(17):
+            assert results[i].medicare == base_med, (
+                f"period {i+1}: medicare expected "
+                f"{base_med}, got {results[i].medicare}"
+            )
+
+        # Period 18: partial surtax (crosses threshold)
+        # cumul = 17*11538.46 = 196153.82
+        # surtax_income = 207692.28 - 200000 = 7692.28
+        # surtax = 7692.28*0.009 = 69.23052->69.23
+        assert results[17].medicare == trans_med, (
+            f"period 18 (transition): medicare expected "
+            f"{trans_med}, got {results[17].medicare}"
+        )
+
+        # Periods 19-26: full surtax (cumul >= threshold)
+        # surtax = 11538.46*0.009 = 103.84614->103.85
+        for i in range(18, 26):
+            assert results[i].medicare == full_surtax_med, (
+                f"period {i+1}: medicare expected "
+                f"{full_surtax_med}, "
+                f"got {results[i].medicare}"
+            )
+
+
+# ── Annual Projection Tests ─────────────────────────────────────
+
+
+class TestAnnualProjection:
+    """Tests for full-year salary projection correctness."""
+
+    def test_26_period_annual_net_pay_sum(
+        self, base_profile, biweekly_periods,
+        simple_tax_configs
+    ):
+        """Annual totals across 26 periods for $60k salary.
+
+        All periods identical (cumul max $59,999.94 is under
+        SS cap $168,600 and surtax threshold $200,000).
+        Per period: gross=$2,307.69, federal=$173.08,
+          state=$103.85, SS=$143.08, medicare=$33.46,
+          net=$1,854.22
+        Annual = per_period * 26 for each field.
+        """
+        results = project_salary(
+            base_profile, biweekly_periods, simple_tax_configs
+        )
+
+        assert len(results) == 26, (
+            f"expected 26 results, got {len(results)}"
+        )
+
+        # Per-period oracle values:
+        # gross=60000/26=2307.69, federal=4499.99/26=173.08
+        # state=2700.00/26=103.85, SS=2307.69*0.062=143.08
+        # medicare=2307.69*0.0145=33.46
+        # net=2307.69-173.08-103.85-143.08-33.46=1854.22
+        exp_gross = Decimal("2307.69")
+        exp_net = Decimal("1854.22")
+
+        # 2307.69 * 26 = 59999.94
+        total_gross = sum(
+            r.gross_biweekly for r in results
+        )
+        assert total_gross == exp_gross * 26, (
+            f"total gross: expected 59999.94, "
+            f"got {total_gross}"
+        )
+
+        # 173.08 * 26 = 4500.08
+        total_federal = sum(
+            r.federal_tax for r in results
+        )
+        assert total_federal == Decimal("173.08") * 26, (
+            f"total federal: expected 4500.08, "
+            f"got {total_federal}"
+        )
+
+        # 103.85 * 26 = 2700.10
+        total_state = sum(
+            r.state_tax for r in results
+        )
+        assert total_state == Decimal("103.85") * 26, (
+            f"total state: expected 2700.10, "
+            f"got {total_state}"
+        )
+
+        # 143.08 * 26 = 3720.08
+        total_ss = sum(
+            r.social_security for r in results
+        )
+        assert total_ss == Decimal("143.08") * 26, (
+            f"total SS: expected 3720.08, "
+            f"got {total_ss}"
+        )
+
+        # 33.46 * 26 = 869.96
+        total_medicare = sum(
+            r.medicare for r in results
+        )
+        assert total_medicare == Decimal("33.46") * 26, (
+            f"total medicare: expected 869.96, "
+            f"got {total_medicare}"
+        )
+
+        # 1854.22 * 26 = 48209.72
+        total_net = sum(r.net_pay for r in results)
+        assert total_net == exp_net * 26, (
+            f"total net: expected 48209.72, "
+            f"got {total_net}"
+        )
+
+        # Cross-check: net = gross - fed - state - ss - med
+        assert total_net == (
+            total_gross - total_federal - total_state
+            - total_ss - total_medicare
+        ), "net cross-check: components don't sum to net"
+
+    def test_project_salary_all_periods_consistent(
+        self, base_profile, biweekly_periods,
+        simple_tax_configs
+    ):
+        """All 26 periods identical for $60k (under all caps).
+
+        $60k cumul max = 26*2307.69 = $59,999.94, under
+        SS cap ($168,600) and surtax ($200,000). Every
+        period produces the exact same breakdown.
+        """
+        results = project_salary(
+            base_profile, biweekly_periods, simple_tax_configs
+        )
+
+        assert len(results) == 26, (
+            f"expected 26 results, got {len(results)}"
+        )
+
+        first = results[0]
+        for i in range(1, 26):
+            r = results[i]
+            assert r.gross_biweekly == first.gross_biweekly, (
+                f"period {i+1}: gross "
+                f"{r.gross_biweekly} != "
+                f"period 1 gross {first.gross_biweekly}"
+            )
+            assert r.federal_tax == first.federal_tax, (
+                f"period {i+1}: federal "
+                f"{r.federal_tax} != "
+                f"period 1 federal {first.federal_tax}"
+            )
+            assert r.state_tax == first.state_tax, (
+                f"period {i+1}: state "
+                f"{r.state_tax} != "
+                f"period 1 state {first.state_tax}"
+            )
+            assert r.social_security == first.social_security, (
+                f"period {i+1}: SS "
+                f"{r.social_security} != "
+                f"period 1 SS {first.social_security}"
+            )
+            assert r.medicare == first.medicare, (
+                f"period {i+1}: medicare "
+                f"{r.medicare} != "
+                f"period 1 medicare {first.medicare}"
+            )
+            assert r.net_pay == first.net_pay, (
+                f"period {i+1}: net "
+                f"{r.net_pay} != "
+                f"period 1 net {first.net_pay}"
+            )
+
+
+# ── Edge Case Tests ─────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    """Tests for edge cases: zero and negative salary."""
+
+    def test_zero_salary(self, simple_tax_configs):
+        """All fields zero when annual salary is $0.
+
+        gross = 0/26 = 0.00
+        federal: annual=0, taxable=max(0-15000,0)=0, 0.00
+        state: 0*0.045 = 0.00, /26 = 0.00
+        SS: 0*0.062 = 0.00
+        Medicare: 0*0.0145 = 0.00
+        net = 0.00
+        """
+        profile = FakeProfile(
+            annual_salary=0,
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(
+            start_date=date(2026, 1, 16), period_id=1
+        )
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs
+        )
+
+        assert result.gross_biweekly == Decimal("0.00"), (
+            f"gross: expected 0.00, "
+            f"got {result.gross_biweekly}"
+        )
+        assert result.federal_tax == Decimal("0.00"), (
+            f"federal: expected 0.00, "
+            f"got {result.federal_tax}"
+        )
+        assert result.state_tax == Decimal("0.00"), (
+            f"state: expected 0.00, "
+            f"got {result.state_tax}"
+        )
+        assert result.social_security == Decimal("0.00"), (
+            f"SS: expected 0.00, "
+            f"got {result.social_security}"
+        )
+        assert result.medicare == Decimal("0.00"), (
+            f"medicare: expected 0.00, "
+            f"got {result.medicare}"
+        )
+        assert result.net_pay == Decimal("0.00"), (
+            f"net: expected 0.00, "
+            f"got {result.net_pay}"
+        )
+
+    def test_negative_salary_behavior(self, simple_tax_configs):
+        """Negative salary cascades to InvalidGrossPayError.
+
+        -10000/26 = -384.62 (negative gross_biweekly).
+        calculate_federal_withholding validates gross_pay >= 0
+        and raises InvalidGrossPayError for negative input.
+        calculate_paycheck does not validate salary itself.
+        """
+        profile = FakeProfile(
+            annual_salary=-10000,
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(
+            start_date=date(2026, 1, 16), period_id=1
+        )
+
+        with pytest.raises(InvalidGrossPayError):
+            calculate_paycheck(
+                profile, period, [period],
+                simple_tax_configs
+            )

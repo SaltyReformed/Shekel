@@ -298,11 +298,30 @@ class TestDebtBalanceCalculator:
                 f"diff={pbp[p.id] - exp_p[p.id]}"
             )
 
-        # Cross-check: final balance =
-        # original principal - sum of all principal paid.
+        # Cross-check: service final balance =
+        # original principal - sum of all service principal paid.
         assert (
-            exp_b[26]
-            == Decimal("200000.00") - sum(exp_p.values())
+            balances[26]
+            == Decimal("200000.00") - sum(pbp.values())
+        ), (
+            f"Cross-check: balances[26]={balances[26]}, "
+            f"200000 - sum(pbp)="
+            f"{Decimal('200000.00') - sum(pbp.values())}"
+        )
+
+        # Hardcoded spot-check (hand-computed, independent
+        # of oracle). Period 3 (id=3) is the first payment
+        # period (Feb 1). Starting principal = 200000.00.
+        # interest = (200000 * 0.065/12).Q = 1083.33
+        # principal = 1264.14 - 1083.33 = 180.81
+        # balance = 200000.00 - 180.81 = 199819.19
+        assert pbp[3] == Decimal("180.81"), (
+            f"Period 3 (first payment) principal: "
+            f"expected 180.81, got {pbp[3]}"
+        )
+        assert balances[3] == Decimal("199819.19"), (
+            f"Period 3 (first payment) balance: "
+            f"expected 199819.19, got {balances[3]}"
         )
 
     def test_debt_zero_interest_rate(self):

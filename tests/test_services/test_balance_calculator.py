@@ -850,12 +850,13 @@ class TestBalanceCalculatorFIN:
         )
 
     def test_idempotent_same_inputs_same_outputs(self):
-        """Verify calculate_balances is idempotent.
+        """Verify calculate_balances is idempotent and correct.
 
         Calls the function twice with identical inputs (5 periods,
-        standard transactions). Proves repeated calls produce
-        exactly the same Decimal results with no hidden state
-        mutation.
+        standard transactions). Proves:
+        1. Each period's balance matches an independent oracle.
+        2. Repeated calls produce exactly the same Decimal results
+           with no hidden state mutation.
         """
         periods = [FakePeriod(i) for i in range(5)]
         anchor_balance = Decimal("1000.00")
@@ -870,6 +871,18 @@ class TestBalanceCalculatorFIN:
                 FakeTxn(p, "projected", "expense", "850.00")
             )
 
+        # Independent expected values.
+        # anchor=1000, net per period = 2500 - 850 = +1650
+        # P0: 1000+1650=2650, P1: 4300, P2: 5950,
+        # P3: 7600, P4: 9250
+        oracle = {
+            0: Decimal("2650.00"),
+            1: Decimal("4300.00"),
+            2: Decimal("5950.00"),
+            3: Decimal("7600.00"),
+            4: Decimal("9250.00"),
+        }
+
         # First call.
         result_1 = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
@@ -877,6 +890,15 @@ class TestBalanceCalculatorFIN:
             periods=periods,
             transactions=txns,
         )
+
+        # Correctness: verify against independent oracle.
+        for i, period in enumerate(periods):
+            assert result_1[period.id] == oracle[period.id], (
+                f"Period {i} (id={period.id}): "
+                f"expected {oracle[period.id]}, "
+                f"got {result_1[period.id]}"
+            )
+
         # Second call with identical inputs.
         result_2 = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
@@ -885,7 +907,7 @@ class TestBalanceCalculatorFIN:
             transactions=txns,
         )
 
-        # Full dict equality.
+        # Idempotency: full dict equality.
         assert result_1 == result_2, (
             "Idempotency violated: result_1 != result_2"
         )

@@ -97,7 +97,11 @@ class TestLogin:
                 })
                 assert response.status_code == 429
 
-            # Reset limiter for other tests.
+            # Clean up: dispose the secondary app's engine to release
+            # connections, and reset limiter for other tests.
+            with rate_app.app_context():
+                from app.extensions import db as _db
+                _db.engine.dispose()
             limiter.enabled = False
 
 

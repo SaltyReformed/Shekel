@@ -139,18 +139,23 @@ class TestPositiveTaxScenario:
         assert result == Decimal("219.23")
 
     def test_weekly_pay_frequency(self, single_bracket_set):
-        """Same annual salary but weekly pay frequency."""
-        # $60k / 52 weeks = $1,153.85/week
-        # Same annual tax $5,700 / 52 = $109.62 (rounded)
+        """$60k target salary at weekly pay frequency.
+
+        Annualized: 1153.85 * 52 = $60,000.20 (not exactly $60k).
+        Taxable: 60,000.20 - 15,000 = $45,000.20.
+        Brackets: 10,000*0.10 + 30,000*0.12 + 5,000.20*0.22
+                = 1,000 + 3,600 + 1,100.044 = $5,700.044.
+        Quantized annual tax: $5,700.04.
+        Per period: 5,700.04 / 52 = $109.62 (ROUND_HALF_UP).
+        """
         result = calculate_federal_withholding(
-            gross_pay=Decimal("1153.85"),  # $60k / 52
+            gross_pay=Decimal("1153.85"),
             pay_periods=52,
             bracket_set=single_bracket_set,
         )
-        # Slight rounding difference due to gross_pay * 52 vs exact $60k
-        assert result > Decimal("0")
-        # Verify it's roughly half the biweekly amount
-        assert Decimal("108") < result < Decimal("111")
+        assert result == Decimal("109.62"), (
+            f"Weekly withholding: expected 109.62, got {result}"
+        )
 
     def test_monthly_pay_frequency(self, single_bracket_set):
         """Monthly pay frequency."""
@@ -229,46 +234,60 @@ class TestHighIncomeScenario:
     """High earners spanning many or all bracket tiers."""
 
     def test_income_spans_all_brackets(self, single_bracket_set):
-        """Test fixture: $600k salary spans into the top bracket."""
-        # Taxable: $600,000 - $15,000 = $585,000
-        # Brackets:
-        #   $10,000 * 0.10 =  $1,000
-        #   $30,000 * 0.12 =  $3,600
-        #   $45,000 * 0.22 =  $9,900
-        #   $75,000 * 0.24 = $18,000
-        #   $50,000 * 0.32 = $16,000
-        #  $330,000 * 0.35 = $115,500
-        #   $45,000 * 0.37 = $16,650
-        # Total = $180,650
-        # Per period: $180,650 / 26 = $6,948.08
+        """$600k target salary spanning all seven brackets.
+
+        Annualized: 23,076.92 * 26 = $599,999.92 (not exactly $600k).
+        Taxable: 599,999.92 - 15,000 = $584,999.92.
+        Brackets:
+          $10,000.00 * 0.10 =  $1,000.00
+          $30,000.00 * 0.12 =  $3,600.00
+          $45,000.00 * 0.22 =  $9,900.00
+          $75,000.00 * 0.24 = $18,000.00
+          $50,000.00 * 0.32 = $16,000.00
+         $330,000.00 * 0.35 = $115,500.00
+          $44,999.92 * 0.37 = $16,649.9704
+        Total: $180,649.9704 -> quantized $180,649.97.
+        Per period: 180,649.97 / 26 = $6,948.08 (ROUND_HALF_UP).
+        """
         result = calculate_federal_withholding(
-            gross_pay=Decimal("23076.92"),  # $600k / 26
+            gross_pay=Decimal("23076.92"),
             pay_periods=26,
             bracket_set=single_bracket_set,
         )
-        # Verify it's in the right ballpark (rounding from gross_pay * 26)
-        assert Decimal("6940") < result < Decimal("6960")
+        assert result == Decimal("6948.08"), (
+            f"All-bracket withholding: expected 6948.08, got {result}"
+        )
 
     def test_very_high_income_top_bracket_only(self):
-        """Test fixture: income so high most is taxed at top rate."""
-        # Simplified: two brackets for clarity
+        """$1M target salary with simplified two-bracket system.
+
+        Custom brackets: 0-100k @ 10%, 100k+ @ 37%.
+        Annualized: 38,461.54 * 26 = $1,000,000.04.
+        Taxable: 1,000,000.04 - 15,000 = $985,000.04.
+        Brackets:
+          $100,000.00 * 0.10 = $10,000.00
+          $885,000.04 * 0.37 = $327,450.0148
+        Total: $337,450.0148 -> quantized $337,450.01.
+        Per period: 337,450.01 / 26 = $12,978.85 (ROUND_HALF_UP).
+        """
         brackets = [
-            FakeBracket(Decimal("0"), Decimal("100000"), Decimal("0.10"), 0),
-            FakeBracket(Decimal("100000"), None, Decimal("0.37"), 1),
+            FakeBracket(Decimal("0"), Decimal("100000"),
+                        Decimal("0.10"), 0),
+            FakeBracket(Decimal("100000"), None,
+                        Decimal("0.37"), 1),
         ]
         bracket_set = FakeBracketSet(
             standard_deduction=Decimal("15000"),
             brackets=brackets,
         )
-        # $1M/year => taxable $985,000
-        # $100k * 0.10 = $10,000 + $885,000 * 0.37 = $327,450
-        # Total = $337,450 / 26 = $12,978.85
         result = calculate_federal_withholding(
-            gross_pay=Decimal("38461.54"),  # ~$1M / 26
+            gross_pay=Decimal("38461.54"),
             pay_periods=26,
             bracket_set=bracket_set,
         )
-        assert result > Decimal("12900")
+        assert result == Decimal("12978.85"), (
+            f"Two-bracket withholding: expected 12978.85, got {result}"
+        )
 
 
 # ── Test 4: Bracket Boundary Conditions ────────────────────────────
@@ -278,29 +297,44 @@ class TestBracketBoundary:
     """Income exactly at bracket thresholds."""
 
     def test_income_exactly_at_first_bracket_top(self, single_bracket_set):
-        """Taxable income exactly at the first bracket boundary ($10,000)."""
-        # Need annual gross = $10,000 + $15,000 std ded = $25,000
-        # Tax = $10,000 * 0.10 = $1,000
-        # Per period: $1,000 / 26 = $38.46
+        """Taxable income near the first bracket boundary.
+
+        Annualized: 961.54 * 26 = $25,000.04 (not exactly $25k).
+        Taxable: 25,000.04 - 15,000 = $10,000.04.
+        Spills $0.04 into the 12% bracket:
+          $10,000.00 * 0.10 = $1,000.00
+          $0.04 * 0.12      = $0.0048
+        Total: $1,000.0048 -> quantized $1,000.00.
+        Per period: 1,000.00 / 26 = $38.46 (ROUND_HALF_UP).
+        """
         result = calculate_federal_withholding(
-            gross_pay=Decimal("961.54"),  # ~$25k / 26
+            gross_pay=Decimal("961.54"),
             pay_periods=26,
             bracket_set=single_bracket_set,
         )
-        # Verify it's close to $38.46
-        assert Decimal("38") < result < Decimal("39")
+        assert result == Decimal("38.46"), (
+            f"First bracket top: expected 38.46, got {result}"
+        )
 
     def test_income_one_dollar_into_next_bracket(self, single_bracket_set):
-        """Taxable income $1 above the first bracket starts 12% rate."""
-        # $25,001 annual => taxable $10,001
-        # Tax = $10,000 * 0.10 + $1 * 0.12 = $1,000.12
-        # Per period: $1,000.12 / 26 = $38.47
+        """Taxable income slightly above first bracket boundary.
+
+        Annualized: 961.58 * 26 = $25,001.08 (not exactly $25,001).
+        Taxable: 25,001.08 - 15,000 = $10,001.08.
+        Spills $1.08 into the 12% bracket:
+          $10,000.00 * 0.10 = $1,000.00
+          $1.08 * 0.12      = $0.1296
+        Total: $1,000.1296 -> quantized $1,000.13.
+        Per period: 1,000.13 / 26 = $38.47 (ROUND_HALF_UP).
+        """
         result = calculate_federal_withholding(
-            gross_pay=Decimal("961.58"),  # ~$25,001 / 26
+            gross_pay=Decimal("961.58"),
             pay_periods=26,
             bracket_set=single_bracket_set,
         )
-        assert result >= Decimal("38.46")
+        assert result == Decimal("38.47"), (
+            f"One dollar into next bracket: expected 38.47, got {result}"
+        )
 
     def test_income_exactly_at_standard_deduction(self, single_bracket_set):
         """Income exactly equal to standard deduction = zero tax."""
@@ -396,9 +430,24 @@ class TestDependentCredits:
     """W-4 Step 3 credit calculations."""
 
     def test_child_credits_reduce_tax(self, single_bracket_set):
-        """Each qualifying child reduces annual tax by child_credit_amount."""
+        """Two qualifying children reduce per-period withholding.
+
+        Annualized: 3,846.15 * 26 = $99,999.90.
+        Taxable: 99,999.90 - 15,000 = $84,999.90.
+        Brackets:
+          $10,000.00 * 0.10 = $1,000.00
+          $30,000.00 * 0.12 = $3,600.00
+          $44,999.90 * 0.22 = $9,899.978
+        Annual tax before credits: $14,499.978 -> quantized
+        $14,499.98.
+        no_kids: 14,499.98 / 26 = $557.69.
+        two_kids: credits = 2 * $2,000 = $4,000.
+          Annual after credits: 14,499.98 - 4,000 = $10,499.98.
+          Per period: 10,499.98 / 26 = $403.85.
+        Diff: 557.69 - 403.85 = $153.84.
+        """
         no_kids = calculate_federal_withholding(
-            gross_pay=Decimal("3846.15"),  # ~$100k / 26
+            gross_pay=Decimal("3846.15"),
             pay_periods=26,
             bracket_set=single_bracket_set,
         )
@@ -408,12 +457,28 @@ class TestDependentCredits:
             bracket_set=single_bracket_set,
             qualifying_children=2,
         )
-        # 2 kids * $2,000 = $4,000 annual credit / 26 = ~$153.85 less per period
+        assert no_kids == Decimal("557.69"), (
+            f"No-kids withholding: expected 557.69, got {no_kids}"
+        )
+        assert two_kids == Decimal("403.85"), (
+            f"Two-kids withholding: expected 403.85, got {two_kids}"
+        )
         diff = no_kids - two_kids
-        assert Decimal("153") < diff < Decimal("155")
+        assert diff == Decimal("153.84"), (
+            f"Child credit diff: expected 153.84, got {diff}"
+        )
 
     def test_other_dependent_credits(self, single_bracket_set):
-        """Other dependents use the other_dependent_credit_amount."""
+        """Two other dependents reduce per-period withholding.
+
+        Same base income as test_child_credits_reduce_tax:
+        Annual tax before credits: $14,499.98.
+        no_deps: 14,499.98 / 26 = $557.69.
+        two_other: credits = 2 * $500 = $1,000.
+          Annual after credits: 14,499.98 - 1,000 = $13,499.98.
+          Per period: 13,499.98 / 26 = $519.23.
+        Diff: 557.69 - 519.23 = $38.46.
+        """
         no_deps = calculate_federal_withholding(
             gross_pay=Decimal("3846.15"),
             pay_periods=26,
@@ -425,9 +490,16 @@ class TestDependentCredits:
             bracket_set=single_bracket_set,
             other_dependents=2,
         )
-        # 2 * $500 = $1,000 / 26 = ~$38.46 less
+        assert no_deps == Decimal("557.69"), (
+            f"No-deps withholding: expected 557.69, got {no_deps}"
+        )
+        assert two_other == Decimal("519.23"), (
+            f"Two-other withholding: expected 519.23, got {two_other}"
+        )
         diff = no_deps - two_other
-        assert Decimal("38") < diff < Decimal("39")
+        assert diff == Decimal("38.46"), (
+            f"Other dependent diff: expected 38.46, got {diff}"
+        )
 
 
 # ── Test: Legacy calculate_federal_tax wrapper ─────────────────────
@@ -469,3 +541,86 @@ class TestApplyMarginalBrackets:
     def test_negative_taxable_income(self):
         result = _apply_marginal_brackets(Decimal("-1000"), _single_brackets())
         assert result == Decimal("0")
+
+
+# ── Test: Annual Consistency ─────────────────────────────────────
+
+
+class TestAnnualConsistency:
+    """Verify withholding sums to annual tax over a full year."""
+
+    def test_26_period_annual_withholding_matches_annual_tax(
+        self, single_bracket_set
+    ):
+        """Biweekly withholding * 26 approximates annual tax.
+
+        Salary: $78,000.00, gross_biweekly = $3,000.00.
+        Verify: 3,000.00 * 26 = $78,000.00 exactly.
+        Taxable: 78,000 - 15,000 = $63,000.
+        Brackets:
+          $10,000 * 0.10 = $1,000.00
+          $30,000 * 0.12 = $3,600.00
+          $23,000 * 0.22 = $5,060.00
+        Annual tax: $9,660.00.
+        Per period: 9,660.00 / 26 = 371.538... -> $371.54.
+        Annual via withholding: 371.54 * 26 = $9,660.04.
+        Rounding discrepancy: $0.04 (within 26 * $0.01).
+        """
+        annual_salary = Decimal("78000.00")
+        gross_biweekly = Decimal("3000.00")
+        per_period = calculate_federal_withholding(
+            gross_pay=gross_biweekly,
+            pay_periods=26,
+            bracket_set=single_bracket_set,
+        )
+        annual_tax = calculate_federal_tax(
+            annual_salary, single_bracket_set
+        )
+        assert per_period == Decimal("371.54"), (
+            f"Per-period withholding: expected 371.54, "
+            f"got {per_period}"
+        )
+        assert annual_tax == Decimal("9660.00"), (
+            f"Annual tax: expected 9660.00, got {annual_tax}"
+        )
+        annual_via_withholding = per_period * 26
+        # 371.54 * 26 = 9660.04
+        assert annual_via_withholding == Decimal("9660.04"), (
+            f"Annual via withholding: expected 9660.04, "
+            f"got {annual_via_withholding}"
+        )
+        # Rounding discrepancy: 9660.04 - 9660.00 = 0.04
+        # Expected: 26 periods x up to $0.01 rounding each.
+        assert annual_via_withholding - annual_tax == Decimal("0.04"), (
+            f"Rounding discrepancy: expected 0.04, "
+            f"got {annual_via_withholding - annual_tax}"
+        )
+
+    def test_annual_pay_period_no_rounding_loss(
+        self, single_bracket_set
+    ):
+        """Annual pay (1 period/year): withholding equals annual tax.
+
+        With pay_periods=1, there is no de-annualize/re-annualize
+        rounding because the per-period amount IS the annual amount.
+        Salary: $78,000.00. Taxable: $63,000.
+        Brackets: 10,000*0.10 + 30,000*0.12 + 23,000*0.22
+                = 1,000 + 3,600 + 5,060 = $9,660.00.
+        """
+        annual_salary = Decimal("78000.00")
+        per_period = calculate_federal_withholding(
+            gross_pay=annual_salary,
+            pay_periods=1,
+            bracket_set=single_bracket_set,
+        )
+        annual_tax = calculate_federal_tax(
+            annual_salary, single_bracket_set
+        )
+        assert per_period == Decimal("9660.00"), (
+            f"Annual withholding: expected 9660.00, "
+            f"got {per_period}"
+        )
+        assert per_period == annual_tax, (
+            f"Annual withholding {per_period} "
+            f"!= annual tax {annual_tax}"
+        )
