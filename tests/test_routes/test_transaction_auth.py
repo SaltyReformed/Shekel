@@ -100,25 +100,34 @@ class TestTransactionOwnership:
     """Verify that all transaction routes reject access to other users' data."""
 
     def test_get_cell_blocked(self, app, auth_client, seed_user, seed_periods):
-        """GET /transactions/<id>/cell returns 404 for another user's txn."""
+        """GET /transactions/<id>/cell returns 404 for another user's txn
+        and does not leak the victim's transaction data."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             resp = auth_client.get(f"/transactions/{other['transaction'].id}/cell")
             assert resp.status_code == 404
+            assert b"Other User Rent" not in resp.data
+            assert b"1500.00" not in resp.data
 
     def test_quick_edit_blocked(self, app, auth_client, seed_user, seed_periods):
-        """GET /transactions/<id>/quick-edit returns 404 for another user's txn."""
+        """GET /transactions/<id>/quick-edit returns 404 for another user's txn
+        and does not leak the victim's transaction data."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             resp = auth_client.get(f"/transactions/{other['transaction'].id}/quick-edit")
             assert resp.status_code == 404
+            assert b"Other User Rent" not in resp.data
+            assert b"1500.00" not in resp.data
 
     def test_full_edit_blocked(self, app, auth_client, seed_user, seed_periods):
-        """GET /transactions/<id>/full-edit returns 404 for another user's txn."""
+        """GET /transactions/<id>/full-edit returns 404 for another user's txn
+        and does not leak the victim's transaction data."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             resp = auth_client.get(f"/transactions/{other['transaction'].id}/full-edit")
             assert resp.status_code == 404
+            assert b"Other User Rent" not in resp.data
+            assert b"1500.00" not in resp.data
 
     def test_update_blocked(self, app, auth_client, seed_user, seed_periods):
         """PATCH /transactions/<id> returns 404 for another user's txn."""

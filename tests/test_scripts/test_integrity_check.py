@@ -89,7 +89,7 @@ class TestReferentialIntegrity:
         results = check_referential_integrity(db.session)
         fk01 = next(r for r in results if r.check_id == "FK-01")
         assert not fk01.passed
-        assert fk01.detail_count >= 1
+        assert fk01.detail_count == 1  # 1 orphaned account inserted
 
         # Restore FK enforcement.
         db.session.execute(db.text(
@@ -120,7 +120,7 @@ class TestReferentialIntegrity:
         results = check_referential_integrity(db.session)
         fk05 = next(r for r in results if r.check_id == "FK-05")
         assert not fk05.passed
-        assert fk05.detail_count >= 1
+        assert fk05.detail_count == 1  # 1 transaction with missing period
 
         db.session.execute(db.text(
             "SET session_replication_role = 'origin'"
@@ -147,7 +147,7 @@ class TestReferentialIntegrity:
         results = check_referential_integrity(db.session)
         fk10 = next(r for r in results if r.check_id == "FK-10")
         assert not fk10.passed
-        assert fk10.detail_count >= 1
+        assert fk10.detail_count == 1  # 1 template with missing category
 
         db.session.execute(db.text(
             "SET session_replication_role = 'origin'"
@@ -189,7 +189,7 @@ class TestOrphanDetection:
         results = check_orphaned_records(db.session)
         or02 = next(r for r in results if r.check_id == "OR-02")
         assert not or02.passed
-        assert or02.detail_count >= 1
+        assert or02.detail_count == 1  # 1 orphaned recurrence rule
 
     def test_or03_detects_unused_category(self, app, db, seed_user):
         """OR-03 detects a category not used by any template or transaction."""
@@ -198,7 +198,9 @@ class TestOrphanDetection:
         or03 = next(r for r in results if r.check_id == "OR-03")
         # Seed categories are not referenced by any templates or transactions.
         assert not or03.passed
-        assert or03.detail_count >= 1
+        # seed_user creates 5 categories (Salary, Rent, Car Payment, Groceries, Payback)
+        # none referenced by any template or transaction
+        assert or03.detail_count == 5
 
     def test_or06_detects_goal_on_inactive_account(self, app, db, seed_user):
         """OR-06 flags a savings goal on an inactive account."""
@@ -219,7 +221,7 @@ class TestOrphanDetection:
         results = check_orphaned_records(db.session)
         or06 = next(r for r in results if r.check_id == "OR-06")
         assert not or06.passed
-        assert or06.detail_count >= 1
+        assert or06.detail_count == 1  # 1 goal on inactive account
 
 
 # ── Balance Anomalies ────────────────────────────────────────────
@@ -247,7 +249,7 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba01 = next(r for r in results if r.check_id == "BA-01")
         assert not ba01.passed
-        assert ba01.detail_count >= 1
+        assert ba01.detail_count == 1  # 1 account with balance but no anchor period
 
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
@@ -267,7 +269,7 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba03 = next(r for r in results if r.check_id == "BA-03")
         assert not ba03.passed
-        assert ba03.detail_count >= 1
+        assert ba03.detail_count == 1  # 1 gap at index 2
 
     def test_ba04_detects_date_overlap(self, app, db, seed_user):
         """BA-04 detects overlapping pay period date ranges."""
@@ -291,7 +293,7 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba04 = next(r for r in results if r.check_id == "BA-04")
         assert not ba04.passed
-        assert ba04.detail_count >= 1
+        assert ba04.detail_count == 1  # 1 overlapping pair (pp1/pp2)
 
 
 # ── Data Consistency ─────────────────────────────────────────────
@@ -338,7 +340,7 @@ class TestDataConsistency:
         results = check_data_consistency(db.session)
         dc01 = next(r for r in results if r.check_id == "DC-01")
         assert not dc01.passed
-        assert dc01.detail_count >= 1
+        assert dc01.detail_count == 1  # 1 done txn without actual_amount
 
     def test_dc05_detects_active_template_inactive_account(
         self, app, db, seed_user
@@ -367,7 +369,7 @@ class TestDataConsistency:
         results = check_data_consistency(db.session)
         dc05 = next(r for r in results if r.check_id == "DC-05")
         assert not dc05.passed
-        assert dc05.detail_count >= 1
+        assert dc05.detail_count == 1  # 1 active template on inactive account
 
     def test_dc07_detects_user_without_settings(self, app, db):
         """DC-07 detects a user without a user_settings row."""
@@ -383,7 +385,7 @@ class TestDataConsistency:
         results = check_data_consistency(db.session)
         dc07 = next(r for r in results if r.check_id == "DC-07")
         assert not dc07.passed
-        assert dc07.detail_count >= 1
+        assert dc07.detail_count == 1  # 1 user without settings
         assert any(
             d.get("email") == "nosettings@shekel.local"
             for d in dc07.details
@@ -398,7 +400,7 @@ class TestDataConsistency:
         results = check_data_consistency(db.session)
         dc08 = next(r for r in results if r.check_id == "DC-08")
         assert not dc08.passed
-        assert dc08.detail_count >= 1
+        assert dc08.detail_count == 1  # 1 user without baseline scenario
 
     def test_dc09_detects_cross_user_deduction_target(
         self, app, db, seed_user
@@ -467,7 +469,7 @@ class TestDataConsistency:
         results = check_data_consistency(db.session)
         dc09 = next(r for r in results if r.check_id == "DC-09")
         assert not dc09.passed
-        assert dc09.detail_count >= 1
+        assert dc09.detail_count == 1  # 1 deduction targeting another user's account
 
 
 # ── run_all_checks ───────────────────────────────────────────────

@@ -152,6 +152,8 @@ class TestTemplateList:
         with app.app_context():
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
+            assert b"No recurring transactions yet" in resp.data
+            assert b"Car Payment" not in resp.data
 
 
 # ── Create Tests ─────────────────────────────────────────────────────
@@ -165,6 +167,10 @@ class TestTemplateCreate:
         with app.app_context():
             resp = auth_client.get("/templates/new")
             assert resp.status_code == 200
+            assert b"New Recurring Transaction" in resp.data
+            assert b'name="name"' in resp.data
+            assert b'name="default_amount"' in resp.data
+            assert b'name="recurrence_pattern"' in resp.data
 
     def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods):
         """POST /templates creates a template without recurrence."""
@@ -212,11 +218,15 @@ class TestTemplateCreate:
             ).one()
             assert template.recurrence_rule is not None
 
-            # Recurrence should have generated transactions.
+            # every_period pattern generates 1 transaction per period;
+            # seed_periods creates 10 biweekly periods
             txns = db.session.query(Transaction).filter_by(
                 template_id=template.id
             ).all()
-            assert len(txns) > 0
+            assert len(txns) == 10
+            # Each transaction maps to a distinct period
+            period_ids = {txn.pay_period_id for txn in txns}
+            assert len(period_ids) == 10
 
     def test_create_template_validation_error(self, app, auth_client, seed_user):
         """POST /templates with missing required fields shows validation error."""
@@ -468,11 +478,12 @@ class TestTemplateReactivate:
             db.session.refresh(template)
             assert template.is_active is True
 
-            # Transactions should be restored.
+            # Transactions should be restored: every_period generates 1 per period,
+            # seed_periods creates 10 biweekly periods
             active_txns = db.session.query(Transaction).filter_by(
                 template_id=template.id, is_deleted=False,
             ).count()
-            assert active_txns > 0
+            assert active_txns == 10
 
     def test_reactivate_template_idor(self, app, auth_client, seed_user):
         """POST /templates/<id>/reactivate for another user's template redirects."""

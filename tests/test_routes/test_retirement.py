@@ -122,6 +122,10 @@ class TestRetirementDashboard:
         """GET returns 200 even with no pensions or accounts."""
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
+        assert b"Retirement Planning" in resp.data
+        assert b"Retirement Income Gap Analysis" in resp.data
+        # No pension data seeded, so pension details should not appear.
+        assert b"Pension Benefit Details" not in resp.data
 
     def test_dashboard_with_pension(self, auth_client, seed_user, db, seed_periods):
         """GET returns 200 with pension data displayed."""
@@ -129,6 +133,8 @@ class TestRetirementDashboard:
         _create_pension(seed_user, db.session, salary_profile=profile)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
+        assert b"Retirement Planning" in resp.data
+        assert b"Pension Benefit Details" in resp.data
 
     def test_dashboard_requires_auth(self, client, db):
         """Unauthenticated → redirect to login."""
@@ -141,9 +147,11 @@ class TestPensionCRUD:
     """Tests for pension profile CRUD operations."""
 
     def test_pension_list(self, auth_client, seed_user, db, seed_periods):
-        """GET pension list returns 200."""
+        """GET pension list returns 200 with pension form."""
         resp = auth_client.get("/retirement/pension")
         assert resp.status_code == 200
+        assert b"Pension Profiles" in resp.data
+        assert b'name="benefit_multiplier"' in resp.data
 
     def test_create_pension(self, auth_client, seed_user, db, seed_periods):
         """POST creates a new pension profile."""
@@ -165,10 +173,14 @@ class TestPensionCRUD:
         assert pension.benefit_multiplier == Decimal("0.01850")
 
     def test_edit_pension_form(self, auth_client, seed_user, db, seed_periods):
-        """GET edit form returns 200."""
+        """GET edit form returns 200 with pre-populated pension data."""
         pension = _create_pension(seed_user, db.session)
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
         assert resp.status_code == 200
+        assert b"Edit Pension" in resp.data
+        assert b"State Pension" in resp.data
+        assert b'name="benefit_multiplier"' in resp.data
+        assert b'name="hire_date"' in resp.data
 
     def test_update_pension(self, auth_client, seed_user, db, seed_periods):
         """POST update modifies pension fields."""
@@ -410,6 +422,8 @@ class TestRetirementProjections:
 
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
+        assert b"Test 401k" in resp.data
+        assert b"Test roth_ira" in resp.data
 
     def test_dashboard_uses_projected_salary_for_gap(
         self, auth_client, seed_user, db, seed_periods
@@ -460,7 +474,8 @@ class TestGapAnalysisFragment:
             headers={"HX-Request": "true"},
         )
         assert resp.status_code == 200
-        assert b"Configure your salary" in resp.data or b"Gap" in resp.data
+        # Gap analysis always renders the table with income gap row.
+        assert b"Monthly Income Gap" in resp.data
 
     def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods):
         """SWR slider parameter is accepted and used."""
@@ -477,8 +492,8 @@ class TestGapAnalysisFragment:
             headers={"HX-Request": "true"},
         )
         assert resp.status_code == 200
-        # The fragment should show the 3% rate, not the stored 4%.
-        assert b"3" in resp.data
+        # The fragment should show the 3.0% rate in the "Required Savings" line.
+        assert b"3.0% rule" in resp.data
 
     def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods):
         """Return rate slider parameter is accepted."""
@@ -496,4 +511,5 @@ class TestGapAnalysisFragment:
             headers={"HX-Request": "true"},
         )
         assert resp.status_code == 200
-        assert b"Gap" in resp.data or b"Surplus" in resp.data
+        # Gap analysis table always contains income gap row.
+        assert b"Monthly Income Gap" in resp.data

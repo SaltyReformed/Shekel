@@ -44,16 +44,18 @@ class TestPayPeriodGenerate:
             assert len(periods) == 10
 
     def test_generate_missing_start_date(self, app, auth_client, seed_user):
-        """POST /pay-periods/generate without start_date returns 422."""
+        """POST /pay-periods/generate without start_date returns 422 with field error."""
         with app.app_context():
             resp = auth_client.post("/pay-periods/generate", data={
                 "num_periods": "10",
             })
 
             assert resp.status_code == 422
+            assert b"Start Date" in resp.data
+            assert b"Please fix the following errors" in resp.data
 
     def test_generate_cadence_zero(self, app, auth_client, seed_user):
-        """POST /pay-periods/generate with cadence_days=0 returns 422."""
+        """POST /pay-periods/generate with cadence_days=0 returns 422 with field error."""
         with app.app_context():
             resp = auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
@@ -61,6 +63,8 @@ class TestPayPeriodGenerate:
             })
 
             assert resp.status_code == 422
+            assert b"Cadence Days" in resp.data
+            assert b"Please fix the following errors" in resp.data
 
     def test_generate_single_period(self, app, auth_client, seed_user):
         """POST /pay-periods/generate with num_periods=1 creates one period."""

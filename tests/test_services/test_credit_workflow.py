@@ -135,7 +135,7 @@ class TestCreditWorkflow:
                 )
                 .one()
             )
-            assert new_cat is not None
+            # .one() above already raises if not found; accessing .id validates non-None
             assert payback.category_id == new_cat.id
 
     def test_no_next_period_raises_validation_error(

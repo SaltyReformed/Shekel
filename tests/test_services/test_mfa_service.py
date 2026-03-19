@@ -14,7 +14,8 @@ class TestGenerateSecret:
         """generate_totp_secret() returns a valid base32 string."""
         secret = mfa_service.generate_totp_secret()
         assert isinstance(secret, str)
-        assert len(secret) > 0
+        # pyotp.random_base32() default length is 32 characters
+        assert len(secret) == 32
         # Valid base32 characters only (A-Z, 2-7, =).
         assert re.fullmatch(r"[A-Z2-7=]+", secret)
 

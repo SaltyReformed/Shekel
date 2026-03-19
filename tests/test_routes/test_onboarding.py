@@ -71,7 +71,8 @@ class TestOnboardingBanner:
         assert "line-through" in html
 
         # Salary and templates don't exist, so should show links
-        assert 'href="/salary"' in html or "Set up a salary profile" in html
+        assert 'href="/salary"' in html
+        assert "Set up a salary profile" in html
         assert "Set up recurring transactions" in html
 
     def test_banner_not_shown_to_anonymous_user(self, client):
@@ -79,3 +80,4 @@ class TestOnboardingBanner:
         resp = client.get("/", follow_redirects=False)
         # Grid requires login, so redirects
         assert resp.status_code in (302, 303)
+        assert "/login" in resp.headers.get("Location", "")

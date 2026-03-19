@@ -20,10 +20,13 @@ class TestSettingsShow:
     """Tests for GET /settings."""
 
     def test_settings_page_renders(self, app, auth_client, seed_user):
-        """GET /settings renders the settings page."""
+        """GET /settings renders the settings page with general section."""
         with app.app_context():
             resp = auth_client.get("/settings")
             assert resp.status_code == 200
+            assert b"General Settings" in resp.data
+            assert b'name="grid_default_periods"' in resp.data
+            assert b'name="default_inflation_rate"' in resp.data
 
     def test_settings_auto_creates_if_missing(self, app, auth_client, seed_user):
         """GET /settings auto-creates UserSettings when missing."""
@@ -194,21 +197,24 @@ class TestSettingsDashboard:
         with app.app_context():
             resp = auth_client.get("/settings?section=categories")
             assert resp.status_code == 200
-            assert b"Categories" in resp.data
+            assert b"Add Category" in resp.data
+            assert b'name="group_name"' in resp.data
 
     def test_settings_dashboard_tax_section(self, app, auth_client, seed_user):
         """GET /settings?section=tax renders tax configuration."""
         with app.app_context():
             resp = auth_client.get("/settings?section=tax")
             assert resp.status_code == 200
-            assert b"Tax" in resp.data
+            assert b"Tax Configuration" in resp.data
+            assert b"Federal Tax Brackets" in resp.data
 
     def test_settings_dashboard_retirement_section(self, app, auth_client, seed_user):
         """GET /settings?section=retirement renders retirement settings."""
         with app.app_context():
             resp = auth_client.get("/settings?section=retirement")
             assert resp.status_code == 200
-            assert b"Retirement" in resp.data
+            assert b"Retirement Settings" in resp.data
+            assert b'name="safe_withdrawal_rate"' in resp.data
 
     def test_settings_dashboard_account_types_section(self, app, auth_client, seed_user):
         """GET /settings?section=account-types renders account type management."""
@@ -222,7 +228,8 @@ class TestSettingsDashboard:
         with app.app_context():
             resp = auth_client.get("/settings?section=pay-periods")
             assert resp.status_code == 200
-            assert b"Pay Periods" in resp.data
+            assert b"Generate Pay Periods" in resp.data
+            assert b'name="start_date"' in resp.data
 
     def test_settings_dashboard_invalid_section_defaults_to_general(self, app, auth_client, seed_user):
         """GET /settings?section=bogus defaults to the General section."""

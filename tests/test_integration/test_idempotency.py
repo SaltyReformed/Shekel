@@ -83,7 +83,8 @@ class TestLoginDoubleSubmit:
     """Double login refreshes session without error."""
 
     def test_double_login_succeeds(self, app, client, seed_user):
-        """POST /login twice with valid credentials succeeds both times."""
+        """POST /login twice with valid credentials succeeds both times
+        and the session remains functional."""
         with app.app_context():
             data = {"email": "test@shekel.local", "password": "testpass"}
 
@@ -94,6 +95,11 @@ class TestLoginDoubleSubmit:
             # Second login while already authenticated — redirects to grid.
             resp2 = client.post("/login", data=data, follow_redirects=False)
             assert resp2.status_code == 302
+
+            # Verify session is live after double login by accessing a protected page.
+            protected_resp = client.get("/settings")
+            assert protected_resp.status_code == 200
+            assert b"Settings" in protected_resp.data
 
 
 class TestTemplateDoubleSubmit:

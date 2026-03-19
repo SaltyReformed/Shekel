@@ -97,8 +97,9 @@ class TestBalanceOverTime:
             result = chart_data_service.get_balance_over_time(
                 user_id=seed_user["user"].id,
             )
-            assert len(result["labels"]) > 0
-            assert len(result["datasets"]) >= 1
+            # 10 seed_periods → 10 labels; 1 checking account → 1 dataset
+            assert len(result["labels"]) == 10
+            assert len(result["datasets"]) == 1
             # Checking account should be on left axis.
             checking_ds = next(
                 (ds for ds in result["datasets"]
@@ -154,8 +155,8 @@ class TestBalanceOverTime:
                 start=start,
                 end=end,
             )
-            # Should have fewer periods than the full range.
-            assert len(result["labels"]) <= 4
+            # Periods 2-5 satisfy start_date >= start AND end_date <= end → 4 labels
+            assert len(result["labels"]) == 4
 
 
 # ── Spending by Category Tests ──────────────────────────────────────
@@ -198,7 +199,9 @@ class TestSpendingByCategory:
                 user_id=seed_user["user"].id,
                 period_range="last_12",
             )
-            assert len(result["labels"]) >= 2
+            # 2 expenses in distinct category groups: "Home" (Rent) and
+            # "Family" (Groceries) → 2 labels
+            assert len(result["labels"]) == 2
             assert all(isinstance(v, float) for v in result["data"])
 
     def test_only_done_and_projected(self, app, seed_user, seed_periods):
@@ -315,7 +318,13 @@ class TestAmortizationBreakdown:
                 user_id=seed_user["user"].id,
                 account_id=account.id,
             )
-            assert len(result["labels"]) > 0
+            # Remaining months = term_months - elapsed months since origination.
+            # origination_date=2022-06-01, term=360. Labels = remaining months.
+            from app.services import amortization_engine
+            expected_months = amortization_engine.calculate_remaining_months(
+                date(2022, 6, 1), 360,
+            )
+            assert len(result["labels"]) == expected_months
             assert len(result["principal"]) == len(result["labels"])
             assert len(result["interest"]) == len(result["labels"])
             assert result["account_name"] == "Test Mortgage"
@@ -336,11 +345,12 @@ class TestNetWorthOverTime:
             result = chart_data_service.get_net_worth_over_time(
                 user_id=seed_user["user"].id,
             )
-            # With a single checking account, net worth equals checking balance.
-            assert len(result["labels"]) > 0
-            assert len(result["data"]) == len(result["labels"])
-            # First data point should be close to anchor balance.
-            assert result["data"][0] > 0
+            # 10 seed_periods → 10 labels; single checking account
+            assert len(result["labels"]) == 10
+            assert len(result["data"]) == 10
+            # Net worth at period 0 = checking anchor balance = $1,000.00
+            # (no transactions, no liabilities)
+            assert result["data"][0] == 1000.0
 
 
 # ── Helpers Tests ───────────────────────────────────────────────────

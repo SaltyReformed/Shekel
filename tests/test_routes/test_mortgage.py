@@ -98,16 +98,18 @@ class TestMortgageDashboard:
         )
 
     def test_dashboard_wrong_type(self, auth_client, seed_user, db, seed_periods):
-        """Non-mortgage account → redirect."""
+        """Non-mortgage account → redirect to savings dashboard."""
         # seed_user has a checking account
         acct = seed_user["account"]
         resp = auth_client.get(f"/accounts/{acct.id}/mortgage")
         assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
 
     def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods):
-        """Bad ID → redirect."""
+        """Bad ID → redirect to savings dashboard."""
         resp = auth_client.get("/accounts/99999/mortgage")
         assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
 
     def test_dashboard_login_required(self, client, seed_user, db, seed_periods):
         """Unauthenticated → redirect to login."""

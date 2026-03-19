@@ -174,7 +174,9 @@ class TestProfileList:
             response = auth_client.get("/salary/new")
 
             assert response.status_code == 200
-            assert b"form" in response.data
+            assert b'name="annual_salary"' in response.data
+            assert b'name="filing_status_id"' in response.data
+            assert b"New Salary Profile" in response.data
 
 
 class TestProfileCreate:
@@ -441,6 +443,8 @@ class TestRaises:
             )
 
             assert response.status_code == 200
+            assert b"Cola" in response.data
+            assert b"2000.00" in response.data
 
     def test_delete_raise(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/raises/<id>/delete removes a raise."""
@@ -640,6 +644,8 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
+            assert b"Roth IRA" in response.data
+            assert b"300" in response.data
 
     def test_add_percentage_deduction_converts_input(
         self, app, auth_client, seed_user, seed_periods
@@ -686,7 +692,9 @@ class TestBreakdown:
             )
 
             assert response.status_code == 200
-            assert b"breakdown" in response.data.lower()
+            assert b"Paycheck Breakdown" in response.data
+            assert b"Gross Biweekly Pay" in response.data
+            assert b"Net Biweekly Paycheck" in response.data
 
     def test_breakdown_current_redirects(self, app, auth_client, seed_user, seed_periods):
         """GET /salary/<id>/breakdown redirects to the current period breakdown."""
@@ -706,6 +714,9 @@ class TestBreakdown:
             response = auth_client.get(f"/salary/{profile.id}/projection")
 
             assert response.status_code == 200
+            assert b"Salary Projection" in response.data
+            assert b"Day Job" in response.data
+            assert b"Net Biweekly" in response.data
 
     def test_breakdown_no_current_period(self, app, auth_client, seed_user):
         """GET /salary/<id>/breakdown with no periods flashes a warning."""

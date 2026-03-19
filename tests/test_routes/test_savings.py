@@ -217,6 +217,8 @@ class TestDashboard:
             # seed_user only has a checking account — no savings accounts.
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
+            assert b"Accounts Dashboard" in resp.data
+            assert b"No savings goals yet" in resp.data
 
     def test_dashboard_with_goals(self, app, auth_client, seed_user, seed_periods):
         """Dashboard displays savings goals when they exist."""
@@ -275,10 +277,12 @@ class TestDashboard:
                 if int(a.replace(',', '')) > 50000
             ]
 
-            # With 7% growth, at least one projected amount should exceed $50,000.
-            assert len(amounts_int) > 0, (
-                "Expected at least one projected amount > $50,000 with 7% growth, "
-                "but all amounts were <= $50,000. Growth is not being applied."
+            # Dashboard shows 3 milestones (3-month, 6-month, 1-year) at offsets
+            # 6, 13, 26 periods from current. With 7% annual return on $50k,
+            # all 3 milestones exceed $50,000 (~$50.8k, ~$51.7k, ~$53.5k).
+            assert len(amounts_int) == 3, (
+                "Expected 3 milestone projections > $50,000 with 7% growth, "
+                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
             )
 
     def test_dashboard_investment_account_includes_contributions(
@@ -316,9 +320,12 @@ class TestDashboard:
                 if int(a.replace(',', '')) > 60000
             ]
 
-            assert len(amounts_int) > 0, (
-                "Expected at least one projected amount > $60,000 with contributions, "
-                f"but found amounts: {amounts}. Contributions not being applied."
+            # 3 milestones at offsets 6, 13, 26. With $500/period employee +
+            # ~$192/period employer (5% of $100k/26) + 7% growth on $50k:
+            # 3-month ~$55k (<$60k), 6-month ~$61k (>$60k), 1-year ~$72k (>$60k)
+            assert len(amounts_int) == 2, (
+                "Expected 2 milestone projections > $60,000 with contributions, "
+                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
             )
 
     def test_dashboard_employer_contribution_without_employee_deduction(
@@ -387,9 +394,12 @@ class TestDashboard:
                 if int(a.replace(',', '')) > 54000
             ]
 
-            assert len(amounts_int) > 0, (
-                "Expected projected amount > $54,000 with employer 5% flat contribution, "
-                f"but found amounts: {amounts}. Employer contribution not applied."
+            # 3 milestones at offsets 6, 13, 26. With 5% employer flat on
+            # $100k/26 (~$192/period) + 7% growth on $50k, no employee deduction:
+            # 3-month ~$52k (<$54k), 6-month ~$54.3k (>$54k), 1-year ~$58.7k (>$54k)
+            assert len(amounts_int) == 2, (
+                "Expected 2 milestone projections > $54,000 with employer contribution, "
+                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
             )
 
     def test_dashboard_requires_login(self, app, client, seed_user):
@@ -411,6 +421,9 @@ class TestGoalCreate:
         with app.app_context():
             resp = auth_client.get("/savings/goals/new")
             assert resp.status_code == 200
+            assert b'name="target_amount"' in resp.data
+            assert b'name="target_date"' in resp.data
+            assert b"New Savings Goal" in resp.data
 
     def test_create_goal_success(self, app, auth_client, seed_user, seed_periods):
         """POST /savings/goals creates a goal and redirects to dashboard."""

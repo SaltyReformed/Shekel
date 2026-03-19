@@ -64,7 +64,9 @@ class TestAccountList:
             response = auth_client.get("/accounts/new")
 
             assert response.status_code == 200
-            assert b"form" in response.data
+            assert b'name="name"' in response.data
+            assert b'name="anchor_balance"' in response.data
+            assert b"New Account" in response.data
 
 
 class TestAccountCreate:
@@ -355,6 +357,8 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 200
+            assert b'name="anchor_balance"' in response.data
+            assert b"1000.00" in response.data
 
     def test_inline_anchor_display_returns_partial(
         self, app, auth_client, seed_user
@@ -368,6 +372,8 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 200
+            assert b"$1000.00" in response.data
+            assert b"font-mono" in response.data
 
     def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):
         """PATCH /accounts/<id>/inline-anchor with invalid amount returns 400."""
@@ -484,7 +490,8 @@ class TestAccountTypes:
             acct_type = (
                 db.session.query(AccountType).filter_by(name="investment").one()
             )
-            assert acct_type is not None
+            # .one() already raises NoResultFound if missing; verify the created name
+            assert acct_type.name == "investment"
 
     def test_rename_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types/<id> renames an account type."""

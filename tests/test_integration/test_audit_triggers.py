@@ -4,6 +4,7 @@ Verifies that INSERT, UPDATE, and DELETE operations on audited tables
 produce the expected rows in system.audit_log, with correct metadata,
 old/new data capture, and changed-field detection.
 """
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.extensions import db
@@ -63,7 +64,8 @@ class TestAuditTriggerInsert:
         rows = _get_audit_rows("transactions", "INSERT")
         # seed_user fixture creates user/account/etc which also trigger
         # audit rows, so filter specifically for transactions.
-        assert len(rows) >= 1
+        # Exactly 1 INSERT on transactions from _create_transaction
+        assert len(rows) == 1
         txn_row = rows[-1]
         assert txn_row["operation"] == "INSERT"
         assert txn_row["table_schema"] == "budget"
@@ -99,7 +101,8 @@ class TestAuditTriggerInsert:
         """INSERT on budget.accounts produces an audit_log row."""
         # seed_user already creates an account, so check for it.
         rows = _get_audit_rows("accounts", "INSERT")
-        assert len(rows) >= 1
+        # seed_user creates exactly 1 account via INSERT
+        assert len(rows) == 1
         assert rows[-1]["table_schema"] == "budget"
 
     def test_insert_on_salary_profile_creates_audit_row(
@@ -119,7 +122,8 @@ class TestAuditTriggerInsert:
         db.session.add(profile)
         db.session.flush()
         rows = _get_audit_rows("salary_profiles", "INSERT")
-        assert len(rows) >= 1
+        # Exactly 1 INSERT from the profile creation above
+        assert len(rows) == 1
         assert rows[-1]["table_schema"] == "salary"
 
     def test_insert_on_auth_user_settings_creates_audit_row(
@@ -128,7 +132,8 @@ class TestAuditTriggerInsert:
         """INSERT on auth.user_settings produces an audit_log row."""
         # seed_user creates UserSettings, so check for it.
         rows = _get_audit_rows("user_settings", "INSERT")
-        assert len(rows) >= 1
+        # seed_user creates exactly 1 UserSettings row
+        assert len(rows) == 1
         assert rows[-1]["table_schema"] == "auth"
 
 
@@ -146,7 +151,8 @@ class TestAuditTriggerUpdate:
         txn.estimated_amount = Decimal("200.00")
         db.session.flush()
         rows = _get_audit_rows("transactions", "UPDATE")
-        assert len(rows) >= 1
+        # Exactly 1 UPDATE from changing estimated_amount
+        assert len(rows) == 1
 
     def test_update_captures_changed_fields(
         self, app, db, seed_user, seed_periods
@@ -202,7 +208,8 @@ class TestAuditTriggerUpdate:
         account.name = "Updated Checking"
         db.session.flush()
         rows = _get_audit_rows("accounts", "UPDATE")
-        assert len(rows) >= 1
+        # Exactly 1 UPDATE from changing account name
+        assert len(rows) == 1
 
 
 # ── DELETE Tests ──────────────────────────────────────────────────────────
@@ -223,7 +230,8 @@ class TestAuditTriggerDelete:
         )
         db.session.flush()
         rows = _get_audit_rows("transactions", "DELETE")
-        assert len(rows) >= 1
+        # Exactly 1 DELETE from the raw SQL delete above
+        assert len(rows) == 1
 
     def test_delete_captures_old_data(
         self, app, db, seed_user, seed_periods
@@ -277,19 +285,28 @@ class TestAuditTriggerMetadata:
     def test_executed_at_is_populated(
         self, app, db, seed_user, seed_periods
     ):
-        """audit_log row has a non-null executed_at timestamp."""
+        """audit_log row has a recent executed_at timestamp from PG now()."""
         _create_transaction(seed_user, seed_periods)
         rows = _get_audit_rows("transactions", "INSERT")
-        assert rows[-1]["executed_at"] is not None
+        executed_at = rows[-1]["executed_at"]
+        assert executed_at is not None, "executed_at was not set by trigger"
+        # PG trigger uses now(); verify it's within 5s of current time
+        now = datetime.now(timezone.utc)
+        if executed_at.tzinfo is None:
+            now = datetime.utcnow()
+        delta = abs(now - executed_at)
+        assert delta < timedelta(seconds=5), (
+            f"executed_at is {delta} from now, expected < 5s"
+        )
 
     def test_db_user_is_populated(
         self, app, db, seed_user, seed_periods
     ):
-        """audit_log row captures the PostgreSQL db_user."""
+        """audit_log row captures the PostgreSQL db_user matching the test config role."""
         _create_transaction(seed_user, seed_periods)
         rows = _get_audit_rows("transactions", "INSERT")
-        assert rows[-1]["db_user"] is not None
-        assert len(rows[-1]["db_user"]) > 0
+        # PG role from TEST_DATABASE_URL is 'shekel_user'
+        assert rows[-1]["db_user"] == "shekel_user"
 
     def test_user_id_is_null_without_middleware(
         self, app, db, seed_user, seed_periods
@@ -397,7 +414,8 @@ class TestAuditUserIdCapture:
             r for r in rows
             if r["new_data"] and r["new_data"].get("name") == "Test Expense"
         ]
-        assert len(txn_row) >= 1
+        # Exactly 1 audit row for our specific "Test Expense" INSERT
+        assert len(txn_row) == 1
         assert txn_row[-1]["user_id"] is None
 
     def test_set_local_is_transaction_scoped(self, app, db, seed_user):

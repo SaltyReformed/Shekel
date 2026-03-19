@@ -228,3 +228,10 @@ class TestCreateAutoLoanAccount:
         )
         assert resp.status_code == 302
         assert "/auto-loan" in resp.headers.get("Location", "")
+
+        # Verify DB record was created.
+        acct = db.session.query(Account).filter_by(
+            user_id=seed_user["user"].id, name="New Auto Loan",
+        ).one()
+        assert acct.account_type_id == auto_type.id
+        assert acct.current_anchor_balance == Decimal("20000")

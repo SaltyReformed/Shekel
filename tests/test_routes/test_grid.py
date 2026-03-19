@@ -42,6 +42,8 @@ class TestGridView:
         with app.app_context():
             response = auth_client.get("/?periods=3")
             assert response.status_code == 200
+            assert b"01/02" in response.data
+            assert b"Projected End Balance" in response.data
 
 
 class TestBalanceRow:
@@ -52,6 +54,8 @@ class TestBalanceRow:
         with app.app_context():
             resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
             assert resp.status_code == 200
+            assert b"Projected End Balance" in resp.data
+            assert b"Total Income" in resp.data
 
     def test_balance_row_no_current_period(self, app, auth_client, seed_user):
         """GET /grid/balance-row with no periods returns 204 empty."""
@@ -66,6 +70,8 @@ class TestBalanceRow:
         with app.app_context():
             resp = auth_client.get("/grid/balance-row?periods=3&offset=2")
             assert resp.status_code == 200
+            assert b"Projected End Balance" in resp.data
+            assert b"Total Expenses" in resp.data
 
     def test_grid_periods_large_value(self, app, auth_client, seed_user, seed_periods):
         """GET / with periods larger than available still renders."""
@@ -73,6 +79,8 @@ class TestBalanceRow:
             # Request 100 periods when only 10 exist — should render what's available.
             resp = auth_client.get("/?periods=100")
             assert resp.status_code == 200
+            assert b"Projected End Balance" in resp.data
+            assert b"01/02" in resp.data
 
 
 class TestTransactionCRUD:
@@ -110,6 +118,16 @@ class TestTransactionCRUD:
                 "transaction_type_id": expense_type.id,
             })
             assert response.status_code == 201
+
+            # Verify the transaction was persisted correctly.
+            txn = db.session.query(Transaction).filter_by(
+                name="New Expense",
+                scenario_id=seed_user["scenario"].id,
+            ).one()
+            assert txn.estimated_amount == Decimal("99.99")
+            assert txn.pay_period_id == seed_periods[0].id
+            assert txn.category_id == seed_user["categories"]["Groceries"].id
+            assert txn.status.name == "projected"
 
     def test_update_transaction(self, app, auth_client, seed_user, seed_periods):
         """PATCH /transactions/<id> updates fields."""
@@ -243,7 +261,12 @@ class TestTransactionCRUD:
                 Transaction.name.like("%Payback%"),
                 Transaction.pay_period_id == seed_periods[1].id,
             ).first()
-            assert payback is not None
+            assert payback is not None, "Payback transaction was not created"
+            assert payback.name == "CC Payback: Test Expense"
+            assert payback.estimated_amount == Decimal("123.45")
+            assert payback.status.name == "projected"
+            assert payback.pay_period_id == seed_periods[1].id
+            assert payback.credit_payback_for_id == txn.id
 
     def test_unmark_credit_reverts_and_deletes_payback(self, app, auth_client, seed_user, seed_periods):
         """DELETE /transactions/<id>/unmark-credit reverts to projected and deletes payback."""

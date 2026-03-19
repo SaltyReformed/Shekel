@@ -132,6 +132,10 @@ class TestCategoryCreate:
             }, headers={"HX-Request": "true"})
 
             assert resp.status_code == 400
+            data = resp.get_json()
+            assert "errors" in data
+            assert "group_name" in data["errors"]
+            assert "item_name" in data["errors"]
 
 
 # ── Delete Tests ─────────────────────────────────────────────────────

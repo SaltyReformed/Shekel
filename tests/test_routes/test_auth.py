@@ -202,9 +202,15 @@ class TestSessionManagement:
             assert response.status_code == 200
             assert b"All other sessions have been logged out" in response.data
 
-            # Reload user from database and verify timestamp was set.
+            # Reload user from database and verify timestamp is recent.
             user = db.session.get(User, seed_user["user"].id)
-            assert user.session_invalidated_at is not None
+            assert user.session_invalidated_at is not None, \
+                "session_invalidated_at was not set"
+            # Column is DateTime(timezone=True); verify within 5s of now
+            now = datetime.now(timezone.utc)
+            delta = abs(now - user.session_invalidated_at)
+            assert delta < timedelta(seconds=5), \
+                f"session_invalidated_at is {delta} from now, expected < 5s"
 
     def test_invalidate_sessions_current_session_survives(self, app, auth_client, seed_user):
         """Current session remains valid after invalidation."""
@@ -247,9 +253,15 @@ class TestSessionManagement:
                 "confirm_password": "newpassword12",
             })
 
-            # Reload user and verify session_invalidated_at was set.
+            # Reload user and verify session_invalidated_at is recent.
             user = db.session.get(User, seed_user["user"].id)
-            assert user.session_invalidated_at is not None
+            assert user.session_invalidated_at is not None, \
+                "session_invalidated_at was not set after password change"
+            # Column is DateTime(timezone=True); verify within 5s of now
+            now = datetime.now(timezone.utc)
+            delta = abs(now - user.session_invalidated_at)
+            assert delta < timedelta(seconds=5), \
+                f"session_invalidated_at is {delta} from now, expected < 5s"
 
     def test_invalidate_sessions_requires_login(self, app, client):
         """POST /invalidate-sessions without login redirects to login."""

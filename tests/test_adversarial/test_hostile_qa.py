@@ -191,6 +191,10 @@ class TestReferentialIntegrity:
             # Current behavior: route blocks deactivation with a flash warning.
             assert resp.status_code == 302  # Redirect back to list
 
+            # Follow redirect to verify the flash message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"Cannot deactivate" in follow.data
+
             # Re-query to verify account is still active.
             acct = db.session.get(Account, checking_id)
             assert acct.is_active is True
@@ -209,6 +213,10 @@ class TestReferentialIntegrity:
             resp = auth_client.post(f"/categories/{rent_cat.id}/delete")
             # Current behavior: route blocks with flash warning.
             assert resp.status_code == 302
+
+            # Follow redirect to verify the flash message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"in use" in follow.data
 
             # Category still exists.
             cat = db.session.get(Category, rent_cat.id)
@@ -463,8 +471,11 @@ class TestInputValidationBypass:
         """
         with app.app_context():
             resp = auth_client.get("/?periods=-1")
-            # Current behavior: renders the grid with no period columns.
+            # Current behavior: renders a valid page (grid or pay period setup).
             assert resp.status_code == 200
+            assert b"Shekel" in resp.data
+            assert b"Traceback" not in resp.data
+            assert b"Internal Server Error" not in resp.data
 
     def test_grid_extreme_periods_param(self, app, auth_client, seed_user, seed_periods):
         """?periods=10000 → resource exhaustion risk.
@@ -477,6 +488,9 @@ class TestInputValidationBypass:
             resp = auth_client.get("/?periods=10000")
             # Current behavior: works because only 10 periods exist in test data.
             assert resp.status_code == 200
+            assert b"grid-table" in resp.data
+            assert b"Traceback" not in resp.data
+            assert b"Internal Server Error" not in resp.data
 
     def test_transfer_zero_amount_via_schema(self, app, auth_client, seed_user, seed_periods):
         """TransferCreateSchema should reject amount=0.
@@ -760,3 +774,5 @@ class TestAuthEdgeCases:
             resp = auth_client.get(f"/accounts/{account2.id}/edit")
             # Current behavior: redirect to accounts list with flash.
             assert resp.status_code == 302
+            assert "/accounts" in resp.headers.get("Location", "")
+            assert b"Other Checking" not in resp.data

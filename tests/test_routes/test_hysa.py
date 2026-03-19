@@ -189,6 +189,7 @@ class TestCreateHysaAccount:
 
         account = db.session.query(Account).filter_by(name="New HYSA").one()
         params = db.session.query(HysaParams).filter_by(account_id=account.id).first()
-        assert params is not None
+        assert params is not None, "HysaParams were not auto-created"
+        assert params.account_id == account.id
         assert params.apy == Decimal("0.04500")
         assert params.compounding_frequency == "daily"

@@ -92,30 +92,35 @@ class TestFragmentRedirects:
         with app.app_context():
             resp = auth_client.get("/charts/spending-by-category")
             assert resp.status_code == 302
+            assert "/charts" in resp.headers["Location"]
 
     def test_budget_fragment_redirects(self, app, auth_client, seed_user):
         """GET /charts/budget-vs-actuals without HTMX redirects."""
         with app.app_context():
             resp = auth_client.get("/charts/budget-vs-actuals")
             assert resp.status_code == 302
+            assert "/charts" in resp.headers["Location"]
 
     def test_amortization_fragment_redirects(self, app, auth_client, seed_user):
         """GET /charts/amortization without HTMX redirects."""
         with app.app_context():
             resp = auth_client.get("/charts/amortization")
             assert resp.status_code == 302
+            assert "/charts" in resp.headers["Location"]
 
     def test_net_worth_fragment_redirects(self, app, auth_client, seed_user):
         """GET /charts/net-worth without HTMX redirects."""
         with app.app_context():
             resp = auth_client.get("/charts/net-worth")
             assert resp.status_code == 302
+            assert "/charts" in resp.headers["Location"]
 
     def test_net_pay_fragment_redirects(self, app, auth_client, seed_user):
         """GET /charts/net-pay without HTMX redirects."""
         with app.app_context():
             resp = auth_client.get("/charts/net-pay")
             assert resp.status_code == 302
+            assert "/charts" in resp.headers["Location"]
 
 
 # ── HTMX Fragment Tests ─────────────────────────────────────────────
@@ -206,6 +211,8 @@ class TestSpendingFragment:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
+            # No expense transactions seeded, so empty state is expected
+            assert b"No spending data" in resp.data
 
 
 class TestBudgetFragment:

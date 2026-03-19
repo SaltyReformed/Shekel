@@ -114,6 +114,9 @@ class TestInvestmentDashboard:
         )
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
+        assert b"Brokerage" in resp.data
+        assert b"25,000.00" in resp.data
+        assert b"Assumed Return" in resp.data
 
 
 class TestInvestmentParams:

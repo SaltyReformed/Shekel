@@ -103,9 +103,13 @@ class TestTemplateRecurrenceToGrid:
             )
             db.session.commit()
 
-            # Monthly on day 15 across 10 biweekly periods (~140 days / ~5 months).
-            # Exact count depends on which periods contain the 15th.
-            assert len(txns) >= 1
+            # seed_periods starts 2026-01-02, 10 biweekly periods through 2026-05-21.
+            # Monthly recurrence on day_of_month=15 hits:
+            #   P0: Jan 2-15 → Jan 15, P3: Feb 13-26 → Feb 15,
+            #   P5: Mar 13-26 → Mar 15, P7: Apr 10-23 → Apr 15,
+            #   P9: May 8-21 → May 15
+            # = 5 hits
+            assert len(txns) == 5
             for txn in txns:
                 assert txn.name == "Rent"
                 assert txn.estimated_amount == Decimal("1200.00")

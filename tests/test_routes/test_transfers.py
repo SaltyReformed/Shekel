@@ -177,7 +177,9 @@ class TestTemplateList:
             response = auth_client.get("/transfers/new")
 
             assert response.status_code == 200
-            assert b"form" in response.data
+            assert b'name="default_amount"' in response.data
+            assert b'name="from_account_id"' in response.data
+            assert b"New Recurring Transfer" in response.data
 
 
 class TestTemplatePrefill:
@@ -471,6 +473,8 @@ class TestGridCells:
             response = auth_client.get(f"/transfers/cell/{xfer.id}")
 
             assert response.status_code == 200
+            assert b"Monthly Savings" in response.data
+            assert b"200" in response.data
 
     def test_get_quick_edit(self, app, auth_client, seed_user, seed_periods):
         """GET /transfers/quick-edit/<id> returns the quick-edit form."""
@@ -481,6 +485,8 @@ class TestGridCells:
             response = auth_client.get(f"/transfers/quick-edit/{xfer.id}")
 
             assert response.status_code == 200
+            assert b'name="amount"' in response.data
+            assert b"200" in response.data
 
     def test_get_full_edit(self, app, auth_client, seed_user, seed_periods):
         """GET /transfers/<id>/full-edit returns the full-edit form."""
@@ -491,6 +497,8 @@ class TestGridCells:
             response = auth_client.get(f"/transfers/{xfer.id}/full-edit")
 
             assert response.status_code == 200
+            assert b"Monthly Savings" in response.data
+            assert b'name="amount"' in response.data
 
     def test_get_cell_other_users_transfer(self, app, auth_client, seed_user):
         """GET /transfers/cell/<id> for another user's transfer returns 404."""
@@ -659,6 +667,8 @@ class TestAdHoc:
             })
 
             assert response.status_code == 400
+            body = response.get_json()
+            assert "errors" in body
 
     def test_create_ad_hoc_other_users_period(
         self, app, auth_client, seed_user, seed_periods
