@@ -253,6 +253,91 @@ class TestTransferAccountOwnership:
 
         assert resp.status_code == 404
 
+    def test_update_transfer_template_with_foreign_from_account(
+        self, app, db, auth_client, seed_user, seed_periods, second_user,
+    ):
+        """Updating a transfer template's from_account to a foreign account is rejected.
+
+        The update route validates account ownership when from_account_id
+        is included in the form data, returning a flash error and redirect.
+        """
+        savings_acct = _create_savings_account(seed_user["user"].id)
+
+        template = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings_acct.id,
+            name="My Transfer",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.commit()
+
+        # Snapshot before attack.
+        original_from = template.from_account_id
+        original_to = template.to_account_id
+
+        # Try to update from_account_id to second user's account.
+        resp = auth_client.post(
+            f"/transfers/{template.id}",
+            data={
+                "name": "My Transfer",
+                "default_amount": "100.00",
+                "from_account_id": str(second_user["account"].id),
+                "to_account_id": str(savings_acct.id),
+            },
+            follow_redirects=True,
+        )
+
+        assert b"Invalid source account" in resp.data
+
+        # Verify template is unchanged in DB.
+        db.session.refresh(template)
+        assert template.from_account_id == original_from
+        assert template.to_account_id == original_to
+
+    def test_update_transfer_template_with_foreign_to_account(
+        self, app, db, auth_client, seed_user, seed_periods, second_user,
+    ):
+        """Updating a transfer template's to_account to a foreign account is rejected.
+
+        Same IDOR vector as from_account but targeting the destination field.
+        """
+        savings_acct = _create_savings_account(seed_user["user"].id)
+
+        template = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings_acct.id,
+            name="My Transfer 2",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.commit()
+
+        # Snapshot before attack.
+        original_from = template.from_account_id
+        original_to = template.to_account_id
+
+        # Try to update to_account_id to second user's account.
+        resp = auth_client.post(
+            f"/transfers/{template.id}",
+            data={
+                "name": "My Transfer 2",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(second_user["account"].id),
+            },
+            follow_redirects=True,
+        )
+
+        assert b"Invalid destination account" in resp.data
+
+        # Verify template is unchanged in DB.
+        db.session.refresh(template)
+        assert template.from_account_id == original_from
+        assert template.to_account_id == original_to
+
 
 # ── Section 3: IDOR — Savings Goal Account Ownership ────────────────
 
@@ -277,6 +362,45 @@ class TestSavingsGoalAccountOwnership:
             user_id=seed_user["user"].id,
         ).count()
         assert count == 0
+
+    def test_update_savings_goal_with_foreign_account(
+        self, app, db, auth_client, seed_user, second_user,
+    ):
+        """Updating a savings goal's account_id to a foreign account is rejected.
+
+        The update route validates account ownership when account_id is
+        included in the form data, returning a flash error and redirect.
+        """
+        savings_acct = _create_savings_account(seed_user["user"].id)
+
+        goal = SavingsGoal(
+            user_id=seed_user["user"].id,
+            account_id=savings_acct.id,
+            name="My Emergency Fund",
+            target_amount=Decimal("10000.00"),
+        )
+        db.session.add(goal)
+        db.session.commit()
+
+        # Snapshot before attack.
+        original_account_id = goal.account_id
+
+        # Try to update account_id to second user's account.
+        resp = auth_client.post(
+            f"/savings/goals/{goal.id}",
+            data={
+                "name": "My Emergency Fund",
+                "target_amount": "10000.00",
+                "account_id": str(second_user["account"].id),
+            },
+            follow_redirects=True,
+        )
+
+        assert b"Invalid account" in resp.data
+
+        # Verify goal is unchanged in DB.
+        db.session.refresh(goal)
+        assert goal.account_id == original_account_id
 
 
 # ── Section 4: IDOR — Template Account/Category Ownership ───────────
@@ -477,3 +601,67 @@ class TestUniqueConstraints:
         with pytest.raises(IntegrityError, match="uq_savings_goals_user_acct_name"):
             db.session.flush()
         db.session.rollback()
+
+
+# ── Section 7: Self-Transfer Rejection ───────────────────────────────
+
+
+class TestSelfTransferRejection:
+    """Verify that transfers from an account to itself are rejected.
+
+    Both the schema (validates_schema) and the DB (CHECK constraint)
+    enforce from_account_id != to_account_id.
+    """
+
+    def test_create_self_transfer_template_rejected(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """Creating a transfer template where from == to is rejected.
+
+        The TransferTemplateCreateSchema validates_schema method catches
+        from_account_id == to_account_id and returns a validation error.
+        The route flashes a generic error and redirects.
+        """
+        resp = auth_client.post("/transfers", data={
+            "name": "Self Transfer",
+            "default_amount": "100.00",
+            "from_account_id": str(seed_user["account"].id),
+            "to_account_id": str(seed_user["account"].id),
+            "recurrence_pattern": "",
+        })
+
+        # Schema validation fails → redirect with flash.
+        assert resp.status_code == 302
+
+        # Verify no template was created.
+        count = db.session.query(TransferTemplate).filter_by(
+            user_id=seed_user["user"].id,
+            name="Self Transfer",
+        ).count()
+        assert count == 0
+
+    def test_create_ad_hoc_self_transfer_rejected(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """Creating an ad-hoc transfer where from == to is rejected.
+
+        The TransferCreateSchema validates_schema method catches
+        from_account_id == to_account_id and returns 400 with JSON errors.
+        """
+        resp = auth_client.post("/transfers/ad-hoc", data={
+            "from_account_id": str(seed_user["account"].id),
+            "to_account_id": str(seed_user["account"].id),
+            "amount": "50.00",
+            "pay_period_id": str(seed_periods[0].id),
+            "scenario_id": str(seed_user["scenario"].id),
+        })
+
+        # Schema validation fails → 400 with error details.
+        assert resp.status_code == 400
+
+        # Verify no transfer was created.
+        from app.models.transfer import Transfer as XferModel
+        count = db.session.query(XferModel).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0

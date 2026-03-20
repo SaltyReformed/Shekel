@@ -18,7 +18,8 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, FilingStatus, Status, TransactionType
+from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -154,6 +155,259 @@ class TestStateMachineViolations:
             # Current behavior: status is re-set, actual_amount preserved
             # because the form didn't send one.
             assert txn.actual_amount == Decimal("75.00")
+
+    def test_projected_to_cancelled_to_projected_double_reversal(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Projected → cancelled → projected double reversal.
+
+        Cancel a projected transaction, then PATCH it back to projected.
+        The audit flagged this round-trip as missing test coverage.
+        Verifies effective_amount correctness at each stage.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods)
+            db.session.commit()
+            original_amount = txn.estimated_amount  # Decimal("100.00")
+
+            # Verify initial effective_amount.
+            assert txn.effective_amount == original_amount
+
+            # Step 1: Cancel the transaction.
+            resp = auth_client.post(f"/transactions/{txn.id}/cancel")
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "cancelled"
+            assert txn.effective_amount == Decimal("0")
+
+            # Step 2: PATCH back to projected.
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(projected.id)},
+            )
+            # Current behavior: no transition guard, reversion is allowed.
+            # Ideal: cancelled → projected should require explicit confirmation
+            # to prevent accidental re-projection of cancelled items.
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+            assert txn.effective_amount == original_amount
+
+    def test_done_to_cancelled_transition(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Done → cancelled transition.
+
+        A done transaction (with actual_amount set) is cancelled.
+        Verifies that actual_amount is preserved in the DB but
+        effective_amount drops to zero (excluded from balance calcs).
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn.actual_amount = Decimal("85.00")
+            db.session.commit()
+
+            # Verify initial effective_amount uses actual_amount.
+            assert txn.effective_amount == Decimal("85.00")
+
+            # Cancel the transaction.
+            resp = auth_client.post(f"/transactions/{txn.id}/cancel")
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "cancelled"
+            assert txn.effective_amount == Decimal("0")
+
+            # Current behavior: actual_amount is preserved in the DB.
+            # The cancel endpoint only changes status_id, does not clear actual_amount.
+            assert txn.actual_amount == Decimal("85.00")
+
+    def test_received_to_projected_reversion(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Received → projected reversion on an income transaction.
+
+        Income marked received (with actual_amount) is reverted to
+        projected via PATCH. Financially dangerous: income that was
+        counted as received re-appears at estimated_amount, which may
+        differ from the actual_amount that was settled.
+        """
+        with app.app_context():
+            txn = _make_transaction(
+                seed_user, seed_periods, txn_type_name="income",
+                name="Paycheck", category_key="Salary", amount="3000.00",
+                status_name="received",
+            )
+            txn.actual_amount = Decimal("2800.00")
+            db.session.commit()
+
+            # Verify initial effective_amount uses actual_amount.
+            assert txn.effective_amount == Decimal("2800.00")
+
+            # PATCH back to projected.
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(projected.id)},
+            )
+            # Current behavior: no transition guard, reversion is allowed.
+            # Ideal: received → projected should be rejected to prevent
+            # balance corruption from re-projecting settled income.
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+            # effective_amount now uses estimated_amount (projected path).
+            assert txn.effective_amount == Decimal("3000.00")
+            # actual_amount is NOT cleared by the PATCH.
+            assert txn.actual_amount == Decimal("2800.00")
+
+    def test_credit_to_projected_reversion(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Credit → projected reversion leaves orphaned payback.
+
+        A transaction marked as credit (auto-generates payback) is
+        reverted to projected via PATCH. The payback transaction is
+        NOT deleted, creating an orphaned payback that inflates
+        projected expenses.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, period_index=0)
+            db.session.commit()
+
+            # Mark as credit — creates payback in next period.
+            resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "credit"
+            assert txn.effective_amount == Decimal("0")
+
+            # Find the payback transaction.
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn.id,
+            ).one()
+            payback_id = payback.id
+
+            # PATCH the original back to projected.
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(projected.id)},
+            )
+            # Current behavior: no transition guard, reversion is allowed.
+            # Ideal: credit → projected should also delete the payback
+            # (like unmark_credit does) to prevent orphaned paybacks.
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+            assert txn.effective_amount == Decimal("100.00")
+
+            # BUG: the payback transaction is now orphaned.
+            orphan = db.session.get(Transaction, payback_id)
+            assert orphan is not None, \
+                "Payback still exists as orphan after credit→projected reversion"
+
+    def test_cancelled_to_done_direct(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Cancelled → done via direct PATCH (bypassing mark_done).
+
+        PATCHing status_id to done bypasses the mark_done endpoint,
+        resulting in a 'done' transaction without actual_amount.
+        effective_amount falls through to estimated_amount.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            db.session.commit()
+
+            done_status = db.session.query(Status).filter_by(name="done").one()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(done_status.id)},
+            )
+            # Current behavior: no transition guard, direct status change is allowed.
+            # Ideal: cancelled → done should be rejected; use mark_done instead.
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "done"
+            # effective_amount for done without actual_amount uses estimated_amount.
+            assert txn.effective_amount == txn.estimated_amount
+
+    def test_cancel_already_cancelled_transaction(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Cancel → cancel idempotency check.
+
+        Cancelling an already-cancelled transaction should be harmless.
+        Verifies the status remains cancelled with no side effects.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            db.session.commit()
+
+            resp = auth_client.post(f"/transactions/{txn.id}/cancel")
+            # Current behavior: cancel sets status unconditionally. Idempotent.
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "cancelled"
+            assert txn.effective_amount == Decimal("0")
+
+    def test_mark_done_on_cancelled_transaction(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """POST mark_done on a cancelled transaction.
+
+        A cancelled transaction is excluded from balance calculations.
+        mark_done re-includes it as 'done', which could corrupt balance
+        projections if the cancellation was intentional.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/mark-done",
+                data={"actual_amount": "95.00"},
+            )
+            # Current behavior: mark_done has no guard against cancelled transactions.
+            # Ideal: should reject with "cannot mark cancelled as done".
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "done"
+            assert txn.actual_amount == Decimal("95.00")
+            assert txn.effective_amount == Decimal("95.00")
+
+    def test_mark_credit_on_done_transaction(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """POST mark-credit on a done transaction — rejected by service.
+
+        credit_workflow.mark_as_credit only allows projected transactions.
+        Attempting to mark a done transaction as credit returns 400.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn.actual_amount = Decimal("100.00")
+            db.session.commit()
+
+            resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            # credit_workflow raises ValidationError for non-projected transactions.
+            # Route catches it and returns 400.
+            assert resp.status_code == 400
+            assert b"Only projected" in resp.data
+
+            db.session.refresh(txn)
+            assert txn.status.name == "done"
+            assert txn.effective_amount == Decimal("100.00")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -721,6 +975,13 @@ class TestAuthEdgeCases:
             )
             assert resp.status_code == 404
 
+            # Verify DB state unchanged after IDOR PATCH attempt.
+            db.session.refresh(txn2)
+            assert txn2.estimated_amount == Decimal("99.99"), \
+                "IDOR PATCH should not have modified the victim's amount"
+            assert txn2.status.name == "projected", \
+                "IDOR PATCH should not have modified the victim's status"
+
     def test_access_other_users_account(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
@@ -737,3 +998,220 @@ class TestAuthEdgeCases:
             assert resp.status_code == 302
             assert "/accounts" in resp.headers.get("Location", "")
             assert b"Other Checking" not in resp.data
+
+            # Follow redirect to verify the flash warning message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"not found" in follow.data.lower()
+
+            # Verify DB state unchanged after IDOR attempt.
+            acct2 = db.session.get(Account, second_user["account"].id)
+            assert acct2.name == "Other Checking", \
+                "IDOR attempt should not have modified the victim's account"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9. SQL Injection Prevention
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestSQLInjectionPrevention:
+    """Verify SQL injection payloads are rejected or stored literally.
+
+    SQLAlchemy uses parameterized queries, so data fields are safe by
+    construction.  Query parameters parsed via int() or schema validation
+    also reject injection strings.  These tests verify that explicitly.
+    """
+
+    def test_grid_period_param_sql_injection(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """SQL injection in ?periods param is rejected by int() parsing.
+
+        The grid route calls int() on the periods param, which raises
+        ValueError for non-numeric SQL injection strings.
+        """
+        with app.app_context():
+            with pytest.raises(ValueError):
+                auth_client.get("/?periods=1;DROP%20TABLE%20budget.transactions--")
+
+            # Verify the transactions table still exists.
+            count = db.session.execute(
+                db.text("SELECT count(*) FROM budget.transactions")
+            ).scalar()
+            assert count is not None
+
+    def test_transaction_patch_sql_in_name(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """SQL injection payload in transaction name is stored literally.
+
+        SQLAlchemy parameterized queries prevent execution.  The payload
+        is stored as a plain string in the name column.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods)
+            db.session.commit()
+
+            payload = "'; DROP TABLE budget.transactions; --"
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"name": payload},
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.name == payload
+
+            # Verify the table still exists and the transaction is intact.
+            count = db.session.execute(
+                db.text("SELECT count(*) FROM budget.transactions")
+            ).scalar()
+            assert count >= 1
+
+    def test_transaction_patch_sql_in_amount(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """SQL injection in estimated_amount is rejected by schema validation.
+
+        The Marshmallow schema validates estimated_amount as a Decimal.
+        A SQL injection string is not a valid decimal and returns 400.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods)
+            db.session.commit()
+            original_amount = txn.estimated_amount
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"estimated_amount": "0; DROP TABLE budget.transactions"},
+            )
+            assert resp.status_code == 400
+
+            db.session.refresh(txn)
+            assert txn.estimated_amount == original_amount
+
+            # Verify the table still exists.
+            count = db.session.execute(
+                db.text("SELECT count(*) FROM budget.transactions")
+            ).scalar()
+            assert count >= 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 10. Cross-Resource IDOR
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestCrossResourceIDOR:
+    """IDOR tests for salary profiles, categories, and transfer templates.
+
+    Authenticated as user 1, attempt to access/modify resources owned
+    by user 2.  Each test verifies both the HTTP response and DB state.
+    """
+
+    def test_edit_other_users_salary_profile(
+        self, app, auth_client, seed_user, seed_periods, second_user,
+    ):
+        """User A tries to GET User B's salary profile edit page → redirect.
+
+        The salary route checks user_id ownership and redirects with
+        a flash warning when the profile doesn't belong to the current user.
+        """
+        with app.app_context():
+            filing_single = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+
+            profile = SalaryProfile(
+                user_id=second_user["user"].id,
+                scenario_id=second_user["scenario"].id,
+                filing_status_id=filing_single.id,
+                name="Other User Job",
+                annual_salary=Decimal("60000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.commit()
+            profile_id = profile.id
+            original_salary = profile.annual_salary
+
+            # Auth client (user 1) tries to access user 2's salary profile.
+            resp = auth_client.get(f"/salary/{profile_id}/edit")
+            assert resp.status_code == 302
+
+            # Follow redirect to verify flash message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"Salary profile not found" in follow.data
+
+            # Verify profile is unchanged in DB.
+            db.session.refresh(profile)
+            assert profile.annual_salary == original_salary
+            assert profile.name == "Other User Job"
+
+    def test_delete_other_users_category(
+        self, app, auth_client, seed_user, seed_periods, second_user,
+    ):
+        """User A tries to DELETE User B's category → rejected.
+
+        The categories route checks user_id ownership and redirects
+        with a flash warning.
+        """
+        with app.app_context():
+            cat = second_user["categories"]["Rent"]
+            cat_id = cat.id
+
+            resp = auth_client.post(f"/categories/{cat_id}/delete")
+            assert resp.status_code == 302
+
+            # Follow redirect to verify flash message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"Category not found" in follow.data
+
+            # Verify category still exists.
+            cat_after = db.session.get(Category, cat_id)
+            assert cat_after is not None
+
+    def test_delete_other_users_transfer_template(
+        self, app, auth_client, seed_user, seed_periods, second_user,
+    ):
+        """User A tries to DELETE User B's transfer template → rejected.
+
+        The transfers route checks user_id ownership and redirects
+        with a flash warning.
+        """
+        with app.app_context():
+            # Create a savings account and transfer template for second user.
+            savings_type = db.session.query(AccountType).filter_by(
+                name="savings",
+            ).one()
+            savings_acct2 = Account(
+                user_id=second_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Other Savings",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_acct2)
+            db.session.flush()
+
+            template2 = TransferTemplate(
+                user_id=second_user["user"].id,
+                from_account_id=second_user["account"].id,
+                to_account_id=savings_acct2.id,
+                name="Other Savings Transfer",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template2)
+            db.session.commit()
+            template2_id = template2.id
+
+            # Auth client (user 1) tries to delete user 2's template.
+            resp = auth_client.post(f"/transfers/{template2_id}/delete")
+            assert resp.status_code == 302
+
+            # Follow redirect to verify flash message.
+            follow = auth_client.get(resp.headers["Location"])
+            assert b"Recurring transfer not found" in follow.data
+
+            # Verify template still exists and is active.
+            db.session.refresh(template2)
+            assert template2.is_active is True
