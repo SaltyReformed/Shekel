@@ -1216,3 +1216,269 @@ class TestCrossUserIsolation:
                 f"generate_for_template needs an ownership "
                 f"check."
             )
+
+
+# --- Negative-Path Tests ---------------------------------------------------
+
+
+class TestNegativePaths:
+    """Negative-path and boundary-condition tests for the recurrence engine.
+
+    Verifies behavior with zero-amount templates, None recurrence rules,
+    empty period lists, and immutable status preservation during regeneration.
+    """
+
+    def _make_template_with_rule(self, seed_user, pattern_name,
+                                  default_amount=Decimal("100.00"),
+                                  **rule_kwargs):
+        """Helper: create a template + recurrence rule with configurable amount."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="expense")
+            .one()
+        )
+
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+        )
+        db.session.add(rule)
+        db.session.flush()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Test Recurring NP",
+            default_amount=default_amount,
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def test_template_with_zero_estimated_amount(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Zero-amount template generates transactions with amount=0.00.
+
+        Input: Template with default_amount=0.00, every_period pattern.
+        Expected: One transaction per period, each with estimated_amount=0.00.
+        The engine does not skip zero-amount templates.
+        Why: A template accidentally set to $0 must behave predictably, not crash
+        or generate phantom balances.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period", default_amount=Decimal("0.00")
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            # Engine generates for all periods regardless of amount.
+            assert len(created) == len(seed_periods)
+            for txn in created:
+                assert txn.estimated_amount == Decimal("0.00")
+
+    def test_template_with_none_recurrence_rule(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Template with no recurrence rule returns empty list.
+
+        Input: Template with recurrence_rule_id=None.
+        Expected: generate_for_template returns [].
+        Why: Templates without rules are manually placed; the engine must not
+        crash or generate spurious transactions.
+        """
+        with app.app_context():
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="expense")
+                .one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Car Payment"].id,
+                recurrence_rule_id=None,
+                transaction_type_id=expense_type.id,
+                name="No Rule Template",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.refresh(template)
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            assert created == []
+
+    def test_received_status_in_existing_transaction_is_immutable(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Received transactions must NOT be deleted or recreated on regeneration.
+
+        Input: Generate for all periods, mark one as received, regenerate.
+        Expected: The received transaction persists with same ID and status.
+        Other periods are regenerated normally.
+        Why: The recurrence engine must never overwrite settled financial history.
+        A received paycheck deleted by regeneration corrupts balance history.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+
+            # Initial generation.
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) == len(seed_periods)
+
+            # Mark the 3rd transaction as received.
+            received_status = (
+                db.session.query(Status).filter_by(name="received").one()
+            )
+            target_txn = created[2]
+            target_id = target_txn.id
+            target_txn.status_id = received_status.id
+            db.session.flush()
+
+            # Regenerate — received transaction must survive.
+            recurrence_engine.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Verify the received transaction still exists unchanged.
+            preserved = db.session.get(Transaction, target_id)
+            assert preserved is not None, (
+                f"Received transaction {target_id} was deleted during regeneration"
+            )
+            assert preserved.status.name == "received"
+            assert preserved.id == target_id
+
+    def test_generate_with_empty_periods_list(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Empty periods list returns empty without error.
+
+        Input: Template with valid rule, periods=[].
+        Expected: Returns []. No crash.
+        Why: Edge case when the user has no pay periods generated yet.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [], seed_user["scenario"].id,
+                effective_from=date(2026, 1, 1),
+            )
+
+            assert created == []
+
+    def test_cancelled_status_in_existing_is_immutable(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Cancelled transactions must be preserved on regeneration.
+
+        Input: Generate for all periods, cancel one, regenerate.
+        Expected: The cancelled transaction persists with same ID and status.
+        Why: Cancelled items represent a deliberate user action that must
+        not be overwritten by the recurrence engine.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) == len(seed_periods)
+
+            # Cancel one transaction.
+            cancelled_status = (
+                db.session.query(Status).filter_by(name="cancelled").one()
+            )
+            target_txn = created[4]
+            target_id = target_txn.id
+            target_txn.status_id = cancelled_status.id
+            db.session.flush()
+
+            # Regenerate.
+            recurrence_engine.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Cancelled transaction must still exist.
+            preserved = db.session.get(Transaction, target_id)
+            assert preserved is not None, (
+                f"Cancelled transaction {target_id} was deleted "
+                f"during regeneration"
+            )
+            assert preserved.status.name == "cancelled"
+            assert preserved.id == target_id
+
+    def test_credit_status_in_existing_is_immutable(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Credit transactions must be preserved on regeneration.
+
+        Input: Generate for all periods, mark one as credit, regenerate.
+        Expected: The credit transaction persists with same ID and status.
+        Why: Credit items represent payments on a credit card and must not
+        be overwritten by the recurrence engine.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) == len(seed_periods)
+
+            # Mark one as credit.
+            credit_status = (
+                db.session.query(Status).filter_by(name="credit").one()
+            )
+            target_txn = created[6]
+            target_id = target_txn.id
+            target_txn.status_id = credit_status.id
+            db.session.flush()
+
+            # Regenerate.
+            recurrence_engine.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Credit transaction must still exist.
+            preserved = db.session.get(Transaction, target_id)
+            assert preserved is not None, (
+                f"Credit transaction {target_id} was deleted "
+                f"during regeneration"
+            )
+            assert preserved.status.name == "credit"
+            assert preserved.id == target_id

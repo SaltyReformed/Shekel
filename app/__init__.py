@@ -110,11 +110,13 @@ def create_app(config_name=None):
     # --- Security Headers -------------------------------------------------
     _register_security_headers(app)
 
-    # --- Create schemas (development convenience) ------------------------
-    # In production, schemas are managed by Alembic migrations.
+    # --- Create schemas & seed ref data (development convenience) --------
+    # In production, schemas are managed by Alembic migrations and
+    # reference data is seeded by the Docker entrypoint.
     if config_name in ("development", "testing"):
         with app.app_context():
             _ensure_schemas()
+            _seed_ref_tables()
 
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
@@ -132,11 +134,19 @@ def _register_context_processors(app):
             return {}
 
         from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
         from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
         from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
 
         uid = current_user.id
+        has_account = db.session.query(
+            exists().where(Account.user_id == uid, Account.is_active.is_(True))
+        ).scalar()
+        has_categories = db.session.query(
+            exists().where(Category.user_id == uid)
+        ).scalar()
         has_periods = db.session.query(
             exists().where(PayPeriod.user_id == uid)
         ).scalar()
@@ -149,6 +159,8 @@ def _register_context_processors(app):
 
         return {
             "onboarding": {
+                "has_account": has_account,
+                "has_categories": has_categories,
                 "has_periods": has_periods,
                 "has_salary": has_salary,
                 "has_templates": has_templates,
@@ -264,3 +276,43 @@ def _ensure_schemas():
             db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
         )
     db.session.commit()
+
+
+def _seed_ref_tables():
+    """Seed reference lookup tables if empty (dev/test only).
+
+    In production, this is handled by the Docker entrypoint.
+    Idempotent — skips rows that already exist.  Silently skips if
+    the tables haven't been created yet (e.g. first test-session run
+    before create_all()).
+    """
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy.exc import ProgrammingError
+    from app.models.ref import (
+        AccountType, CalcMethod, DeductionTiming, FilingStatus,
+        RaiseType, RecurrencePattern, Status, TaxType, TransactionType,
+    )
+
+    ref_data = {
+        AccountType: ["checking", "savings"],
+        TransactionType: ["income", "expense"],
+        Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
+        RecurrencePattern: [
+            "every_period", "every_n_periods", "monthly", "monthly_first",
+            "quarterly", "semi_annual", "annual", "once",
+        ],
+        FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
+        DeductionTiming: ["pre_tax", "post_tax"],
+        CalcMethod: ["flat", "percentage"],
+        TaxType: ["flat", "none", "bracket"],
+        RaiseType: ["merit", "cola", "custom"],
+    }
+
+    try:
+        for model, names in ref_data.items():
+            for name in names:
+                if not db.session.query(model).filter_by(name=name).first():
+                    db.session.add(model(name=name))
+        db.session.commit()
+    except ProgrammingError:
+        db.session.rollback()

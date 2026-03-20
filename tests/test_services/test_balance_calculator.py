@@ -1012,3 +1012,186 @@ class TestBalanceCalculatorFIN:
             f"Period 2: expected 1000.00, got {result[2]}, "
             f"diff={result[2] - Decimal('1000.00')}"
         )
+
+
+# -------------------------------------------------------------------
+# Negative-path and boundary-condition tests
+# -------------------------------------------------------------------
+
+
+class TestNegativePaths:
+    """Negative-path and boundary-condition tests for calculate_balances.
+
+    Verifies correct status filtering, zero-amount handling, and
+    comprehensive status interaction in the balance calculator.
+    """
+
+    def test_zero_estimated_amount_no_balance_effect(self):
+        """Zero-amount projected transactions must not affect the balance.
+
+        Input: 3 periods, anchor=1500.00. Each period has one real transaction
+        and one zero-amount transaction.
+        Expected: Zero-amount transactions are processed but contribute nothing.
+        Why: A bug treating zero as None or skipping it differently could silently
+        corrupt balances.
+        """
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns = [
+            # Period 1 (anchor): income 2000, zero expense
+            FakeTxn(1, "projected", "income", "2000.00"),
+            FakeTxn(1, "projected", "expense", "0.00"),  # zero — must not affect balance
+            # Period 2: expense 500, zero expense
+            FakeTxn(2, "projected", "expense", "500.00"),
+            FakeTxn(2, "projected", "expense", "0.00"),  # zero — must not affect balance
+            # Period 3: expense 300 only
+            FakeTxn(3, "projected", "expense", "300.00"),
+        ]
+
+        balances = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1500.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Period 1 (anchor): 1500 + 2000 - 0 = 3500.00
+        assert balances[1] == Decimal("3500.00")
+        # Period 2: 3500 - 500 - 0 = 3000.00 (zero expense has no effect)
+        assert balances[2] == Decimal("3000.00")
+        # Period 3: 3000 - 300 = 2700.00
+        assert balances[3] == Decimal("2700.00")
+
+    def test_received_status_excluded_from_remaining(self):
+        """Received income must NOT be added to the anchor balance.
+
+        Input: 2 periods, anchor=2000.00. Anchor has a received income (already
+        settled in the anchor balance) and a projected expense.
+        Expected: Only projected items affect the balance. The received income
+        is already reflected in the anchor balance.
+        Why: If received income is double-counted, every downstream period shows
+        an inflated balance, and the user budgets against money they already spent.
+        """
+        periods = [FakePeriod(1), FakePeriod(2)]
+        txns = [
+            # Anchor: received income — already settled, must be excluded.
+            # actual_amount would be on the real ORM object but the balance
+            # calculator never reads it; it skips the entire txn via SETTLED_STATUSES.
+            FakeTxn(1, "received", "income", "2500.00"),
+            # Anchor: projected expense — included in remaining calculation.
+            FakeTxn(1, "projected", "expense", "800.00"),
+            # Period 2: projected expense.
+            FakeTxn(2, "projected", "expense", "600.00"),
+        ]
+
+        balances = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("2000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Anchor: 2000 + 0(received excluded) - 800 = 1200.00
+        assert balances[1] == Decimal("1200.00")
+        # Period 2: 1200 - 600 = 600.00
+        assert balances[2] == Decimal("600.00")
+
+    def test_all_cancelled_period_passes_balance_through(self):
+        """A period with only cancelled transactions passes balance through unchanged.
+
+        Input: 3 periods, anchor=1000.00. Period 2 has two cancelled expenses.
+        Expected: Cancelled transactions excluded; period 2 balance = period 1 balance.
+        Why: If cancelled items are accidentally included or the period is skipped
+        entirely, downstream balances break.
+        """
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns = [
+            # Period 1 (anchor): projected income
+            FakeTxn(1, "projected", "income", "2000.00"),
+            # Period 2: two cancelled expenses — must be excluded
+            FakeTxn(2, "cancelled", "expense", "500.00"),
+            FakeTxn(2, "cancelled", "expense", "300.00"),
+            # Period 3: projected expense
+            FakeTxn(3, "projected", "expense", "400.00"),
+        ]
+
+        balances = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Period 1 (anchor): 1000 + 2000 = 3000.00
+        assert balances[1] == Decimal("3000.00")
+        # Period 2: 3000 + 0 - 0 = 3000.00 (cancelled excluded, balance passes through)
+        assert balances[2] == Decimal("3000.00")
+        # Period 3: 3000 - 400 = 2600.00
+        assert balances[3] == Decimal("2600.00")
+
+    def test_done_transaction_excluded_from_anchor_remaining(self):
+        """Done transactions in the anchor period are excluded (already settled).
+
+        Input: 2 periods, anchor=3000.00. Anchor has a done income
+        (estimated_amount=2500, actual_amount=2487.33 on the ORM object).
+        No projected transactions in anchor period.
+        Expected: The done income is already reflected in the anchor balance and
+        must NOT be added again. Balance = 3000 unchanged.
+        Why: Mixing up estimated vs. actual or double-counting done items is the
+        most dangerous financial bug possible. This test locks the behavior.
+        """
+        periods = [FakePeriod(1), FakePeriod(2)]
+        txns = [
+            # Anchor: done income — already settled. The balance calculator skips
+            # it entirely (SETTLED_STATUSES), so estimated_amount is never read.
+            FakeTxn(1, "done", "income", "2500.00"),
+            # Period 2: projected expense
+            FakeTxn(2, "projected", "expense", "1000.00"),
+        ]
+
+        balances = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("3000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Anchor: 3000 + 0(done excluded) = 3000.00
+        assert balances[1] == Decimal("3000.00")
+        # Period 2: 3000 - 1000 = 2000.00
+        assert balances[2] == Decimal("2000.00")
+
+    def test_mixed_statuses_single_period_comprehensive(self):
+        """Single-period integration test of the entire status filtering logic.
+
+        Input: 1 period (anchor), anchor=5000.00. Six transactions, one per status:
+        projected income, done expense, received income, credit expense, cancelled
+        expense, projected expense.
+        Expected: Only projected items counted. End balance = 5000 + 1500 - 750 = 5750.
+        Why: If any status is misclassified, this catches it.
+        """
+        periods = [FakePeriod(1)]
+        txns = [
+            # projected income — INCLUDED (only projected items count in _sum_remaining)
+            FakeTxn(1, "projected", "income", "1500.00"),
+            # done expense — EXCLUDED (in SETTLED_STATUSES: already in anchor)
+            FakeTxn(1, "done", "expense", "999.00"),
+            # received income — EXCLUDED (in SETTLED_STATUSES: already in anchor)
+            FakeTxn(1, "received", "income", "888.00"),
+            # credit expense — EXCLUDED (credit card, not checking balance)
+            FakeTxn(1, "credit", "expense", "777.00"),
+            # cancelled expense — EXCLUDED (user cancelled it)
+            FakeTxn(1, "cancelled", "expense", "666.00"),
+            # projected expense — INCLUDED
+            FakeTxn(1, "projected", "expense", "750.00"),
+        ]
+
+        balances = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # Only projected items: +1500 income, -750 expense
+        # 5000 + 1500 - 750 = 5750.00
+        assert balances[1] == Decimal("5750.00")

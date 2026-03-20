@@ -144,6 +144,27 @@
         <h5 class="card-title"><i class="bi bi-rocket-takeoff"></i> Welcome to Shekel!</h5>
         <p class="card-text text-muted mb-2">Get started by completing these steps:</p>
         <ul class="list-unstyled welcome-checklist mb-0">
+          {# Step 1: Account (auto-provisioned at registration) #}
+          <li class="mb-1">
+            {% if onboarding.has_account %}
+            <i class="bi bi-check-circle-fill text-success"></i>
+            <span class="text-muted text-decoration-line-through">Account created</span>
+            {% else %}
+            <i class="bi bi-bank text-primary"></i>
+            <a href="{{ url_for('accounts.new_account') }}">Create an account</a>
+            {% endif %}
+          </li>
+          {# Step 2: Categories (auto-provisioned at registration) #}
+          <li class="mb-1">
+            {% if onboarding.has_categories %}
+            <i class="bi bi-check-circle-fill text-success"></i>
+            <span class="text-muted text-decoration-line-through">Budget categories set up</span>
+            {% else %}
+            <i class="bi bi-tags text-primary"></i>
+            <a href="{{ url_for('categories.list_categories') }}">Set up budget categories</a>
+            {% endif %}
+          </li>
+          {# Step 3: Pay periods #}
           <li class="mb-1">
             {% if onboarding.has_periods %}
             <i class="bi bi-check-circle-fill text-success"></i>
@@ -153,22 +174,30 @@
             <a href="{{ url_for('pay_periods.generate_form') }}">Generate pay periods</a>
             {% endif %}
           </li>
+          {# Step 4: Salary (locked until pay periods exist) #}
           <li class="mb-1">
             {% if onboarding.has_salary %}
             <i class="bi bi-check-circle-fill text-success"></i>
             <span class="text-muted text-decoration-line-through">Set up a salary profile</span>
-            {% else %}
+            {% elif onboarding.has_periods %}
             <i class="bi bi-cash-coin text-primary"></i>
             <a href="{{ url_for('salary.list_profiles') }}">Set up a salary profile</a>
+            {% else %}
+            <i class="bi bi-lock text-secondary"></i>
+            <span class="text-muted">Set up a salary profile <small>(generate pay periods first)</small></span>
             {% endif %}
           </li>
+          {# Step 5: Recurring transactions (locked until pay periods exist) #}
           <li>
             {% if onboarding.has_templates %}
             <i class="bi bi-check-circle-fill text-success"></i>
             <span class="text-muted text-decoration-line-through">Set up recurring transactions</span>
-            {% else %}
+            {% elif onboarding.has_periods %}
             <i class="bi bi-arrow-repeat text-primary"></i>
             <a href="{{ url_for('templates.list_templates') }}">Set up recurring transactions</a>
+            {% else %}
+            <i class="bi bi-lock text-secondary"></i>
+            <span class="text-muted">Set up recurring transactions <small>(generate pay periods first)</small></span>
             {% endif %}
           </li>
         </ul>

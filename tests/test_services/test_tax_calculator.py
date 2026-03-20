@@ -14,6 +14,8 @@ from decimal import Decimal
 from app.services.tax_calculator import (
     calculate_federal_withholding,
     calculate_federal_tax,
+    calculate_state_tax,
+    calculate_fica,
     _apply_marginal_brackets,
 )
 from app.services.exceptions import (
@@ -623,4 +625,166 @@ class TestAnnualConsistency:
         assert per_period == annual_tax, (
             f"Annual withholding {per_period} "
             f"!= annual tax {annual_tax}"
+        )
+
+
+# ── Negative-Path and Boundary-Condition Tests ─────────────────────
+
+
+class _FakeStateTaxConfig:
+    """Minimal state tax config for negative path tests."""
+
+    def __init__(self, flat_rate="0.045"):
+        self.flat_rate = Decimal(str(flat_rate))
+        self.tax_type = type("_TT", (), {"name": "flat"})()
+
+
+class _FakeFicaConfig:
+    """Minimal FICA config for negative path tests."""
+
+    def __init__(self):
+        self.ss_rate = Decimal("0.062")
+        self.ss_wage_base = Decimal("168600")
+        self.medicare_rate = Decimal("0.0145")
+        self.medicare_surtax_rate = Decimal("0.009")
+        self.medicare_surtax_threshold = Decimal("200000")
+
+
+class TestNegativeAndBoundaryPaths:
+    """Negative-path and boundary-condition tests for the tax calculator.
+
+    Verifies behavior at bracket boundaries, with zero/negative inputs,
+    and with edge-case pay frequencies.
+    """
+
+    def test_annual_pay_single_period_no_rounding_loss(self):
+        """With pay_periods=1, per-period withholding equals annual tax exactly.
+
+        Input: pay_periods=1, gross_pay=78000, standard_deduction=15000.
+        Taxable: 78000 - 15000 = 63000.
+        Tax: 50000*0.10 + 13000*0.22 = 5000 + 2860 = 7860.00.
+        Expected: withholding = 7860.00 (no division rounding since periods=1).
+        Why: This is the cleanest validation that the tax engine's per-period
+        conversion is correct.
+        """
+        # Simple 2-bracket set: 0-50000@10%, 50000+@22%
+        brackets = [
+            FakeBracket(Decimal("0"), Decimal("50000"), Decimal("0.10"), 0),
+            FakeBracket(Decimal("50000"), None, Decimal("0.22"), 1),
+        ]
+        bracket_set = FakeBracketSet(
+            standard_deduction=Decimal("15000"),
+            brackets=brackets,
+        )
+
+        result = calculate_federal_withholding(
+            gross_pay=Decimal("78000"),
+            pay_periods=1,
+            bracket_set=bracket_set,
+        )
+
+        # taxable = 78000 - 15000 = 63000
+        # 50000*0.10 + 13000*0.22 = 5000 + 2860 = 7860.00
+        # per_period = 7860 / 1 = 7860.00 (exact, no rounding loss)
+        assert result == Decimal("7860.00"), (
+            f"Annual withholding: expected 7860.00, got {result}"
+        )
+
+    def test_zero_taxable_income(self):
+        """Zero taxable income must produce zero tax in all components.
+
+        Input: taxable_income=0 for federal brackets, gross=0 for state/FICA.
+        Expected: All tax components are Decimal("0.00").
+        Why: Zero income must not produce negative taxes, NaN, or crash
+        in bracket iteration.
+        """
+        # Federal brackets: zero taxable income
+        fed_result = _apply_marginal_brackets(Decimal("0"), _single_brackets())
+        assert fed_result == Decimal("0.00")
+
+        # Federal withholding pipeline: zero gross
+        bracket_set = FakeBracketSet(brackets=_single_brackets())
+        fed_wh = calculate_federal_withholding(
+            gross_pay=Decimal("0"),
+            pay_periods=26,
+            bracket_set=bracket_set,
+        )
+        assert fed_wh == Decimal("0.00")
+
+        # State: zero annual income
+        state = calculate_state_tax(Decimal("0"), _FakeStateTaxConfig())
+        assert state == Decimal("0.00")
+
+        # FICA: zero wages
+        fica = calculate_fica(Decimal("0"), _FakeFicaConfig(), Decimal("0"))
+        assert fica["ss"] == Decimal("0.00")
+        assert fica["medicare"] == Decimal("0.00")
+
+    def test_negative_taxable_income_after_deductions(self):
+        """Negative taxable income (standard deduction > gross) produces zero tax.
+
+        Input: taxable_income=-5000 passed directly to _apply_marginal_brackets.
+        Expected: returns Decimal("0.00"). The function guards with
+        'if taxable_income <= ZERO: return ZERO'.
+        Why: If standard_deduction > gross_income, taxable income is negative.
+        The bracket loop must not produce negative tax or iterate incorrectly.
+        """
+        # Direct negative input to bracket logic
+        # Source clamps: if taxable_income <= ZERO: return ZERO
+        result = _apply_marginal_brackets(Decimal("-5000"), _single_brackets())
+        assert result == Decimal("0.00"), (
+            f"Negative taxable income should produce zero tax, got {result}"
+        )
+
+        # Via the full withholding pipeline: income below standard deduction
+        bracket_set = FakeBracketSet(
+            standard_deduction=Decimal("15000"),
+            brackets=_single_brackets(),
+        )
+        # 500*26 = 13000 < 15000 std ded → taxable=0 → tax=0
+        result_pipeline = calculate_federal_withholding(
+            gross_pay=Decimal("500"),
+            pay_periods=26,
+            bracket_set=bracket_set,
+        )
+        assert result_pipeline == Decimal("0.00")
+
+    def test_income_exactly_at_bracket_boundary(self):
+        """Income at the first bracket boundary stays entirely in that bracket.
+
+        Input: taxable_income=50000 with boundary at 50000
+        (brackets: 0-50000@10%, 50000+@22%).
+        Expected: tax = 50000*0.10 = 5000.00. No amount spills into 22% bracket.
+        Why: Off-by-one at bracket boundaries is a classic tax calculation bug.
+        """
+        brackets = [
+            FakeBracket(Decimal("0"), Decimal("50000"), Decimal("0.10"), 0),
+            FakeBracket(Decimal("50000"), None, Decimal("0.22"), 1),
+        ]
+
+        result = _apply_marginal_brackets(Decimal("50000"), brackets)
+
+        # 50000 * 0.10 = 5000.00 (all in first bracket)
+        # Second bracket: taxable(50000) <= bracket_min(50000) → break
+        assert result == Decimal("5000.00"), (
+            f"At boundary: expected 5000.00, got {result}. "
+            f"No income should spill into the 22% bracket."
+        )
+
+    def test_fica_zero_wages(self):
+        """Zero wages must produce zero FICA taxes.
+
+        Input: gross=0, cumulative_wages=0.
+        Expected: SS=Decimal("0.00"), Medicare=Decimal("0.00").
+        Why: Zero wages must not produce negative taxes or crash.
+        """
+        result = calculate_fica(
+            Decimal("0"), _FakeFicaConfig(), Decimal("0")
+        )
+
+        assert result["ss"] == Decimal("0.00"), (
+            f"SS: expected 0.00, got {result['ss']}"
+        )
+        assert result["medicare"] == Decimal("0.00"), (
+            f"Medicare: expected 0.00, got {result['medicare']}"
         )

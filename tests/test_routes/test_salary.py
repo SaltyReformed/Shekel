@@ -258,6 +258,7 @@ class TestProfileCreate:
 
             assert response.status_code == 200
             assert b"No baseline scenario found" in response.data
+            assert b"register" in response.data
 
     def test_create_profile_no_active_account(self, app, auth_client, seed_user):
         """POST /salary with no active account flashes danger."""
@@ -277,7 +278,8 @@ class TestProfileCreate:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"No active account found" in response.data
+            assert b"active account" in response.data
+            assert b"/accounts/new" in response.data
 
     def test_create_profile_double_submit(self, app, auth_client, seed_user, seed_periods):
         """POST /salary twice results in an error on the second attempt."""
@@ -297,6 +299,26 @@ class TestProfileCreate:
             # Second submit with same name triggers unique constraint error.
             response2 = auth_client.post("/salary", data=data, follow_redirects=True)
             assert b"Failed to create salary profile" in response2.data
+
+    def test_create_profile_no_account_flash_has_link(
+        self, app, auth_client, seed_user
+    ):
+        """POST /salary with no active account flashes a message with a create-account link."""
+        with app.app_context():
+            account = db.session.get(Account, seed_user["account"].id)
+            account.is_active = False
+            db.session.commit()
+
+            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+            response = auth_client.post("/salary", data={
+                "name": "Link Test",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"/accounts/new" in response.data
 
 
 class TestProfileUpdate:
@@ -730,6 +752,7 @@ class TestBreakdown:
 
             assert response.status_code == 200
             assert b"No pay periods found" in response.data
+            assert b"Generate pay periods" in response.data
 
     def test_breakdown_other_users_profile_redirects(
         self, app, auth_client, seed_user, seed_periods

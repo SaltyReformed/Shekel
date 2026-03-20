@@ -1437,3 +1437,235 @@ class TestEdgeCases:
                 profile, period, [period],
                 simple_tax_configs
             )
+
+
+# ── Negative-Path and Boundary-Condition Tests ─────────────────────
+
+
+class TestNegativeAndBoundaryPaths:
+    """Negative-path and boundary-condition tests for the paycheck calculator.
+
+    Verifies behavior with zero/edge-case salary profiles, excessive
+    deductions, and unusual pay frequencies.
+    """
+
+    def test_pay_periods_per_year_zero_defaults_to_26(self, simple_tax_configs):
+        """pay_periods_per_year=0 defaults to 26 via 'or 26' fallback.
+
+        Input: Profile with pay_periods_per_year=0.
+        Expected: Identical output to pay_periods_per_year=26. The source code
+        has `profile.pay_periods_per_year or 26` which treats 0 as falsy.
+        Why: Division by zero in the paycheck pipeline would crash grid load
+        for any user with a misconfigured salary profile.
+        """
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        profile_zero = FakeProfile(
+            annual_salary=60000,
+            pay_periods_per_year=0,
+            created_at=date(2026, 1, 1),
+        )
+        profile_26 = FakeProfile(
+            annual_salary=60000,
+            pay_periods_per_year=26,
+            created_at=date(2026, 1, 1),
+        )
+
+        # NOTE: Source does not raise for zero. Instead,
+        # `profile.pay_periods_per_year or 26` silently defaults to 26.
+        # Consider adding a ValidationError guard if 0 is invalid user input.
+        result_zero = calculate_paycheck(
+            profile_zero, period, [period], simple_tax_configs
+        )
+        result_26 = calculate_paycheck(
+            profile_26, period, [period], simple_tax_configs
+        )
+
+        # Both produce identical results since 0 defaults to 26.
+        assert result_zero.gross_biweekly == result_26.gross_biweekly
+        assert result_zero.federal_tax == result_26.federal_tax
+        assert result_zero.state_tax == result_26.state_tax
+        assert result_zero.social_security == result_26.social_security
+        assert result_zero.medicare == result_26.medicare
+        assert result_zero.net_pay == result_26.net_pay
+
+        # Verify actual values match known $60k/26-periods result.
+        assert result_zero.gross_biweekly == Decimal("2307.69")
+        assert result_zero.net_pay == Decimal("1854.22")
+
+    def test_pay_periods_per_year_one_annual(
+        self, simple_bracket_set, nc_state_config, standard_fica
+    ):
+        """Annual pay frequency (1 period/year) produces no rounding artifacts.
+
+        Input: annual_salary=78000, pay_periods_per_year=1, no raises/deductions.
+        Pipeline trace:
+          gross = 78000 / 1 = 78000.00
+          federal: taxable = 78000 - 15000 = 63000
+            50000*0.10 + 13000*0.22 = 5000 + 2860 = 7860.00 / 1 = 7860.00
+          state: 78000*0.045 = 3510.00 / 1 = 3510.00
+          SS: 78000*0.062 = 4836.00
+          Medicare: 78000*0.0145 = 1131.00
+          net: 78000 - 7860 - 3510 - 4836 - 1131 = 60663.00
+        Why: Annual pay frequency is a real edge case (contractors). The
+        per-period conversion must not introduce rounding artifacts when periods=1.
+        """
+        profile = FakeProfile(
+            annual_salary=78000,
+            pay_periods_per_year=1,
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        tax_configs = {
+            "bracket_set": simple_bracket_set,
+            "state_config": nc_state_config,
+            "fica_config": standard_fica,
+        }
+
+        result = calculate_paycheck(profile, period, [period], tax_configs)
+
+        # gross = 78000 / 1 = 78000.00 (exact, no rounding)
+        assert result.gross_biweekly == Decimal("78000.00"), (
+            f"gross: expected 78000.00, got {result.gross_biweekly}"
+        )
+        # Federal: 50000*0.10 + 13000*0.22 = 7860.00 / 1 = 7860.00
+        assert result.federal_tax == Decimal("7860.00"), (
+            f"federal: expected 7860.00, got {result.federal_tax}"
+        )
+        # State: 78000*0.045 = 3510.00 / 1 = 3510.00
+        assert result.state_tax == Decimal("3510.00"), (
+            f"state: expected 3510.00, got {result.state_tax}"
+        )
+        # SS: 78000*0.062 = 4836.00
+        assert result.social_security == Decimal("4836.00"), (
+            f"SS: expected 4836.00, got {result.social_security}"
+        )
+        # Medicare: 78000*0.0145 = 1131.00
+        assert result.medicare == Decimal("1131.00"), (
+            f"medicare: expected 1131.00, got {result.medicare}"
+        )
+        # net = 78000 - 7860 - 3510 - 4836 - 1131 = 60663.00
+        assert result.net_pay == Decimal("60663.00"), (
+            f"net: expected 60663.00, got {result.net_pay}"
+        )
+
+    def test_net_pay_negative_from_excessive_post_tax(self, simple_tax_configs):
+        """Excessive post-tax deductions produce negative net pay.
+
+        Input: annual_salary=30000 (gross=1153.85/period), post-tax deduction=2000.
+        Pipeline trace:
+          gross = 30000/26 = 1153.85
+          federal: annual=30000.10, taxable=15000.10
+            15000.10*0.10 = 1500.01 / 26 = 57.69
+          state: 30000.10*0.045 = 1350.00 / 26 = 51.92
+          SS: 1153.85*0.062 = 71.54
+          Medicare: 1153.85*0.0145 = 16.73
+          post_tax: 2000.00
+          net = 1153.85 - 57.69 - 51.92 - 71.54 - 16.73 - 2000.00 = -1044.03
+        Why: A user misconfiguring deductions could get a negative net pay shown
+        on the budget grid. The app must handle this deterministically, not crash.
+        """
+        profile = FakeProfile(
+            annual_salary=30000,
+            pay_periods_per_year=26,
+            deductions=[
+                FakeDeduction(
+                    name="Excessive Post Tax",
+                    amount="2000",
+                    deduction_timing="post_tax",
+                ),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+
+        assert result.gross_biweekly == Decimal("1153.85")
+        assert result.federal_tax == Decimal("57.69")
+        assert result.state_tax == Decimal("51.92")
+        assert result.social_security == Decimal("71.54")
+        assert result.medicare == Decimal("16.73")
+
+        # The calculator returns negative net pay when post-tax deductions exceed
+        # take-home. The route layer should warn the user.
+        assert result.net_pay == Decimal("-1044.03"), (
+            f"net_pay: expected -1044.03, got {result.net_pay}"
+        )
+
+    def test_zero_annual_salary(self, simple_tax_configs):
+        """Zero salary produces zero in every field without error.
+
+        Input: annual_salary=0, pay_periods_per_year=26, no deductions.
+        Expected: All fields (including annual_salary, taxable_income) are zero.
+        Why: A zero-salary profile (e.g., a template or placeholder) must not
+        produce NaN, crash, or negative values in any tax calculation.
+        """
+        profile = FakeProfile(
+            annual_salary=0,
+            pay_periods_per_year=26,
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+
+        assert result.annual_salary == Decimal("0.00")
+        assert result.gross_biweekly == Decimal("0.00")
+        assert result.taxable_income == Decimal("0.00")
+        assert result.federal_tax == Decimal("0.00")
+        assert result.state_tax == Decimal("0.00")
+        assert result.social_security == Decimal("0.00")
+        assert result.medicare == Decimal("0.00")
+        assert result.net_pay == Decimal("0.00")
+
+    def test_massive_deductions_exceed_gross(self, simple_tax_configs):
+        """Pre-tax deductions exceeding gross clamp taxable to zero.
+
+        Input: annual_salary=52000 (gross=2000/period), pre-tax deduction=2500.
+        Pipeline trace:
+          gross = 52000/26 = 2000.00
+          taxable_biweekly = max(2000 - 2500, 0) = 0.00 (clamped)
+          federal: adjusted = max(52000 - 65000, 0) = 0, taxable = 0, tax = 0
+          state: 0*26*0.045 = 0
+          SS: 2000*0.062 = 124.00 (FICA uses gross, not taxable)
+          Medicare: 2000*0.0145 = 29.00
+          net = 2000 - 2500 - 0 - 0 - 124 - 29 = -653.00
+        Why: Pre-tax deductions reducing gross below zero would produce negative
+        taxable income, which could break bracket calculations.
+        """
+        profile = FakeProfile(
+            annual_salary=52000,
+            pay_periods_per_year=26,
+            deductions=[
+                FakeDeduction(
+                    name="Mega Pre Tax",
+                    amount="2500",
+                    deduction_timing="pre_tax",
+                ),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+
+        # gross = 52000/26 = 2000.00
+        assert result.gross_biweekly == Decimal("2000.00")
+        # taxable_biweekly = max(2000 - 2500, 0) = 0.00 (clamped by source code)
+        assert result.taxable_income == Decimal("0.00"), (
+            f"taxable_income should be clamped to 0, got {result.taxable_income}"
+        )
+        # Federal/state: 0 taxable → 0 tax
+        assert result.federal_tax == Decimal("0.00")
+        assert result.state_tax == Decimal("0.00")
+        # FICA is computed on gross, not taxable income.
+        # SS: 2000*0.062 = 124.00
+        assert result.social_security == Decimal("124.00")
+        # Medicare: 2000*0.0145 = 29.00
+        assert result.medicare == Decimal("29.00")
+        # net = 2000 - 2500 - 0 - 0 - 124 - 29 = -653.00
+        # The calculator allows negative net when deductions exceed gross.
+        assert result.net_pay == Decimal("-653.00"), (
+            f"net_pay: expected -653.00, got {result.net_pay}"
+        )

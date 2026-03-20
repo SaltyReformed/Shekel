@@ -26,34 +26,7 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import AccountType
-from app.services.auth_service import hash_password
-
-
-# Default categories to bootstrap the budget.
-DEFAULT_CATEGORIES = [
-    ("Income", "Salary"),
-    ("Income", "Other Income"),
-    ("Home", "Mortgage/Rent"),
-    ("Home", "Electricity"),
-    ("Home", "Gas"),
-    ("Home", "Water"),
-    ("Home", "Internet"),
-    ("Home", "Phone"),
-    ("Home", "Home Insurance"),
-    ("Auto", "Car Payment"),
-    ("Auto", "Car Insurance"),
-    ("Auto", "Fuel"),
-    ("Auto", "Maintenance"),
-    ("Family", "Groceries"),
-    ("Family", "Dining Out"),
-    ("Family", "Spending Money"),
-    ("Family", "Subscriptions"),
-    ("Health", "Medical"),
-    ("Health", "Dental"),
-    ("Financial", "Savings Transfer"),
-    ("Financial", "Extra Debt Payment"),
-    ("Credit Card", "Payback"),
-]
+from app.services.auth_service import hash_password, DEFAULT_CATEGORIES
 
 
 def seed_user():

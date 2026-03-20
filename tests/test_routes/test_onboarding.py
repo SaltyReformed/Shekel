@@ -75,6 +75,34 @@ class TestOnboardingBanner:
         assert "Set up a salary profile" in html
         assert "Set up recurring transactions" in html
 
+    def test_banner_shows_account_as_complete(self, auth_client, seed_user):
+        """Auto-provisioned account shows as completed in the banner."""
+        resp = auth_client.get("/")
+        html = resp.data.decode()
+        assert "Account created" in html
+
+    def test_banner_shows_categories_as_complete(self, auth_client, seed_user):
+        """Auto-provisioned categories show as completed in the banner."""
+        resp = auth_client.get("/")
+        html = resp.data.decode()
+        assert "Budget categories set up" in html
+
+    def test_banner_locks_salary_when_no_periods(self, auth_client, seed_user):
+        """Salary step is locked (not a link) when pay periods don't exist."""
+        resp = auth_client.get("/")
+        html = resp.data.decode()
+        assert "generate pay periods first" in html.lower()
+        assert "bi-lock" in html
+
+    def test_banner_unlocks_salary_when_periods_exist(
+        self, auth_client, seed_user, seed_periods
+    ):
+        """Salary step becomes an active link after pay periods are generated."""
+        resp = auth_client.get("/")
+        html = resp.data.decode()
+        assert 'href="/salary"' in html
+        assert "generate pay periods first" not in html.lower()
+
     def test_banner_not_shown_to_anonymous_user(self, client):
         """Anonymous users should not see the banner (redirected to login)."""
         resp = client.get("/", follow_redirects=False)

@@ -23,25 +23,19 @@ python scripts/init_database.py
 echo "Seeding reference data..."
 python scripts/seed_ref_tables.py
 
-# ── 5. Create seed user (first run only) ───────────────────────
-if [ -n "$SEED_USER_EMAIL" ]; then
-    echo "Checking for seed user..."
-    python scripts/seed_user.py
-fi
-
-# ── 6. Seed tax brackets (requires users to exist) ─────────────
+# ── 5. Seed tax brackets ──────────────────────────────────────
 echo "Seeding tax configuration..."
 python scripts/seed_tax_brackets.py
 echo "Seeding complete."
 
-# ── 7. Copy static files to shared volume ────────────────────────
+# ── 6. Copy static files to shared volume ────────────────────────
 # Nginx serves /static/ directly from this volume.  Copying on every
 # start ensures files are current after image updates.
 echo "Copying static files to shared volume..."
 cp -r /home/shekel/app/app/static/* /var/www/static/ 2>/dev/null || true
 echo "Static files ready."
 
-# ── 8. Start the application server ──────────────────────────────
+# ── 7. Start the application server ──────────────────────────────
 # exec "$@" runs the Dockerfile CMD (gunicorn in production, or the
 # docker-compose command override in development).
 echo "=== Starting Application ==="

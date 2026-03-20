@@ -10,6 +10,7 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from markupsafe import Markup
 
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
@@ -158,7 +159,11 @@ def create_profile():
         .first()
     )
     if not scenario:
-        flash("No baseline scenario found. Set up your budget first.", "danger")
+        flash(Markup(
+            "No baseline scenario found. Please "
+            '<a href="/register" class="alert-link">register a new account</a> '
+            "to set up your budget."
+        ), "danger")
         return redirect(url_for("salary.list_profiles"))
 
     # Find or create Income: Salary category
@@ -187,7 +192,11 @@ def create_profile():
         .first()
     )
     if not account:
-        flash("No active account found.", "danger")
+        flash(Markup(
+            'You need an active account before creating a salary profile. '
+            '<a href="' + url_for("accounts.new_account") + '" class="alert-link">'
+            'Create an account</a>.'
+        ), "danger")
         return redirect(url_for("salary.list_profiles"))
 
     try:
@@ -537,7 +546,11 @@ def breakdown_current(profile_id):
     """Show paycheck breakdown for the current period."""
     current_period = pay_period_service.get_current_period(current_user.id)
     if not current_period:
-        flash("No pay periods found.", "warning")
+        flash(Markup(
+            'No pay periods found. '
+            '<a href="' + url_for("pay_periods.generate_form") + '" class="alert-link">'
+            'Generate pay periods</a> first.'
+        ), "warning")
         return redirect(url_for("salary.list_profiles"))
     return redirect(url_for(
         "salary.breakdown",

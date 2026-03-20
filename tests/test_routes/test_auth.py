@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 from app import create_app
 from app.extensions import db
+from app.models.account import Account
+from app.models.category import Category
 from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
 from app.services import mfa_service
@@ -984,3 +986,44 @@ class TestRegistration:
             assert scenarios[0].is_baseline is True
             assert scenarios[0].name == "Baseline"
             assert scenarios[0].user_id == user.id
+
+    def test_register_success_creates_default_categories(self, app, client):
+        """POST /register creates 22 default categories for the new user."""
+        with app.app_context():
+            client.post("/register", data={
+                "email": "categories@example.com",
+                "display_name": "Category Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+
+            user = db.session.query(User).filter_by(
+                email="categories@example.com"
+            ).first()
+            assert user is not None
+
+            categories = db.session.query(Category).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(categories) == 22
+
+    def test_register_success_creates_checking_account(self, app, client):
+        """POST /register creates a default checking account for the new user."""
+        with app.app_context():
+            client.post("/register", data={
+                "email": "acct@example.com",
+                "display_name": "Account Test",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+
+            user = db.session.query(User).filter_by(
+                email="acct@example.com"
+            ).first()
+            assert user is not None
+
+            accounts = db.session.query(Account).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(accounts) == 1
+            assert accounts[0].name == "Checking"

@@ -10,7 +10,9 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.user import User, UserSettings
+from app.models.category import Category
 from app.models.scenario import Scenario
+from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
 from app.services import auth_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 
@@ -363,3 +365,118 @@ class TestRegisterUser:
                 )
             # Confirm it is the email error, not the password error.
             assert "12 characters" not in str(exc_info.value)
+
+    def test_register_user_creates_default_categories(self, app, db):
+        """register_user() creates 22 default categories for the new user."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "cats@example.com", "securepass123", "Category Test"
+            )
+            db.session.flush()
+
+            categories = db.session.query(Category).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(categories) == 22
+
+    def test_register_user_categories_have_correct_groups(self, app, db):
+        """register_user() creates categories spanning all expected groups."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "groups@example.com", "securepass123", "Group Test"
+            )
+            db.session.flush()
+
+            categories = db.session.query(Category).filter_by(
+                user_id=user.id
+            ).all()
+            groups = {c.group_name for c in categories}
+            assert groups == {
+                "Income", "Home", "Auto", "Family",
+                "Health", "Financial", "Credit Card",
+            }
+
+    def test_register_user_categories_include_income_salary(self, app, db):
+        """register_user() creates the Income: Salary category needed for salary profiles."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "salary@example.com", "securepass123", "Salary Cat Test"
+            )
+            db.session.flush()
+
+            salary_cat = db.session.query(Category).filter_by(
+                user_id=user.id, group_name="Income", item_name="Salary"
+            ).first()
+            assert salary_cat is not None
+
+    def test_register_user_categories_have_sort_order(self, app, db):
+        """register_user() assigns sequential sort_order to categories."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "sort@example.com", "securepass123", "Sort Test"
+            )
+            db.session.flush()
+
+            categories = db.session.query(Category).filter_by(
+                user_id=user.id
+            ).order_by(Category.sort_order).all()
+            orders = [c.sort_order for c in categories]
+            assert orders == list(range(22))
+
+    def test_register_user_categories_rollback_on_failure(self, app, db):
+        """register_user() categories are discarded on transaction rollback."""
+        with app.app_context():
+            auth_service.register_user(
+                "rollback@example.com", "securepass123", "Rollback Test"
+            )
+            db.session.rollback()
+
+            count = db.session.query(Category).filter_by(
+                group_name="Income", item_name="Salary"
+            ).count()
+            assert count == 0
+
+    def test_register_user_creates_federal_tax_brackets(self, app, db):
+        """register_user() creates federal tax bracket sets for 2025 and 2026."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "tax@example.com", "securepass123", "Tax Test"
+            )
+            db.session.flush()
+
+            bracket_sets = db.session.query(TaxBracketSet).filter_by(
+                user_id=user.id
+            ).all()
+            # 4 filing statuses x 2 years = 8 bracket sets
+            assert len(bracket_sets) == 8
+            years = {bs.tax_year for bs in bracket_sets}
+            assert years == {2025, 2026}
+
+    def test_register_user_creates_fica_config(self, app, db):
+        """register_user() creates FICA configs for 2025 and 2026."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "fica@example.com", "securepass123", "FICA Test"
+            )
+            db.session.flush()
+
+            fica_configs = db.session.query(FicaConfig).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(fica_configs) == 2
+            years = {fc.tax_year for fc in fica_configs}
+            assert years == {2025, 2026}
+
+    def test_register_user_creates_state_tax_config(self, app, db):
+        """register_user() creates a default NC state tax config."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "state@example.com", "securepass123", "State Test"
+            )
+            db.session.flush()
+
+            state_configs = db.session.query(StateTaxConfig).filter_by(
+                user_id=user.id
+            ).all()
+            assert len(state_configs) == 1
+            assert state_configs[0].state_code == "NC"

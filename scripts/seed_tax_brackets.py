@@ -28,155 +28,11 @@ from app.models.tax_config import (
     TaxBracketSet,
 )
 from app.models.user import User
-
-
-# ── 2025 Federal Tax Brackets ──────────────────────────────────────
-
-BRACKETS_2025 = {
-    "single": {
-        "standard_deduction": Decimal("15000"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      11925,   Decimal("0.1000")),
-            (11925,  48475,   Decimal("0.1200")),
-            (48475,  103350,  Decimal("0.2200")),
-            (103350, 197300,  Decimal("0.2400")),
-            (197300, 250525,  Decimal("0.3200")),
-            (250525, 626350,  Decimal("0.3500")),
-            (626350, None,    Decimal("0.3700")),
-        ],
-    },
-    "married_jointly": {
-        "standard_deduction": Decimal("30000"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      23850,   Decimal("0.1000")),
-            (23850,  96950,   Decimal("0.1200")),
-            (96950,  206700,  Decimal("0.2200")),
-            (206700, 394600,  Decimal("0.2400")),
-            (394600, 501050,  Decimal("0.3200")),
-            (501050, 751600,  Decimal("0.3500")),
-            (751600, None,    Decimal("0.3700")),
-        ],
-    },
-    "married_separately": {
-        "standard_deduction": Decimal("15000"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      11925,   Decimal("0.1000")),
-            (11925,  48475,   Decimal("0.1200")),
-            (48475,  103350,  Decimal("0.2200")),
-            (103350, 197300,  Decimal("0.2400")),
-            (197300, 250525,  Decimal("0.3200")),
-            (250525, 375800,  Decimal("0.3500")),
-            (375800, None,    Decimal("0.3700")),
-        ],
-    },
-    "head_of_household": {
-        "standard_deduction": Decimal("22500"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      17000,   Decimal("0.1000")),
-            (17000,  64850,   Decimal("0.1200")),
-            (64850,  103350,  Decimal("0.2200")),
-            (103350, 197300,  Decimal("0.2400")),
-            (197300, 250500,  Decimal("0.3200")),
-            (250500, 626350,  Decimal("0.3500")),
-            (626350, None,    Decimal("0.3700")),
-        ],
-    },
-}
-
-# 2026 brackets (estimated — same structure, adjusted for inflation)
-BRACKETS_2026 = {
-    "single": {
-        "standard_deduction": Decimal("15350"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      12150,   Decimal("0.1000")),
-            (12150,  49475,   Decimal("0.1200")),
-            (49475,  105525,  Decimal("0.2200")),
-            (105525, 201350,  Decimal("0.2400")),
-            (201350, 255800,  Decimal("0.3200")),
-            (255800, 639500,  Decimal("0.3500")),
-            (639500, None,    Decimal("0.3700")),
-        ],
-    },
-    "married_jointly": {
-        "standard_deduction": Decimal("30700"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      24300,   Decimal("0.1000")),
-            (24300,  98950,   Decimal("0.1200")),
-            (98950,  211050,  Decimal("0.2200")),
-            (211050, 402700,  Decimal("0.2400")),
-            (402700, 511500,  Decimal("0.3200")),
-            (511500, 767200,  Decimal("0.3500")),
-            (767200, None,    Decimal("0.3700")),
-        ],
-    },
-    "married_separately": {
-        "standard_deduction": Decimal("15350"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      12150,   Decimal("0.1000")),
-            (12150,  49475,   Decimal("0.1200")),
-            (49475,  105525,  Decimal("0.2200")),
-            (105525, 201350,  Decimal("0.2400")),
-            (201350, 255800,  Decimal("0.3200")),
-            (255800, 383600,  Decimal("0.3500")),
-            (383600, None,    Decimal("0.3700")),
-        ],
-    },
-    "head_of_household": {
-        "standard_deduction": Decimal("23000"),
-        "child_credit_amount": Decimal("2000"),
-        "other_dependent_credit_amount": Decimal("500"),
-        "brackets": [
-            (0,      17350,   Decimal("0.1000")),
-            (17350,  66200,   Decimal("0.1200")),
-            (66200,  105525,  Decimal("0.2200")),
-            (105525, 201350,  Decimal("0.2400")),
-            (201350, 255800,  Decimal("0.3200")),
-            (255800, 639500,  Decimal("0.3500")),
-            (639500, None,    Decimal("0.3700")),
-        ],
-    },
-}
-
-# ── FICA Configuration ─────────────────────────────────────────────
-
-FICA_DATA = {
-    2025: {
-        "ss_rate": Decimal("0.0620"),
-        "ss_wage_base": Decimal("176100"),
-        "medicare_rate": Decimal("0.0145"),
-        "medicare_surtax_rate": Decimal("0.0090"),
-        "medicare_surtax_threshold": Decimal("200000"),
-    },
-    2026: {
-        "ss_rate": Decimal("0.0620"),
-        "ss_wage_base": Decimal("180000"),
-        "medicare_rate": Decimal("0.0145"),
-        "medicare_surtax_rate": Decimal("0.0090"),
-        "medicare_surtax_threshold": Decimal("200000"),
-    },
-}
-
-# ── Default State Tax (NC = 4.5% flat) ─────────────────────────────
-
-DEFAULT_STATE = {
-    "state_code": "NC",
-    "flat_rate": Decimal("0.0450"),
-    "tax_type_name": "flat",
-}
+from app.services.auth_service import (
+    DEFAULT_FEDERAL_BRACKETS,
+    DEFAULT_FICA,
+    DEFAULT_STATE_TAX,
+)
 
 
 def seed_tax_brackets():
@@ -195,8 +51,8 @@ def seed_tax_brackets():
 
     for user in users:
         print(f"\nSeeding tax data for user: {user.email} (id={user.id})")
-        _seed_brackets_for_user(user, filing_statuses, 2025, BRACKETS_2025)
-        _seed_brackets_for_user(user, filing_statuses, 2026, BRACKETS_2026)
+        for tax_year, year_data in DEFAULT_FEDERAL_BRACKETS.items():
+            _seed_brackets_for_user(user, filing_statuses, tax_year, year_data)
         _seed_fica_for_user(user)
         _seed_state_tax_for_user(user)
 
@@ -250,7 +106,7 @@ def _seed_brackets_for_user(user, filing_statuses, tax_year, bracket_data):
 
 def _seed_fica_for_user(user):
     """Seed FICA configuration for a user."""
-    for tax_year, data in FICA_DATA.items():
+    for tax_year, data in DEFAULT_FICA.items():
         existing = (
             db.session.query(FicaConfig)
             .filter_by(user_id=user.id, tax_year=tax_year)
@@ -267,7 +123,7 @@ def _seed_fica_for_user(user):
 
 def _seed_state_tax_for_user(user):
     """Seed default state tax configuration."""
-    state_code = DEFAULT_STATE["state_code"]
+    state_code = DEFAULT_STATE_TAX["state_code"]
     existing = (
         db.session.query(StateTaxConfig)
         .filter_by(user_id=user.id, state_code=state_code)
@@ -279,7 +135,7 @@ def _seed_state_tax_for_user(user):
 
     tax_type = (
         db.session.query(TaxType)
-        .filter_by(name=DEFAULT_STATE["tax_type_name"])
+        .filter_by(name="flat")
         .first()
     )
     if not tax_type:
@@ -290,10 +146,10 @@ def _seed_state_tax_for_user(user):
         user_id=user.id,
         tax_type_id=tax_type.id,
         state_code=state_code,
-        flat_rate=DEFAULT_STATE["flat_rate"],
+        flat_rate=DEFAULT_STATE_TAX["flat_rate"],
     )
     db.session.add(state_config)
-    print(f"  + {state_code} state tax config (flat {DEFAULT_STATE['flat_rate']})")
+    print(f"  + {state_code} state tax config (flat {DEFAULT_STATE_TAX['flat_rate']})")
 
 
 if __name__ == "__main__":
