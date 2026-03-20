@@ -14,11 +14,21 @@ Shekel is a personal budget app that organizes finances around **pay periods** (
 # Run dev server
 flask run                    # or: python run.py (http://localhost:5000)
 
-# Tests
-pytest                       # all tests
-pytest tests/path/test_file.py -v           # single file
-pytest tests/path/test_file.py::test_name   # single test
-pytest --cov=app --cov-report=term-missing  # with coverage
+# Tests — IMPORTANT: full suite takes ~9 minutes (526s+)
+# Always use an explicit timeout so long runs are not mistakenly killed.
+
+# Full suite (use 660s timeout — 11 min with buffer)
+timeout 660 pytest -v --tb=short
+
+# Targeted runs for development iteration (fast feedback):
+pytest tests/test_routes/test_grid.py -v           # ~20s
+pytest tests/test_services/ -v                     # ~120s
+pytest tests/path/test_file.py -v                  # single file
+pytest tests/path/test_file.py::TestClass -v       # single class
+pytest tests/path/test_file.py::test_name -v       # single test
+
+# With coverage (also needs the long timeout)
+timeout 660 pytest --cov=app --cov-report=term-missing
 
 # Lint
 pylint app/
@@ -75,6 +85,20 @@ HTMX with server-rendered partials — no SPA. The budget grid uses HTMX for inl
 - Tests use a real PostgreSQL database (configured via `TEST_DATABASE_URL` or defaults in TestConfig)
 - `conftest.py` uses session-scoped app/db setup, truncates tables between tests
 - Test categories: `test_routes/`, `test_services/`, `test_models/`, `test_integration/`, `test_adversarial/`, `test_scripts/`
+
+## Test Run Guidelines
+
+- **Full suite runtime:** ~9 minutes (1258 tests). Always use
+  `timeout 660` when invoking `pytest` without a file target.
+- **During development:** Run only the test file(s) relevant to the code
+  being changed. These typically complete in under 30 seconds.
+- **Before reporting done:** Run the full suite once with
+  `timeout 660 pytest -v --tb=short` as a final gate.
+- **If a test appears stuck:** It is almost certainly still running (the
+  slowest individual test is ~3 seconds). Wait for the full timeout before
+  concluding there is a problem.
+- **MFA/auth tests are slow** (~1-3s each) due to bcrypt hashing. This is
+  expected.
 
 ## Environment
 
