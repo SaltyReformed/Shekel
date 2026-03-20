@@ -136,7 +136,13 @@ class TestCalculateGap:
         assert result.after_tax_projected_savings == Decimal("500000.00")
 
     def test_custom_swr(self):
-        """Different SWR changes required savings."""
+        """Different SWR changes required savings; lower SWR → larger nest egg.
+
+        net_monthly = (2000*26/12).quantize(0.01) = 4333.33
+        gap = 4333.33 (no pension)
+        required_4 = (4333.33*12/0.04).quantize(0.01) = (51999.96/0.04) = 1299999.00
+        required_3 = (4333.33*12/0.03).quantize(0.01) = (51999.96/0.03) = 1733332.00
+        """
         result_4 = calculate_gap(
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
@@ -147,7 +153,8 @@ class TestCalculateGap:
             monthly_pension_income=ZERO,
             safe_withdrawal_rate=Decimal("0.03"),
         )
-        assert result_3.required_retirement_savings > result_4.required_retirement_savings
+        assert result_4.required_retirement_savings == Decimal("1299999.00")
+        assert result_3.required_retirement_savings == Decimal("1733332.00")
 
     def test_zero_net_pay(self):
         """Zero income results in zero gap."""
@@ -262,3 +269,293 @@ class TestCalculateGap:
         )
         assert result.after_tax_monthly_pension == ZERO
         assert result.monthly_income_gap == result.pre_retirement_net_monthly
+
+    # ── Edge-case and negative-path tests ────────────────────────────
+
+    def test_safe_withdrawal_rate_zero(self):
+        """SWR=0 is guarded by the source: required nest egg defaults to ZERO.
+
+        The source code checks `if safe_withdrawal_rate > 0:` before dividing.
+        When SWR=0, the else branch sets required_retirement_savings = ZERO,
+        so no ZeroDivisionError occurs.
+
+        pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
+        monthly_income_gap = max(5416.67 - 1000, 0) = 4416.67
+        required_retirement_savings = ZERO (SWR not > 0)
+        projected_total_savings = 500000
+        savings_surplus_or_shortfall = 500000 - 0 = 500000
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("1000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("500000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("5416.67")
+        assert result.monthly_income_gap == Decimal("4416.67")
+        assert result.required_retirement_savings == ZERO
+        assert result.projected_total_savings == Decimal("500000")
+        assert result.savings_surplus_or_shortfall == Decimal("500000")
+
+    def test_safe_withdrawal_rate_negative(self):
+        """Negative SWR is mathematically nonsensical; source treats it like zero.
+
+        The source guard `if safe_withdrawal_rate > 0:` is False for negative
+        values, so required_retirement_savings = ZERO. No validation is
+        performed — a negative SWR silently produces the same result as SWR=0.
+
+        # BUG: Source does not validate SWR > 0 — negative SWR silently
+        # accepted. Should raise ValidationError.
+        # TODO: Source should validate safe_withdrawal_rate > 0.
+
+        pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
+        monthly_income_gap = max(5416.67 - 1000, 0) = 4416.67
+        required_retirement_savings = ZERO (SWR not > 0)
+        projected_total_savings = 500000
+        savings_surplus_or_shortfall = 500000 - 0 = 500000
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("1000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("500000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("-0.04"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("5416.67")
+        assert result.monthly_income_gap == Decimal("4416.67")
+        assert result.required_retirement_savings == ZERO
+        assert result.projected_total_savings == Decimal("500000")
+        assert result.savings_surplus_or_shortfall == Decimal("500000")
+        assert result.safe_withdrawal_rate == Decimal("-0.04")
+
+    def test_tax_rate_one_hundred_percent(self):
+        """100% tax rate means all traditional withdrawals taxed away entirely.
+
+        pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
+        after_tax_monthly_pension = (2000*(1-1.00)).quantize(0.01) = 0.00
+        monthly_income_gap = max(5416.67 - 0.00, 0) = 5416.67
+        required = (5416.67*12/0.04).quantize(0.01) = (65000.04/0.04) = 1625001.00
+        projected_total = 400000 + 100000 = 500000
+        surplus = 500000 - 1625001.00 = -1125001.00
+        after_tax_projected = (400000*0 + 100000).quantize(0.01) = 100000.00
+        after_tax_surplus = 100000.00 - 1625001.00 = -1525001.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("2000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("400000"), "is_traditional": True},
+                {"projected_balance": Decimal("100000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+            estimated_tax_rate=Decimal("1.00"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("5416.67")
+        assert result.monthly_pension_income == Decimal("2000")
+        assert result.after_tax_monthly_pension == Decimal("0.00")
+        assert result.monthly_income_gap == Decimal("5416.67")
+        assert result.required_retirement_savings == Decimal("1625001.00")
+        assert result.projected_total_savings == Decimal("500000")
+        assert result.savings_surplus_or_shortfall == Decimal("-1125001.00")
+        assert result.after_tax_projected_savings == Decimal("100000.00")
+        assert result.after_tax_surplus_or_shortfall == Decimal("-1525001.00")
+
+    def test_tax_rate_zero(self):
+        """0% tax rate means all withdrawals are fully available.
+
+        pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
+        after_tax_monthly_pension = (2000*(1-0)).quantize(0.01) = 2000.00
+        monthly_income_gap = max(5416.67 - 2000.00, 0) = 3416.67
+        required = (3416.67*12/0.04).quantize(0.01) = (41000.04/0.04) = 1025001.00
+        projected_total = 500000
+        surplus = 500000 - 1025001.00 = -525001.00
+        after_tax_projected = (400000*1.00 + 100000).quantize(0.01) = 500000.00
+        after_tax_surplus = 500000.00 - 1025001.00 = -525001.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("2000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("400000"), "is_traditional": True},
+                {"projected_balance": Decimal("100000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+            estimated_tax_rate=Decimal("0.00"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("5416.67")
+        assert result.after_tax_monthly_pension == Decimal("2000.00")
+        assert result.monthly_income_gap == Decimal("3416.67")
+        assert result.required_retirement_savings == Decimal("1025001.00")
+        assert result.projected_total_savings == Decimal("500000")
+        assert result.savings_surplus_or_shortfall == Decimal("-525001.00")
+        assert result.after_tax_projected_savings == Decimal("500000.00")
+        assert result.after_tax_surplus_or_shortfall == Decimal("-525001.00")
+
+    def test_tax_rate_negative(self):
+        """Negative tax rate is nonsensical; source does not validate it.
+
+        A negative tax rate inflates after-tax pension and after-tax savings
+        (multiplies by > 1.0). This is mathematically valid but financially
+        meaningless.
+
+        # BUG: Source does not validate estimated_tax_rate >= 0.
+        # TODO: Source should raise ValidationError for negative tax rates.
+
+        pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
+        after_tax_monthly_pension = (2000*(1-(-0.10))).quantize(0.01)
+                                  = (2000*1.10).quantize(0.01) = 2200.00
+        monthly_income_gap = max(5416.67 - 2200.00, 0) = 3216.67
+        required = (3216.67*12/0.04).quantize(0.01) = (38600.04/0.04) = 965001.00
+        projected_total = 500000
+        surplus = 500000 - 965001.00 = -465001.00
+        after_tax_projected = (400000*1.10 + 100000).quantize(0.01) = 540000.00
+        after_tax_surplus = 540000.00 - 965001.00 = -425001.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("2000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("400000"), "is_traditional": True},
+                {"projected_balance": Decimal("100000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+            estimated_tax_rate=Decimal("-0.10"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("5416.67")
+        assert result.after_tax_monthly_pension == Decimal("2200.00")
+        assert result.monthly_income_gap == Decimal("3216.67")
+        assert result.required_retirement_savings == Decimal("965001.00")
+        assert result.projected_total_savings == Decimal("500000")
+        assert result.savings_surplus_or_shortfall == Decimal("-465001.00")
+        assert result.after_tax_projected_savings == Decimal("540000.00")
+        assert result.after_tax_surplus_or_shortfall == Decimal("-425001.00")
+
+    def test_negative_net_biweekly_pay(self):
+        """Negative pay (deductions exceed gross) clamps income gap to zero.
+
+        This can happen when heavy pre-tax contributions exceed gross on
+        certain pay periods. The max() clamp prevents a negative gap.
+
+        pre_retirement_net_monthly = (-500*26/12).quantize(0.01) = -1083.33
+        monthly_income_gap = max(-1083.33 - 0, 0) = 0
+        required = (0*12/0.04).quantize(0.01) = 0.00
+        projected_total = 0
+        surplus = 0 - 0.00 = 0.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("-500.00"),
+            monthly_pension_income=ZERO,
+        )
+        assert result.pre_retirement_net_monthly == Decimal("-1083.33")
+        assert result.monthly_income_gap == ZERO
+        assert result.required_retirement_savings == Decimal("0.00")
+        assert result.projected_total_savings == ZERO
+        assert result.savings_surplus_or_shortfall == Decimal("0.00")
+
+    def test_zero_monthly_pension_income(self):
+        """No pension means the full net income must be replaced by savings.
+
+        pre_retirement_net_monthly = (3000*26/12).quantize(0.01) = 6500.00
+        monthly_income_gap = max(6500.00 - 0, 0) = 6500.00
+        required = (6500.00*12/0.04).quantize(0.01) = (78000.00/0.04) = 1950000.00
+        projected_total = 800000
+        surplus = 800000 - 1950000.00 = -1150000.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("3000"),
+            monthly_pension_income=ZERO,
+            retirement_account_projections=[
+                {"projected_balance": Decimal("800000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+        )
+        assert result.monthly_pension_income == ZERO
+        assert result.monthly_income_gap == Decimal("6500.00")
+        assert result.required_retirement_savings == Decimal("1950000.00")
+        assert result.projected_total_savings == Decimal("800000")
+        assert result.savings_surplus_or_shortfall == Decimal("-1150000.00")
+
+    def test_all_income_sources_zero(self):
+        """No pay, no pension, no accounts: gap is zero (nothing to replace).
+
+        When net_biweekly_pay=0 and pension=0, the gap is 0 because there
+        is no pre-retirement income to replace. Required savings = 0.
+        """
+        result = calculate_gap(
+            net_biweekly_pay=ZERO,
+            monthly_pension_income=ZERO,
+            retirement_account_projections=[],
+        )
+        assert result.pre_retirement_net_monthly == ZERO
+        assert result.monthly_income_gap == ZERO
+        assert result.required_retirement_savings == ZERO
+        assert result.projected_total_savings == ZERO
+        assert result.savings_surplus_or_shortfall == ZERO
+
+    def test_result_field_completeness(self):
+        """Every field of RetirementGapAnalysis is present with expected type.
+
+        Guards against silent field additions or removals from breaking
+        downstream consumers. Uses normal inputs to produce non-None values
+        for all optional fields.
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("2500"),
+            monthly_pension_income=Decimal("1000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("300000"), "is_traditional": True},
+                {"projected_balance": Decimal("200000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+            planned_retirement_date=date(2050, 1, 1),
+            estimated_tax_rate=Decimal("0.20"),
+        )
+        assert isinstance(result, RetirementGapAnalysis)
+        assert isinstance(result.pre_retirement_net_monthly, Decimal)
+        assert isinstance(result.monthly_pension_income, Decimal)
+        assert isinstance(result.after_tax_monthly_pension, Decimal)
+        assert isinstance(result.monthly_income_gap, Decimal)
+        assert isinstance(result.required_retirement_savings, Decimal)
+        assert isinstance(result.projected_total_savings, Decimal)
+        assert isinstance(result.savings_surplus_or_shortfall, Decimal)
+        assert isinstance(result.safe_withdrawal_rate, Decimal)
+        assert isinstance(result.planned_retirement_date, date)
+        assert isinstance(result.after_tax_projected_savings, Decimal)
+        assert isinstance(result.after_tax_surplus_or_shortfall, Decimal)
+        # Verify all 11 dataclass fields are present.
+        import dataclasses
+        field_names = {f.name for f in dataclasses.fields(RetirementGapAnalysis)}
+        assert field_names == {
+            "pre_retirement_net_monthly", "monthly_pension_income",
+            "after_tax_monthly_pension", "monthly_income_gap",
+            "required_retirement_savings", "projected_total_savings",
+            "savings_surplus_or_shortfall", "safe_withdrawal_rate",
+            "planned_retirement_date", "after_tax_projected_savings",
+            "after_tax_surplus_or_shortfall",
+        }
+
+    def test_large_values_no_overflow(self):
+        """Decimal precision maintained at high magnitudes.
+
+        pre_retirement_net_monthly = (20000*26/12).quantize(0.01) = 43333.33
+        monthly_income_gap = max(43333.33 - 5000, 0) = 38333.33
+        required = (38333.33*12/0.04).quantize(0.01) = (459999.96/0.04) = 11499999.00
+        projected_total = 10000000
+        surplus = 10000000 - 11499999.00 = -1499999.00
+        """
+        result = calculate_gap(
+            net_biweekly_pay=Decimal("20000"),
+            monthly_pension_income=Decimal("5000"),
+            retirement_account_projections=[
+                {"projected_balance": Decimal("10000000"), "is_traditional": False},
+            ],
+            safe_withdrawal_rate=Decimal("0.04"),
+        )
+        assert result.pre_retirement_net_monthly == Decimal("43333.33")
+        assert result.monthly_income_gap == Decimal("38333.33")
+        assert result.required_retirement_savings == Decimal("11499999.00")
+        assert result.projected_total_savings == Decimal("10000000")
+        assert result.savings_surplus_or_shortfall == Decimal("-1499999.00")

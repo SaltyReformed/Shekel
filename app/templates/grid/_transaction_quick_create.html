@@ -12,7 +12,8 @@
       data-mode="create"
       hx-post="{{ url_for('transactions.create_inline') }}"
       hx-target="closest td"
-      hx-swap="innerHTML">
+      hx-swap="innerHTML"
+      hx-disabled-elt="find input">
   <input type="hidden" name="category_id" value="{{ category.id }}">
   <input type="hidden" name="pay_period_id" value="{{ period.id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
