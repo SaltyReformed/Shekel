@@ -11,6 +11,8 @@ import bcrypt
 
 from app.extensions import db
 from app.models.user import User, UserSettings
+from app.models.account import Account
+from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.exceptions import AuthError, ConflictError, ValidationError
 
@@ -144,6 +146,16 @@ def register_user(email, password, display_name):
     # Create default settings (model defaults handle values).
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
+
+    # Create default checking account.
+    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    account = Account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Checking",
+        current_anchor_balance=0,
+    )
+    db.session.add(account)
 
     # Create baseline scenario.
     scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)

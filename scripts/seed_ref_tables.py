@@ -23,12 +23,21 @@ from app.models.ref import (
     DeductionTiming,
     FilingStatus,
     RaiseType,
+    RecurrencePattern,
+    Status,
     TaxType,
+    TransactionType,
 )
 
 
 REF_DATA = {
     AccountType: ["checking", "savings"],
+    TransactionType: ["income", "expense"],
+    Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
+    RecurrencePattern: [
+        "every_period", "every_n_periods", "monthly", "monthly_first",
+        "quarterly", "semi_annual", "annual", "once",
+    ],
     FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
     DeductionTiming: ["pre_tax", "post_tax"],
     CalcMethod: ["flat", "percentage"],
