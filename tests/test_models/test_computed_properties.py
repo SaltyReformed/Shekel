@@ -66,6 +66,72 @@ class TestTransactionEffectiveAmount:
             txn = self._make_txn(seed_user, seed_periods, "done", Decimal("150.00"))
             assert txn.effective_amount == Decimal("150.00")
 
+    def test_credit_status_returns_zero(self, app, db, seed_user, seed_periods):
+        """Credit-status transaction returns Decimal('0') for effective_amount.
+
+        Credit transactions are excluded from checking balance calculations
+        because the charge is on a credit card, not the checking account.
+        Expected: effective_amount == Decimal('0') regardless of estimated_amount.
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "credit", Decimal("250.00"),
+            )
+            assert txn.effective_amount == Decimal("0")
+
+    def test_cancelled_status_returns_zero(self, app, db, seed_user, seed_periods):
+        """Cancelled transaction returns Decimal('0') for effective_amount.
+
+        Cancelled transactions should not affect balance projections at all.
+        Expected: effective_amount == Decimal('0').
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "cancelled", Decimal("500.00"),
+            )
+            assert txn.effective_amount == Decimal("0")
+
+    def test_received_uses_estimated_when_no_actual(self, app, db, seed_user, seed_periods):
+        """Received transaction without actual_amount falls back to estimated.
+
+        The source treats 'received' the same as 'done': actual if set,
+        else estimated. When actual_amount is None, estimated is returned.
+        Expected: effective_amount == Decimal('150.00').
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "received", Decimal("150.00"),
+            )
+            assert txn.effective_amount == Decimal("150.00")
+
+    def test_received_uses_actual_when_set(self, app, db, seed_user, seed_periods):
+        """Received transaction with actual_amount returns actual.
+
+        When both estimated and actual are present, the actual takes
+        precedence for done/received statuses.
+        Expected: effective_amount == Decimal('145.00').
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "received",
+                Decimal("150.00"), actual=Decimal("145.00"),
+            )
+            assert txn.effective_amount == Decimal("145.00")
+
+    def test_done_with_zero_actual(self, app, db, seed_user, seed_periods):
+        """Done transaction with actual_amount=0 returns zero (e.g., waived fee).
+
+        Zero is a valid actual_amount (the bill was waived). The function
+        must not fall back to estimated when actual is explicitly 0.
+        Expected: effective_amount == Decimal('0.00').
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "done",
+                Decimal("100.00"), actual=Decimal("0.00"),
+            )
+            assert txn.effective_amount == Decimal("0.00")
+
 
 # ── Transaction.is_income / is_expense ───────────────────────────────
 
@@ -162,6 +228,19 @@ class TestTransferEffectiveAmount:
             xfer = self._make_transfer(seed_user, seed_periods, "done", Decimal("500.00"))
             assert xfer.effective_amount == Decimal("500.00")
 
+    def test_cancelled_returns_zero(self, app, db, seed_user, seed_periods):
+        """Cancelled transfer returns Decimal('0') for effective_amount.
+
+        Cancelled transfers should not affect account balance calculations.
+        The source checks `self.status.name == 'cancelled'` and returns 0.
+        Expected: effective_amount == Decimal('0').
+        """
+        with app.app_context():
+            xfer = self._make_transfer(
+                seed_user, seed_periods, "cancelled", Decimal("500.00"),
+            )
+            assert xfer.effective_amount == Decimal("0")
+
 
 # ── Category.display_name ────────────────────────────────────────────
 
@@ -188,6 +267,57 @@ class TestPayPeriodLabel:
             period = seed_periods[0]
             # seed_periods start 2026-01-02, cadence 14 days → end 2026-01-15.
             assert period.label == "01/02 – 01/15"
+
+    def test_label_cross_month(self, app, db, seed_user):
+        """Label formats correctly when period spans two different months.
+
+        A period from Jan 25 to Feb 7 should show both month prefixes.
+        Expected: '01/25 – 02/07'.
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 25),
+                end_date=date(2026, 2, 7),
+                period_index=0,
+            )
+            db.session.add(period)
+            db.session.flush()
+            assert period.label == "01/25 – 02/07"
+
+    def test_label_cross_year(self, app, db, seed_user):
+        """Label includes 2-digit year when period spans a year boundary.
+
+        A Dec 26 – Jan 8 period crosses the year boundary. The label
+        adds /YY to both dates so the user can distinguish the years.
+        Expected: '12/26/26 – 01/08/27'.
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 12, 26),
+                end_date=date(2027, 1, 8),
+                period_index=0,
+            )
+            db.session.add(period)
+            db.session.flush()
+            assert period.label == "12/26/26 – 01/08/27"
+
+    def test_label_same_month(self, app, db, seed_user):
+        """Label formats correctly when start and end are in the same month.
+
+        Expected: '03/01 – 03/14'.
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 3, 1),
+                end_date=date(2026, 3, 14),
+                period_index=0,
+            )
+            db.session.add(period)
+            db.session.flush()
+            assert period.label == "03/01 – 03/14"
 
 
 # ── PaycheckBreakdown computed totals ────────────────────────────────
@@ -244,3 +374,88 @@ class TestPaycheckBreakdownTotals:
         )
         assert breakdown.total_pre_tax == Decimal("0")
         assert breakdown.total_post_tax == Decimal("0")
+
+    def test_net_pay_stored_value(self):
+        """net_pay is a stored field, not a computed property.
+
+        The PaycheckBreakdown dataclass stores net_pay as set by
+        calculate_paycheck. Verify that when constructed with an explicit
+        net_pay value, it equals gross - pre_tax - taxes - post_tax.
+        Expected: net_pay == Decimal('1607.69').
+        """
+        breakdown = PaycheckBreakdown(
+            period_id=1,
+            annual_salary=Decimal("75000"),
+            gross_biweekly=Decimal("2307.69"),
+            pre_tax_deductions=[
+                DeductionLine(name="401k", amount=Decimal("200.00")),
+            ],
+            federal_tax=Decimal("250.00"),
+            state_tax=Decimal("100.00"),
+            social_security=Decimal("75.00"),
+            medicare=Decimal("25.00"),
+            post_tax_deductions=[
+                DeductionLine(name="Roth", amount=Decimal("50.00")),
+            ],
+            net_pay=Decimal("1607.69"),
+        )
+        # Verify net_pay stores the exact value we set.
+        assert breakdown.net_pay == Decimal("1607.69")
+        # Cross-check: gross - all deductions/taxes should equal net_pay.
+        expected = (
+            breakdown.gross_biweekly
+            - breakdown.total_pre_tax
+            - breakdown.total_taxes
+            - breakdown.total_post_tax
+        )
+        assert expected == Decimal("1607.69")
+        assert breakdown.net_pay == expected
+
+    def test_net_pay_all_zeros(self):
+        """net_pay with zero deductions and taxes equals gross.
+
+        When all deductions and taxes are zero, the entire gross pay
+        should pass through as net pay.
+        Expected: net_pay == Decimal('2000.00').
+        """
+        breakdown = PaycheckBreakdown(
+            period_id=1,
+            annual_salary=Decimal("52000"),
+            gross_biweekly=Decimal("2000.00"),
+            net_pay=Decimal("2000.00"),
+        )
+        assert breakdown.net_pay == Decimal("2000.00")
+        assert breakdown.total_pre_tax == Decimal("0")
+        assert breakdown.total_taxes == Decimal("0")
+        assert breakdown.total_post_tax == Decimal("0")
+
+    def test_net_pay_negative_when_deductions_exceed_gross(self):
+        """net_pay can be negative when deductions exceed gross.
+
+        The PaycheckBreakdown dataclass does not clamp net_pay to zero.
+        If calculate_paycheck produces a negative net_pay (which is a
+        data configuration error), the model stores it as-is.
+        Expected: net_pay == Decimal('-200.00').
+        """
+        breakdown = PaycheckBreakdown(
+            period_id=1,
+            annual_salary=Decimal("52000"),
+            gross_biweekly=Decimal("2000.00"),
+            pre_tax_deductions=[
+                DeductionLine(name="401k", amount=Decimal("1500.00")),
+            ],
+            federal_tax=Decimal("500.00"),
+            state_tax=Decimal("200.00"),
+            social_security=Decimal("0"),
+            medicare=Decimal("0"),
+            net_pay=Decimal("-200.00"),
+        )
+        assert breakdown.net_pay == Decimal("-200.00")
+        # Verify the math: 2000 - 1500 - 700 = -200
+        expected = (
+            breakdown.gross_biweekly
+            - breakdown.total_pre_tax
+            - breakdown.total_taxes
+            - breakdown.total_post_tax
+        )
+        assert expected == Decimal("-200.00")

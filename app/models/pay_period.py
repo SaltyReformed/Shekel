@@ -37,7 +37,12 @@ class PayPeriod(db.Model):
 
     @property
     def label(self):
-        """Human-readable label, e.g. '02/21 – 03/06'."""
+        """Human-readable label, e.g. '02/21 – 03/06' or '12/26/26 – 01/08/27'."""
+        if self.start_date.year != self.end_date.year:
+            return (
+                f"{self.start_date.strftime('%m/%d/%y')} – "
+                f"{self.end_date.strftime('%m/%d/%y')}"
+            )
         return f"{self.start_date.strftime('%m/%d')} – {self.end_date.strftime('%m/%d')}"
 
     def __repr__(self):

@@ -136,17 +136,17 @@ shekel/
 │   ├── models/                  # SQLAlchemy models (23 files, 5 PG schemas)
 │   ├── routes/                  # Flask Blueprints (19 route modules)
 │   ├── services/                # Business logic (22 service modules)
-│   ├── schemas/                 # Marshmallow validation
+│   ├── schemas/                 # Marshmallow validation (750-line consolidated schema)
 │   ├── utils/                   # Logging config, structured log events
-│   ├── templates/               # Jinja2 HTML templates (~90 files)
-│   └── static/                  # CSS, JS (16 chart/grid scripts), images
+│   ├── templates/               # Jinja2 HTML templates (~90 files, 17 directories)
+│   └── static/                  # CSS, JS (19 chart/grid/form scripts), images
 ├── migrations/                  # Alembic database migrations (15 versions)
 ├── monitoring/                  # Promtail config and Grafana/Loki runbook
 ├── nginx/                       # Nginx reverse proxy configuration
 ├── cloudflared/                 # Cloudflare Tunnel configuration
 ├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite (1242 test functions)
+├── tests/                       # pytest test suite (1502 test functions, 60 test files)
 ├── docs/                        # Plans, progress tracking, runbooks
 ├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
 ├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
@@ -195,6 +195,6 @@ Last evaluated: 2026-03-20
 
 **Status key:** Complete | In Progress | Not Started | Deferred
 
-**Test suite:** 1242 test functions (+ 3 performance benchmarks run separately)
+**Test suite:** 1502 test functions across 60 test files (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.

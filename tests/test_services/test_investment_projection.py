@@ -48,6 +48,7 @@ class FakeInvestmentParams:
 class TestCalculateInvestmentInputs:
 
     def test_no_deductions_no_transfers(self):
+        """No deductions or transfers → zero contributions and zero YTD."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -64,6 +65,7 @@ class TestCalculateInvestmentInputs:
         assert result.annual_contribution_limit == Decimal("23500")
 
     def test_flat_deduction(self):
+        """Flat deduction amount adds directly to periodic contribution."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -79,6 +81,7 @@ class TestCalculateInvestmentInputs:
         assert result.periodic_contribution == Decimal("500.00")
 
     def test_percentage_deduction(self):
+        """Percentage deduction computed as gross_biweekly * rate."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -96,6 +99,7 @@ class TestCalculateInvestmentInputs:
         assert result.periodic_contribution == expected
 
     def test_transfer_contributions_averaged(self):
+        """Transfer contributions averaged across distinct periods with transfers."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=None,
             employer_contribution_type="none",
@@ -114,6 +118,7 @@ class TestCalculateInvestmentInputs:
         assert result.periodic_contribution == Decimal("233.33")
 
     def test_employer_flat_percentage(self):
+        """Employer flat_percentage populates employer_params with correct values."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="flat_percentage", employer_flat_percentage=Decimal("0.05"),
@@ -132,6 +137,7 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["gross_biweekly"] == gross
 
     def test_employer_match(self):
+        """Employer match type populates match_percentage and cap fields."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="match", employer_match_percentage=Decimal("1.0"),
@@ -150,6 +156,7 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["match_cap_percentage"] == Decimal("0.06")
 
     def test_ytd_contributions_from_transfers(self):
+        """YTD contributions sum only current-year transfers up to current period."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
@@ -176,6 +183,7 @@ class TestCalculateInvestmentInputs:
         assert result.ytd_contributions == Decimal("1500")
 
     def test_combined_deductions_and_transfers(self):
+        """Deductions and transfers both contribute to periodic_contribution."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
@@ -250,6 +258,7 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["gross_biweekly"] == expected_gross
 
     def test_no_employer_when_type_none(self):
+        """Employer type 'none' produces employer_params=None."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
@@ -260,3 +269,138 @@ class TestCalculateInvestmentInputs:
             all_transfers=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is None
+
+    def test_empty_periods_none_current_period(self):
+        """Empty period list and None current_period does not crash.
+
+        When no periods exist yet (fresh user), the function should still
+        return a valid InvestmentInputs with zero contributions and ytd.
+        Expected: periodic_contribution=0, ytd_contributions=0.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="none",
+        )
+        result = calculate_investment_inputs(
+            account_id=10, investment_params=params, deductions=[],
+            all_transfers=[], all_periods=[], current_period=None,
+        )
+        assert result.periodic_contribution == Decimal("0")
+        assert result.ytd_contributions == Decimal("0")
+        assert result.employer_params is None
+        assert result.gross_biweekly == Decimal("0")
+
+    def test_zero_contribution_rate(self):
+        """Percentage deduction at 0% produces zero contribution.
+
+        Scenario: employee sets 401k contribution to 0% temporarily.
+        Expected: periodic_contribution=0, no employer match triggered.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="match",
+            employer_match_percentage=Decimal("1.0"),
+            employer_match_cap_percentage=Decimal("0.06"),
+        )
+        deductions = [FakeDeduction(
+            amount=Decimal("0"),
+            calc_method_name="percentage",
+            annual_salary=Decimal("100000"),
+            pay_periods_per_year=26,
+        )]
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+        result = calculate_investment_inputs(
+            account_id=10, investment_params=params, deductions=deductions,
+            all_transfers=[], all_periods=[current_period], current_period=current_period,
+        )
+        # gross * 0% = 0
+        assert result.periodic_contribution == Decimal("0")
+        # Employer params are still populated (the match params exist even if contribution is 0)
+        assert result.employer_params is not None
+        expected_gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
+        assert result.gross_biweekly == expected_gross
+
+    def test_negative_deduction_amount(self):
+        """Negative flat deduction amount is accepted without validation.
+
+        The source does not guard against negative amounts. A negative
+        deduction effectively reduces the total periodic contribution.
+        # BUG: negative deduction amount is silently accepted — consider
+        # adding a guard in the service.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="none",
+        )
+        deductions = [FakeDeduction(
+            amount=Decimal("-500.00"),
+            calc_method_name="flat",
+            annual_salary=Decimal("100000"),
+            pay_periods_per_year=26,
+        )]
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+        result = calculate_investment_inputs(
+            account_id=10, investment_params=params, deductions=deductions,
+            all_transfers=[], all_periods=[current_period], current_period=current_period,
+        )
+        assert result.periodic_contribution == Decimal("-500.00")
+
+    def test_soft_deleted_transfers_excluded(self):
+        """Transfers with is_deleted=True are excluded from contributions and YTD.
+
+        The source filters via `not getattr(t, 'is_deleted', False)`.
+        Soft-deleted transfers must not affect projection inputs.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="none",
+        )
+        transfers = [
+            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
+            FakeTransfer(to_account_id=10, amount=Decimal("300"), pay_period_id=2, is_deleted=True),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+        ]
+        result = calculate_investment_inputs(
+            account_id=10, investment_params=params, deductions=[],
+            all_transfers=transfers, all_periods=periods, current_period=periods[0],
+        )
+        # Only the non-deleted $200 transfer counts.
+        # 1 transfer across 1 period → periodic = $200
+        assert result.periodic_contribution == Decimal("200")
+        # YTD only includes current_period=periods[0], which has the $200 transfer
+        assert result.ytd_contributions == Decimal("200")
+
+    def test_none_current_period_with_transfers(self):
+        """None current_period skips YTD calculation but still averages transfers.
+
+        When current_period is None (e.g., no period is current), the
+        function should still compute periodic_contribution from transfers
+        but set ytd_contributions to 0.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type="none",
+        )
+        transfers = [
+            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
+            FakeTransfer(to_account_id=10, amount=Decimal("400"), pay_period_id=2),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+        ]
+        result = calculate_investment_inputs(
+            account_id=10, investment_params=params, deductions=[],
+            all_transfers=transfers, all_periods=periods, current_period=None,
+        )
+        # (200 + 400) / 2 periods = 300
+        assert result.periodic_contribution == Decimal("300")
+        assert result.ytd_contributions == Decimal("0")

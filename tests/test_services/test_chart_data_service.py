@@ -236,6 +236,92 @@ class TestSpendingByCategory:
             # Cancelled transaction should not appear.
             assert result["labels"] == []
 
+    def test_spending_with_multiple_categories_exact_sums(self, app, seed_user, seed_periods):
+        """Expense transactions summed by category group with exact Decimal values.
+
+        Seeds 10 transactions across 4 categories. Verifies exact per-group
+        sums, cancelled/credit exclusions, and multi-transaction aggregation.
+        Expected: Home=2400, Family=650, Auto=300. Cancelled/credit excluded.
+        """
+        with app.app_context():
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="expense")
+                .one()
+            )
+            done = db.session.query(Status).filter_by(name="done").one()
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            credit = db.session.query(Status).filter_by(name="credit").one()
+
+            # Use a period we know is in "last_12" range (period 0).
+            period = seed_periods[0]
+
+            txn_data = [
+                # Home group (Rent category): two done txns
+                ("Rent", "Rent Jan", "1200.00", "1200.00", done),
+                ("Rent", "Rent Feb", "1200.00", "1200.00", done),
+                # Family group (Groceries category): three txns
+                ("Groceries", "Groceries Wk1", "200.00", "200.00", done),
+                ("Groceries", "Groceries Wk2", "250.00", "250.00", done),
+                ("Groceries", "Groceries Wk3", "200.00", None, projected),
+                # Auto group (Car Payment): one done txn
+                ("Car Payment", "Car Pmt", "300.00", "300.00", done),
+                # Cancelled — must NOT appear
+                ("Rent", "Cancelled Rent", "1200.00", None, cancelled),
+                # Credit — must NOT appear (status filter excludes it)
+                ("Groceries", "Credit Groceries", "100.00", None, credit),
+            ]
+
+            for cat_name, name, est, act, status in txn_data:
+                cat = seed_user["categories"][cat_name]
+                txn = Transaction(
+                    template_id=None,
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    category_id=cat.id,
+                    transaction_type_id=expense_type.id,
+                    name=name,
+                    estimated_amount=Decimal(est),
+                    actual_amount=Decimal(act) if act else None,
+                    status_id=status.id,
+                )
+                db.session.add(txn)
+            db.session.commit()
+
+            result = chart_data_service.get_spending_by_category(
+                user_id=seed_user["user"].id,
+                period_range="last_12",
+            )
+
+            # Build a label→amount mapping from the result.
+            spending = dict(zip(result["labels"], result["data"]))
+
+            # Home: 1200 + 1200 = 2400 (cancelled Rent excluded)
+            assert spending["Home"] == 2400.0
+            # Family: 200 + 250 + 200(estimated, projected) = 650
+            # (credit Groceries excluded by status filter)
+            assert spending["Family"] == 650.0
+            # Auto: 300
+            assert spending["Auto"] == 300.0
+            # Only 3 groups should appear (cancelled/credit excluded)
+            assert len(result["labels"]) == 3
+
+    def test_spending_by_category_invalid_user(self, app, seed_user, seed_periods):
+        """Nonexistent user_id returns empty result without crashing.
+
+        The function queries for periods and scenario by user_id. A
+        nonexistent user produces no periods → returns empty dict.
+        Expected: empty labels and data lists.
+        """
+        with app.app_context():
+            result = chart_data_service.get_spending_by_category(
+                user_id=999999,
+                period_range="last_12",
+            )
+            assert result["labels"] == []
+            assert result["data"] == []
+
 
 # ── Budget vs. Actuals Tests ────────────────────────────────────────
 
@@ -351,6 +437,97 @@ class TestNetWorthOverTime:
             # Net worth at period 0 = checking anchor balance = $1,000.00
             # (no transactions, no liabilities)
             assert result["data"][0] == 1000.0
+
+    def test_net_worth_with_liability_exact(self, app, seed_user, seed_periods):
+        """Net worth = assets - liabilities with exact values.
+
+        Adds a mortgage (liability) account alongside the existing checking
+        (asset) account. Net worth = checking - mortgage for each period.
+        Expected: net_worth[0] = 1000.00 - 200000.00 = -199000.00.
+        """
+        with app.app_context():
+            mortgage_type = (
+                db.session.query(AccountType)
+                .filter_by(name="mortgage")
+                .one()
+            )
+            mortgage = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Home Loan",
+                current_anchor_balance=Decimal("200000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(mortgage)
+            db.session.commit()
+
+            result = chart_data_service.get_net_worth_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert len(result["data"]) == 10
+            # Checking ($1,000 asset) - Mortgage ($200,000 liability)
+            assert result["data"][0] == -199000.0
+
+    def test_net_worth_invalid_user(self, app, seed_user):
+        """Nonexistent user_id returns empty net worth without crashing.
+
+        Expected: empty labels and data lists.
+        """
+        with app.app_context():
+            result = chart_data_service.get_net_worth_over_time(
+                user_id=999999,
+            )
+            assert result["labels"] == []
+            assert result["data"] == []
+
+
+# ── Balance Over Time Consistency Tests ────────────────────────────
+
+class TestBalanceConsistency:
+    """Cross-service consistency between chart data and balance calculator."""
+
+    def test_balance_over_time_matches_balance_calculator(
+        self, app, seed_user, seed_periods,
+    ):
+        """Chart data balances match balance_calculator.calculate_balances().
+
+        Both services must produce identical balance values for the same
+        account, periods, and transactions. If they disagree, the user
+        sees contradictory numbers on the dashboard vs. the chart.
+        Expected: every chart data point equals the corresponding balance
+        from calculate_balances().
+        """
+        from app.services import balance_calculator
+
+        with app.app_context():
+            account = seed_user["account"]
+            scenario = seed_user["scenario"]
+
+            # Get chart data.
+            chart_result = chart_data_service.get_balance_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert len(chart_result["datasets"]) == 1
+            chart_balances = chart_result["datasets"][0]["data"]
+
+            # Get balance calculator results directly.
+            periods = seed_periods
+            calc_balances = balance_calculator.calculate_balances(
+                anchor_balance=account.current_anchor_balance,
+                anchor_period_id=account.current_anchor_period_id,
+                periods=periods,
+                transactions=[],
+                transfers=[],
+                account_id=account.id,
+            )
+
+            # Compare each period.
+            for i, period in enumerate(periods):
+                calc_val = float(calc_balances.get(period.id, Decimal("0")))
+                assert chart_balances[i] == calc_val, (
+                    f"Period {i} mismatch: chart={chart_balances[i]}, "
+                    f"calc={calc_val}"
+                )
 
 
 # ── Helpers Tests ───────────────────────────────────────────────────

@@ -30,21 +30,15 @@ d743158 chore: harden test database connection and timeout settings
 e2a5118 fix: increase pytest timeout and update CLAUDE.md test guidelines
 9becd73 Test remediation Phase 3 implementation
 b2c72ae Phase 8E implementation
-b8bb84c Test remediation Phase 2 implemented. Added prompts for Phase 8E implmentation
-df3d150 Remaining Phase 1 work units and Phase 0 and Phase 1 audit and remediation.
-f295e39 Testing WU1.3 implemented
-8cdf5ce Testing WU1.1 and WU1.2 implemented
-6404aa2 Phase 8E implementation plan Test Audit Report Test Remediation Plan
-52dc6d9 Created Phase 8E implementation plan Created Test Audit Report
-11ae54f Phase 8D-3 Implementation
-2b9a6ae Phase 8D-2 implementation
-0c14fe4 Phase 8D-1 Implementation
-b33c712 Phase 8C updated docs
 ```
 
-Recent work focused on completing Phase 8D (production deployment, 3 sub-phases),
-Phase 8E (multi-user groundwork), and a comprehensive multi-phase test remediation
-effort that brought the test suite to 1242 test functions across all categories.
+Recent work focused on a comprehensive multi-phase test remediation effort
+(Work Units 1.1 through 5.4) that brought the test suite from 1242 to 1502
+test functions. The remediation added negative-path testing, IDOR verification
+with DB state assertions, schema validation boundary tests, auth-required
+coverage, and financial account route hardening across all five account types
+(mortgage, HYSA, auto loan, investment, retirement). Four application bugs
+were discovered and fixed during WU4.2 test remediation.
 
 ---
 
@@ -81,7 +75,8 @@ effort that brought the test suite to 1242 test functions across all categories.
   `pay_periods/` (1 file), `accounts/` (4 files)
 - Tests (all present): `test_balance_calculator.py`, `test_recurrence_engine.py`,
   `test_credit_workflow.py`, `test_carry_forward` (in test_services),
-  `test_auth.py`, `test_grid.py`, `test_transactions.py` (via test_transaction_auth.py)
+  `test_auth.py`, `test_grid.py`, `test_transactions.py` (via test_transaction_auth.py),
+  `test_auth_required.py` (91 auth-required tests across all blueprints)
 - Scripts (all present): `seed_user.py`, `seed_ref_tables.py`
 
 **Notes:**
@@ -179,7 +174,8 @@ templates support recurrence rules for automated recurring transfers.
 - Services (present): `interest_projection.py`
 - Templates (present): `accounts/hysa_detail.html`
 - Tests (present): `test_interest_projection.py`, `test_balance_calculator_hysa.py`,
-  `test_hysa.py` (route tests)
+  `test_hysa.py` (15 route tests including negative paths, IDOR with DB
+  verification, wrong-type guards, APY boundary validation)
 - Schema change (present): `category` column on `ref.account_types` model
 - Migration (present): `f1a2b3c4d5e6_add_hysa_and_account_categories.py`
 
@@ -218,7 +214,9 @@ dedicated test file `test_balance_calculator_hysa.py`).
   `mortgage/_escrow_list.html`, `mortgage/_rate_history.html`, `mortgage/setup.html`,
   `auto_loan/dashboard.html`, `auto_loan/setup.html`
 - Tests (all present): `test_amortization_engine.py`, `test_escrow_calculator.py`,
-  `test_balance_calculator_debt.py`, `test_mortgage.py`, `test_auto_loan.py`
+  `test_balance_calculator_debt.py`, `test_mortgage.py` (30 tests including
+  negative paths, IDOR with DB verification, escrow/rate change edge cases),
+  `test_auto_loan.py` (15 tests including negative paths)
 - Migration (present): `a1b2c3d4e5f6_add_debt_account_tables.py`
 - Chart integration: `chart_amortization.js`, `payoff_chart.js`
 
@@ -259,7 +257,10 @@ inline chart was built as specified. Setup forms added for both mortgage and aut
   `retirement/_gap_analysis.html`
 - Tests (all present): `test_growth_engine.py`, `test_pension_calculator.py`,
   `test_retirement_gap_calculator.py`, `test_investment_projection.py`,
-  `test_investment.py`, `test_retirement.py`
+  `test_investment.py` (21 tests including login-required, IDOR with DB
+  verification, negative return rates), `test_retirement.py` (37 tests
+  including pension CRUD negative paths, settings validation boundaries,
+  login-required coverage)
 - Schema change (present): `target_account_id` column on paycheck_deductions model
 - Migration (present): `c3d4e5f6g7h8_add_investment_retirement_tables.py`
 - Chart integration: `growth_chart.js`, `retirement_gap_chart.js`,
@@ -529,7 +530,10 @@ includes `set_real_ip_from` directives for Cloudflare IP ranges and
 - Access control tests (present): `tests/test_integration/test_access_control.py`
   (1083 lines, 66 test functions)
 - Auth-required tests (present): `tests/test_routes/test_auth_required.py`
+  (91 test functions covering all 19 blueprints)
 - Transaction auth tests (present): `tests/test_routes/test_transaction_auth.py`
+- Adversarial tests (present): `tests/test_adversarial/test_hostile_qa.py`
+  (26 tests for XSS, SQL injection, path traversal, CSRF)
 - Implementation plan: `docs/phase_8e_implementation_plan.md`
 
 **Notes:**
@@ -591,3 +595,28 @@ as part of the implementation.
 4. **Production hardening follow-up:** Consider adding a 403 custom error page
    (currently missing from `app/templates/errors/`), and building a simple audit
    log viewer UI (currently backend-only via psql).
+
+---
+
+## Test Suite Health
+
+**Total:** 1502 test functions across 60 test files (1501 pass, 1 xfailed)
+**Runtime:** ~5.5 minutes (full suite)
+
+| Category                | Files | Approx. Tests |
+| ----------------------- | ----- | ------------- |
+| Route tests             | 22    | ~750          |
+| Service tests           | 22    | ~470          |
+| Integration tests       | 6     | ~125          |
+| Schema/model tests      | 2     | ~80           |
+| Script tests            | 3     | ~33           |
+| Utility tests           | 3     | ~28           |
+| Adversarial tests       | 1     | ~26           |
+
+Test remediation work units (WU0 through WU5.4) systematically added:
+- Auth-required coverage for all 19 blueprints (91 tests)
+- IDOR tests with DB state verification (expire_all + re-query pattern)
+- Schema validation boundary tests (negative values, out-of-range, non-numeric)
+- Account type guard tests (wrong type redirects)
+- Nonexistent resource handling (404/302 with flash messages)
+- Financial account negative paths across all 5 account types
