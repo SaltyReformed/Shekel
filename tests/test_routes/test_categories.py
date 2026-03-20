@@ -244,3 +244,126 @@ class TestCategoryDelete:
             )
             assert resp.status_code == 200
             assert b"not found" in resp.data
+
+
+# ── Negative Path Tests ─────────────────────────────────────────────
+
+
+class TestCategoryNegativePaths:
+    """Tests for category edge cases, validation, and XSS protection."""
+
+    def test_create_category_double_submit(self, app, auth_client, seed_user):
+        """Double-submitting the same category is caught by duplicate check."""
+        with app.app_context():
+            data = {"group_name": "Test", "item_name": "Double"}
+
+            # First submit succeeds.
+            resp1 = auth_client.post("/categories", data=data, follow_redirects=True)
+            assert resp1.status_code == 200
+            assert b"created" in resp1.data
+
+            # Second submit detected as duplicate.
+            resp2 = auth_client.post("/categories", data=data, follow_redirects=True)
+            assert resp2.status_code == 200
+            assert b"Category already exists." in resp2.data
+
+            # Only one category with this group+item exists.
+            count = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                group_name="Test",
+                item_name="Double",
+            ).count()
+            assert count == 1
+
+    def test_create_category_max_length_group_name(self, app, auth_client, seed_user):
+        """Group name exceeding 100 chars is rejected by schema Length validator."""
+        with app.app_context():
+            long_name = "A" * 101
+            resp = auth_client.post("/categories", data={
+                "group_name": long_name,
+                "item_name": "Valid",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors and try again." in resp.data
+
+            count = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                item_name="Valid",
+            ).count()
+            assert count == 0
+
+    def test_create_category_max_length_item_name(self, app, auth_client, seed_user):
+        """Item name exceeding 100 chars is rejected by schema Length validator."""
+        with app.app_context():
+            long_name = "B" * 101
+            resp = auth_client.post("/categories", data={
+                "group_name": "Valid",
+                "item_name": long_name,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors and try again." in resp.data
+
+            count = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                group_name="Valid",
+            ).count()
+            assert count == 0
+
+    def test_create_category_empty_group_name_after_trim(self, app, auth_client, seed_user):
+        """Whitespace-only group name rejected after server-side strip."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "   ",
+                "item_name": "ValidItem",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Category names cannot be blank." in resp.data
+
+            cat = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                item_name="ValidItem",
+            ).first()
+            assert cat is None
+
+    def test_create_category_empty_item_name_after_trim(self, app, auth_client, seed_user):
+        """Whitespace-only item name rejected after server-side strip."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "ValidGroup",
+                "item_name": "   ",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Category names cannot be blank." in resp.data
+
+            cat = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                group_name="ValidGroup",
+            ).first()
+            assert cat is None
+
+    def test_create_category_special_characters(self, app, auth_client, seed_user):
+        """Special characters in category names are stored and auto-escaped on render."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "Test & 'Quotes'",
+                "item_name": 'Item "Special" <tag>',
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+
+            cat = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+                group_name="Test & 'Quotes'",
+            ).first()
+            assert cat is not None
+            assert cat.item_name == 'Item "Special" <tag>'
+
+            # Verify Jinja2 auto-escaping on settings page.
+            settings_resp = auth_client.get("/settings?section=categories")
+            assert settings_resp.status_code == 200
+            assert b"<tag>" not in settings_resp.data
+            assert b"&lt;tag&gt;" in settings_resp.data

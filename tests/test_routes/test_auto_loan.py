@@ -213,6 +213,165 @@ class TestAutoLoanParamsUpdate:
         )
 
 
+class TestAutoLoanNegativePaths:
+    """Negative-path and boundary tests for auto loan routes."""
+
+    def test_params_update_negative_interest_rate(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Negative interest rate is rejected by Range(min=0) validator."""
+        acct = _create_auto_loan_account(seed_user, db.session)
+        orig = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        orig_rate = orig.interest_rate
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/auto-loan/params",
+            data={
+                "current_principal": "25000.00",
+                "interest_rate": "-0.01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        assert after.interest_rate == orig_rate
+
+    def test_params_update_payment_day_zero(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payment day 0 is rejected by Range(min=1) validator."""
+        acct = _create_auto_loan_account(seed_user, db.session)
+        orig = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        orig_day = orig.payment_day
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/auto-loan/params",
+            data={
+                "current_principal": "25000.00",
+                "interest_rate": "0.05000",
+                "payment_day": "0",
+            },
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        assert after.payment_day == orig_day
+
+    def test_params_update_payment_day_32(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payment day 32 is rejected by Range(max=31) validator."""
+        acct = _create_auto_loan_account(seed_user, db.session)
+        orig = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        orig_day = orig.payment_day
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/auto-loan/params",
+            data={
+                "current_principal": "25000.00",
+                "interest_rate": "0.05000",
+                "payment_day": "32",
+            },
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        assert after.payment_day == orig_day
+
+    def test_params_update_non_numeric_principal(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Non-numeric principal is rejected and DB unchanged."""
+        acct = _create_auto_loan_account(seed_user, db.session)
+        orig = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        orig_principal = orig.current_principal
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/auto-loan/params",
+            data={
+                "current_principal": "abc",
+                "interest_rate": "0.05000",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        assert after.current_principal == orig_principal
+
+    def test_params_update_nonexistent_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST to nonexistent account redirects with flash."""
+        resp = auth_client.post(
+            "/accounts/999999/auto-loan/params",
+            data={
+                "current_principal": "20000.00",
+                "interest_rate": "0.04000",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Auto loan account not found." in resp2.data
+
+    def test_params_update_wrong_account_type(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST auto loan params to checking account is rejected."""
+        checking_acct = seed_user["account"]
+        resp = auth_client.post(
+            f"/accounts/{checking_acct.id}/auto-loan/params",
+            data={
+                "current_principal": "20000.00",
+                "interest_rate": "0.04000",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+        # _load_auto_loan_account returns (None, None) for wrong type.
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Auto loan account not found." in resp2.data
+
+    def test_create_params_already_configured(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST setup when params already exist redirects with info flash."""
+        acct = _create_auto_loan_account(seed_user, db.session)
+        orig = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        orig_principal = orig.current_principal
+        orig_rate = orig.interest_rate
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/auto-loan/setup",
+            data={
+                "original_principal": "99999.00",
+                "current_principal": "99999.00",
+                "interest_rate": "0.99000",
+                "term_months": "12",
+                "origination_date": "2025-01-01",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert "/auto-loan" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Auto loan parameters already configured." in resp2.data
+
+        # Verify original params are unchanged.
+        db.session.expire_all()
+        after = db.session.query(AutoLoanParams).filter_by(account_id=acct.id).one()
+        assert after.current_principal == orig_principal
+        assert after.interest_rate == orig_rate
+
+
 class TestCreateAutoLoanAccount:
     """Test creating an auto loan account redirects correctly."""
 

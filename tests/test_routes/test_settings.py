@@ -261,3 +261,150 @@ class TestSettingsDashboard:
             resp = auth_client.get("/settings?section=security")
             assert resp.status_code == 200
             assert b"Change Password" in resp.data
+
+
+# ── Negative Path Tests ─────────────────────────────────────────────
+
+
+class TestSettingsNegativePaths:
+    """Tests for settings validation gaps, IDOR, and edge cases."""
+
+    def test_grid_account_idor(self, app, auth_client, seed_user, second_user):
+        """Setting grid account to another user's account is rejected."""
+        with app.app_context():
+            other_acct_id = second_user["account"].id
+
+            resp = auth_client.post("/settings", data={
+                "default_grid_account_id": str(other_acct_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid grid account." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.default_grid_account_id != other_acct_id
+
+    def test_grid_account_deactivated_account_rejected(self, app, auth_client, seed_user):
+        """Setting grid account to a deactivated account is rejected."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            # Re-fetch in current session so the modification is tracked.
+            account = db.session.get(Account, acct_id)
+            account.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post("/settings", data={
+                "default_grid_account_id": str(acct_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid grid account." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.default_grid_account_id is None
+
+    def test_grid_account_non_numeric_id(self, app, auth_client, seed_user):
+        """Non-numeric grid account ID triggers ValueError and flashes error."""
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "default_grid_account_id": "abc",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid grid account." in resp.data
+
+    def test_negative_grid_periods(self, app, auth_client, seed_user):
+        """Negative grid periods rejected by server-side range check."""
+        with app.app_context():
+            original = seed_user["settings"].grid_default_periods
+
+            resp = auth_client.post("/settings", data={
+                "grid_default_periods": "-5",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Grid periods must be between 1 and 52." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.grid_default_periods == original
+
+    def test_zero_grid_periods(self, app, auth_client, seed_user):
+        """Zero grid periods rejected by server-side range check."""
+        with app.app_context():
+            original = seed_user["settings"].grid_default_periods
+
+            resp = auth_client.post("/settings", data={
+                "grid_default_periods": "0",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Grid periods must be between 1 and 52." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.grid_default_periods == original
+
+    def test_extreme_grid_periods(self, app, auth_client, seed_user):
+        """Extreme grid periods rejected by server-side range check."""
+        with app.app_context():
+            original = seed_user["settings"].grid_default_periods
+
+            resp = auth_client.post("/settings", data={
+                "grid_default_periods": "99999",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Grid periods must be between 1 and 52." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.grid_default_periods == original
+
+    def test_negative_inflation_rate(self, app, auth_client, seed_user):
+        """Negative inflation rate rejected by server-side range check."""
+        with app.app_context():
+            original = seed_user["settings"].default_inflation_rate
+
+            resp = auth_client.post("/settings", data={
+                "default_inflation_rate": "-0.05",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Inflation rate must be between 0 and 1." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.default_inflation_rate == original
+
+    def test_negative_low_balance_threshold(self, app, auth_client, seed_user):
+        """Negative low balance threshold rejected by server-side range check."""
+        with app.app_context():
+            original = seed_user["settings"].low_balance_threshold
+
+            resp = auth_client.post("/settings", data={
+                "low_balance_threshold": "-100",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Low balance threshold cannot be negative." in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.low_balance_threshold == original

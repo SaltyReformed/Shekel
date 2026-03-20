@@ -40,6 +40,15 @@ def create_category():
 
     data = _create_schema.load(request.form)
 
+    # Strip whitespace — the schema allows it through Length(min=1).
+    data["group_name"] = data["group_name"].strip()
+    data["item_name"] = data["item_name"].strip()
+    if not data["group_name"] or not data["item_name"]:
+        if request.headers.get("HX-Request"):
+            return jsonify(errors={"_schema": ["Category names cannot be blank."]}), 400
+        flash("Category names cannot be blank.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
+
     # Check for duplicates.
     existing = (
         db.session.query(Category)

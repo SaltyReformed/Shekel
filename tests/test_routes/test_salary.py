@@ -847,3 +847,270 @@ class TestTaxConfig:
 
             assert response.status_code == 200
             assert b"Please correct the highlighted errors" in response.data
+
+
+# ── Helpers for Negative-Path Tests ───────────────────────────────
+
+
+def _create_second_user_salary_profile(second_user_data):
+    """Create a salary profile for the second_user fixture (IDOR testing).
+
+    Mirrors _create_other_user_profile() but reuses the second_user
+    fixture data instead of creating a new user.
+
+    Args:
+        second_user_data: Dict from the second_user conftest fixture.
+
+    Returns:
+        SalaryProfile: the created profile.
+    """
+    filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+    income_type = db.session.query(TransactionType).filter_by(name="income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+
+    cat = (
+        db.session.query(Category)
+        .filter_by(
+            user_id=second_user_data["user"].id,
+            group_name="Income",
+            item_name="Salary",
+        )
+        .first()
+    )
+    if not cat:
+        cat = Category(
+            user_id=second_user_data["user"].id,
+            group_name="Income",
+            item_name="Salary",
+        )
+        db.session.add(cat)
+        db.session.flush()
+
+    rule = RecurrenceRule(
+        user_id=second_user_data["user"].id,
+        pattern_id=every_period.id,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    template = TransactionTemplate(
+        user_id=second_user_data["user"].id,
+        account_id=second_user_data["account"].id,
+        category_id=cat.id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=income_type.id,
+        name="Other Job",
+        default_amount=Decimal("60000.00") / 26,
+        is_active=True,
+    )
+    db.session.add(template)
+    db.session.flush()
+
+    profile = SalaryProfile(
+        user_id=second_user_data["user"].id,
+        scenario_id=second_user_data["scenario"].id,
+        template_id=template.id,
+        filing_status_id=filing_status.id,
+        name="Other Job",
+        annual_salary=Decimal("60000.00"),
+        state_code="NC",
+        pay_periods_per_year=26,
+    )
+    db.session.add(profile)
+    db.session.commit()
+    return profile
+
+
+# ── Negative Paths ────────────────────────────────────────────────
+
+
+class TestSalaryNegativePaths:
+    """Negative-path tests: nonexistent IDs, IDOR on raises/deductions/views."""
+
+    def test_edit_nonexistent_profile(self, app, auth_client, seed_user):
+        """GET /salary/999999/edit for a nonexistent profile redirects with flash."""
+        with app.app_context():
+            resp = auth_client.get("/salary/999999/edit", follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+
+    def test_update_nonexistent_profile(self, app, auth_client, seed_user):
+        """POST /salary/999999 for a nonexistent profile redirects with flash."""
+        with app.app_context():
+            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+
+            resp = auth_client.post("/salary/999999", data={
+                "name": "Ghost",
+                "annual_salary": "50000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+
+    def test_delete_nonexistent_profile(self, app, auth_client, seed_user):
+        """POST /salary/999999/delete for a nonexistent profile redirects with flash."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/salary/999999/delete", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+
+    def test_add_raise_to_other_users_profile_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /salary/<id>/raises for another user's profile is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            resp = auth_client.post(
+                f"/salary/{other_profile.id}/raises",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "7",
+                    "effective_year": "2026",
+                    "percentage": "3.0000",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+
+            # Verify no raise was created for the other user's profile.
+            raise_count = db.session.query(SalaryRaise).filter_by(
+                salary_profile_id=other_profile.id,
+            ).count()
+            assert raise_count == 0
+
+    def test_add_deduction_to_other_users_profile_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /salary/<id>/deductions for another user's profile is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            resp = auth_client.post(
+                f"/salary/{other_profile.id}/deductions",
+                data={
+                    "name": "Sneaky 401k",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+
+            # Verify no deduction was created for the other user's profile.
+            ded_count = db.session.query(PaycheckDeduction).filter_by(
+                salary_profile_id=other_profile.id,
+            ).count()
+            assert ded_count == 0
+
+    def test_delete_raise_from_other_users_profile_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /salary/raises/<id>/delete for another user's raise is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=other_profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=7,
+                effective_year=2026,
+                percentage=Decimal("0.0300"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+            raise_id = salary_raise.id
+
+            resp = auth_client.post(
+                f"/salary/raises/{raise_id}/delete",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Not authorized." in resp.data
+
+            # Verify raise still exists in DB.
+            db.session.expire_all()
+            refreshed = db.session.get(SalaryRaise, raise_id)
+            assert refreshed is not None
+
+    def test_delete_deduction_from_other_users_profile_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /salary/deductions/<id>/delete for another user's deduction is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=other_profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Other 401k",
+                amount=Decimal("100.0000"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+            ded_id = deduction.id
+
+            resp = auth_client.post(
+                f"/salary/deductions/{ded_id}/delete",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Not authorized." in resp.data
+
+            # Verify deduction still exists in DB.
+            db.session.expire_all()
+            refreshed = db.session.get(PaycheckDeduction, ded_id)
+            assert refreshed is not None
+
+    def test_view_other_users_breakdown_idor(
+        self, app, auth_client, seed_user, seed_periods, second_user
+    ):
+        """GET /salary/<id>/breakdown for another user's profile is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+
+            resp = auth_client.get(
+                f"/salary/{other_profile.id}/breakdown",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data
+            # No sensitive data from the other user's profile should leak.
+            assert b"Other Job" not in resp.data
+
+    def test_view_other_users_projection_idor(
+        self, app, auth_client, seed_user, seed_periods, second_user
+    ):
+        """GET /salary/<id>/projection for another user's profile is blocked."""
+        with app.app_context():
+            other_profile = _create_second_user_salary_profile(second_user)
+
+            resp = auth_client.get(
+                f"/salary/{other_profile.id}/projection",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Salary profile not found." in resp.data

@@ -9,6 +9,9 @@ user's transactions.
 from datetime import date
 from decimal import Decimal
 
+import pytest
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
 from app.extensions import db
 from app.models.user import User, UserSettings
 from app.models.account import Account
@@ -274,6 +277,142 @@ class TestCreateOwnership:
                 "scenario_id": seed_user["scenario"].id,
             })
             assert resp.status_code == 404
+
+    def test_create_with_other_users_scenario_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions with another user's scenario_id is accepted (missing check)."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            resp = auth_client.post("/transactions", data={
+                "name": "Sneaky Scenario",
+                "estimated_amount": "100.00",
+                "pay_period_id": seed_periods[0].id,
+                "scenario_id": other["scenario"].id,  # Other user's scenario
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+            })
+            # BUG: create_transaction does not verify scenario_id belongs to
+            # current_user. The transaction is created under the other user's
+            # scenario, making it invisible in the creator's baseline grid
+            # and polluting the victim's scenario data.
+            assert resp.status_code == 201
+
+            txn = db.session.query(Transaction).filter_by(
+                name="Sneaky Scenario"
+            ).one()
+            assert txn.scenario_id == other["scenario"].id
+
+    def test_inline_create_with_other_users_scenario_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions/inline with another user's scenario_id is accepted (missing check)."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            resp = auth_client.post("/transactions/inline", data={
+                "estimated_amount": "75.00",
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "pay_period_id": seed_periods[0].id,
+                "transaction_type_id": expense_type.id,
+                "scenario_id": other["scenario"].id,  # Other user's scenario
+            })
+            # BUG: create_inline does not verify scenario_id belongs to
+            # current_user. Same ownership gap as create_transaction.
+            assert resp.status_code == 201
+
+            txn = db.session.query(Transaction).filter_by(
+                scenario_id=other["scenario"].id,
+                estimated_amount=Decimal("75.00"),
+            ).one()
+            assert txn.scenario_id == other["scenario"].id
+
+    def test_create_with_nonexistent_pay_period_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions with nonexistent pay_period_id returns 404."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            resp = auth_client.post("/transactions", data={
+                "name": "Ghost Period",
+                "estimated_amount": "100.00",
+                "pay_period_id": 999999,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+            })
+            assert resp.status_code == 404
+            assert b"Pay period not found" in resp.data
+
+            # Verify no transaction was created.
+            count = db.session.query(Transaction).filter_by(
+                name="Ghost Period"
+            ).count()
+            assert count == 0
+
+    def test_create_with_nonexistent_category_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions with nonexistent category_id raises unhandled DB error."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            # BUG: create_transaction does not validate category_id existence
+            # or ownership. The DB FK constraint catches the invalid reference.
+            # With TESTING=True, the IntegrityError propagates as an exception
+            # (in production this would be a 500 Internal Server Error).
+            with pytest.raises(SAIntegrityError):
+                auth_client.post("/transactions", data={
+                    "name": "Ghost Category",
+                    "estimated_amount": "100.00",
+                    "pay_period_id": seed_periods[0].id,
+                    "scenario_id": seed_user["scenario"].id,
+                    "category_id": 999999,
+                    "transaction_type_id": expense_type.id,
+                })
+
+            db.session.rollback()  # Clear the failed DB transaction
+
+            count = db.session.query(Transaction).filter_by(
+                name="Ghost Category"
+            ).count()
+            assert count == 0
+
+    def test_inline_create_with_nonexistent_period(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions/inline with nonexistent pay_period_id returns 404."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            resp = auth_client.post("/transactions/inline", data={
+                "estimated_amount": "50.00",
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "pay_period_id": 999999,
+                "transaction_type_id": expense_type.id,
+                "scenario_id": seed_user["scenario"].id,
+            })
+            # Inline route checks category first (passes), then period (404).
+            assert resp.status_code == 404
+
+            count = db.session.query(Transaction).filter_by(
+                pay_period_id=999999
+            ).count()
+            assert count == 0
 
 
 class TestCarryForwardOwnership:

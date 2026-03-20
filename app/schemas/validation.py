@@ -82,7 +82,7 @@ class TemplateCreateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    default_amount = fields.Decimal(required=True, places=2, as_string=True)
+    default_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     category_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
     account_id = fields.Integer(required=True)
@@ -111,7 +111,7 @@ class TemplateUpdateSchema(TemplateCreateSchema):
 
     # Override — all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
-    default_amount = fields.Decimal(places=2, as_string=True)
+    default_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     category_id = fields.Integer()
     transaction_type_id = fields.Integer()
     account_id = fields.Integer()
@@ -423,6 +423,7 @@ class SavingsGoalUpdateSchema(BaseSchema):
     def strip_empty_strings(self, data, **kwargs):
         return {k: v for k, v in data.items() if v != ""}
 
+    account_id = fields.Integer()
     name = fields.String(validate=validate.Length(min=1, max=100))
     target_amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)

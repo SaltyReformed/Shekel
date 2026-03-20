@@ -133,21 +133,25 @@ shekel/
 │   ├── config.py                # Dev / Test / Prod configuration
 │   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager, Limiter
 │   ├── exceptions.py            # Domain-specific exceptions
-│   ├── models/                  # SQLAlchemy models (22 files, 5 PG schemas)
-│   ├── routes/                  # Flask Blueprints (17 route modules)
+│   ├── models/                  # SQLAlchemy models (23 files, 5 PG schemas)
+│   ├── routes/                  # Flask Blueprints (19 route modules)
 │   ├── services/                # Business logic (22 service modules)
 │   ├── schemas/                 # Marshmallow validation
 │   ├── utils/                   # Logging config, structured log events
-│   ├── templates/               # Jinja2 HTML templates (~85 files)
-│   └── static/                  # CSS, JS (14 chart/grid scripts), images
+│   ├── templates/               # Jinja2 HTML templates (~90 files)
+│   └── static/                  # CSS, JS (16 chart/grid scripts), images
 ├── migrations/                  # Alembic database migrations (15 versions)
 ├── monitoring/                  # Promtail config and Grafana/Loki runbook
+├── nginx/                       # Nginx reverse proxy configuration
+├── cloudflared/                 # Cloudflare Tunnel configuration
+├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite (913 tests)
+├── tests/                       # pytest test suite (1242 test functions)
 ├── docs/                        # Plans, progress tracking, runbooks
-├── docker-compose.yml           # Production Docker Compose
+├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
 ├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
 ├── Dockerfile                   # Multi-stage production container
+├── gunicorn.conf.py             # Gunicorn WSGI server configuration
 ├── entrypoint.sh                # Container startup (DB init, migrate, seed)
 ├── requirements.txt             # Python dependencies
 └── run.py                       # Entry point
@@ -169,26 +173,28 @@ The core interaction loop the app supports:
 
 ---
 
-## Phase Roadmap
+## Build Status
 
-Last evaluated: 2026-03-15
+Last evaluated: 2026-03-20
 
-| Phase | Status         | Description                                                               |
-| ----- | -------------- | ------------------------------------------------------------------------- |
-| 1     | Complete       | Core budget grid -- templates, recurrence, balance calc, status workflow  |
-| 2     | Complete       | Paycheck calculator -- salary, raises, deductions, federal/state/FICA    |
-| 3     | Deferred       | Scenarios -- clone, compare, what-if analysis                            |
-| 4     | Complete       | Accounts & transfers -- HYSA, mortgage, auto loan, savings goals         |
-| 5     | Complete       | Investments & retirement -- 401(k), IRA, pensions, gap analysis          |
-| 6     | Complete       | Visualization -- charts dashboard, interactive sliders, Chart.js theming |
-| 7     | Not Started    | Smart features -- rolling averages, inflation adjustment                 |
-| 8A    | Complete       | Security hardening -- MFA/TOTP, rate limiting, session mgmt, error pages |
-| 8B    | Complete       | Audit & structured logging -- PG triggers, JSON logs, Promtail config    |
-| 8C    | Complete       | Backups & DR -- pg_dump, retention, restore, integrity checks, runbook   |
-| 8D    | Partial        | Production deployment -- Docker done, Nginx/Cloudflare/CI remaining      |
-| 8E    | Not Started    | Multi-user groundwork                                                    |
-| UI/UX | Complete       | Remediation -- nav restructure, settings consolidation, visual polish    |
+| Phase | Name                           | Status      | Notes                                            |
+| ----- | ------------------------------ | ----------- | ------------------------------------------------ |
+| 1     | Replace the Spreadsheet        | Complete    | Grid, templates, recurrence, balance, status     |
+| 2     | Paycheck Calculator            | Complete    | Salary, raises, deductions, federal/state/FICA   |
+| 3     | HYSA & Accounts Reorganization | Complete    | HYSA interest, category grouping, account dashboard |
+| 4     | Debt Accounts                  | Complete    | Mortgage (fixed+ARM), auto loan, escrow, payoff  |
+| 5     | Investments & Retirement       | Complete    | 401(k), IRA, pension, growth engine, gap analysis |
+| 6     | Visualization                  | Complete    | Charts dashboard, interactive sliders, theming   |
+| 7     | Scenarios                      | Deferred    | Model stub exists; clone/compare not built       |
+| 8A    | Security Hardening             | Complete    | MFA/TOTP, rate limiting, session mgmt, CSP       |
+| 8B    | Audit & Structured Logging     | Complete    | PG triggers on 22 tables, JSON logs, Promtail    |
+| 8C    | Backups & Disaster Recovery    | Complete    | pg_dump, retention, restore, integrity checks    |
+| 8D    | Production Deployment          | Complete    | Docker, Nginx, Cloudflare Tunnel, CI, deploy.sh  |
+| 8E    | Multi-User Groundwork          | Complete    | Registration, user_id audit, data isolation tests |
+| UI/UX | Remediation                    | Complete    | Nav restructure, settings consolidation, polish  |
 
-**Test suite:** 913 tests passing (+ 3 performance benchmarks run separately)
+**Status key:** Complete | In Progress | Not Started | Deferred
+
+**Test suite:** 1242 test functions (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.

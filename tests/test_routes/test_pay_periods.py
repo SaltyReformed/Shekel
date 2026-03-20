@@ -110,3 +110,116 @@ class TestPayPeriodGenerate:
             ).count()
             # Should still be 5, not 10 (duplicates skipped).
             assert second_count == 5
+
+
+# ── Negative Path Tests ─────────────────────────────────────────────
+
+
+class TestPayPeriodNegativePaths:
+    """Tests for pay period generation validation and edge cases."""
+
+    def test_generate_invalid_date_format(self, app, auth_client, seed_user):
+        """Non-date string for start_date returns 422 with validation error."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "not-a-date",
+                "num_periods": "10",
+                "cadence_days": "14",
+            })
+            assert resp.status_code == 422
+            assert b"Start Date" in resp.data
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_negative_num_periods(self, app, auth_client, seed_user):
+        """Negative num_periods returns 422 (Range min=1 on schema)."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-01-02",
+                "num_periods": "-5",
+                "cadence_days": "14",
+            })
+            assert resp.status_code == 422
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_zero_num_periods(self, app, auth_client, seed_user):
+        """Zero num_periods returns 422 (Range min=1 on schema)."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-01-02",
+                "num_periods": "0",
+                "cadence_days": "14",
+            })
+            assert resp.status_code == 422
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_extremely_large_num_periods(self, app, auth_client, seed_user):
+        """num_periods exceeding max=260 returns 422 validation error."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-01-02",
+                "num_periods": "999999",
+                "cadence_days": "14",
+            })
+            # PayPeriodGenerateSchema has Range(min=1, max=260) on num_periods.
+            assert resp.status_code == 422
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_negative_cadence_days(self, app, auth_client, seed_user):
+        """Negative cadence_days returns 422 (Range min=1 on schema)."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-01-02",
+                "num_periods": "10",
+                "cadence_days": "-1",
+            })
+            assert resp.status_code == 422
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_missing_all_fields(self, app, auth_client, seed_user):
+        """Empty form data returns 422 with required field errors."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={})
+            assert resp.status_code == 422
+            # start_date is the only truly required field
+            # (num_periods and cadence_days have load_defaults).
+            assert b"Start Date" in resp.data
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_generate_cadence_zero_db_state(self, app, auth_client, seed_user):
+        """Cadence zero returns 422 and creates no pay periods in the DB."""
+        with app.app_context():
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-03-01",
+                "cadence_days": "0",
+            })
+            assert resp.status_code == 422
+            assert b"Cadence Days" in resp.data
+
+            count = db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0

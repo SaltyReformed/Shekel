@@ -172,6 +172,95 @@ class TestHysaParamsUpdate:
         )
 
 
+class TestHysaNegativePaths:
+    """Negative-path and boundary tests for HYSA routes."""
+
+    def test_params_update_invalid_apy(self, auth_client, seed_user, db):
+        """Non-numeric APY is rejected and DB is unchanged."""
+        account, params = _create_hysa_account(seed_user, db.session)
+        orig_apy = params.apy
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/hysa/params",
+            data={"apy": "abc", "compounding_frequency": "daily"},
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(HysaParams).filter_by(account_id=account.id).one()
+        assert after.apy == orig_apy, "Invalid APY modified the DB!"
+
+    def test_params_update_negative_apy(self, auth_client, seed_user, db):
+        """Negative APY is rejected by Range(min=0) validator."""
+        account, params = _create_hysa_account(seed_user, db.session)
+        orig_apy = params.apy
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/hysa/params",
+            data={"apy": "-0.5", "compounding_frequency": "daily"},
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(HysaParams).filter_by(account_id=account.id).one()
+        assert after.apy == orig_apy, "Negative APY modified the DB!"
+
+    def test_params_update_invalid_compounding_frequency(
+        self, auth_client, seed_user, db,
+    ):
+        """Invalid compounding frequency is rejected by OneOf validator."""
+        account, params = _create_hysa_account(seed_user, db.session)
+        orig_freq = params.compounding_frequency
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/hysa/params",
+            data={"apy": "0.04500", "compounding_frequency": "bogus_value"},
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(HysaParams).filter_by(account_id=account.id).one()
+        assert after.compounding_frequency == orig_freq
+
+    def test_params_update_nonexistent_account(self, auth_client, seed_user, db):
+        """POST to nonexistent account redirects with flash."""
+        resp = auth_client.post(
+            "/accounts/999999/hysa/params",
+            data={"apy": "0.04500", "compounding_frequency": "daily"},
+        )
+        assert resp.status_code == 302
+        assert "/accounts" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Account not found." in resp2.data
+
+    def test_params_update_wrong_account_type(self, auth_client, seed_user, db):
+        """POST HYSA params to a checking account is rejected."""
+        checking_acct = seed_user["account"]
+        resp = auth_client.post(
+            f"/accounts/{checking_acct.id}/hysa/params",
+            data={"apy": "0.04500", "compounding_frequency": "daily"},
+        )
+        assert resp.status_code == 302
+        assert "/accounts" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"This account is not a HYSA." in resp2.data
+
+    def test_params_update_extremely_high_apy(self, auth_client, seed_user, db):
+        """APY > 1 (100%) is rejected by Range(max=1) validator."""
+        account, params = _create_hysa_account(seed_user, db.session)
+        orig_apy = params.apy
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/hysa/params",
+            data={"apy": "500", "compounding_frequency": "daily"},
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(HysaParams).filter_by(account_id=account.id).one()
+        assert after.apy == orig_apy, "APY > 1 should be rejected by schema"
+
+
 class TestCreateHysaAccount:
     """Creating a HYSA account auto-creates HysaParams."""
 

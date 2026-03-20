@@ -461,6 +461,182 @@ class TestPayoffSlider:
         assert b'chart_slider.js' in resp.data
 
 
+class TestMortgageNegativePaths:
+    """Negative-path and boundary tests for mortgage routes."""
+
+    def test_escrow_add_missing_name(self, auth_client, seed_user, db, seed_periods):
+        """Escrow POST without name field returns 400 and creates nothing."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={"annual_amount": "1200.00"},
+        )
+        assert resp.status_code == 400
+        assert b"Please correct" in resp.data
+
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id,
+        ).count()
+        assert count == 0
+
+    def test_escrow_add_negative_amount(self, auth_client, seed_user, db, seed_periods):
+        """Escrow POST with negative annual_amount is rejected by Range(min=0)."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={"name": "Tax", "annual_amount": "-1200.00"},
+        )
+        assert resp.status_code == 400
+        assert b"Please correct" in resp.data
+
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id,
+        ).count()
+        assert count == 0
+
+    def test_rate_change_missing_date(self, auth_client, seed_user, db, seed_periods):
+        """Rate change POST without effective_date returns 400 schema error."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
+        orig_rate = params.interest_rate
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/rate",
+            data={"interest_rate": "5.5"},
+        )
+        assert resp.status_code == 400
+        assert b"Please correct" in resp.data
+
+        # No rate history created, params unchanged.
+        history_count = db.session.query(MortgageRateHistory).filter_by(
+            account_id=acct.id,
+        ).count()
+        assert history_count == 0
+        db.session.expire_all()
+        params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
+        assert params.interest_rate == orig_rate
+
+    def test_rate_change_rate_zero(self, auth_client, seed_user, db, seed_periods):
+        """Rate change with 0% interest is valid (ARM reset to 0%)."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/rate",
+            data={"interest_rate": "0", "effective_date": "2026-06-01"},
+        )
+        assert resp.status_code == 200
+
+        db.session.expire_all()
+        params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
+        assert params.interest_rate == Decimal("0.00000")
+
+        entry = db.session.query(MortgageRateHistory).filter_by(
+            account_id=acct.id,
+        ).first()
+        assert entry is not None
+        assert entry.interest_rate == Decimal("0.00000")
+
+    def test_params_update_nonexistent_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST params to nonexistent account redirects with flash."""
+        resp = auth_client.post(
+            "/accounts/999999/mortgage/params",
+            data={
+                "current_principal": "200000.00",
+                "interest_rate": "6.0",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+        # Follow redirect to verify flash message.
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Mortgage account not found." in resp2.data
+
+    def test_rate_change_nonexistent_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Rate change POST to nonexistent account returns 404."""
+        resp = auth_client.post(
+            "/accounts/999999/mortgage/rate",
+            data={"interest_rate": "5.5", "effective_date": "2026-06-01"},
+        )
+        assert resp.status_code == 404
+        assert b"Account not found" in resp.data
+
+    def test_escrow_nonexistent_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Escrow POST to nonexistent account returns 404."""
+        resp = auth_client.post(
+            "/accounts/999999/mortgage/escrow",
+            data={"name": "Tax", "annual_amount": "3000.00"},
+        )
+        assert resp.status_code == 404
+        assert b"Account not found" in resp.data
+
+    def test_params_update_wrong_account_type(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST mortgage params to a checking account redirects with type error."""
+        checking_acct = seed_user["account"]
+        resp = auth_client.post(
+            f"/accounts/{checking_acct.id}/mortgage/params",
+            data={
+                "current_principal": "200000.00",
+                "interest_rate": "6.0",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+        # _load_mortgage_account returns (None, None) for wrong type,
+        # so route flashes "Mortgage account not found."
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Mortgage account not found." in resp2.data
+
+    def test_rate_change_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """Rate change POST to another user's mortgage returns 404 with no side effects."""
+        other_acct = _create_other_mortgage(second_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{other_acct.id}/mortgage/rate",
+            data={"interest_rate": "9.0", "effective_date": "2026-06-01"},
+        )
+        assert resp.status_code == 404
+
+        # Verify no rate history was created.
+        history_count = db.session.query(MortgageRateHistory).filter_by(
+            account_id=other_acct.id,
+        ).count()
+        assert history_count == 0
+
+        # Verify params unchanged.
+        db.session.expire_all()
+        params = db.session.query(MortgageParams).filter_by(
+            account_id=other_acct.id,
+        ).one()
+        assert params.interest_rate == Decimal("0.05000")
+
+    def test_escrow_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """Escrow POST to another user's mortgage returns 404 with no side effects."""
+        other_acct = _create_other_mortgage(second_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{other_acct.id}/mortgage/escrow",
+            data={"name": "Stolen Escrow", "annual_amount": "9999.00"},
+        )
+        assert resp.status_code == 404
+
+        # Verify no escrow component was created.
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=other_acct.id,
+        ).count()
+        assert count == 0
+
+
 class TestCreateMortgageAccount:
     """Test creating a mortgage account redirects correctly."""
 

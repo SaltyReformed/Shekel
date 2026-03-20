@@ -352,3 +352,40 @@ class TestNetPayFragment:
             )
             assert resp.status_code == 200
             assert b"No salary profiles" in resp.data
+
+
+# ── Negative Path Tests ─────────────────────────────────────────────
+
+
+class TestChartNegativePaths:
+    """Tests for chart edge cases, invalid params, and error handling."""
+
+    def test_spending_fragment_invalid_range_param(self, app, auth_client, seed_user):
+        """Invalid range param handled gracefully (no crash) by spending fragment."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/charts/spending-by-category?range=invalid_value",
+                headers={"HX-Request": "true"},
+            )
+            # Route passes unknown range to service; the broad except
+            # catches any error and returns _error_fragment(), or
+            # the service handles it gracefully and returns empty data.
+            assert resp.status_code == 200
+            assert (
+                b"No spending data" in resp.data
+                or b"Failed to load chart data" in resp.data
+                or b"chart-spending-category" in resp.data
+            )
+
+    def test_balance_fragment_with_nonexistent_account_id(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Nonexistent account_id handled gracefully by balance fragment."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/charts/balance-over-time?account_id=999999",
+                headers={"HX-Request": "true"},
+            )
+            # Service filters by user_id, so nonexistent account
+            # returns empty data or is ignored. No crash.
+            assert resp.status_code == 200

@@ -715,3 +715,161 @@ class TestGoalIdempotency:
             )
             account_ids = {g.account_id for g in all_ef_goals}
             assert account_ids == {acct.id, acct2.id}
+
+
+# ── Negative Paths ────────────────────────────────────────────────
+
+
+class TestSavingsNegativePaths:
+    """Negative-path tests: nonexistent IDs, IDOR, deactivated accounts, validation."""
+
+    def test_edit_nonexistent_goal(self, app, auth_client, seed_user):
+        """GET /savings/goals/999999/edit for a nonexistent goal redirects with flash."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/savings/goals/999999/edit", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Goal not found." in resp.data
+
+    def test_update_nonexistent_goal(self, app, auth_client, seed_user):
+        """POST /savings/goals/999999 for a nonexistent goal redirects with flash."""
+        with app.app_context():
+            resp = auth_client.post("/savings/goals/999999", data={
+                "name": "Ghost Goal",
+                "target_amount": "5000.00",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Goal not found." in resp.data
+
+    def test_delete_nonexistent_goal(self, app, auth_client, seed_user):
+        """POST /savings/goals/999999/delete for a nonexistent goal redirects with flash."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/savings/goals/999999/delete", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Goal not found." in resp.data
+
+    def test_create_goal_on_deactivated_account(self, app, auth_client, seed_user):
+        """POST /savings/goals with account_id of a deactivated account is rejected."""
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+            acct.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post("/savings/goals", data={
+                "account_id": acct.id,
+                "name": "Deactivated Test",
+                "target_amount": "5000.00",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid account." in resp.data
+
+            # Verify no goal was created.
+            goal = db.session.query(SavingsGoal).filter_by(
+                name="Deactivated Test",
+            ).first()
+            assert goal is None
+
+    def test_update_goal_account_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /savings/goals/<id> with another user's account_id is rejected."""
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+            goal = _create_goal(seed_user, acct)
+            original_account_id = goal.account_id
+
+            resp = auth_client.post(f"/savings/goals/{goal.id}", data={
+                "account_id": str(second_user["account"].id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid account." in resp.data
+
+            # Verify goal's account_id was NOT changed.
+            db.session.expire_all()
+            refreshed = db.session.get(SavingsGoal, goal.id)
+            assert refreshed.account_id == original_account_id, (
+                "Goal's account_id must not change to another user's account"
+            )
+
+    def test_delete_other_users_goal_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /savings/goals/<id>/delete for another user's goal is blocked."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            other_acct = Account(
+                user_id=second_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Other Savings",
+                current_anchor_balance=Decimal("2000.00"),
+            )
+            db.session.add(other_acct)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=second_user["user"].id,
+                account_id=other_acct.id,
+                name="Other Goal",
+                target_amount=Decimal("5000.00"),
+            )
+            db.session.add(goal)
+            db.session.commit()
+            goal_id = goal.id
+
+            resp = auth_client.post(
+                f"/savings/goals/{goal_id}/delete",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Goal not found." in resp.data
+
+            # Verify goal still exists and is active.
+            db.session.expire_all()
+            refreshed = db.session.get(SavingsGoal, goal_id)
+            assert refreshed is not None
+            assert refreshed.is_active is True
+
+    def test_create_goal_missing_required_fields(self, app, auth_client, seed_user):
+        """POST /savings/goals with empty form data fails validation and creates no record."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/savings/goals", data={}, follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+            # Verify no goal was created.
+            count = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_create_goal_negative_target_amount(self, app, auth_client, seed_user):
+        """POST /savings/goals with negative target_amount fails schema validation."""
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+
+            resp = auth_client.post("/savings/goals", data={
+                "account_id": acct.id,
+                "name": "Bad Goal",
+                "target_amount": "-1000.00",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+            # Verify no goal was created.
+            count = db.session.query(SavingsGoal).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0

@@ -584,3 +584,162 @@ class TestAccountTypes:
 
             # Type should still exist.
             assert db.session.get(AccountType, checking_type.id) is not None
+
+
+# ── Negative Paths ────────────────────────────────────────────────
+
+
+class TestAccountNegativePaths:
+    """Negative-path tests: nonexistent IDs, IDOR, idempotent ops, validation, XSS."""
+
+    def test_edit_nonexistent_account(self, app, auth_client, seed_user):
+        """GET /accounts/999999/edit for a nonexistent account redirects with flash."""
+        with app.app_context():
+            resp = auth_client.get("/accounts/999999/edit", follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Account not found." in resp.data
+
+    def test_update_nonexistent_account(self, app, auth_client, seed_user):
+        """POST /accounts/999999 for a nonexistent account redirects with flash."""
+        with app.app_context():
+            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+
+            resp = auth_client.post("/accounts/999999", data={
+                "name": "Ghost",
+                "account_type_id": checking_type.id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Account not found." in resp.data
+
+    def test_deactivate_nonexistent_account(self, app, auth_client, seed_user):
+        """POST /accounts/999999/delete for a nonexistent account redirects with flash."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/accounts/999999/delete", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Account not found." in resp.data
+
+    def test_reactivate_other_users_account_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /accounts/<id>/reactivate for another user's deactivated account is blocked."""
+        with app.app_context():
+            # Re-query to ensure the object is in the current session.
+            acct_id = second_user["account"].id
+            other_acct = db.session.get(Account, acct_id)
+            other_acct.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/accounts/{acct_id}/reactivate",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Account not found." in resp.data
+
+            # Verify DB state unchanged: account still inactive.
+            db.session.expire_all()
+            refreshed = db.session.get(Account, acct_id)
+            assert refreshed.is_active is False
+
+    def test_deactivate_already_inactive_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/delete on an already-inactive account is idempotent."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+            # First deactivation via the route.
+            resp1 = auth_client.post(
+                f"/accounts/{account_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp1.status_code == 200
+            assert b"deactivated" in resp1.data
+
+            # Second deactivation — account is already inactive.
+            resp2 = auth_client.post(
+                f"/accounts/{account_id}/delete",
+                follow_redirects=True,
+            )
+
+            # Route does not guard against double-deactivate; it sets
+            # is_active=False and commits. This is idempotent behavior.
+            assert resp2.status_code == 200
+            assert b"deactivated" in resp2.data
+
+            db.session.expire_all()
+            refreshed = db.session.get(Account, account_id)
+            assert refreshed.is_active is False
+
+    def test_reactivate_already_active_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/reactivate on an already-active account is idempotent."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+            # Account starts active (default from seed). Reactivate anyway.
+            resp = auth_client.post(
+                f"/accounts/{account_id}/reactivate",
+                follow_redirects=True,
+            )
+
+            # Route does not guard against reactivating an already-active
+            # account; it sets is_active=True and commits.
+            assert resp.status_code == 200
+            assert b"reactivated" in resp.data
+
+            db.session.expire_all()
+            refreshed = db.session.get(Account, account_id)
+            assert refreshed.is_active is True
+
+    def test_create_account_missing_name(self, app, auth_client, seed_user):
+        """POST /accounts with missing name field fails schema validation and creates no record."""
+        with app.app_context():
+            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+
+            resp = auth_client.post("/accounts", data={
+                "account_type_id": checking_type.id,
+                "anchor_balance": "500.00",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+            # Verify no extra account was created (seed_user has exactly 1).
+            count = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 1
+
+    def test_create_account_xss_in_name(self, app, auth_client, seed_user):
+        """POST /accounts with script tag in name is stored but Jinja2 auto-escapes on render."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+
+            # Schema accepts the name (no character restrictions, 32 chars < 100 max).
+            resp = auth_client.post("/accounts", data={
+                "name": "<script>alert(1)</script>",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "0",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+
+            # Verify account was created in DB.
+            acct = (
+                db.session.query(Account)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    name="<script>alert(1)</script>",
+                )
+                .one()
+            )
+            assert acct is not None
+
+            # Verify the XSS payload does not appear unescaped in the response.
+            assert b"<script>alert(1)</script>" not in resp.data
+            # Verify the escaped form is present (Jinja2 auto-escaping).
+            assert b"&lt;script&gt;" in resp.data

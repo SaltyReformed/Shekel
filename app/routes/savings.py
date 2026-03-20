@@ -489,9 +489,9 @@ def create_goal():
 
     data = _create_schema.load(request.form)
 
-    # Validate account ownership.
+    # Validate account ownership and active status.
     acct = db.session.get(Account, data.get("account_id"))
-    if not acct or acct.user_id != current_user.id:
+    if not acct or acct.user_id != current_user.id or not acct.is_active:
         flash("Invalid account.", "danger")
         return redirect(url_for("savings.new_goal"))
 

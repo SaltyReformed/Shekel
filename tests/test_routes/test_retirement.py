@@ -519,3 +519,259 @@ class TestGapAnalysisFragment:
         assert resp.status_code == 200
         # Gap analysis table always contains income gap row.
         assert b"Monthly Income Gap" in resp.data
+
+
+class TestRetirementNegativePaths:
+    """Negative-path and boundary tests for retirement routes."""
+
+    def test_create_pension_missing_name(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Pension POST without name is rejected by schema (required field)."""
+        resp = auth_client.post("/retirement/pension", data={
+            "benefit_multiplier": "2.0",
+            "consecutive_high_years": "4",
+            "hire_date": "2020-01-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct the highlighted errors" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_missing_hire_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Pension POST without hire_date is rejected (required field)."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "State Pension",
+            "benefit_multiplier": "2.0",
+            "consecutive_high_years": "4",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct the highlighted errors" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_negative_multiplier(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Pension POST with negative benefit_multiplier is rejected by Range(min=0, min_inclusive=False)."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Bad Pension",
+            "benefit_multiplier": "-0.01",
+            "consecutive_high_years": "4",
+            "hire_date": "2020-01-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct the highlighted errors" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_edit_nonexistent_pension(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET edit for nonexistent pension redirects with flash."""
+        resp = auth_client.get("/retirement/pension/999999/edit")
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Pension profile not found." in resp2.data
+
+    def test_update_nonexistent_pension(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST update for nonexistent pension redirects with flash."""
+        resp = auth_client.post("/retirement/pension/999999", data={
+            "name": "Ghost",
+            "benefit_multiplier": "2.0",
+            "hire_date": "2020-01-01",
+        })
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Pension profile not found." in resp2.data
+
+    def test_delete_nonexistent_pension(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST delete for nonexistent pension redirects with flash."""
+        resp = auth_client.post("/retirement/pension/999999/delete")
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers.get("Location", "")
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Pension profile not found." in resp2.data
+
+    def test_edit_pension_idor_no_data_leaked(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """IDOR GET to edit pension does not leak victim's pension data."""
+        pension = PensionProfile(
+            user_id=second_user["user"].id,
+            name="Secret Pension",
+            benefit_multiplier=Decimal("0.02500"),
+            consecutive_high_years=4,
+            hire_date=date(2020, 1, 1),
+        )
+        db.session.add(pension)
+        db.session.commit()
+
+        resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
+        assert resp.status_code == 302
+        assert b"Secret Pension" not in resp.data
+        assert b"0.02500" not in resp.data
+
+    def test_update_settings_invalid_swr(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Non-numeric SWR is handled gracefully; original value preserved."""
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        orig_swr = settings.safe_withdrawal_rate
+
+        # The route's try/except passes on conversion failure, leaving "abc"
+        # as-is. The schema then rejects it as not a valid Decimal.
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "abc",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after.safe_withdrawal_rate == orig_swr
+
+    def test_update_settings_negative_swr(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Negative SWR as percentage: -5 converts to -0.05, rejected by Range(min=0)."""
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        orig_swr = settings.safe_withdrawal_rate
+
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "-5",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after.safe_withdrawal_rate == orig_swr
+
+    def test_update_settings_zero_swr(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """SWR of 0% converts to 0.00, which is valid per Range(min=0)."""
+        # 0 / 100 = 0.00, which passes Range(min=0, max=1).
+        # The gap calculator would need to handle division by zero separately.
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "0",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # 0 / 100 = 0.0000
+        assert settings.safe_withdrawal_rate == Decimal("0.0000")
+
+    def test_update_settings_invalid_tax_rate(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Non-numeric tax rate is handled; original value preserved."""
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        orig_tax = settings.estimated_retirement_tax_rate
+
+        resp = auth_client.post("/retirement/settings", data={
+            "estimated_retirement_tax_rate": "abc",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after.estimated_retirement_tax_rate == orig_tax
+
+    def test_update_settings_tax_rate_over_100(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Tax rate 150% converts to 1.50, rejected by Range(max=1)."""
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        orig_tax = settings.estimated_retirement_tax_rate
+
+        resp = auth_client.post("/retirement/settings", data={
+            "estimated_retirement_tax_rate": "150",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after.estimated_retirement_tax_rate == orig_tax
+
+    def test_update_settings_invalid_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Non-date retirement date is rejected; original date preserved."""
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        orig_date = settings.planned_retirement_date
+
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": "not-a-date",
+        })
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after.planned_retirement_date == orig_date
+
+    def test_create_pension_login_required(self, client, db):
+        """Unauthenticated POST to create pension redirects to login."""
+        resp = client.post("/retirement/pension", data={
+            "name": "Sneaky",
+            "benefit_multiplier": "2.0",
+            "hire_date": "2020-01-01",
+        })
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_update_settings_login_required(self, client, db):
+        """Unauthenticated POST to update settings redirects to login."""
+        resp = client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "4",
+        })
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_gap_analysis_login_required(self, client, db):
+        """Unauthenticated GET to gap analysis redirects to login."""
+        resp = client.get("/retirement/gap")
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]

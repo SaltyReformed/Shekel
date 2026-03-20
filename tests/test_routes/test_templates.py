@@ -548,3 +548,212 @@ class TestPreviewRecurrence:
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
+
+
+# ── Negative Path Tests ─────────────────────────────────────────────
+
+
+class TestTemplateNegativePaths:
+    """Tests for template edge cases, validation gaps, and idempotent operations."""
+
+    def test_delete_already_deactivated_template(self, app, auth_client, seed_user, seed_periods):
+        """Deleting an already-deactivated template is idempotent."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="every_period")
+            template.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template.id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"deactivated" in resp.data
+            # No projected transactions exist, so 0 are soft-deleted.
+            assert b"0 projected transaction(s) removed" in resp.data
+
+            db.session.refresh(template)
+            assert template.is_active is False
+            # NOTE: delete_template is idempotent -- no guard against
+            # deactivating an already-inactive template.
+
+    def test_reactivate_already_active_template(self, app, auth_client, seed_user, seed_periods):
+        """Reactivating an already-active template is idempotent."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="every_period")
+            assert template.is_active is True
+
+            resp = auth_client.post(
+                f"/templates/{template.id}/reactivate",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"reactivated" in resp.data
+            # No soft-deleted transactions to restore.
+            assert b"0 projected transaction(s) restored" in resp.data
+
+            db.session.refresh(template)
+            assert template.is_active is True
+            # NOTE: reactivate is idempotent -- no guard against
+            # reactivating an already-active template.
+
+    def test_create_template_missing_name(self, app, auth_client, seed_user):
+        """Creating a template without name fails schema validation."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "default_amount": "100.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors and try again." in resp.data
+
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_create_template_missing_category(self, app, auth_client, seed_user):
+        """Creating a template without category_id fails schema validation."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+            resp = auth_client.post("/templates", data={
+                "name": "No Category Template",
+                "default_amount": "100.00",
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors and try again." in resp.data
+
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_create_template_negative_amount(self, app, auth_client, seed_user):
+        """Negative amount rejected by schema Range(min=0) validator."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "Negative Test",
+                "default_amount": "-100.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors and try again." in resp.data
+
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id, name="Negative Test",
+            ).count()
+            assert count == 0
+
+    def test_edit_nonexistent_template(self, app, auth_client, seed_user):
+        """GET /templates/999999/edit for missing template redirects with flash."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/templates/999999/edit",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Recurring transaction not found." in resp.data
+
+    def test_update_nonexistent_template(self, app, auth_client, seed_user):
+        """POST /templates/999999 for missing template redirects with flash."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/templates/999999",
+                data={"name": "Ghost"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Recurring transaction not found." in resp.data
+
+    def test_create_template_xss_in_name(self, app, auth_client, seed_user):
+        """XSS payload in template name is escaped by Jinja2 auto-escaping."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "<script>alert(1)</script>",
+                "default_amount": "100.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+
+            # Verify template was created with the XSS payload.
+            template = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id,
+                name="<script>alert(1)</script>",
+            ).first()
+            assert template is not None
+
+            # Jinja2 auto-escaping prevents raw script tags in output.
+            assert b"<script>alert(1)</script>" not in resp.data
+            assert b"&lt;script&gt;" in resp.data
+
+    def test_create_template_with_other_users_category_idor(
+        self, app, auth_client, seed_user, second_user,
+    ):
+        """Template creation with another user's category is rejected and DB unchanged."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            other_cat = second_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "IDOR Category Test",
+                "default_amount": "100.00",
+                "category_id": other_cat.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid category." in resp.data
+
+            # Verify no template was created.
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id, name="IDOR Category Test",
+            ).count()
+            assert count == 0
+
+    def test_create_template_with_other_users_account_idor(
+        self, app, auth_client, seed_user, second_user,
+    ):
+        """Template creation with another user's account is rejected and DB unchanged."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "IDOR Account Test",
+                "default_amount": "100.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": second_user["account"].id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid account." in resp.data
+
+            # Verify no template was created.
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id, name="IDOR Account Test",
+            ).count()
+            assert count == 0

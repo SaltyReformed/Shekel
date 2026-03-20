@@ -770,3 +770,252 @@ class TestAdHoc:
             assert count == 2, (
                 f"Expected exactly 2 ad-hoc transfers, found {count}"
             )
+
+
+# ── Helpers for Negative-Path Tests ───────────────────────────────
+
+
+def _create_second_user_transfer(second_user_data):
+    """Create a transfer for the second_user fixture (IDOR testing).
+
+    Creates a savings account, pay periods, and a transfer instance
+    for the second user.
+
+    Args:
+        second_user_data: Dict from the second_user conftest fixture.
+
+    Returns:
+        Transfer: the created transfer.
+    """
+    from datetime import date as _date  # pylint: disable=import-outside-toplevel
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings = Account(
+        user_id=second_user_data["user"].id,
+        account_type_id=savings_type.id,
+        name="Other Savings",
+        current_anchor_balance=Decimal("0"),
+    )
+    db.session.add(savings)
+    db.session.flush()
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=second_user_data["user"].id,
+        start_date=_date(2026, 1, 2),
+        num_periods=3,
+        cadence_days=14,
+    )
+    db.session.flush()
+
+    projected = db.session.query(Status).filter_by(name="projected").one()
+    xfer = Transfer(
+        user_id=second_user_data["user"].id,
+        from_account_id=second_user_data["account"].id,
+        to_account_id=savings.id,
+        pay_period_id=periods[0].id,
+        scenario_id=second_user_data["scenario"].id,
+        status_id=projected.id,
+        name="Other Transfer",
+        amount=Decimal("100.00"),
+    )
+    db.session.add(xfer)
+    db.session.commit()
+    return xfer
+
+
+# ── Negative Paths ────────────────────────────────────────────────
+
+
+class TestTransferNegativePaths:
+    """Negative-path tests: nonexistent IDs, IDOR, idempotent ops, validation."""
+
+    def test_update_nonexistent_transfer_instance(self, app, auth_client, seed_user):
+        """PATCH /transfers/instance/999999 for a nonexistent transfer returns 404."""
+        with app.app_context():
+            resp = auth_client.patch(
+                "/transfers/instance/999999",
+                data={"amount": "100.00"},
+            )
+
+            assert resp.status_code == 404
+
+    def test_mark_done_already_done_transfer(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transfers/instance/<id>/mark-done on an already-done transfer is idempotent."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+
+            # Set to done first.
+            done_status = db.session.query(Status).filter_by(name="done").one()
+            xfer.status_id = done_status.id
+            db.session.commit()
+
+            # Mark done again.
+            resp = auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+
+            # Route does not guard against double mark-done; it sets
+            # the same status again. This is idempotent behavior.
+            assert resp.status_code == 200
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+            db.session.refresh(xfer)
+            assert xfer.status.name == "done"
+
+    def test_cancel_already_cancelled_transfer(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transfers/instance/<id>/cancel on an already-cancelled transfer is idempotent."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+
+            # Cancel first.
+            cancelled_status = db.session.query(Status).filter_by(name="cancelled").one()
+            xfer.status_id = cancelled_status.id
+            db.session.commit()
+
+            # Cancel again.
+            resp = auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
+
+            # Route does not guard against double cancel; it sets
+            # the same status again. This is idempotent behavior.
+            assert resp.status_code == 200
+
+            db.session.refresh(xfer)
+            assert xfer.status.name == "cancelled"
+
+    def test_quick_edit_other_users_transfer_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """GET /transfers/quick-edit/<id> for another user's transfer returns 404."""
+        with app.app_context():
+            other_xfer = _create_second_user_transfer(second_user)
+
+            resp = auth_client.get(f"/transfers/quick-edit/{other_xfer.id}")
+
+            assert resp.status_code == 404
+            # No transfer data should leak.
+            assert b"Other Transfer" not in resp.data
+            assert b"100.00" not in resp.data
+
+    def test_full_edit_other_users_transfer_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """GET /transfers/<id>/full-edit for another user's transfer returns 404."""
+        with app.app_context():
+            other_xfer = _create_second_user_transfer(second_user)
+
+            resp = auth_client.get(f"/transfers/{other_xfer.id}/full-edit")
+
+            assert resp.status_code == 404
+
+    def test_mark_done_other_users_transfer_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /transfers/instance/<id>/mark-done for another user's transfer returns 404."""
+        with app.app_context():
+            other_xfer = _create_second_user_transfer(second_user)
+            original_status_id = other_xfer.status_id
+
+            resp = auth_client.post(
+                f"/transfers/instance/{other_xfer.id}/mark-done"
+            )
+
+            assert resp.status_code == 404
+
+            # Verify DB state unchanged.
+            db.session.expire_all()
+            refreshed = db.session.get(Transfer, other_xfer.id)
+            assert refreshed.status_id == original_status_id
+
+    def test_cancel_other_users_transfer_idor(
+        self, app, auth_client, seed_user, second_user
+    ):
+        """POST /transfers/instance/<id>/cancel for another user's transfer returns 404."""
+        with app.app_context():
+            other_xfer = _create_second_user_transfer(second_user)
+            original_status_id = other_xfer.status_id
+
+            resp = auth_client.post(
+                f"/transfers/instance/{other_xfer.id}/cancel"
+            )
+
+            assert resp.status_code == 404
+
+            # Verify DB state unchanged.
+            db.session.expire_all()
+            refreshed = db.session.get(Transfer, other_xfer.id)
+            assert refreshed.status_id == original_status_id
+
+    def test_create_template_with_missing_accounts(self, app, auth_client, seed_user):
+        """POST /transfers with empty from/to accounts fails schema validation."""
+        with app.app_context():
+            resp = auth_client.post("/transfers", data={
+                "name": "Bad Transfer",
+                "default_amount": "100.00",
+                "from_account_id": "",
+                "to_account_id": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+            # Verify no template was created.
+            count = db.session.query(TransferTemplate).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_create_ad_hoc_with_zero_amount(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transfers/ad-hoc with amount=0.00 fails validation (must be > 0)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            resp = auth_client.post("/transfers/ad-hoc", data={
+                "pay_period_id": seed_periods[0].id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "0.00",
+                "scenario_id": seed_user["scenario"].id,
+            })
+
+            # TransferCreateSchema requires amount > 0 (min_inclusive=False).
+            assert resp.status_code == 400
+            body = resp.get_json()
+            assert "errors" in body
+
+            # Verify no transfer was created.
+            count = db.session.query(Transfer).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0
+
+    def test_create_ad_hoc_with_negative_amount(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transfers/ad-hoc with negative amount fails schema validation."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            resp = auth_client.post("/transfers/ad-hoc", data={
+                "pay_period_id": seed_periods[0].id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "-100.00",
+                "scenario_id": seed_user["scenario"].id,
+            })
+
+            assert resp.status_code == 400
+            body = resp.get_json()
+            assert "errors" in body
+
+            # Verify no transfer was created.
+            count = db.session.query(Transfer).filter_by(
+                user_id=seed_user["user"].id,
+            ).count()
+            assert count == 0

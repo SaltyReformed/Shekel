@@ -144,28 +144,40 @@ def update():
     grid_periods = request.form.get("grid_default_periods")
     if grid_periods:
         try:
-            settings.grid_default_periods = int(grid_periods)
+            val = int(grid_periods)
         except (ValueError, TypeError):
             flash("Invalid number for grid periods.", "danger")
             return redirect(url_for("settings.show", section="general"))
+        if val < 1 or val > 52:
+            flash("Grid periods must be between 1 and 52.", "danger")
+            return redirect(url_for("settings.show", section="general"))
+        settings.grid_default_periods = val
 
     # Update default inflation rate.
     inflation = request.form.get("default_inflation_rate")
     if inflation:
         try:
-            settings.default_inflation_rate = Decimal(inflation)
+            val = Decimal(inflation)
         except (InvalidOperation, ValueError, ArithmeticError):
             flash("Invalid inflation rate.", "danger")
             return redirect(url_for("settings.show", section="general"))
+        if val < 0 or val > 1:
+            flash("Inflation rate must be between 0 and 1.", "danger")
+            return redirect(url_for("settings.show", section="general"))
+        settings.default_inflation_rate = val
 
     # Update low balance threshold.
     low_bal = request.form.get("low_balance_threshold")
     if low_bal:
         try:
-            settings.low_balance_threshold = int(low_bal)
+            val = int(low_bal)
         except (ValueError, TypeError):
             flash("Invalid number for low balance threshold.", "danger")
             return redirect(url_for("settings.show", section="general"))
+        if val < 0:
+            flash("Low balance threshold cannot be negative.", "danger")
+            return redirect(url_for("settings.show", section="general"))
+        settings.low_balance_threshold = val
 
     # Update default grid account.
     grid_acct_raw = request.form.get("default_grid_account_id", "")
