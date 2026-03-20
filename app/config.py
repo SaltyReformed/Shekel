@@ -68,8 +68,11 @@ class TestConfig(BaseConfig):
     # NullPool closes connections immediately after use — no pooling.
     # Prevents stale/leaked connections from holding locks that block
     # TRUNCATE between tests.
+    # connect_timeout: fail fast (5s) if test-db is unreachable instead
+    # of waiting for the OS TCP timeout (120+ seconds).
     SQLALCHEMY_ENGINE_OPTIONS = {
         "poolclass": NullPool,
+        "connect_args": {"connect_timeout": 5},
     }
 
 

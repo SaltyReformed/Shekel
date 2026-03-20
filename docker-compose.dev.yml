@@ -45,11 +45,16 @@ services:
     volumes:
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     # Kill zombie transactions from crashed test runs after 30s,
-    # and keep TCP connections alive so the OS detects dead clients.
+    # prevent infinite lock/statement waits, and keep TCP connections
+    # alive so the OS detects dead clients.
     command:
       - postgres
       - -c
       - idle_in_transaction_session_timeout=30000
+      - -c
+      - lock_timeout=10000
+      - -c
+      - statement_timeout=30000
       - -c
       - tcp_keepalives_idle=60
       - -c

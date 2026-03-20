@@ -118,6 +118,10 @@ def db(app, setup_database):
     interfere with each other.  Reference tables are preserved.
     """
     with app.app_context():
+        # Clear any stale transaction state from a prior test that
+        # raised an exception without committing or rolling back.
+        _db.session.rollback()
+
         # Truncate budget and auth tables (order matters for FK constraints).
         _db.session.execute(_db.text(
             "TRUNCATE TABLE "
