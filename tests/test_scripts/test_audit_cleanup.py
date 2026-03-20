@@ -83,3 +83,38 @@ class TestAuditCleanup:
         """execute_cleanup() on an empty audit_log table returns 0."""
         deleted = execute_cleanup(db.session, days=365, dry_run=False)
         assert deleted == 0
+
+    def test_cleanup_negative_days(self, app, db):
+        """execute_cleanup(days=-1) deletes ALL rows.
+
+        # BUG: A negative days value creates a future cutoff in PostgreSQL:
+        # now() - make_interval(days => -1) = now() + 1 day.
+        # The WHERE clause becomes executed_at < (now + 1 day), which matches
+        # every existing row.  Negative days should be rejected or treated
+        # as zero to prevent accidental deletion of the entire audit log.
+        """
+        _insert_audit_row(days_ago=30)
+        _insert_audit_row(days_ago=0)
+        _insert_audit_row(days_ago=1)
+        db.session.commit()
+
+        deleted = execute_cleanup(db.session, days=-1, dry_run=False)
+        # Negative days shifts the cutoff into the future, deleting everything.
+        assert deleted == 3
+        assert _audit_count() == 0
+
+    def test_cleanup_does_not_affect_recent_records(self, app, db):
+        """execute_cleanup(days=30) preserves records newer than 30 days.
+
+        Seeds 4 rows: 2 old (60 days), 1 recent (15 days), 1 today.
+        Only the 2 old rows should be deleted.
+        """
+        _insert_audit_row(days_ago=60)
+        _insert_audit_row(days_ago=60)
+        _insert_audit_row(days_ago=15)
+        _insert_audit_row(days_ago=0)
+        db.session.commit()
+
+        deleted = execute_cleanup(db.session, days=30, dry_run=False)
+        assert deleted == 2
+        assert _audit_count() == 2

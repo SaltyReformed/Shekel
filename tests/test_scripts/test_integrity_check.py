@@ -153,6 +153,55 @@ class TestReferentialIntegrity:
             "SET session_replication_role = 'origin'"
         ))
 
+    def test_fk02_detects_account_with_invalid_type(self, app, db, seed_user):
+        """FK-02: Accounts with invalid account_type_id."""
+        db.session.execute(db.text(
+            "SET session_replication_role = 'replica'"
+        ))
+        db.session.execute(db.text("""
+            INSERT INTO budget.accounts
+                (user_id, account_type_id, name, current_anchor_balance)
+            VALUES (:uid, 99999, 'Bad Type Account', 100.00)
+        """), {"uid": seed_user["user"].id})
+        db.session.flush()
+
+        results = check_referential_integrity(db.session)
+        fk02 = next(r for r in results if r.check_id == "FK-02")
+        assert not fk02.passed
+        assert fk02.detail_count == 1
+        # Verify the detail identifies the offending row.
+        assert fk02.details[0]["name"] == "Bad Type Account"
+        assert fk02.details[0]["account_type_id"] == 99999
+
+        db.session.execute(db.text(
+            "SET session_replication_role = 'origin'"
+        ))
+
+    def test_fk03_detects_account_with_missing_anchor_period(
+        self, app, db, seed_user
+    ):
+        """FK-03: Accounts pointing to nonexistent anchor period."""
+        db.session.execute(db.text(
+            "SET session_replication_role = 'replica'"
+        ))
+        # Point the seed account to a nonexistent pay period.
+        db.session.execute(db.text("""
+            UPDATE budget.accounts
+            SET current_anchor_period_id = 99999
+            WHERE id = :aid
+        """), {"aid": seed_user["account"].id})
+        db.session.flush()
+
+        results = check_referential_integrity(db.session)
+        fk03 = next(r for r in results if r.check_id == "FK-03")
+        assert not fk03.passed
+        assert fk03.detail_count == 1
+        assert fk03.details[0]["id"] == seed_user["account"].id
+
+        db.session.execute(db.text(
+            "SET session_replication_role = 'origin'"
+        ))
+
 
 # ── Orphan Detection ─────────────────────────────────────────────
 
@@ -201,6 +250,30 @@ class TestOrphanDetection:
         # seed_user creates 5 categories (Salary, Rent, Car Payment, Groceries, Payback)
         # none referenced by any template or transaction
         assert or03.detail_count == 5
+
+    def test_or01_detects_orphaned_template(self, app, db, seed_user):
+        """OR-01: Template with no recurrence rule and no transactions."""
+        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        category = list(seed_user["categories"].values())[0]
+
+        # Create a template with no recurrence_rule_id and no transactions.
+        orphan_template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=category.id,
+            transaction_type_id=txn_type.id,
+            name="Orphaned Template",
+            default_amount=Decimal("50.00"),
+            recurrence_rule_id=None,
+        )
+        db.session.add(orphan_template)
+        db.session.flush()
+
+        results = check_orphaned_records(db.session)
+        or01 = next(r for r in results if r.check_id == "OR-01")
+        assert not or01.passed
+        assert or01.detail_count == 1
+        assert or01.details[0]["name"] == "Orphaned Template"
 
     def test_or06_detects_goal_on_inactive_account(self, app, db, seed_user):
         """OR-06 flags a savings goal on an inactive account."""
@@ -270,6 +343,65 @@ class TestBalanceAnomalies:
         ba03 = next(r for r in results if r.check_id == "BA-03")
         assert not ba03.passed
         assert ba03.detail_count == 1  # 1 gap at index 2
+
+    def test_ba02_detects_anchor_beyond_last_period(self, app, db, seed_user):
+        """BA-02: Anchor period is beyond the last pay period for the user.
+
+        The check joins accounts -> pay_periods (via anchor_period_id) and
+        compares the anchor period's index to the max period_index for the
+        account's user.  To trigger it, we create a period owned by a
+        different (fake) user with a high index and point the real
+        account's anchor to it — bypassing FK constraints via replica mode.
+        """
+        user = seed_user["user"]
+        account = seed_user["account"]
+
+        # Create normal periods for this user so max_idx is well-defined.
+        for idx, (start, end) in enumerate([
+            (date(2026, 1, 2), date(2026, 1, 15)),
+            (date(2026, 1, 16), date(2026, 1, 29)),
+            (date(2026, 1, 30), date(2026, 2, 12)),
+        ]):
+            pp = PayPeriod(
+                user_id=user.id,
+                start_date=start,
+                end_date=end,
+                period_index=idx,
+            )
+            db.session.add(pp)
+        db.session.flush()
+
+        # Use replica mode to bypass FK/CHECK constraints.
+        db.session.execute(db.text(
+            "SET session_replication_role = 'replica'"
+        ))
+        # Create a fake period with a very high index owned by a nonexistent user.
+        db.session.execute(db.text("""
+            INSERT INTO budget.pay_periods
+                (user_id, start_date, end_date, period_index)
+            VALUES (99999, '2030-01-01', '2030-01-14', 999)
+        """))
+        fake_period_id = db.session.execute(
+            db.text("SELECT id FROM budget.pay_periods WHERE period_index = 999")
+        ).scalar()
+
+        # Point the account's anchor to this high-index period.
+        db.session.execute(db.text("""
+            UPDATE budget.accounts
+            SET current_anchor_period_id = :pid
+            WHERE id = :aid
+        """), {"pid": fake_period_id, "aid": account.id})
+        db.session.flush()
+
+        results = check_balance_anomalies(db.session)
+        ba02 = next(r for r in results if r.check_id == "BA-02")
+        assert not ba02.passed
+        assert ba02.detail_count == 1
+        assert ba02.details[0]["id"] == account.id
+
+        db.session.execute(db.text(
+            "SET session_replication_role = 'origin'"
+        ))
 
     def test_ba04_detects_date_overlap(self, app, db, seed_user):
         """BA-04 detects overlapping pay period date ranges."""
@@ -341,6 +473,52 @@ class TestDataConsistency:
         dc01 = next(r for r in results if r.check_id == "DC-01")
         assert not dc01.passed
         assert dc01.detail_count == 1  # 1 done txn without actual_amount
+
+    def test_dc02_detects_self_transfer(self, app, db, seed_user, seed_periods):
+        """DC-02: Transfers where from_account equals to_account.
+
+        The Transfer model has a CHECK constraint (ck_transfers_different_accounts)
+        preventing this at the DB level.  We temporarily drop the constraint,
+        insert the anomaly, run the check, then restore it.
+        """
+        account = seed_user["account"]
+        status_projected = db.session.query(Status).filter_by(name="projected").one()
+
+        # Drop the CHECK constraint so we can insert a self-transfer.
+        db.session.execute(db.text(
+            "ALTER TABLE budget.transfers "
+            "DROP CONSTRAINT ck_transfers_different_accounts"
+        ))
+        try:
+            db.session.execute(db.text("""
+                INSERT INTO budget.transfers
+                    (user_id, pay_period_id, scenario_id, status_id,
+                     from_account_id, to_account_id, name, amount,
+                     is_override, is_deleted)
+                VALUES (:uid, :pid, :sid, :stid, :aid, :aid,
+                        'Self Transfer', 100.00, FALSE, FALSE)
+            """), {
+                "uid": seed_user["user"].id,
+                "pid": seed_periods[0].id,
+                "sid": seed_user["scenario"].id,
+                "stid": status_projected.id,
+                "aid": account.id,
+            })
+            db.session.flush()
+
+            results = check_data_consistency(db.session)
+            dc02 = next(r for r in results if r.check_id == "DC-02")
+            assert not dc02.passed
+            assert dc02.detail_count == 1
+            assert dc02.details[0]["from_account_id"] == account.id
+            assert dc02.details[0]["to_account_id"] == account.id
+        finally:
+            # Restore the CHECK constraint.
+            db.session.execute(db.text(
+                "ALTER TABLE budget.transfers "
+                "ADD CONSTRAINT ck_transfers_different_accounts "
+                "CHECK (from_account_id != to_account_id) NOT VALID"
+            ))
 
     def test_dc05_detects_active_template_inactive_account(
         self, app, db, seed_user
@@ -509,3 +687,24 @@ class TestRunAllChecks:
             f"Unexpected critical failures: "
             f"{[(r.check_id, r.description) for r in critical]}"
         )
+
+    def test_clean_database_zero_critical_anomalies(
+        self, app, db, seed_user, seed_periods
+    ):
+        """All checks on a clean seeded database report zero critical anomalies.
+
+        This is a regression guard: if a future schema change introduces a
+        latent integrity issue, this test catches it immediately.
+        """
+        results = run_all_checks(db.session)
+        critical_failures = [
+            r for r in results
+            if not r.passed and r.severity == "critical"
+        ]
+        assert len(critical_failures) == 0, (
+            f"Critical anomalies on clean DB: "
+            f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
+        )
+        # Total check count should cover all 4 categories:
+        # 13 FK + 6 OR + 5 BA + 9 DC = 33 checks.
+        assert len(results) == 33

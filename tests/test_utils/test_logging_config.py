@@ -46,57 +46,29 @@ class TestRequestDurationLogLevel:
         assert summaries[-1].event == "request_complete"
 
     def test_slow_request_logs_at_warning(self, app, client, monkeypatch):
-        """Requests over the threshold are logged at WARNING level."""
-        # Set threshold to 0ms so every request is "slow".
-        monkeypatch.setenv("SLOW_REQUEST_THRESHOLD_MS", "0")
-        # We need a fresh app to pick up the new threshold, but the
-        # threshold is read at setup_logging() time. Instead, patch the
-        # closure variable directly on the app's after_request function.
-        # Simpler approach: just verify the logic by checking that the
-        # _log_request_summary code path works — set threshold to 0
-        # on the module-level captured variable.
-        import app.utils.logging_config as lc  # pylint: disable=import-outside-toplevel
-        original = lc.setup_logging  # noqa: F841 — keep reference
+        """Requests exceeding SLOW_REQUEST_THRESHOLD_MS log at WARNING level.
 
-        # Directly patch the threshold in the app's closure.
-        # The after_request functions are stored in app.after_request_funcs.
-        # Instead of that complexity, create a fresh test app.
+        The after_request hook in logging_config reads the threshold at
+        setup_logging() time.  To test the WARNING path, we create a fresh
+        app with the threshold set to 0ms so every request qualifies.
+        """
         from app import create_app  # pylint: disable=import-outside-toplevel
-        test_app = create_app("testing")
-        with test_app.app_context():
-            # Patch the slow_threshold_ms in the closure.
-            # The simplest approach: just test with the default threshold
-            # and verify fast requests are DEBUG (done above).
-            # For WARNING, we verify the code path by checking the event
-            # name when we simulate a slow request.
-            pass
 
-        # Alternative: verify via direct function testing that the logic
-        # is correct by checking the event field on a real request where
-        # we can control timing. Since we can't easily make a request
-        # slow, we'll test with threshold=0 by creating a new app.
         monkeypatch.setenv("SLOW_REQUEST_THRESHOLD_MS", "0")
         slow_app = create_app("testing")
         slow_client = slow_app.test_client()
-        with slow_app.app_context():
-            # Ensure schemas and tables exist for the test DB.
-            for schema_name in ("ref", "auth", "budget", "salary", "system"):
-                db.session.execute(
-                    db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-                )
-            db.session.commit()
 
         with _capture_log("app.utils.logging_config") as records:
             slow_client.get("/login")
+
         summaries = [r for r in records if hasattr(r, "event")]
         assert len(summaries) >= 1
         assert summaries[-1].levelno == logging.WARNING
         assert summaries[-1].event == "slow_request"
 
-        # Dispose engines from secondary apps to release connections.
-        for secondary_app in (test_app, slow_app):
-            with secondary_app.app_context():
-                db.engine.dispose()
+        # Release connections from the secondary app.
+        with slow_app.app_context():
+            db.engine.dispose()
 
 
 class TestRequestLogFields:
@@ -108,7 +80,8 @@ class TestRequestLogFields:
             client.get("/login")
         summaries = [r for r in records if hasattr(r, "event")]
         assert len(summaries) >= 1
-        assert hasattr(summaries[-1], "remote_addr")
+        # Test client always connects from localhost.
+        assert summaries[-1].remote_addr == "127.0.0.1"
 
     def test_log_includes_user_id_when_authenticated(
         self, app, auth_client, seed_user
