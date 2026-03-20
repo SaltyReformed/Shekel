@@ -89,8 +89,7 @@
 
       <div class="mb-3">
         <label for="recurrence_pattern" class="form-label">Pattern</label>
-        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
-                onchange="toggleRecurrenceFields(this.value)">
+        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select">
           <option value="">None (one-time / manual)</option>
           {% for p in patterns %}
           <option value="{{ p.name }}"
@@ -143,7 +142,8 @@
         </div>
         {% endif %}
 
-        <div id="recurrence-preview" class="mt-2 mb-3">
+        <div id="recurrence-preview" class="mt-2 mb-3"
+             data-preview-url="{{ url_for('templates.preview_recurrence') }}">
           <small class="text-muted">Select a pattern to see upcoming dates</small>
         </div>
       </div>
@@ -171,80 +171,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-// Show/hide recurrence sub-fields based on pattern selection.
-function toggleRecurrenceFields(pattern) {
-  const container = document.getElementById('recurrence-fields');
-  const interval = document.getElementById('field-interval');
-  const dom = document.getElementById('field-dom');
-  const moy = document.getElementById('field-moy');
-  const startPeriod = document.getElementById('field-start-period');
-  const preview = document.getElementById('recurrence-preview');
-
-  if (!pattern) {
-    container.classList.add('d-none');
-    return;
-  }
-  container.classList.remove('d-none');
-
-  // Show/hide based on pattern type.
-  interval.classList.toggle('d-none', pattern !== 'every_n_periods');
-  dom.classList.toggle('d-none', !['monthly', 'quarterly', 'semi_annual', 'annual'].includes(pattern));
-  moy.classList.toggle('d-none', !['quarterly', 'semi_annual', 'annual'].includes(pattern));
-
-  if (startPeriod) {
-    startPeriod.classList.toggle('d-none', pattern === 'once');
-  }
-
-  // Refresh preview.
-  fetchPreview();
-}
-
-// HTMX-style preview using fetch.
-function fetchPreview() {
-  const preview = document.getElementById('recurrence-preview');
-  if (!preview) return;
-
-  const pattern = document.getElementById('recurrence_pattern').value;
-  if (!pattern || pattern === 'once') {
-    preview.innerHTML = '<small class="text-muted">Select a pattern to see upcoming dates</small>';
-    return;
-  }
-
-  const params = new URLSearchParams();
-  params.set('recurrence_pattern', pattern);
-
-  const intervalEl = document.getElementById('interval_n');
-  if (intervalEl && intervalEl.value) params.set('interval_n', intervalEl.value);
-
-  const domEl = document.getElementById('day_of_month');
-  if (domEl && domEl.value) params.set('day_of_month', domEl.value);
-
-  const moyEl = document.getElementById('month_of_year');
-  if (moyEl && moyEl.value) params.set('month_of_year', moyEl.value);
-
-  const spEl = document.querySelector('[name="start_period_id"]');
-  if (spEl && spEl.value) params.set('start_period_id', spEl.value);
-
-  fetch('{{ url_for("templates.preview_recurrence") }}?' + params.toString())
-    .then(r => r.text())
-    .then(html => { preview.innerHTML = html; })
-    .catch(() => { preview.innerHTML = '<small class="text-muted">Could not load preview</small>'; });
-}
-
-// Initialize on page load.
-const patternSelect = document.getElementById('recurrence_pattern');
-if (patternSelect) {
-  toggleRecurrenceFields(patternSelect.value);
-
-  // Listen for changes on all recurrence sub-fields.
-  patternSelect.addEventListener('change', function() { toggleRecurrenceFields(this.value); });
-  for (const id of ['interval_n', 'day_of_month', 'month_of_year']) {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', fetchPreview);
-  }
-  const spEl = document.querySelector('[name="start_period_id"]');
-  if (spEl) spEl.addEventListener('change', fetchPreview);
-}
-</script>
+<script src="{{ url_for('static', filename='js/recurrence_form.js') }}"></script>
 {% endblock %}

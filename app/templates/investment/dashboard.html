@@ -226,18 +226,5 @@
 <script src="{{ url_for('static', filename='js/growth_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
 {% endif %}
-<script>
-(function() {
-  var typeSelect = document.querySelector('select[name="employer_contribution_type"]');
-  var container = document.getElementById('employer-fields-container');
-  if (!typeSelect || !container) return;
-
-  function toggle() {
-    container.style.display = (!typeSelect.value || typeSelect.value === 'none') ? 'none' : '';
-  }
-
-  typeSelect.addEventListener('change', toggle);
-  toggle();
-})();
-</script>
+<script src="{{ url_for('static', filename='js/investment_form.js') }}"></script>
 {% endblock %}

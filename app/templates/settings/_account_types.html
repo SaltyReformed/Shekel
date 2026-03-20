@@ -9,10 +9,7 @@
             class="d-flex align-items-center flex-grow-1 me-2 account-type-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="text" name="name" value="{{ at.name }}" class="form-control form-control-sm border-0 bg-transparent"
-               aria-label="Account type name"
-               onfocus="this.classList.remove('bg-transparent', 'border-0')"
-               onblur="if(!this.form._changed){this.classList.add('bg-transparent', 'border-0')}"
-               oninput="this.form._changed=true">
+               aria-label="Account type name">
         <button type="submit" class="btn btn-sm btn-outline-primary ms-1 d-none save-type-btn"
                 aria-label="Save">
           <i class="bi bi-check"></i>
@@ -52,14 +49,4 @@
   </div>
 </div>
 
-<script>
-// Show the save button when the inline account type name input changes.
-document.querySelectorAll('.account-type-form').forEach(function(form) {
-  var input = form.querySelector('input[name="name"]');
-  var btn = form.querySelector('.save-type-btn');
-  var original = input.value;
-  input.addEventListener('input', function() {
-    btn.classList.toggle('d-none', input.value === original);
-  });
-});
-</script>
+<script src="{{ url_for('static', filename='js/account_types.js') }}"></script>

@@ -27,12 +27,6 @@
         data-standard='{{ chart_standard|tojson }}'
         data-accelerated='{{ chart_accelerated|tojson }}'
         style="max-height: 300px;"></canvas>
-<script>
-  // Re-render chart after HTMX swap.
-  if (typeof renderPayoffChart === 'function') {
-    renderPayoffChart('payoff-chart-results');
-  }
-</script>
 {% endif %}
 {% elif mode == "target_date" %}
 {% if required_extra is none %}

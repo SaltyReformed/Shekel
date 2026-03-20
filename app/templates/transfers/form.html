@@ -83,8 +83,7 @@
 
       <div class="mb-3">
         <label for="recurrence_pattern" class="form-label">Pattern</label>
-        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
-                onchange="toggleRecurrenceFields(this.value)">
+        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select">
           <option value="">None (one-time / manual)</option>
           {% for p in patterns %}
           <option value="{{ p.name }}"
@@ -161,33 +160,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-function toggleRecurrenceFields(pattern) {
-  const container = document.getElementById('recurrence-fields');
-  const interval = document.getElementById('field-interval');
-  const dom = document.getElementById('field-dom');
-  const moy = document.getElementById('field-moy');
-  const startPeriod = document.getElementById('field-start-period');
-
-  if (!pattern) {
-    container.classList.add('d-none');
-    return;
-  }
-  container.classList.remove('d-none');
-
-  interval.classList.toggle('d-none', pattern !== 'every_n_periods');
-  dom.classList.toggle('d-none', !['monthly', 'quarterly', 'semi_annual', 'annual'].includes(pattern));
-  moy.classList.toggle('d-none', !['quarterly', 'semi_annual', 'annual'].includes(pattern));
-
-  if (startPeriod) {
-    startPeriod.classList.toggle('d-none', pattern === 'once');
-  }
-}
-
-const patternSelect = document.getElementById('recurrence_pattern');
-if (patternSelect) {
-  toggleRecurrenceFields(patternSelect.value);
-  patternSelect.addEventListener('change', function() { toggleRecurrenceFields(this.value); });
-}
-</script>
+<script src="{{ url_for('static', filename='js/recurrence_form.js') }}"></script>
 {% endblock %}
