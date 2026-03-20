@@ -258,6 +258,8 @@ def verify_password(plain_password, password_hash):
     Returns:
         True if the password matches, False otherwise.
     """
+    if plain_password is None:
+        return False
     return bcrypt.checkpw(
         plain_password.encode("utf-8"),
         password_hash.encode("utf-8"),

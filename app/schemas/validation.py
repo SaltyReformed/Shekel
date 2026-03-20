@@ -283,12 +283,25 @@ class FicaConfigSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     tax_year = fields.Integer(required=True)
-    ss_rate = fields.Decimal(required=True, places=4, as_string=True)
-    ss_wage_base = fields.Decimal(required=True, places=2, as_string=True)
-    medicare_rate = fields.Decimal(required=True, places=4, as_string=True)
-    medicare_surtax_rate = fields.Decimal(required=True, places=4, as_string=True)
+    ss_rate = fields.Decimal(
+        required=True, places=4, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    ss_wage_base = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    medicare_rate = fields.Decimal(
+        required=True, places=4, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    medicare_surtax_rate = fields.Decimal(
+        required=True, places=4, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
     medicare_surtax_threshold = fields.Decimal(
-        required=True, places=2, as_string=True
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
     )
 
 

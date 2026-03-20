@@ -480,3 +480,126 @@ class TestRegisterUser:
             ).all()
             assert len(state_configs) == 1
             assert state_configs[0].state_code == "NC"
+
+
+class TestNegativeAndBoundaryPaths:
+    """Negative-path and boundary-condition tests for auth service functions.
+
+    Covers: empty/long passwords, None inputs to authenticate, password
+    change boundary conditions, and bcrypt truncation behavior.
+    """
+
+    def test_hash_password_empty_string(self):
+        """Hashing an empty string returns a valid bcrypt hash.
+
+        An empty password should not crash the hashing layer. Whether the app
+        should allow empty passwords is a route-level validation concern, not
+        a service-level one.
+        """
+        hashed = auth_service.hash_password("")
+        assert hashed.startswith("$2b$")
+        assert len(hashed) == 60
+
+        # Round-trip verification.
+        assert auth_service.verify_password("", hashed) is True
+
+    def test_hash_password_long_bcrypt_limit(self):
+        """bcrypt silently truncates passwords at 72 bytes.
+
+        A 73-character password and the same password truncated to 72
+        characters both verify against the same hash, because bcrypt only
+        processes the first 72 bytes.
+        If the app ever accepts very long passwords without its own length
+        validation, two different passwords could authenticate to the same account.
+        """
+        long_password = "a" * 73  # One byte over bcrypt's 72-byte limit.
+        hashed = auth_service.hash_password(long_password)
+
+        assert hashed.startswith("$2b$")
+        assert len(hashed) == 60
+
+        # Full 73-char password verifies.
+        assert auth_service.verify_password(long_password, hashed) is True
+
+        # bcrypt silently truncates passwords at 72 bytes. Bytes 73+ are ignored.
+        # This means a 73-char and a 72-char password that share the first 72
+        # chars are equivalent.
+        assert auth_service.verify_password(long_password[:72], hashed) is True
+
+    def test_authenticate_none_email(self, app, db, seed_user):
+        """Authenticating with None email raises AuthError, not a TypeError.
+
+        A malformed request could pass None. The service must raise AuthError,
+        not an AttributeError or TypeError. filter_by(email=None) returns None
+        (no user with email=None), which triggers the generic error.
+        """
+        with app.app_context():
+            with pytest.raises(AuthError, match="Invalid email or password"):
+                auth_service.authenticate(None, "testpass")
+
+    def test_authenticate_none_password(self, app, db, seed_user):
+        """Authenticating with None password raises AuthError, not AttributeError.
+
+        verify_password() guards against None input by returning False,
+        which causes authenticate() to raise AuthError normally.
+        """
+        with app.app_context():
+            with pytest.raises(AuthError, match="Invalid email or password"):
+                auth_service.authenticate("test@shekel.local", None)
+
+    def test_change_password_new_equals_old(self, app, db, seed_user):
+        """Changing to the same password succeeds — no password-history enforcement.
+
+        The service does not prevent changing to the same password. This is a
+        UX concern, not a security one. bcrypt generates a new salt each time,
+        so the hash differs even though the password is identical.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            # First change to a valid-length password.
+            auth_service.change_password(user, "testpass", "validpass1234")
+            db.session.flush()
+            old_hash = user.password_hash
+
+            # Now change to the same password.
+            auth_service.change_password(user, "validpass1234", "validpass1234")
+            db.session.flush()
+
+            # The hash changed (new salt) even though the password is the same.
+            assert user.password_hash != old_hash
+            assert auth_service.verify_password("validpass1234", user.password_hash) is True
+
+    def test_change_password_exactly_12_characters(self, app, db, seed_user):
+        """A new password of exactly 12 characters passes the length check.
+
+        Off-by-one on the minimum length is a classic validation bug. The
+        guard is ``len(new_password) < 12``, so exactly 12 should pass.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            # "exactly12chr" is exactly 12 characters.
+            auth_service.change_password(user, "testpass", "exactly12chr")
+            db.session.flush()
+
+            assert auth_service.verify_password("exactly12chr", user.password_hash) is True
+
+    def test_change_password_11_characters_raises(self, app, db, seed_user):
+        """A new password of 11 characters raises ValidationError.
+
+        Ensures the 12-character boundary is enforced correctly.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            with pytest.raises(ValidationError, match="at least 12 characters"):
+                auth_service.change_password(user, "testpass", "short11char")
+
+    def test_authenticate_empty_string_email(self, app, db, seed_user):
+        """Authenticating with empty-string email raises AuthError.
+
+        Empty string is different from None. Both must be handled.
+        filter_by(email='') returns None (no user with empty email), which
+        triggers the generic AuthError.
+        """
+        with app.app_context():
+            with pytest.raises(AuthError, match="Invalid email or password"):
+                auth_service.authenticate("", "testpass")

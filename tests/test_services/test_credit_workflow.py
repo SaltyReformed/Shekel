@@ -570,3 +570,205 @@ class TestCarryForward:
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate
+
+
+class TestNegativePaths:
+    """Negative-path and edge-case tests for credit workflow and carry forward.
+
+    Covers: unmark on projected transactions, double-mark idempotency,
+    carry-forward source==target, and marking done transactions as credit.
+    """
+
+    def _create_expense(self, seed_user, seed_periods, amount="100.00",
+                        status_name="projected"):
+        """Helper: create an expense in the first period with the given status."""
+        status = db.session.query(Status).filter_by(name=status_name).one()
+        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+        txn = Transaction(
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=status.id,
+            name="Test Expense",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal(amount),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_unmark_credit_on_projected_transaction(self, app, db, seed_user, seed_periods):
+        """Calling unmark_credit on a projected (never credited) transaction is a silent no-op.
+
+        The function sets status to 'projected' (which it already is), finds
+        no payback transaction to delete, and returns without error. The
+        transaction remains unchanged.
+        A user double-clicking 'unmark credit' or calling the endpoint on the
+        wrong transaction must not corrupt data.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            original_status_id = txn.status_id
+
+            # unmark_credit on a projected transaction — no exception expected.
+            credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+
+            # Status unchanged (was projected, still projected).
+            db.session.refresh(txn)
+            assert txn.status.name == "projected"
+            assert txn.status_id == original_status_id
+
+            # No payback transaction exists for this transaction.
+            payback_count = (
+                db.session.query(Transaction)
+                .filter_by(credit_payback_for_id=txn.id)
+                .count()
+            )
+            assert payback_count == 0
+
+    def test_double_mark_as_credit_returns_existing_payback(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Double-marking a transaction as credit returns the existing payback idempotently.
+
+        The function checks if the transaction's status is already 'credit'
+        and, if so, returns the existing payback rather than creating a duplicate.
+        This is critical: a duplicate payback would mean the user sees double
+        the debt repayment on their grid.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+
+            # First mark: creates the payback.
+            first_payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+            first_payback_id = first_payback.id
+
+            # Second mark: should return the existing payback, not create a new one.
+            second_payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+
+            # Same payback returned.
+            assert second_payback.id == first_payback_id
+
+            # Only one payback exists for this transaction.
+            payback_count = (
+                db.session.query(Transaction)
+                .filter_by(credit_payback_for_id=txn.id)
+                .count()
+            )
+            assert payback_count == 1
+
+    def test_carry_forward_same_period_behavior(self, app, db, seed_user, seed_periods):
+        """carry_forward with source == target returns 0 without modifying transactions.
+
+        The guard ``if source_period_id == target_period_id: return 0``
+        prevents the function from touching any transactions, which avoids
+        the previous bug of setting is_override=True on items that were not
+        actually carried forward.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+
+            # Create a template for a template-linked transaction.
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Template Expense",
+                default_amount=Decimal("50.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            # Create a template-linked transaction (is_override=False).
+            txn_with_template = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Template Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+                is_override=False,
+            )
+            # Create an ad-hoc transaction (no template).
+            txn_adhoc = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Ad-hoc Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("30.00"),
+            )
+            db.session.add_all([txn_with_template, txn_adhoc])
+            db.session.flush()
+
+            # Carry forward with source == target — early return.
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
+            )
+            db.session.flush()
+
+            # Guard returns 0 — no items processed.
+            assert count == 0
+
+            # Template-linked item is untouched (is_override stays False).
+            db.session.refresh(txn_with_template)
+            assert txn_with_template.is_override is False
+            assert txn_with_template.pay_period_id == seed_periods[0].id
+
+            # Ad-hoc item is also untouched.
+            db.session.refresh(txn_adhoc)
+            assert txn_adhoc.pay_period_id == seed_periods[0].id
+
+    def test_mark_credit_on_done_transaction(self, app, db, seed_user, seed_periods):
+        """Marking a 'done' transaction as credit raises ValidationError.
+
+        Only projected transactions can be marked as credit. A done
+        transaction (already paid) must not be retroactively put on credit,
+        which would create a phantom payback for money already spent.
+        """
+        with app.app_context():
+            txn = self._create_expense(
+                seed_user, seed_periods, status_name="done",
+            )
+
+            with pytest.raises(ValidationError, match="Only projected transactions"):
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+
+            # Status unchanged — still 'done'.
+            db.session.refresh(txn)
+            assert txn.status.name == "done"
+
+            # No payback was created.
+            payback_count = (
+                db.session.query(Transaction)
+                .filter_by(credit_payback_for_id=txn.id)
+                .count()
+            )
+            assert payback_count == 0
+
+    def test_mark_credit_on_cancelled_transaction(self, app, db, seed_user, seed_periods):
+        """Marking a 'cancelled' transaction as credit raises ValidationError.
+
+        Cancelled transactions must also be rejected by the status guard,
+        not just done transactions.
+        """
+        with app.app_context():
+            txn = self._create_expense(
+                seed_user, seed_periods, status_name="cancelled",
+            )
+
+            with pytest.raises(ValidationError, match="Only projected transactions"):
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+
+            # Status unchanged — still 'cancelled'.
+            db.session.refresh(txn)
+            assert txn.status.name == "cancelled"

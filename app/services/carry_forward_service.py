@@ -52,6 +52,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id):
     if target is None or target.user_id != user_id:
         raise NotFoundError(f"Target pay period {target_period_id} not found.")
 
+    if source_period_id == target_period_id:
+        return 0
+
     # Get the 'projected' status ID.
     projected_status = db.session.query(Status).filter_by(name="projected").one()
 

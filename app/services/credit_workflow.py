@@ -66,6 +66,13 @@ def mark_as_credit(transaction_id, user_id):
         if existing_payback:
             return existing_payback
 
+    # Only projected transactions can be newly marked as credit.
+    if txn.status.name != "projected":
+        raise ValidationError(
+            f"Cannot mark a '{txn.status.name}' transaction as credit. "
+            "Only projected transactions can be marked as credit."
+        )
+
     # Get the 'credit' status.
     credit_status = db.session.query(Status).filter_by(name="credit").one()
     projected_status = db.session.query(Status).filter_by(name="projected").one()

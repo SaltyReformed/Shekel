@@ -664,3 +664,361 @@ class TestCategoryCreateSchema:
                 "item_name": "Rent",
             })
         assert "group_name" in exc.value.messages
+
+
+# ── TransactionCreateSchemaBoundary ─────────────────────────────────
+
+
+class TestTransactionCreateSchemaBoundary:
+    """Boundary and edge-case tests for TransactionCreateSchema."""
+
+    def test_excessive_decimal_places_coerced(self):
+        """Decimal field with places=2 quantizes excessive decimal places.
+
+        Marshmallow's Decimal field with places=2 rounds the input to 2
+        decimal places on deserialization. A user typing '100.12345' must not
+        store 3+ decimal places in a Numeric(12,2) column.
+        """
+        data = TransactionCreateSchema().load({
+            "name": "Test",
+            "estimated_amount": "100.12345",
+            "pay_period_id": "1",
+            "scenario_id": "1",
+            "category_id": "1",
+            "transaction_type_id": "1",
+        })
+        # 100.12345 rounded to 2 places → 100.12 (3rd decimal is 3 < 5, rounds down).
+        assert data["estimated_amount"] == Decimal("100.12")
+
+    def test_xss_in_name_field(self):
+        """Schema accepts raw HTML in name field — no sanitization at this layer.
+
+        # Schema accepts raw HTML. XSS prevention relies on Jinja2 auto-escaping
+        # in templates ({{ name }} auto-escapes by default). Verify template
+        # escaping separately.
+        """
+        data = TransactionCreateSchema().load({
+            "name": "<script>alert(1)</script>",
+            "estimated_amount": "100.00",
+            "pay_period_id": "1",
+            "scenario_id": "1",
+            "category_id": "1",
+            "transaction_type_id": "1",
+        })
+        assert data["name"] == "<script>alert(1)</script>"
+
+    def test_name_at_max_length(self):
+        """A name of exactly 200 characters passes Length(max=200) validation."""
+        long_name = "A" * 200
+        data = TransactionCreateSchema().load({
+            "name": long_name,
+            "estimated_amount": "100.00",
+            "pay_period_id": "1",
+            "scenario_id": "1",
+            "category_id": "1",
+            "transaction_type_id": "1",
+        })
+        assert len(data["name"]) == 200
+
+    def test_name_over_max_length(self):
+        """A name of 201 characters fails Length(max=200) validation."""
+        long_name = "A" * 201
+        with pytest.raises(ValidationError) as exc:
+            TransactionCreateSchema().load({
+                "name": long_name,
+                "estimated_amount": "100.00",
+                "pay_period_id": "1",
+                "scenario_id": "1",
+                "category_id": "1",
+                "transaction_type_id": "1",
+            })
+        assert "name" in exc.value.messages
+
+
+# ── TestTemplateCreateSchemaBoundary ────────────────────────────────
+
+
+class TestTemplateCreateSchemaBoundary:
+    """Boundary tests for TemplateCreateSchema recurrence fields."""
+
+    def _valid_template_data(self, **overrides):
+        """Return a valid template payload with optional overrides."""
+        data = {
+            "name": "Test Template",
+            "default_amount": "100.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+        }
+        data.update(overrides)
+        return data
+
+    def test_day_of_month_zero_rejected(self):
+        """day_of_month=0 fails Range(min=1, max=31) validation."""
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load(
+                self._valid_template_data(day_of_month="0")
+            )
+        assert "day_of_month" in exc.value.messages
+
+    def test_day_of_month_32_rejected(self):
+        """day_of_month=32 fails Range(min=1, max=31) validation.
+
+        No month has 32 days. The schema must reject this before it reaches
+        the recurrence engine.
+        """
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load(
+                self._valid_template_data(day_of_month="32")
+            )
+        assert "day_of_month" in exc.value.messages
+
+    def test_day_of_month_31_accepted(self):
+        """day_of_month=31 is valid — months with 31 days exist."""
+        data = TemplateCreateSchema().load(
+            self._valid_template_data(day_of_month="31")
+        )
+        assert data["day_of_month"] == 31
+
+    def test_interval_n_zero_rejected(self):
+        """interval_n=0 fails Range(min=1) validation.
+
+        interval_n=0 would cause an infinite loop in the recurrence engine.
+        The schema should catch it before the DB check constraint.
+        """
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load(
+                self._valid_template_data(interval_n="0")
+            )
+        assert "interval_n" in exc.value.messages
+
+
+# ── TestTransferCreateSchemaBoundary ────────────────────────────────
+
+
+class TestTransferCreateSchemaBoundary:
+    """Boundary tests for TransferCreateSchema amount and account validation."""
+
+    def _valid_transfer_data(self, **overrides):
+        """Return a valid transfer payload with optional overrides."""
+        data = {
+            "from_account_id": "1",
+            "to_account_id": "2",
+            "amount": "100.00",
+            "pay_period_id": "1",
+            "scenario_id": "1",
+        }
+        data.update(overrides)
+        return data
+
+    def test_negative_amount_rejected(self):
+        """Negative amount fails Range(min=0, min_inclusive=False) validation."""
+        with pytest.raises(ValidationError) as exc:
+            TransferCreateSchema().load(
+                self._valid_transfer_data(amount="-100")
+            )
+        assert "amount" in exc.value.messages
+
+    def test_zero_amount_rejected(self):
+        """Zero amount fails Range(min=0, min_inclusive=False) — must be > 0.
+
+        Zero-amount transfers are meaningless and should be blocked at the
+        schema level.
+        """
+        with pytest.raises(ValidationError) as exc:
+            TransferCreateSchema().load(
+                self._valid_transfer_data(amount="0")
+            )
+        assert "amount" in exc.value.messages
+
+    def test_same_account_ids_rejected(self):
+        """from_account_id == to_account_id raises @validates_schema error.
+
+        The error message contains 'From and To accounts must be different.'
+        """
+        with pytest.raises(ValidationError) as exc:
+            TransferCreateSchema().load(
+                self._valid_transfer_data(from_account_id="5", to_account_id="5")
+            )
+        # Cross-field validation error goes to _schema key.
+        assert "_schema" in exc.value.messages
+
+    def test_very_small_positive_amount_accepted(self):
+        """amount=0.01 (smallest valid transfer) passes validation.
+
+        Boundary of the Range(min=0, min_inclusive=False) validator.
+        """
+        data = TransferCreateSchema().load(
+            self._valid_transfer_data(amount="0.01")
+        )
+        assert data["amount"] == Decimal("0.01")
+
+
+# ── TestSalaryProfileCreateSchemaBoundary ───────────────────────────
+
+
+class TestSalaryProfileCreateSchemaBoundary:
+    """Boundary tests for SalaryProfileCreateSchema state_code validation."""
+
+    def _valid_salary_data(self, **overrides):
+        """Return a valid salary profile payload with optional overrides."""
+        data = {
+            "name": "Test Profile",
+            "annual_salary": "75000.00",
+            "filing_status_id": "1",
+            "state_code": "NC",
+        }
+        data.update(overrides)
+        return data
+
+    def test_empty_state_code_rejected(self):
+        """Empty state_code is stripped by @pre_load, then fails as missing required field.
+
+        An empty state code would break the tax calculator lookup.
+        """
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(
+                self._valid_salary_data(state_code="")
+            )
+        assert "state_code" in exc.value.messages
+
+    def test_single_char_state_code_rejected(self):
+        """Single-character state_code fails Length(min=2, max=2) validation."""
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(
+                self._valid_salary_data(state_code="N")
+            )
+        assert "state_code" in exc.value.messages
+
+    def test_lowercase_state_code_accepted(self):
+        """Lowercase state_code is accepted — no uppercase normalization in schema.
+
+        # Schema accepts lowercase state codes. Normalization to uppercase
+        # (if needed) must happen at the route or service level.
+        """
+        data = SalaryProfileCreateSchema().load(
+            self._valid_salary_data(state_code="nc")
+        )
+        assert data["state_code"] == "nc"
+
+
+# ── TestFicaConfigSchemaBoundary ────────────────────────────────────
+
+
+class TestFicaConfigSchemaBoundary:
+    """Boundary tests for FicaConfigSchema rate validation gaps."""
+
+    def _valid_fica_data(self, **overrides):
+        """Return a valid FICA config payload with optional overrides."""
+        data = {
+            "tax_year": "2026",
+            "ss_rate": "0.0620",
+            "ss_wage_base": "176100.00",
+            "medicare_rate": "0.0145",
+            "medicare_surtax_rate": "0.0090",
+            "medicare_surtax_threshold": "200000.00",
+        }
+        data.update(overrides)
+        return data
+
+    def test_fica_rate_over_one_rejected(self):
+        """ss_rate=2.0 (200%) is rejected by Range(min=0, max=1) validator.
+
+        A misplaced decimal (6.2 vs 0.062) would produce catastrophically
+        wrong paycheck calculations. The schema catches this before the DB.
+        """
+        with pytest.raises(ValidationError) as exc:
+            FicaConfigSchema().load(
+                self._valid_fica_data(ss_rate="2.0")
+            )
+        assert "ss_rate" in exc.value.messages
+
+    def test_negative_fica_rate_rejected(self):
+        """Negative ss_rate is rejected by Range(min=0, max=1) validator.
+
+        Negative rates would produce negative tax withholding.
+        """
+        with pytest.raises(ValidationError) as exc:
+            FicaConfigSchema().load(
+                self._valid_fica_data(ss_rate="-0.05")
+            )
+        assert "ss_rate" in exc.value.messages
+
+    def test_zero_wage_base_rejected(self):
+        """ss_wage_base=0 is rejected by Range(min=0, min_inclusive=False).
+
+        Wage base must be positive. Matches the database CHECK constraint
+        ``ss_wage_base > 0``.
+        """
+        with pytest.raises(ValidationError) as exc:
+            FicaConfigSchema().load(
+                self._valid_fica_data(ss_wage_base="0")
+            )
+        assert "ss_wage_base" in exc.value.messages
+
+    def test_rate_at_zero_accepted(self):
+        """ss_rate=0.0 is accepted — inclusive lower bound of Range(min=0, max=1)."""
+        data = FicaConfigSchema().load(
+            self._valid_fica_data(ss_rate="0.0000")
+        )
+        assert data["ss_rate"] == Decimal("0.0000")
+
+    def test_rate_at_one_accepted(self):
+        """ss_rate=1.0 is accepted — inclusive upper bound of Range(min=0, max=1)."""
+        data = FicaConfigSchema().load(
+            self._valid_fica_data(ss_rate="1.0000")
+        )
+        assert data["ss_rate"] == Decimal("1.0000")
+
+    def test_wage_base_minimum_accepted(self):
+        """ss_wage_base=0.01 is accepted — smallest valid value (> 0)."""
+        data = FicaConfigSchema().load(
+            self._valid_fica_data(ss_wage_base="0.01")
+        )
+        assert data["ss_wage_base"] == Decimal("0.01")
+
+    def test_threshold_minimum_accepted(self):
+        """medicare_surtax_threshold=0.01 is accepted — smallest valid value (> 0)."""
+        data = FicaConfigSchema().load(
+            self._valid_fica_data(medicare_surtax_threshold="0.01")
+        )
+        assert data["medicare_surtax_threshold"] == Decimal("0.01")
+
+
+# ── TestCategoryCreateSchemaBoundary ────────────────────────────────
+
+
+class TestCategoryCreateSchemaBoundary:
+    """Boundary tests for CategoryCreateSchema field length limits."""
+
+    def test_group_name_at_max_length(self):
+        """group_name of exactly 100 characters passes Length(max=100) validation."""
+        long_name = "G" * 100
+        data = CategoryCreateSchema().load({
+            "group_name": long_name,
+            "item_name": "Test",
+        })
+        assert len(data["group_name"]) == 100
+
+    def test_group_name_over_max_length(self):
+        """group_name of 101 characters fails Length(max=100) validation."""
+        long_name = "G" * 101
+        with pytest.raises(ValidationError) as exc:
+            CategoryCreateSchema().load({
+                "group_name": long_name,
+                "item_name": "Test",
+            })
+        assert "group_name" in exc.value.messages
+
+    def test_xss_in_group_name(self):
+        """Schema accepts raw HTML in group_name — no sanitization at this layer.
+
+        # Schema accepts raw HTML. XSS prevention relies on Jinja2 auto-escaping
+        # in templates ({{ name }} auto-escapes by default). Verify template
+        # escaping separately.
+        """
+        data = CategoryCreateSchema().load({
+            "group_name": "<img src=x onerror=alert(1)>",
+            "item_name": "Test",
+        })
+        assert data["group_name"] == "<img src=x onerror=alert(1)>"

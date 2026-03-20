@@ -369,11 +369,10 @@ class TestCarryForwardEdgeCases:
     """Probe carry_forward_service for source==target and credit handling."""
 
     def test_carry_forward_source_equals_target(self, app, auth_client, seed_user, seed_periods):
-        """Carry forward with source == target period.
+        """Carry forward with source == target period returns 0 without modification.
 
-        Bug: No guard prevents source == target.  The operation moves items
-        to the same period (no-op on pay_period_id) but still sets
-        is_override=True on template-linked transactions.
+        The source==target guard returns early, preventing the previous bug
+        of setting is_override=True on template-linked transactions.
         """
         with app.app_context():
             # Create a template-linked transaction in period 0.
@@ -398,11 +397,11 @@ class TestCarryForwardEdgeCases:
             count = carry_forward_service.carry_forward_unpaid(period_id, period_id, seed_user["user"].id)
             db.session.commit()
 
-            # Current behavior: moves 1 item (to itself), sets is_override.
-            assert count == 1
+            # Guard returns 0 — no items processed, no side effects.
+            assert count == 0
             db.session.refresh(txn)
-            assert txn.pay_period_id == period_id  # Didn't actually move
-            assert txn.is_override is True  # Side effect: now flagged as override
+            assert txn.pay_period_id == period_id
+            assert txn.is_override is False  # Not modified by the guard
 
     def test_carry_forward_preserves_credit_transactions(self, app, auth_client, seed_user, seed_periods):
         """Carry forward should NOT move credit-status transactions.
