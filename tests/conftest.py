@@ -37,6 +37,26 @@ from app.services.auth_service import hash_password
 # --- App & DB Fixtures ---------------------------------------------------
 
 
+@pytest.fixture(scope="session", autouse=True)
+def fast_bcrypt():
+    """Use minimum bcrypt rounds (4) for all tests.
+
+    Bcrypt's default work factor (12) makes each hash take ~250ms.
+    Rounds=4 reduces this to ~2ms, saving 10+ seconds across the
+    full suite without affecting test correctness.
+    """
+    import bcrypt as _bcrypt  # pylint: disable=import-outside-toplevel
+    _original_gensalt = _bcrypt.gensalt
+
+    def _fast_gensalt(rounds=4, prefix=b"2b"):
+        """Generate a bcrypt salt with minimum work factor."""
+        return _original_gensalt(rounds=rounds, prefix=prefix)
+
+    _bcrypt.gensalt = _fast_gensalt
+    yield
+    _bcrypt.gensalt = _original_gensalt
+
+
 @pytest.fixture(autouse=True)
 def set_totp_key(monkeypatch):
     """Set a test TOTP encryption key for all tests."""

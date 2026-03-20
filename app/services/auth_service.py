@@ -15,17 +15,20 @@ from app.models.scenario import Scenario
 from app.exceptions import AuthError, ConflictError, ValidationError
 
 
-def hash_password(plain_password):
+def hash_password(plain_password, rounds=None):
     """Hash a plaintext password using bcrypt.
 
     Args:
         plain_password: The plaintext password string.
+        rounds: Optional bcrypt cost factor (log2 iterations).
+            Defaults to bcrypt's built-in default if not specified.
 
     Returns:
         The bcrypt hash as a string.
     """
+    salt = bcrypt.gensalt(rounds=rounds) if rounds else bcrypt.gensalt()
     return bcrypt.hashpw(
-        plain_password.encode("utf-8"), bcrypt.gensalt()
+        plain_password.encode("utf-8"), salt
     ).decode("utf-8")
 
 

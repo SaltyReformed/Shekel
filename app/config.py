@@ -61,6 +61,10 @@ class TestConfig(BaseConfig):
     LOGIN_DISABLED = False
     RATELIMIT_ENABLED = False
 
+    # Lower bcrypt cost for faster test execution. Default is 12;
+    # 4 is the minimum and makes auth/MFA tests ~100x faster.
+    BCRYPT_LOG_ROUNDS = 4
+
     # NullPool closes connections immediately after use — no pooling.
     # Prevents stale/leaked connections from holding locks that block
     # TRUNCATE between tests.

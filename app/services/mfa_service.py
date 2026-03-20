@@ -123,17 +123,21 @@ def generate_backup_codes(count=10):
     return [secrets.token_hex(4) for _ in range(count)]
 
 
-def hash_backup_codes(codes):
+def hash_backup_codes(codes, rounds=None):
     """Hash a list of plaintext backup codes with bcrypt.
 
     Args:
         codes: List of plaintext backup code strings.
+        rounds: Optional bcrypt cost factor (default 12, use 4 for tests).
 
     Returns:
         list[str]: Bcrypt hash strings, one per code.
     """
     return [
-        bcrypt.hashpw(c.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        bcrypt.hashpw(
+            c.encode("utf-8"),
+            bcrypt.gensalt(rounds=rounds) if rounds else bcrypt.gensalt(),
+        ).decode("utf-8")
         for c in codes
     ]
 
