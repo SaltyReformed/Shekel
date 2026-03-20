@@ -676,47 +676,20 @@ class TestNumericEdgeCases:
 class TestAuthEdgeCases:
     """Cross-user resource access — confirm defense in depth."""
 
-    def _create_second_user(self):
-        """Create a second user with their own data."""
-        from app.models.user import User, UserSettings
-        from app.services.auth_service import hash_password
-
-        user2 = User(
-            email="other@shekel.local",
-            password_hash=hash_password("otherpass"),
-            display_name="Other User",
-        )
-        db.session.add(user2)
-        db.session.flush()
-
-        settings2 = UserSettings(user_id=user2.id)
-        db.session.add(settings2)
-
-        checking_type = db.session.query(AccountType).filter_by(name="checking").one()
-        account2 = Account(
-            user_id=user2.id,
-            account_type_id=checking_type.id,
-            name="Other Checking",
-            current_anchor_balance=Decimal("2000.00"),
-        )
-        db.session.add(account2)
-        db.session.flush()
-
-        return user2, account2
-
-    def test_access_other_users_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_access_other_users_transaction(
+        self, app, auth_client, seed_user, seed_periods, second_user,
+    ):
         """User A tries to view User B's transaction → must get 404.
 
         Routes filter by current_user.id via _get_owned_transaction().
         Cross-user access should return 404, not 403 (no info leakage).
+        Uses the shared second_user fixture from conftest.py.
         """
         with app.app_context():
-            user2, account2 = self._create_second_user()
-
             # Create a pay period for user 2.
             from app.services import pay_period_service
             periods2 = pay_period_service.generate_pay_periods(
-                user_id=user2.id,
+                user_id=second_user["user"].id,
                 start_date=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=14,
@@ -727,23 +700,12 @@ class TestAuthEdgeCases:
             status = db.session.query(Status).filter_by(name="projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
-            cat2 = Category(
-                user_id=user2.id, group_name="Other", item_name="Other Expense",
-            )
-            db.session.add(cat2)
-            db.session.flush()
-
-            from app.models.scenario import Scenario
-            scenario2 = Scenario(user_id=user2.id, name="Baseline", is_baseline=True)
-            db.session.add(scenario2)
-            db.session.flush()
-
             txn2 = Transaction(
                 pay_period_id=periods2[0].id,
-                scenario_id=scenario2.id,
+                scenario_id=second_user["scenario"].id,
                 status_id=status.id,
                 name="Other's Expense",
-                category_id=cat2.id,
+                category_id=second_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
                 estimated_amount=Decimal("99.99"),
             )
@@ -760,18 +722,18 @@ class TestAuthEdgeCases:
             )
             assert resp.status_code == 404
 
-    def test_access_other_users_account(self, app, auth_client, seed_user, seed_periods):
+    def test_access_other_users_account(
+        self, app, auth_client, seed_user, seed_periods, second_user,
+    ):
         """User A tries to edit User B's account → must get redirect/flash.
 
         Account routes check user_id == current_user.id and redirect with
         a flash warning when the account doesn't belong to the current user.
+        Uses the shared second_user fixture from conftest.py.
         """
         with app.app_context():
-            user2, account2 = self._create_second_user()
-            db.session.commit()
-
             # Auth client is logged in as user 1 — try to edit user 2's account.
-            resp = auth_client.get(f"/accounts/{account2.id}/edit")
+            resp = auth_client.get(f"/accounts/{second_user['account'].id}/edit")
             # Current behavior: redirect to accounts list with flash.
             assert resp.status_code == 302
             assert "/accounts" in resp.headers.get("Location", "")

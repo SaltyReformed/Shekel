@@ -255,7 +255,7 @@ class TestRateChange:
         assert entry.interest_rate == Decimal("0.07000")
 
     def test_rate_change_validation(self, auth_client, seed_user, db, seed_periods):
-        """Invalid rate → error."""
+        """Invalid rate → error with validation message."""
         acct = _create_mortgage_account(seed_user, db.session)
         params = db.session.query(MortgageParams).filter_by(account_id=acct.id).one()
         params.is_arm = True
@@ -266,6 +266,7 @@ class TestRateChange:
             data={"interest_rate": "200.0"},  # > 100, invalid
         )
         assert resp.status_code == 400
+        assert b"Please correct the highlighted errors" in resp.data
 
 
     def test_percentage_input_stored_as_decimal(self, auth_client, seed_user, db, seed_periods):
@@ -308,7 +309,7 @@ class TestEscrow:
         assert comp.annual_amount == Decimal("4800.00")
 
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
-        """Duplicate name → error."""
+        """Duplicate name → error message, and DB still has exactly 1 component."""
         acct = _create_mortgage_account(seed_user, db.session)
         # Add first component.
         comp = EscrowComponent(
@@ -324,6 +325,14 @@ class TestEscrow:
             data={"name": "Insurance", "annual_amount": "3000.00"},
         )
         assert resp.status_code == 400
+        assert b"already exists" in resp.data
+
+        # Verify DB still has exactly 1 escrow with that name.
+        db.session.expire_all()
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id, name="Insurance",
+        ).count()
+        assert count == 1
 
     def test_escrow_delete(self, auth_client, seed_user, db, seed_periods):
         """POST delete → deactivates component."""
@@ -391,13 +400,17 @@ class TestPayoffCalculator:
         assert b"Months Saved" in resp.data
 
     def test_payoff_target_date(self, auth_client, seed_user, db, seed_periods):
-        """POST payoff with target date → results fragment."""
+        """POST payoff with target date → results fragment with payment data."""
         acct = _create_mortgage_account(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/payoff",
             data={"mode": "target_date", "target_date": "2040-01-01"},
         )
         assert resp.status_code == 200
+        # The payoff results template renders payment calculation data.
+        assert b"$" in resp.data, (
+            "Payoff results should contain dollar-formatted payment data"
+        )
 
     def test_payoff_validation(self, auth_client, seed_user, db, seed_periods):
         """Invalid input → error."""

@@ -440,7 +440,15 @@ class TestGenerateProjectionPeriods:
         assert len(periods) == 1
 
     def test_works_with_project_balance(self):
-        """Synthetic periods integrate with project_balance."""
+        """Synthetic periods integrate with project_balance.
+
+        Independent computation replicates the growth engine formula:
+        For each period (14-day cadence → 13 actual days per period):
+          period_return = (1 + 0.07)^(period_days / 365) - 1
+          growth = (balance * period_return).quantize(0.01, ROUND_HALF_UP)
+          balance = balance + growth + 500
+        Starting from balance = 10,000 over 27 periods (one calendar year).
+        """
         periods = generate_projection_periods(date(2026, 1, 1), date(2026, 12, 31))
         result = project_balance(
             current_balance=Decimal("10000"),
@@ -449,7 +457,22 @@ class TestGenerateProjectionPeriods:
             periodic_contribution=Decimal("500"),
         )
         assert len(result) == len(periods)
-        assert result[-1].end_balance > Decimal("10000") + Decimal("500") * len(periods)
+
+        # Independent loop computing the expected final balance.
+        expected_balance = Decimal("10000")
+        for period in periods:
+            period_days = (period.end_date - period.start_date).days
+            period_return_rate = (
+                (1 + Decimal("0.07"))
+                ** (Decimal(str(period_days)) / Decimal("365"))
+                - 1
+            )
+            growth = (expected_balance * period_return_rate).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            expected_balance = expected_balance + growth + Decimal("500")
+
+        assert result[-1].end_balance == expected_balance
 
     def test_year_boundaries_correct_for_limit_reset(self):
         """Periods crossing year boundary have correct year in start_date."""

@@ -189,7 +189,11 @@ class TestDashboardGrouping:
         assert b"Liability" in resp.data
 
     def test_dashboard_no_accounts(self, app, db, seed_user):
-        """Empty state renders correctly."""
+        """Empty state renders the dashboard page with navigation elements.
+
+        When no active accounts exist, the page should still render the
+        Accounts Dashboard heading and action buttons (New Account, etc.).
+        """
         # Deactivate the default checking account.
         seed_user["account"].is_active = False
         db.session.commit()
@@ -198,3 +202,5 @@ class TestDashboardGrouping:
         client.post("/login", data={"email": "test@shekel.local", "password": "testpass"})
         resp = client.get("/savings")
         assert resp.status_code == 200
+        assert b"Accounts Dashboard" in resp.data
+        assert b"New Account" in resp.data

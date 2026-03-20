@@ -686,11 +686,11 @@ class TestGoalIdempotency:
             original_goal = db.session.get(SavingsGoal, original_goal_id)
             assert original_goal.target_amount == Decimal("5000.00")
 
-            # Session health check.
+            # Session health check: only 1 goal should exist at this point.
             total_goals = db.session.query(SavingsGoal).filter_by(
                 user_id=seed_user["user"].id,
             ).count()
-            assert total_goals >= 1
+            assert total_goals == 1
 
             # -- Same name on DIFFERENT account must still succeed --
             acct2 = _create_savings_account(seed_user, "Second Savings")

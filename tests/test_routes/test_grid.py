@@ -317,7 +317,11 @@ class TestTransactionCRUD:
             assert txn.category_id == seed_user["categories"]["Car Payment"].id
 
     def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods):
-        """GET /transactions/new/quick with no baseline scenario returns 400."""
+        """GET /transactions/new/quick with no baseline scenario returns 400.
+
+        The route returns the plain text error 'No baseline scenario' when
+        no baseline scenario exists for the user.
+        """
         with app.app_context():
             from app.models.scenario import Scenario
 
@@ -334,3 +338,4 @@ class TestTransactionCRUD:
                 f"&txn_type_name=expense"
             )
             assert response.status_code == 400
+            assert b"No baseline scenario" in response.data

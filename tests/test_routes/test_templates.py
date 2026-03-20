@@ -398,7 +398,8 @@ class TestTemplateDelete:
             txn_count = db.session.query(Transaction).filter_by(
                 template_id=template.id, is_deleted=False,
             ).count()
-            assert txn_count > 0
+            # every_period pattern generates 1 transaction per period; 10 seeded periods.
+            assert txn_count == 10
 
             resp = auth_client.post(
                 f"/templates/{template.id}/delete",

@@ -501,13 +501,19 @@ class TestGridCells:
             assert b'name="amount"' in response.data
 
     def test_get_cell_other_users_transfer(self, app, auth_client, seed_user):
-        """GET /transfers/cell/<id> for another user's transfer returns 404."""
+        """GET /transfers/cell/<id> for another user's transfer returns 404.
+
+        Read-path IDOR: response must not leak the other user's transfer data.
+        """
         with app.app_context():
             other = _create_other_user_with_template()
 
             response = auth_client.get(f"/transfers/cell/{other['transfer'].id}")
 
             assert response.status_code == 404
+            # Verify no leakage of the other user's transfer data.
+            assert b"Other Transfer" not in response.data
+            assert b"100.00" not in response.data
 
 
 # ── Transfer Instance Operations ──────────────────────────────────
@@ -624,16 +630,32 @@ class TestTransferInstance:
             assert xfer.effective_amount == Decimal("0")
 
     def test_update_other_users_transfer(self, app, auth_client, seed_user):
-        """PATCH /transfers/instance/<id> for another user's transfer returns 404."""
+        """PATCH /transfers/instance/<id> for another user's transfer returns 404.
+
+        IDOR write-path (HIGH priority): must prove the transfer was not modified.
+        """
         with app.app_context():
             other = _create_other_user_with_template()
+            target = other["transfer"]
+            orig_amount = target.amount
+            orig_name = target.name
 
             response = auth_client.patch(
-                f"/transfers/instance/{other['transfer'].id}",
+                f"/transfers/instance/{target.id}",
                 data={"amount": "9999.00"},
             )
 
             assert response.status_code == 404
+
+            # Prove no state change occurred.
+            db.session.expire_all()
+            db.session.refresh(target)
+            assert target.amount == orig_amount, (
+                "IDOR attack modified victim's transfer amount!"
+            )
+            assert target.name == orig_name, (
+                "IDOR attack modified victim's transfer name!"
+            )
 
 
 # ── Ad-Hoc Creation ───────────────────────────────────────────────
@@ -673,7 +695,11 @@ class TestAdHoc:
     def test_create_ad_hoc_other_users_period(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transfers/ad-hoc with another user's period returns 404."""
+        """POST /transfers/ad-hoc with another user's period returns 404.
+
+        Create-path IDOR: must verify no transfer was created in the other
+        user's period.
+        """
         with app.app_context():
             other = _create_other_user_with_template()
             savings = _create_savings_account(seed_user)
@@ -686,6 +712,11 @@ class TestAdHoc:
                 .first()
             )
 
+            # Count transfers in the other user's period before the request.
+            count_before = db.session.query(Transfer).filter_by(
+                pay_period_id=other_period.id,
+            ).count()
+
             response = auth_client.post("/transfers/ad-hoc", data={
                 "pay_period_id": other_period.id,
                 "from_account_id": seed_user["account"].id,
@@ -696,10 +727,23 @@ class TestAdHoc:
 
             assert response.status_code == 404
 
+            # Prove no transfer was created.
+            db.session.expire_all()
+            count_after = db.session.query(Transfer).filter_by(
+                pay_period_id=other_period.id,
+            ).count()
+            assert count_after == count_before, (
+                "IDOR attack created a transfer in victim's period!"
+            )
+
     def test_create_ad_hoc_double_submit(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transfers/ad-hoc twice succeeds both times (no unique constraint on ad-hoc)."""
+        """POST /transfers/ad-hoc twice succeeds both times (no unique constraint on ad-hoc).
+
+        Both submissions should create a transfer, resulting in exactly 2
+        transfers named 'Double Transfer' in the period.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             data = {
@@ -716,3 +760,13 @@ class TestAdHoc:
 
             response2 = auth_client.post("/transfers/ad-hoc", data=data)
             assert response2.status_code == 201
+
+            # Verify exactly 2 transfers were created.
+            db.session.expire_all()
+            count = db.session.query(Transfer).filter_by(
+                pay_period_id=seed_periods[0].id,
+                name="Double Transfer",
+            ).count()
+            assert count == 2, (
+                f"Expected exactly 2 ad-hoc transfers, found {count}"
+            )

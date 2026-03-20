@@ -375,7 +375,11 @@ class TestRetirementProjections:
     def test_dashboard_projects_without_retirement_date(
         self, auth_client, seed_user, db, seed_periods
     ):
-        """Without planned retirement date, uses current balance as projection."""
+        """Without planned retirement date, dashboard still renders correctly.
+
+        The page should render the Retirement Planning heading and content
+        even when no retirement date is configured.
+        """
         _create_retirement_account(seed_user, db.session)
 
         # No planned_retirement_date set.
@@ -387,6 +391,7 @@ class TestRetirementProjections:
 
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
+        assert b"Retirement Planning" in resp.data
 
     def test_dashboard_pension_tax_shown(
         self, auth_client, seed_user, db, seed_periods
@@ -463,9 +468,10 @@ class TestGapAnalysisFragment:
     """Tests for the retirement gap analysis HTMX fragment (U3)."""
 
     def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods):
-        """GET /retirement/gap without HX-Request redirects to dashboard."""
+        """GET /retirement/gap without HX-Request redirects to retirement dashboard."""
         resp = auth_client.get("/retirement/gap")
         assert resp.status_code == 302
+        assert "/retirement" in resp.headers.get("Location", "")
 
     def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods):
         """GET /retirement/gap with HX-Request returns gap analysis fragment."""

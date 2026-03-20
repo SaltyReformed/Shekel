@@ -1,0 +1,816 @@
+[2026-03-19T18:22:28.112358] Starting connection monitor...
+[18:22:28] Connections: 0
+[18:22:30] Connections: 0
+[18:22:32] Connections: 0
+[18:22:34] Connections: 0
+[18:22:36] Connections: 0
+[18:22:38] Connections: 0
+[18:22:40] Connections: 0
+[18:22:42] Connections: 0
+[18:22:44] Connections: 0
+[18:22:46] Connections: 0
+[18:22:48] Connections: 0
+[18:22:50] Connections: 0
+[18:22:52] Connections: 0
+[18:22:54] Connections: 0
+[18:22:56] Connections: 0
+[18:22:58] Connections: 0
+[18:23:00] Connections: 0
+[18:23:02] Connections: 0
+[18:23:04] Connections: 0
+[18:23:06] Connections: 0
+[18:23:08] Connections: 0
+[18:23:10] Connections: 0
+[18:23:12] Connections: 0
+[18:23:14] Connections: 0
+[18:23:16] Connections: 0
+[18:23:18] Connections: 0
+[18:23:20] Connections: 0
+[18:23:22] Connections: 0
+[18:23:24] Connections: 0
+[18:23:26] Connections: 0
+[18:23:28] Connections: 0
+[18:23:31] Connections: 0
+[18:23:33] Connections: 0
+[18:23:35] Connections: 0
+[18:23:37] Connections: 0
+[18:23:39] Connections: 0
+[18:23:41] Connections: 0
+[18:23:43] Connections: 0
+[18:23:45] Connections: 0
+[18:23:47] Connections: 0
+[18:23:49] Connections: 0
+[18:23:51] Connections: 0
+[18:23:53] Connections: 0
+[18:23:55] Connections: 0
+[18:23:57] Connections: 0
+[18:23:59] Connections: 0
+[18:24:01] Connections: 0
+[18:24:03] Connections: 0
+[18:24:05] Connections: 0
+[18:24:07] Connections: 0
+[18:24:09] Connections: 0
+[18:24:11] Connections: 0
+[18:24:13] Connections: 0
+[18:24:15] Connections: 0
+[18:24:17] Connections: 0
+[18:24:19] Connections: 0
+[18:24:21] Connections: 0
+[18:24:23] Connections: 0
+[18:24:25] Connections: 0
+[18:24:27] Connections: 0
+[18:24:29] Connections: 0
+[18:24:31] Connections: 0
+[18:24:33] Connections: 0
+[18:24:35] Connections: 0
+[18:24:37] Connections: 0
+[18:24:39] Connections: 0
+[18:24:41] Connections: 0
+[18:24:44] Connections: 0
+[18:24:46] Connections: 0
+[18:24:48] Connections: 0
+[18:24:50] Connections: 0
+[18:24:52] Connections: 0
+[18:24:54] Connections: 0
+[18:24:56] Connections: 0
+[18:24:58] Connections: 0
+[18:25:00] Connections: 0
+[18:25:02] Connections: 0
+[18:25:04] Connections: 0
+[18:25:06] Connections: 0
+[18:25:08] Connections: 0
+[18:25:10] Connections: 0
+[18:25:12] Connections: 0
+[18:25:14] Connections: 0
+[18:25:16] Connections: 0
+[18:25:18] Connections: 0
+[18:25:20] Connections: 0
+[18:25:22] Connections: 0
+[18:25:24] Connections: 0
+[18:25:26] Connections: 0
+[18:25:28] Connections: 0
+[18:25:30] Connections: 0
+[18:25:32] Connections: 0
+[18:25:34] Connections: 1 (max: 1)
+[18:25:36] Connections: 1 (max: 1)
+[18:25:38] Connections: 0
+[18:25:40] Connections: 2 (max: 2)
+[18:25:42] Connections: 0
+[18:25:44] Connections: 0
+[18:25:46] Connections: 0
+[18:25:48] Connections: 0
+[18:25:50] Connections: 0
+[18:25:52] Connections: 0
+[18:25:54] Connections: 0
+[18:25:57] Connections: 0
+[18:25:59] Connections: 0
+[18:26:01] Connections: 0
+[18:26:03] Connections: 0
+[18:26:05] Connections: 0
+[18:26:07] Connections: 0
+[18:26:09] Connections: 1 (max: 2)
+[18:26:11] Connections: 0
+[18:26:13] Connections: 2 (max: 2)
+[18:26:15] Connections: 1 (max: 2)
+[18:26:17] Connections: 1 (max: 2)
+[18:26:19] Connections: 0
+[18:26:21] Connections: 0
+[18:26:23] Connections: 0
+[18:26:25] Connections: 1 (max: 2)
+[18:26:27] Connections: 1 (max: 2)
+[18:26:29] Connections: 1 (max: 2)
+[18:26:31] Connections: 1 (max: 2)
+[18:26:33] Connections: 0
+[18:26:35] Connections: 1 (max: 2)
+[18:26:37] Connections: 1 (max: 2)
+[18:26:39] Connections: 1 (max: 2)
+[18:26:41] Connections: 1 (max: 2)
+[18:26:43] Connections: 0
+[18:26:45] Connections: 0
+[18:26:47] Connections: 1 (max: 2)
+[18:26:49] Connections: 1 (max: 2)
+[18:26:51] Connections: 1 (max: 2)
+[18:26:53] Connections: 1 (max: 2)
+[18:26:55] Connections: 0
+[18:26:57] Connections: 1 (max: 2)
+[18:26:59] Connections: 1 (max: 2)
+[18:27:01] Connections: 1 (max: 2)
+[18:27:03] Connections: 0
+[18:27:05] Connections: 1 (max: 2)
+[18:27:07] Connections: 1 (max: 2)
+[18:27:09] Connections: 1 (max: 2)
+[18:27:11] Connections: 1 (max: 2)
+[18:27:13] Connections: 1 (max: 2)
+[18:27:15] Connections: 1 (max: 2)
+[18:27:17] Connections: 0
+[18:27:20] Connections: 0
+[18:27:22] Connections: 0
+[18:27:24] Connections: 1 (max: 2)
+[18:27:26] Connections: 0
+[18:27:28] Connections: 1 (max: 2)
+[18:27:30] Connections: 1 (max: 2)
+[18:27:32] Connections: 0
+[18:27:34] Connections: 1 (max: 2)
+[18:27:36] Connections: 1 (max: 2)
+[18:27:38] Connections: 0
+[18:27:40] Connections: 1 (max: 2)
+[18:27:42] Connections: 0
+[18:27:44] Connections: 0
+[18:27:46] Connections: 1 (max: 2)
+[18:27:48] Connections: 1 (max: 2)
+[18:27:50] Connections: 0
+[18:27:52] Connections: 1 (max: 2)
+[18:27:54] Connections: 1 (max: 2)
+[18:27:56] Connections: 1 (max: 2)
+[18:27:58] Connections: 1 (max: 2)
+[18:28:00] Connections: 1 (max: 2)
+[18:28:02] Connections: 1 (max: 2)
+[18:28:04] Connections: 0
+[18:28:06] Connections: 1 (max: 2)
+[18:28:08] Connections: 1 (max: 2)
+[18:28:10] Connections: 1 (max: 2)
+[18:28:12] Connections: 1 (max: 2)
+[18:28:14] Connections: 0
+[18:28:16] Connections: 1 (max: 2)
+[18:28:18] Connections: 1 (max: 2)
+[18:28:20] Connections: 1 (max: 2)
+[18:28:22] Connections: 1 (max: 2)
+[18:28:24] Connections: 1 (max: 2)
+[18:28:26] Connections: 1 (max: 2)
+[18:28:28] Connections: 1 (max: 2)
+[18:28:30] Connections: 0
+[18:28:32] Connections: 0
+[18:28:34] Connections: 1 (max: 2)
+[18:28:36] Connections: 2 (max: 2)
+[18:28:38] Connections: 1 (max: 2)
+[18:28:41] Connections: 1 (max: 2)
+[18:28:43] Connections: 1 (max: 2)
+[18:28:45] Connections: 2 (max: 2)
+[18:28:47] Connections: 1 (max: 2)
+[18:28:49] Connections: 1 (max: 2)
+[18:28:51] Connections: 2 (max: 2)
+[18:28:53] Connections: 1 (max: 2)
+[18:28:55] Connections: 1 (max: 2)
+[18:28:57] Connections: 2 (max: 2)
+[18:28:59] Connections: 1 (max: 2)
+[18:29:01] Connections: 0
+[18:29:03] Connections: 1 (max: 2)
+[18:29:05] Connections: 1 (max: 2)
+[18:29:07] Connections: 1 (max: 2)
+[18:29:09] Connections: 1 (max: 2)
+[18:29:11] Connections: 1 (max: 2)
+[18:29:13] Connections: 1 (max: 2)
+[18:29:15] Connections: 1 (max: 2)
+[18:29:17] Connections: 1 (max: 2)
+[18:29:19] Connections: 1 (max: 2)
+[18:29:21] Connections: 1 (max: 2)
+[18:29:23] Connections: 1 (max: 2)
+[18:29:25] Connections: 1 (max: 2)
+[18:29:27] Connections: 1 (max: 2)
+[18:29:29] Connections: 1 (max: 2)
+[18:29:31] Connections: 1 (max: 2)
+[18:29:33] Connections: 1 (max: 2)
+[18:29:35] Connections: 0
+[18:29:37] Connections: 1 (max: 2)
+[18:29:39] Connections: 1 (max: 2)
+[18:29:41] Connections: 1 (max: 2)
+[18:29:43] Connections: 1 (max: 2)
+[18:29:45] Connections: 0
+[18:29:47] Connections: 0
+[18:29:49] Connections: 1 (max: 2)
+[18:29:51] Connections: 1 (max: 2)
+[18:29:53] Connections: 0
+[18:29:55] Connections: 2 (max: 2)
+[18:29:57] Connections: 1 (max: 2)
+[18:30:00] Connections: 1 (max: 2)
+[18:30:02] Connections: 0
+[18:30:04] Connections: 1 (max: 2)
+[18:30:06] Connections: 1 (max: 2)
+[18:30:08] Connections: 1 (max: 2)
+[18:30:10] Connections: 1 (max: 2)
+[18:30:12] Connections: 1 (max: 2)
+[18:30:14] Connections: 1 (max: 2)
+[18:30:16] Connections: 0
+[18:30:18] Connections: 1 (max: 2)
+[18:30:20] Connections: 0
+[18:30:22] Connections: 1 (max: 2)
+[18:30:24] Connections: 1 (max: 2)
+[18:30:26] Connections: 1 (max: 2)
+[18:30:28] Connections: 0
+[18:30:30] Connections: 1 (max: 2)
+[18:30:32] Connections: 1 (max: 2)
+[18:30:34] Connections: 1 (max: 2)
+[18:30:36] Connections: 0
+[18:30:38] Connections: 0
+[18:30:40] Connections: 1 (max: 2)
+[18:30:42] Connections: 0
+[18:30:44] Connections: 1 (max: 2)
+[18:30:46] Connections: 1 (max: 2)
+[18:30:48] Connections: 0
+[18:30:50] Connections: 1 (max: 2)
+[18:30:52] Connections: 1 (max: 2)
+[18:30:54] Connections: 1 (max: 2)
+[18:30:56] Connections: 1 (max: 2)
+[18:30:58] Connections: 0
+[18:31:00] Connections: 0
+[18:31:02] Connections: 1 (max: 2)
+[18:31:04] Connections: 1 (max: 2)
+[18:31:06] Connections: 1 (max: 2)
+[18:31:08] Connections: 1 (max: 2)
+[18:31:10] Connections: 0
+[18:31:12] Connections: 1 (max: 2)
+[18:31:14] Connections: 1 (max: 2)
+[18:31:16] Connections: 1 (max: 2)
+[18:31:18] Connections: 1 (max: 2)
+[18:31:20] Connections: 1 (max: 2)
+[18:31:23] Connections: 1 (max: 2)
+[18:31:25] Connections: 0
+[18:31:27] Connections: 1 (max: 2)
+[18:31:29] Connections: 0
+[18:31:31] Connections: 1 (max: 2)
+[18:31:33] Connections: 1 (max: 2)
+[18:31:35] Connections: 1 (max: 2)
+[18:31:37] Connections: 1 (max: 2)
+[18:31:39] Connections: 1 (max: 2)
+[18:31:41] Connections: 1 (max: 2)
+[18:31:43] Connections: 0
+[18:31:45] Connections: 1 (max: 2)
+[18:31:47] Connections: 1 (max: 2)
+[18:31:49] Connections: 0
+[18:31:51] Connections: 0
+[18:31:53] Connections: 0
+[18:31:55] Connections: 1 (max: 2)
+[18:31:57] Connections: 1 (max: 2)
+[18:31:59] Connections: 0
+[18:32:01] Connections: 1 (max: 2)
+[18:32:03] Connections: 1 (max: 2)
+[18:32:05] Connections: 1 (max: 2)
+[18:32:07] Connections: 0
+[18:32:09] Connections: 0
+[18:32:11] Connections: 1 (max: 2)
+[18:32:13] Connections: 1 (max: 2)
+[18:32:15] Connections: 1 (max: 2)
+[18:32:17] Connections: 1 (max: 2)
+[18:32:19] Connections: 1 (max: 2)
+[18:32:21] Connections: 1 (max: 2)
+[18:32:23] Connections: 1 (max: 2)
+[18:32:25] Connections: 1 (max: 2)
+[18:32:27] Connections: 1 (max: 2)
+[18:32:29] Connections: 1 (max: 2)
+[18:32:31] Connections: 0
+[18:32:33] Connections: 0
+[18:32:35] Connections: 0
+[18:32:37] Connections: 1 (max: 2)
+[18:32:39] Connections: 0
+[18:32:41] Connections: 1 (max: 2)
+[18:32:44] Connections: 0
+[18:32:46] Connections: 1 (max: 2)
+[18:32:48] Connections: 1 (max: 2)
+[18:32:50] Connections: 1 (max: 2)
+[18:32:52] Connections: 1 (max: 2)
+[18:32:54] Connections: 1 (max: 2)
+[18:32:56] Connections: 1 (max: 2)
+[18:32:58] Connections: 1 (max: 2)
+[18:33:00] Connections: 1 (max: 2)
+[18:33:02] Connections: 1 (max: 2)
+[18:33:04] Connections: 0
+[18:33:06] Connections: 1 (max: 2)
+[18:33:08] Connections: 1 (max: 2)
+[18:33:10] Connections: 1 (max: 2)
+[18:33:12] Connections: 0
+[18:33:14] Connections: 0
+[18:33:16] Connections: 1 (max: 2)
+[18:33:18] Connections: 1 (max: 2)
+[18:33:20] Connections: 1 (max: 2)
+[18:33:22] Connections: 0
+[18:33:24] Connections: 0
+[18:33:26] Connections: 1 (max: 2)
+[18:33:28] Connections: 1 (max: 2)
+[18:33:30] Connections: 1 (max: 2)
+[18:33:32] Connections: 1 (max: 2)
+[18:33:34] Connections: 1 (max: 2)
+[18:33:36] Connections: 1 (max: 2)
+[18:33:38] Connections: 1 (max: 2)
+[18:33:40] Connections: 1 (max: 2)
+[18:33:42] Connections: 1 (max: 2)
+[18:33:44] Connections: 0
+[18:33:46] Connections: 0
+[18:33:48] Connections: 0
+[18:33:50] Connections: 0
+[18:33:52] Connections: 0
+[18:33:54] Connections: 0
+[18:33:56] Connections: 0
+[18:33:59] Connections: 1 (max: 2)
+[18:34:01] Connections: 1 (max: 2)
+[18:34:03] Connections: 1 (max: 2)
+[18:34:05] Connections: 1 (max: 2)
+[18:34:07] Connections: 0
+[18:34:09] Connections: 1 (max: 2)
+[18:34:11] Connections: 1 (max: 2)
+[18:34:13] Connections: 1 (max: 2)
+[18:34:15] Connections: 1 (max: 2)
+[18:34:17] Connections: 1 (max: 2)
+[18:34:19] Connections: 1 (max: 2)
+[18:34:21] Connections: 1 (max: 2)
+[18:34:23] Connections: 1 (max: 2)
+[18:34:25] Connections: 1 (max: 2)
+[18:34:27] Connections: 1 (max: 2)
+[18:34:29] Connections: 1 (max: 2)
+[18:34:31] Connections: 1 (max: 2)
+[18:34:33] Connections: 1 (max: 2)
+[18:34:35] Connections: 0
+[18:34:37] Connections: 1 (max: 2)
+[18:34:39] Connections: 0
+[18:34:41] Connections: 1 (max: 2)
+[18:34:43] Connections: 0
+[18:34:45] Connections: 1 (max: 2)
+[18:34:47] Connections: 1 (max: 2)
+[18:34:49] Connections: 0
+[18:34:51] Connections: 0
+[18:34:53] Connections: 0
+[18:34:55] Connections: 0
+[18:34:57] Connections: 0
+[18:34:59] Connections: 0
+[18:35:01] Connections: 0
+[18:35:03] Connections: 0
+[18:35:05] Connections: 0
+[18:35:07] Connections: 0
+[18:35:09] Connections: 0
+[18:35:12] Connections: 0
+[18:35:14] Connections: 0
+[18:35:16] Connections: 0
+[18:35:18] Connections: 0
+[18:35:20] Connections: 0
+[18:35:22] Connections: 0
+[18:35:24] Connections: 0
+[18:35:26] Connections: 0
+[18:35:28] Connections: 0
+[18:35:30] Connections: 0
+[18:35:32] Connections: 0
+[18:35:34] Connections: 0
+[18:35:36] Connections: 0
+[18:35:38] Connections: 0
+[18:35:40] Connections: 0
+[18:35:42] Connections: 0
+[18:35:44] Connections: 0
+[18:35:46] Connections: 0
+[18:35:48] Connections: 0
+[18:35:50] Connections: 0
+[18:35:52] Connections: 0
+[18:35:54] Connections: 0
+[18:35:56] Connections: 0
+[18:35:58] Connections: 0
+[18:36:00] Connections: 0
+[18:36:02] Connections: 0
+[18:36:04] Connections: 0
+[18:36:06] Connections: 0
+[18:36:08] Connections: 0
+[18:36:10] Connections: 0
+[18:36:12] Connections: 0
+[18:36:14] Connections: 0
+[18:36:16] Connections: 0
+[18:36:18] Connections: 0
+[18:36:20] Connections: 0
+[18:36:22] Connections: 0
+[18:36:25] Connections: 0
+[18:36:27] Connections: 0
+[18:36:29] Connections: 0
+[18:36:31] Connections: 0
+[18:36:33] Connections: 0
+[18:36:35] Connections: 0
+[18:36:37] Connections: 0
+[18:36:39] Connections: 0
+[18:36:41] Connections: 0
+[18:36:43] Connections: 0
+[18:36:45] Connections: 0
+[18:36:47] Connections: 0
+[18:36:49] Connections: 0
+[18:36:51] Connections: 0
+[18:36:53] Connections: 0
+[18:36:55] Connections: 0
+[18:36:57] Connections: 0
+[18:36:59] Connections: 0
+[18:37:01] Connections: 0
+[18:37:03] Connections: 0
+[18:37:05] Connections: 0
+[18:37:07] Connections: 0
+[18:37:09] Connections: 0
+[18:37:11] Connections: 0
+[18:37:13] Connections: 0
+[18:37:15] Connections: 0
+[18:37:17] Connections: 0
+[18:37:19] Connections: 0
+[18:37:21] Connections: 0
+[18:37:23] Connections: 0
+[18:37:25] Connections: 0
+[18:37:27] Connections: 0
+[18:37:29] Connections: 0
+[18:37:31] Connections: 0
+[18:37:33] Connections: 0
+[18:37:36] Connections: 0
+[18:37:38] Connections: 0
+[18:37:40] Connections: 0
+[18:37:42] Connections: 0
+[18:37:44] Connections: 0
+[18:37:46] Connections: 0
+[18:37:48] Connections: 0
+[18:37:50] Connections: 0
+[18:37:52] Connections: 0
+[18:37:54] Connections: 0
+[18:37:56] Connections: 0
+[18:37:58] Connections: 0
+[18:38:00] Connections: 0
+[18:38:02] Connections: 0
+[18:38:04] Connections: 0
+[18:38:06] Connections: 0
+[18:38:08] Connections: 0
+[18:38:10] Connections: 0
+[18:38:12] Connections: 0
+[18:38:14] Connections: 0
+[18:38:16] Connections: 0
+[18:38:18] Connections: 0
+[18:38:20] Connections: 0
+[18:38:22] Connections: 0
+[18:38:24] Connections: 0
+[18:38:26] Connections: 0
+[18:38:28] Connections: 0
+[18:38:30] Connections: 0
+[18:38:32] Connections: 0
+[18:38:34] Connections: 0
+[18:38:36] Connections: 0
+[18:38:38] Connections: 0
+[18:38:40] Connections: 0
+[18:38:42] Connections: 0
+[18:38:44] Connections: 0
+[18:38:46] Connections: 0
+[18:38:49] Connections: 0
+[18:38:51] Connections: 0
+[18:38:53] Connections: 0
+[18:38:55] Connections: 0
+[18:38:57] Connections: 0
+[18:38:59] Connections: 0
+[18:39:01] Connections: 0
+[18:39:03] Connections: 0
+[18:39:05] Connections: 0
+[18:39:07] Connections: 0
+[18:39:09] Connections: 0
+[18:39:11] Connections: 0
+[18:39:13] Connections: 0
+[18:39:15] Connections: 0
+[18:39:17] Connections: 0
+[18:39:19] Connections: 0
+[18:39:21] Connections: 0
+[18:39:23] Connections: 0
+[18:39:25] Connections: 0
+[18:39:27] Connections: 0
+[18:39:29] Connections: 0
+[18:39:31] Connections: 0
+[18:39:33] Connections: 0
+[18:39:35] Connections: 0
+[18:39:37] Connections: 0
+[18:39:39] Connections: 0
+[18:39:41] Connections: 0
+[18:39:43] Connections: 0
+[18:39:45] Connections: 0
+[18:39:47] Connections: 0
+[18:39:49] Connections: 0
+[18:39:51] Connections: 0
+[18:39:53] Connections: 0
+[18:39:55] Connections: 0
+[18:39:57] Connections: 0
+[18:39:59] Connections: 0
+[18:40:02] Connections: 0
+[18:40:04] Connections: 0
+[18:40:06] Connections: 0
+[18:40:08] Connections: 0
+[18:40:10] Connections: 0
+[18:40:12] Connections: 0
+[18:40:14] Connections: 0
+[18:40:16] Connections: 0
+[18:40:18] Connections: 0
+[18:40:20] Connections: 0
+[18:40:22] Connections: 0
+[18:40:24] Connections: 0
+[18:40:26] Connections: 0
+[18:40:28] Connections: 0
+[18:40:30] Connections: 0
+[18:40:32] Connections: 0
+[18:40:34] Connections: 0
+[18:40:36] Connections: 0
+[18:40:38] Connections: 0
+[18:40:40] Connections: 0
+[18:40:42] Connections: 0
+[18:40:44] Connections: 0
+[18:40:46] Connections: 0
+[18:40:48] Connections: 0
+[18:40:50] Connections: 0
+[18:40:52] Connections: 0
+[18:40:54] Connections: 0
+[18:40:56] Connections: 0
+[18:40:58] Connections: 0
+[18:41:00] Connections: 0
+[18:41:02] Connections: 0
+[18:41:04] Connections: 0
+[18:41:06] Connections: 0
+[18:41:08] Connections: 0
+[18:41:10] Connections: 0
+[18:41:12] Connections: 0
+[18:41:15] Connections: 0
+[18:41:17] Connections: 0
+[18:41:19] Connections: 0
+[18:41:21] Connections: 0
+[18:41:23] Connections: 0
+[18:41:25] Connections: 0
+[18:41:27] Connections: 0
+[18:41:29] Connections: 0
+[18:41:31] Connections: 0
+[18:41:33] Connections: 0
+[18:41:35] Connections: 0
+[18:41:37] Connections: 0
+[18:41:39] Connections: 0
+[18:41:41] Connections: 0
+[18:41:43] Connections: 0
+[18:41:45] Connections: 0
+[18:41:47] Connections: 0
+[18:41:49] Connections: 0
+[18:41:51] Connections: 0
+[18:41:53] Connections: 0
+[18:41:55] Connections: 0
+[18:41:57] Connections: 0
+[18:41:59] Connections: 0
+[18:42:01] Connections: 0
+[18:42:03] Connections: 0
+[18:42:05] Connections: 0
+[18:42:07] Connections: 0
+[18:42:09] Connections: 0
+[18:42:11] Connections: 0
+[18:42:13] Connections: 0
+[18:42:15] Connections: 0
+[18:42:17] Connections: 0
+[18:42:19] Connections: 0
+[18:42:21] Connections: 0
+[18:42:23] Connections: 0
+[18:42:25] Connections: 0
+[18:42:28] Connections: 0
+[18:42:30] Connections: 0
+[18:42:32] Connections: 0
+[18:42:34] Connections: 0
+[18:42:36] Connections: 0
+[18:42:38] Connections: 0
+[18:42:40] Connections: 0
+[18:42:42] Connections: 0
+[18:42:44] Connections: 0
+[18:42:46] Connections: 0
+[18:42:48] Connections: 0
+[18:42:50] Connections: 0
+[18:42:52] Connections: 0
+[18:42:54] Connections: 0
+[18:42:56] Connections: 0
+[18:42:58] Connections: 0
+[18:43:00] Connections: 0
+[18:43:02] Connections: 0
+[18:43:04] Connections: 0
+[18:43:06] Connections: 0
+[18:43:08] Connections: 0
+[18:43:10] Connections: 0
+[18:43:12] Connections: 0
+[18:43:14] Connections: 0
+[18:43:16] Connections: 0
+[18:43:18] Connections: 0
+[18:43:20] Connections: 0
+[18:43:22] Connections: 0
+[18:43:24] Connections: 0
+[18:43:26] Connections: 0
+[18:43:28] Connections: 0
+[18:43:30] Connections: 0
+[18:43:32] Connections: 0
+[18:43:34] Connections: 0
+[18:43:36] Connections: 0
+[18:43:38] Connections: 0
+[18:43:41] Connections: 0
+[18:43:43] Connections: 0
+[18:43:45] Connections: 0
+[18:43:47] Connections: 0
+[18:43:49] Connections: 0
+[18:43:51] Connections: 0
+[18:43:53] Connections: 0
+[18:43:55] Connections: 0
+[18:43:57] Connections: 0
+[18:43:59] Connections: 0
+[18:44:01] Connections: 0
+[18:44:03] Connections: 0
+[18:44:05] Connections: 0
+[18:44:07] Connections: 0
+[18:44:09] Connections: 0
+[18:44:11] Connections: 0
+[18:44:13] Connections: 0
+[18:44:15] Connections: 0
+[18:44:17] Connections: 0
+[18:44:19] Connections: 0
+[18:44:21] Connections: 0
+[18:44:23] Connections: 0
+[18:44:25] Connections: 0
+[18:44:27] Connections: 0
+[18:44:29] Connections: 0
+[18:44:31] Connections: 0
+[18:44:33] Connections: 0
+[18:44:35] Connections: 0
+[18:44:37] Connections: 0
+[18:44:39] Connections: 0
+[18:44:41] Connections: 0
+[18:44:43] Connections: 0
+[18:44:45] Connections: 0
+[18:44:47] Connections: 0
+[18:44:49] Connections: 0
+[18:44:51] Connections: 0
+[18:44:54] Connections: 0
+[18:44:56] Connections: 0
+[18:44:58] Connections: 0
+[18:45:00] Connections: 0
+[18:45:02] Connections: 0
+[18:45:04] Connections: 0
+[18:45:06] Connections: 0
+[18:45:08] Connections: 0
+[18:45:10] Connections: 0
+[18:45:12] Connections: 0
+[18:45:14] Connections: 0
+[18:45:16] Connections: 0
+[18:45:18] Connections: 0
+[18:45:20] Connections: 0
+[18:45:22] Connections: 0
+[18:45:24] Connections: 0
+[18:45:26] Connections: 0
+[18:45:28] Connections: 0
+[18:45:30] Connections: 0
+[18:45:32] Connections: 0
+[18:45:34] Connections: 0
+[18:45:36] Connections: 0
+[18:45:38] Connections: 0
+[18:45:40] Connections: 0
+[18:45:42] Connections: 0
+[18:45:44] Connections: 0
+[18:45:46] Connections: 0
+[18:45:48] Connections: 0
+[18:45:50] Connections: 0
+[18:45:52] Connections: 0
+[18:45:54] Connections: 0
+[18:45:56] Connections: 0
+[18:45:58] Connections: 0
+[18:46:00] Connections: 0
+[18:46:02] Connections: 0
+[18:46:05] Connections: 0
+[18:46:07] Connections: 0
+[18:46:09] Connections: 0
+[18:46:11] Connections: 0
+[18:46:13] Connections: 0
+[18:46:15] Connections: 0
+[18:46:17] Connections: 0
+[18:46:19] Connections: 0
+[18:46:21] Connections: 0
+[18:46:23] Connections: 0
+[18:46:25] Connections: 0
+[18:46:27] Connections: 0
+[18:46:29] Connections: 0
+[18:46:31] Connections: 0
+[18:46:33] Connections: 0
+[18:46:35] Connections: 0
+[18:46:37] Connections: 0
+[18:46:39] Connections: 0
+[18:46:41] Connections: 0
+[18:46:43] Connections: 0
+[18:46:45] Connections: 0
+[18:46:47] Connections: 0
+[18:46:49] Connections: 0
+[18:46:51] Connections: 0
+[18:46:53] Connections: 0
+[18:46:55] Connections: 0
+[18:46:57] Connections: 0
+[18:46:59] Connections: 0
+[18:47:01] Connections: 0
+[18:47:03] Connections: 0
+[18:47:05] Connections: 0
+[18:47:07] Connections: 0
+[18:47:09] Connections: 0
+[18:47:11] Connections: 0
+[18:47:13] Connections: 0
+[18:47:15] Connections: 0
+[18:47:18] Connections: 0
+[18:47:20] Connections: 0
+[18:47:22] Connections: 0
+[18:47:24] Connections: 0
+[18:47:26] Connections: 0
+[18:47:28] Connections: 0
+[18:47:30] Connections: 0
+[18:47:32] Connections: 0
+[18:47:34] Connections: 0
+[18:47:36] Connections: 0
+[18:47:38] Connections: 0
+[18:47:40] Connections: 0
+[18:47:42] Connections: 0
+[18:47:44] Connections: 0
+[18:47:46] Connections: 0
+[18:47:48] Connections: 0
+[18:47:50] Connections: 0
+[18:47:52] Connections: 0
+[18:47:54] Connections: 0
+[18:47:56] Connections: 0
+[18:47:58] Connections: 0
+[18:48:00] Connections: 0
+[18:48:02] Connections: 0
+[18:48:04] Connections: 0
+[18:48:06] Connections: 0
+[18:48:08] Connections: 0
+[18:48:10] Connections: 0
+[18:48:12] Connections: 0
+[18:48:14] Connections: 0
+[18:48:16] Connections: 0
+[18:48:18] Connections: 0
+[18:48:20] Connections: 0
+[18:48:22] Connections: 0
+[18:48:24] Connections: 0
+[18:48:26] Connections: 0
+[18:48:28] Connections: 0
+[18:48:31] Connections: 0
+[18:48:33] Connections: 0
+[18:48:35] Connections: 0
+[18:48:37] Connections: 0
+[18:48:39] Connections: 0
+[18:48:41] Connections: 0
+[18:48:43] Connections: 0
+[18:48:45] Connections: 0
+[18:48:47] Connections: 0
+[18:48:49] Connections: 0
+[18:48:51] Connections: 0
+[18:48:53] Connections: 0
+[18:48:55] Connections: 0
+[18:48:57] Connections: 0
+[18:48:59] Connections: 0
+[18:49:01] Connections: 0
+[18:49:03] Connections: 0
+[18:49:05] Connections: 0
+[18:49:07] Connections: 0
+[18:49:09] Connections: 0
+[18:49:11] Connections: 0
+[18:49:13] Connections: 0
+[18:49:15] Connections: 0
+[18:49:17] Connections: 0
+[18:49:19] Connections: 0
+[18:49:21] Connections: 0
+[18:49:23] Connections: 0
+[18:49:25] Connections: 0
+[18:49:27] Connections: 0
+[18:49:29] Connections: 0
+[18:49:31] Connections: 0
+[18:49:33] Connections: 0
+[18:49:35] Connections: 0
+[18:49:37] Connections: 0
+[18:49:39] Connections: 0
+[18:49:41] Connections: 0
+[18:49:44] Connections: 0
+[18:49:46] Connections: 0
+[18:49:48] Connections: 0
+[18:49:50] Connections: 0
+[18:49:52] Connections: 0
+[18:49:54] Connections: 0
+[18:49:56] Connections: 0
+[18:49:58] Connections: 0

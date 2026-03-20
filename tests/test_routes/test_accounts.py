@@ -376,7 +376,7 @@ class TestInlineAnchor:
             assert b"font-mono" in response.data
 
     def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):
-        """PATCH /accounts/<id>/inline-anchor with invalid amount returns 400."""
+        """PATCH /accounts/<id>/inline-anchor with invalid amount returns 400 with errors JSON."""
         with app.app_context():
             account_id = seed_user["account"].id
 
@@ -386,13 +386,19 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 400
+            body = response.get_json()
+            assert "errors" in body, "400 response must contain validation errors"
 
     def test_inline_anchor_other_users_account(
         self, app, auth_client, seed_user
     ):
-        """PATCH /accounts/<id>/inline-anchor for another user's account returns 404."""
+        """PATCH /accounts/<id>/inline-anchor for another user's account returns 404.
+
+        IDOR write-path: must verify the anchor balance was not changed.
+        """
         with app.app_context():
             other = _create_other_user_account()
+            orig_balance = other["account"].current_anchor_balance
 
             response = auth_client.patch(
                 f"/accounts/{other['account'].id}/inline-anchor",
@@ -400,6 +406,11 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 404
+
+            # Prove no state change occurred.
+            db.session.expire_all()
+            db.session.refresh(other["account"])
+            assert other["account"].current_anchor_balance == orig_balance
 
 
 class TestTrueUp:
@@ -443,7 +454,7 @@ class TestTrueUp:
             assert b"No current pay period found" in response.data
 
     def test_true_up_invalid_amount(self, app, auth_client, seed_user, seed_periods):
-        """PATCH /accounts/<id>/true-up with invalid amount returns 400."""
+        """PATCH /accounts/<id>/true-up with invalid amount returns 400 with errors JSON."""
         with app.app_context():
             account_id = seed_user["account"].id
 
@@ -453,13 +464,19 @@ class TestTrueUp:
             )
 
             assert response.status_code == 400
+            body = response.get_json()
+            assert "errors" in body, "400 response must contain validation errors"
 
     def test_true_up_other_users_account(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """PATCH /accounts/<id>/true-up for another user's account returns 404."""
+        """PATCH /accounts/<id>/true-up for another user's account returns 404.
+
+        IDOR write-path: must verify the anchor balance was not changed.
+        """
         with app.app_context():
             other = _create_other_user_account()
+            orig_balance = other["account"].current_anchor_balance
 
             response = auth_client.patch(
                 f"/accounts/{other['account'].id}/true-up",
@@ -467,6 +484,11 @@ class TestTrueUp:
             )
 
             assert response.status_code == 404
+
+            # Prove no state change occurred.
+            db.session.expire_all()
+            db.session.refresh(other["account"])
+            assert other["account"].current_anchor_balance == orig_balance
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────

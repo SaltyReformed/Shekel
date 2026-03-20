@@ -97,9 +97,10 @@ class TestInvestmentDashboard:
         )
 
     def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods):
-        """Nonexistent account → redirect."""
+        """Nonexistent account → redirect to savings dashboard."""
         resp = auth_client.get("/accounts/99999/investment")
         assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
 
     def test_dashboard_brokerage(self, auth_client, seed_user, db, seed_periods):
         """Brokerage account (no contribution limit) works."""
@@ -243,10 +244,11 @@ class TestGrowthChartFragment:
     def test_growth_chart_redirects_without_htmx(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """GET without HX-Request header redirects to dashboard."""
+        """GET without HX-Request header redirects to investment dashboard."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/investment/growth-chart")
         assert resp.status_code == 302
+        assert "/investment" in resp.headers.get("Location", "")
 
     def test_growth_chart_empty_without_params(
         self, auth_client, seed_user, db, seed_periods,

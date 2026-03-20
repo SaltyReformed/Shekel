@@ -79,16 +79,18 @@ class TestHysaDetailView:
         )
 
     def test_hysa_detail_nonexistent(self, auth_client, seed_user, db):
-        """Bad account ID → redirect."""
+        """Bad account ID → redirect to accounts list."""
         resp = auth_client.get("/accounts/99999/hysa")
         assert resp.status_code == 302
+        assert "/accounts" in resp.headers.get("Location", "")
 
     def test_hysa_detail_wrong_type(self, auth_client, seed_user, db):
-        """Non-HYSA account → redirect with warning."""
+        """Non-HYSA account → redirect to accounts list with warning."""
         # seed_user already has a checking account.
         account = seed_user["account"]
         resp = auth_client.get(f"/accounts/{account.id}/hysa")
         assert resp.status_code == 302
+        assert "/accounts" in resp.headers.get("Location", "")
 
     def test_hysa_detail_login_required(self, client, db):
         """Unauthenticated → redirect to login."""

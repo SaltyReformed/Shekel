@@ -98,10 +98,11 @@ class TestAutoLoanDashboard:
         )
 
     def test_dashboard_wrong_type(self, auth_client, seed_user, db, seed_periods):
-        """Non-auto-loan → redirect."""
+        """Non-auto-loan → redirect to savings dashboard."""
         acct = seed_user["account"]
         resp = auth_client.get(f"/accounts/{acct.id}/auto-loan")
         assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
 
     def test_dashboard_login_required(self, client, seed_user, db, seed_periods):
         """Unauthenticated → redirect."""

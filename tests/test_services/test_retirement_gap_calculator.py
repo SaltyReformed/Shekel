@@ -59,7 +59,13 @@ class TestCalculateGap:
         )
 
     def test_shortfall(self):
-        """Projected savings less than required."""
+        """Projected savings less than required.
+
+        net_monthly = (2500 * 26 / 12).quantize(0.01) = 5416.67
+        gap = 5416.67 - 0 = 5416.67
+        required = (5416.67 * 12 / 0.04).quantize(0.01) = 1625001.00
+        shortfall = 100000 - 1625001.00 = -1525001.00
+        """
         result = calculate_gap(
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=ZERO,
@@ -68,7 +74,7 @@ class TestCalculateGap:
             ],
             safe_withdrawal_rate=Decimal("0.04"),
         )
-        assert result.savings_surplus_or_shortfall < ZERO
+        assert result.savings_surplus_or_shortfall == Decimal("-1525001.00")
 
     def test_no_pension(self):
         """Full gap equals net income when no pension."""
@@ -167,14 +173,20 @@ class TestCalculateGap:
         assert result.projected_total_savings == Decimal("350000")
 
     def test_no_retirement_accounts(self):
-        """No accounts → full shortfall."""
+        """No accounts → full shortfall.
+
+        net_monthly = (2000 * 26 / 12).quantize(0.01) = 4333.33
+        gap = 4333.33 - 0 = 4333.33
+        required = (4333.33 * 12 / 0.04).quantize(0.01) = 1299999.00
+        shortfall = 0 - 1299999.00 = -1299999.00
+        """
         result = calculate_gap(
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[],
         )
         assert result.projected_total_savings == ZERO
-        assert result.savings_surplus_or_shortfall < ZERO
+        assert result.savings_surplus_or_shortfall == Decimal("-1299999.00")
 
     def test_no_tax_rate_skips_after_tax(self):
         """No tax rate → after-tax fields are None."""
