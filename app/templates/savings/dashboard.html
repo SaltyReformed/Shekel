@@ -143,7 +143,7 @@
           {% for label, bal in ad.projected.items() %}
           <div class="d-flex justify-content-between">
             <small class="text-muted">{{ label }}</small>
-            <small class="font-mono">${{ "{:,.0f}".format(bal|int) }}</small>
+            <small class="font-mono">${{ "{:,.0f}".format(bal) }}</small>
           </div>
           {% endfor %}
         </div>

@@ -14,18 +14,18 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{{ t.name }}: ${{ '{:,.0f}'.format(t.effective_amount|int) }}{% if t.status %} ({{ t.status.name }}){% endif %}"
+     aria-label="{{ t.name }}: ${{ '{:,.0f}'.format(t.effective_amount) }}{% if t.status %} ({{ t.status.name }}){% endif %}"
      title="{{ t.name }}{% if t.notes %} — {{ t.notes }}{% endif %}">
 
   {# Show crossed-out estimate + actual when they differ #}
   {% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
     <span class="text-decoration-line-through small" style="color: var(--shekel-text-muted);">
-      {{ "{:,.0f}".format(t.estimated_amount|int) }}
+      {{ "{:,.0f}".format(t.estimated_amount) }}
     </span>
-    <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount|int) }}</span>
+    <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
   {% else %}
     {% if t.estimated_amount|float != 0 %}
-      <span class="font-mono">{{ "{:,.0f}".format(t.estimated_amount|int) }}</span>
+      <span class="font-mono">{{ "{:,.0f}".format(t.estimated_amount) }}</span>
     {% endif %}
   {% endif %}
 

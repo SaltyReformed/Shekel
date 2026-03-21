@@ -13,7 +13,7 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount|int) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     aria-label="{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
      title="{{ xfer.name or 'Transfer' }}{% if xfer.notes %} — {{ xfer.notes }}{% endif %}">
 
   {# Direction icon #}
@@ -26,7 +26,7 @@
   {% endif %}
 
   {% if xfer.amount|float != 0 %}
-    <span class="font-mono">{{ "{:,.0f}".format(xfer.amount|int) }}</span>
+    <span class="font-mono">{{ "{:,.0f}".format(xfer.amount) }}</span>
   {% endif %}
 
   {# Status badge #}

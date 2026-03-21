@@ -35,9 +35,9 @@
      class="anchor-balance-display font-mono"
      role="button"
      tabindex="0"
-     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance|int if account.current_anchor_balance else 0) }}. Click to edit."
+     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance if account.current_anchor_balance else 0) }}. Click to edit."
      title="Click to update balance">
-  ${{ "{:,.0f}".format(account.current_anchor_balance|int if account.current_anchor_balance else 0) }}
+  ${{ "{:,.0f}".format(account.current_anchor_balance if account.current_anchor_balance else 0) }}
   <i class="bi bi-pencil-square text-muted ms-1 small"></i>
 </div>
 {% endif %}

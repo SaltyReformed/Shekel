@@ -20,7 +20,7 @@
         {% endif %}
       {% endfor %}
       <td class="text-end font-mono">
-        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -36,7 +36,7 @@
         {% endif %}
       {% endfor %}
       <td class="text-end font-mono">
-        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val|int) }}{% endif %}
+        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -61,7 +61,7 @@
       {% endfor %}
       <td class="text-end font-mono {{ 'balance-negative' if xfer_net.val < 0 else '' }}">
         {% if xfer_net.val != 0 %}
-          ${{ "{:,.0f}".format(xfer_net.val|int) }}
+          ${{ "{:,.0f}".format(xfer_net.val) }}
         {% endif %}
       </td>
     {% endfor %}
@@ -87,7 +87,7 @@
       <td class="text-end font-mono {{ 'balance-negative' if net < 0 else '' }}">
         {% if net != 0 %}
           {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-          ${{ "{:,.0f}".format(net|int) }}
+          ${{ "{:,.0f}".format(net) }}
         {% endif %}
       </td>
     {% endfor %}
@@ -103,7 +103,7 @@
       <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}
-          ${{ "{:,.0f}".format(bal|int) }}
+          ${{ "{:,.0f}".format(bal) }}
         {% else %}
           —
         {% endif %}
