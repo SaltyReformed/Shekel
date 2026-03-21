@@ -218,7 +218,7 @@ class RaiseCreateSchema(BaseSchema):
     effective_month = fields.Integer(
         required=True, validate=validate.Range(min=1, max=12)
     )
-    effective_year = fields.Integer()
+    effective_year = fields.Integer(required=True)
     percentage = fields.Decimal(places=2, as_string=True)
     flat_amount = fields.Decimal(places=2, as_string=True)
     is_recurring = fields.Boolean(load_default=False)

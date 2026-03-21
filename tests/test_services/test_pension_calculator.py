@@ -225,3 +225,25 @@ class TestProjectSalariesByYear:
         assert result[2][1] == Decimal("87418.16"), (
             f"2028 salary: expected 87418.16, got {result[2][1]}"
         )
+
+    def test_recurring_raise_highest_years_near_retirement(self):
+        """With compounding raises, highest-paid years should be near retirement."""
+        raises = [
+            FakeRaise(percentage="0.025", effective_month=1,
+                      effective_year=2026, is_recurring=True),
+        ]
+        salary_by_year = project_salaries_by_year(
+            Decimal("90000"), raises, 2026, 2046,
+        )
+        result = calculate_benefit(
+            benefit_multiplier=Decimal("0.0185"),
+            consecutive_high_years=4,
+            hire_date=date(2006, 6, 1),
+            planned_retirement_date=date(2046, 6, 1),
+            salary_by_year=salary_by_year,
+        )
+        high_years = [y for y, _ in result.high_salary_years]
+        # The 4 highest consecutive salary years must be the last 4
+        assert high_years == [2043, 2044, 2045, 2046], (
+            f"Expected highest years near retirement, got {high_years}"
+        )

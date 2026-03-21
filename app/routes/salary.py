@@ -138,6 +138,7 @@ def new_profile():
         raise_types=[],
         deduction_timings=[],
         calc_methods=[],
+        now_year=date.today().year,
     )
 
 
@@ -285,6 +286,7 @@ def edit_profile(profile_id):
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
+        now_year=date.today().year,
     )
 
 
@@ -742,6 +744,7 @@ def _render_raises_partial(profile):
         "salary/_raises_section.html",
         profile=profile,
         raise_types=raise_types,
+        now_year=date.today().year,
     )
 
 

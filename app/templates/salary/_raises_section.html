@@ -30,7 +30,7 @@
           <td>{{ r.raise_type.name|title if r.raise_type else '—' }}</td>
           <td>
             {{ month_names.get(r.effective_month, '?') }}
-            {{ r.effective_year if r.effective_year else '(yearly)' }}
+            {{ r.effective_year }}
           </td>
           <td>
             {% if r.percentage %}
@@ -97,7 +97,7 @@
           <div class="col-md-2">
             <label class="form-label">Year</label>
             <input type="number" name="effective_year" class="form-control form-control-sm"
-                   placeholder="blank=recurring">
+                   value="{{ now_year }}" required>
           </div>
           <div class="col-md-2">
             <label class="form-label">Percentage</label>

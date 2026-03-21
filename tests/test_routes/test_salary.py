@@ -511,6 +511,26 @@ class TestRaises:
             assert response.status_code == 200
             assert b"Please correct the highlighted errors" in response.data
 
+    def test_add_raise_without_year_rejected(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/<id>/raises without effective_year is rejected."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/raises",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "7",
+                    "percentage": "3",
+                    "is_recurring": "on",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Please correct the highlighted errors" in response.data
+
     def test_add_raise_profile_not_found(self, app, auth_client, seed_user):
         """POST /salary/<id>/raises for non-existent profile flashes danger."""
         with app.app_context():

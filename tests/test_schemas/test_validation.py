@@ -452,6 +452,7 @@ class TestRaiseCreateSchema:
         data = RaiseCreateSchema().load({
             "raise_type_id": "1",
             "effective_month": "3",
+            "effective_year": "2026",
             "percentage": "3.50",
         })
         assert data["percentage"] == Decimal("3.50")
@@ -461,6 +462,7 @@ class TestRaiseCreateSchema:
         data = RaiseCreateSchema().load({
             "raise_type_id": "1",
             "effective_month": "1",
+            "effective_year": "2026",
             "flat_amount": "5000.00",
         })
         assert data["flat_amount"] == Decimal("5000.00")
@@ -471,6 +473,7 @@ class TestRaiseCreateSchema:
             RaiseCreateSchema().load({
                 "raise_type_id": "1",
                 "effective_month": "3",
+                "effective_year": "2026",
                 "percentage": "3",
                 "flat_amount": "5000.00",
             })
@@ -482,8 +485,19 @@ class TestRaiseCreateSchema:
             RaiseCreateSchema().load({
                 "raise_type_id": "1",
                 "effective_month": "3",
+                "effective_year": "2026",
             })
         assert "_schema" in exc.value.messages
+
+    def test_missing_effective_year_rejected(self):
+        """Raise without effective_year is rejected."""
+        with pytest.raises(ValidationError) as exc:
+            RaiseCreateSchema().load({
+                "raise_type_id": "1",
+                "effective_month": "3",
+                "percentage": "3",
+            })
+        assert "effective_year" in exc.value.messages
 
     def test_month_out_of_range(self):
         """effective_month=13 fails Range(1-12) validation."""
@@ -491,6 +505,7 @@ class TestRaiseCreateSchema:
             RaiseCreateSchema().load({
                 "raise_type_id": "1",
                 "effective_month": "13",
+                "effective_year": "2026",
                 "percentage": "3",
             })
         assert "effective_month" in exc.value.messages
