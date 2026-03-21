@@ -201,7 +201,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         .filter(
             Transaction.template_id == template.id,
             Transaction.scenario_id == scenario_id,
-            PayPeriod.start_date >= effective_from,
+            PayPeriod.end_date >= effective_from,
         )
         .all()
     )
@@ -287,8 +287,9 @@ def _match_periods(rule, pattern_name, periods, effective_from):
     Returns:
         Filtered list of PayPeriod objects.
     """
-    # Filter by effective date first.
-    candidates = [p for p in periods if p.start_date >= effective_from]
+    # Filter by effective date first.  Use end_date so that the current
+    # pay period is included when effective_from falls mid-period.
+    candidates = [p for p in periods if p.end_date >= effective_from]
 
     if pattern_name == "every_period":
         return candidates

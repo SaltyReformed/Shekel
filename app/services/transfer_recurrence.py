@@ -150,7 +150,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         .filter(
             Transfer.transfer_template_id == template.id,
             Transfer.scenario_id == scenario_id,
-            PayPeriod.start_date >= effective_from,
+            PayPeriod.end_date >= effective_from,
         )
         .all()
     )
