@@ -272,22 +272,31 @@ def get_balance_over_time(user_id, account_ids=None, start=None, end=None):
     if not scenario:
         return _empty_chart()
 
-    accounts = (
+    all_accounts = (
         db.session.query(Account)
         .filter_by(user_id=user_id, is_active=True)
         .order_by(Account.sort_order, Account.name)
         .all()
     )
-    if account_ids:
-        accounts = [a for a in accounts if a.id in account_ids]
-    if not accounts:
+    if not all_accounts:
         return _empty_chart()
+
+    chart_accounts = (
+        [a for a in all_accounts if a.id in account_ids]
+        if account_ids else all_accounts
+    )
 
     labels = [_format_period_label(p) for p in periods]
     datasets = []
     all_accounts_info = []
 
-    for account in accounts:
+    for account in all_accounts:
+        category = account.account_type.category if account.account_type else "asset"
+        all_accounts_info.append({
+            "id": account.id, "name": account.name, "category": category,
+        })
+
+    for account in chart_accounts:
         category = account.account_type.category if account.account_type else "asset"
         axis = "y" if category in _LEFT_AXIS_CATEGORIES else "y1"
 
@@ -299,9 +308,6 @@ def get_balance_over_time(user_id, account_ids=None, start=None, end=None):
         datasets.append({
             "label": account.name, "data": data,
             "account_id": account.id, "axis": axis,
-        })
-        all_accounts_info.append({
-            "id": account.id, "name": account.name, "category": category,
         })
 
     return {"labels": labels, "datasets": datasets, "accounts": all_accounts_info}

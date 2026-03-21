@@ -10,7 +10,7 @@
              {% if chart_data.datasets|selectattr('account_id', 'equalto', acct.id)|list %}checked{% endif %}
              hx-get="{{ url_for('charts.balance_over_time') }}"
              hx-include="[name='account_id']:checked, [name='dual_axis']"
-             hx-target="#balance-chart-container"
+             hx-target="closest .card-body"
              hx-swap="innerHTML">
       <label class="form-check-label small" for="acct-{{ acct.id }}">{{ acct.name }}</label>
     </div>
