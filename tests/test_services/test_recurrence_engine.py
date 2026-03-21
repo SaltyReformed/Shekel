@@ -1167,29 +1167,14 @@ class TestCrossUserIsolation:
         db.session.refresh(template)
         return template
 
-    @pytest.mark.xfail(
-        reason=(
-            "SECURITY: No ownership check in "
-            "generate_for_template. Template from user A "
-            "generates transactions into user B's scenario. "
-            "See recurrence_engine.py:42."
-        ),
-        strict=True,
-    )
     def test_cross_user_isolation(
         self, app, db, seed_user, seed_periods, second_user
     ):
         """Template owned by user A must not generate into B's scenario.
 
-        generate_for_template receives scenario_id as a trusted
-        parameter with no ownership validation. If user A's
-        template is used with user B's scenario_id, transactions
-        are created in user B's scenario — a real IDOR
-        vulnerability.
-
-        This test asserts the CORRECT behavior (no cross-user
-        generation). Marked xfail because the engine currently
-        lacks this check.
+        generate_for_template validates that the template's user_id
+        matches the scenario's user_id. If they differ, zero
+        transactions are created (defense-in-depth against IDOR).
         """
         with app.app_context():
             # Template belongs to seed_user (user A).

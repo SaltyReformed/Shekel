@@ -107,6 +107,102 @@ class TestLogin:
                 _db.engine.dispose()
             limiter.enabled = False
 
+    def test_login_nonexistent_email(self, app, client):
+        """POST /login with nonexistent email shows the same generic error.
+
+        Anti-enumeration: same message as wrong password to prevent
+        email discovery attacks. If the message differs, an attacker can
+        determine which emails have accounts.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": "nobody@shekel.local",
+                "password": "anything",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            # Anti-enumeration: same message as wrong password.
+            assert b"Invalid email or password" in response.data
+
+    def test_login_missing_email_field(self, app, client):
+        """POST /login with no email field returns generic error, not a crash.
+
+        The route uses request.form.get('email', '') which defaults to
+        empty string when the key is absent.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "password": "testpass",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+            assert b"Internal Server Error" not in response.data
+
+    def test_login_missing_password_field(self, app, client, seed_user):
+        """POST /login with no password field returns generic error, not a crash.
+
+        The route uses request.form.get('password', '') which defaults to
+        empty string when the key is absent.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+            assert b"Internal Server Error" not in response.data
+
+    def test_login_empty_both_fields(self, app, client):
+        """POST /login with empty email and password returns generic error.
+
+        Edge case: both fields present but empty strings. Catches any
+        difference in handling between missing and empty fields.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": "",
+                "password": "",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+
+    def test_login_xss_in_email_field(self, app, client):
+        """POST /login with XSS payload in email does not render unescaped HTML.
+
+        Verifies Jinja2 auto-escaping prevents script injection. The login
+        template does not echo the submitted email, so the payload should
+        not appear in the response at all.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": '<script>alert("xss")</script>',
+                "password": "anything",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            # The raw script tag must not appear unescaped in the response.
+            assert b'<script>alert("xss")</script>' not in response.data
+            assert b"Internal Server Error" not in response.data
+
+    def test_login_xss_in_password_field(self, app, client, seed_user):
+        """POST /login with XSS payload in password does not render unescaped HTML.
+
+        Password fields are never echoed, but verify no injection path
+        exists via error messages or logging output rendered in HTML.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": '<script>alert("xss")</script>',
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+            assert b'<script>alert("xss")</script>' not in response.data
+
 
 class TestLogout:
     """Tests for the /logout endpoint."""
@@ -197,22 +293,19 @@ class TestSessionManagement:
     def test_invalidate_sessions(self, app, auth_client, seed_user):
         """POST /invalidate-sessions sets session_invalidated_at on user."""
         with app.app_context():
+            before = datetime.now(timezone.utc)
             response = auth_client.post(
                 "/invalidate-sessions", follow_redirects=True
             )
+            after = datetime.now(timezone.utc)
 
             assert response.status_code == 200
             assert b"All other sessions have been logged out" in response.data
 
-            # Reload user from database and verify timestamp is recent.
+            # Reload user from database.
             user = db.session.get(User, seed_user["user"].id)
-            assert user.session_invalidated_at is not None, \
-                "session_invalidated_at was not set"
-            # Column is DateTime(timezone=True); verify within 5s of now
-            now = datetime.now(timezone.utc)
-            delta = abs(now - user.session_invalidated_at)
-            assert delta < timedelta(seconds=5), \
-                f"session_invalidated_at is {delta} from now, expected < 5s"
+            # Verify timestamp is recent, not just non-null (audit section 43 smell fix).
+            assert before <= user.session_invalidated_at <= after
 
     def test_invalidate_sessions_current_session_survives(self, app, auth_client, seed_user):
         """Current session remains valid after invalidation."""
@@ -249,21 +342,18 @@ class TestSessionManagement:
     def test_password_change_invalidates_sessions(self, app, auth_client, seed_user):
         """Password change sets session_invalidated_at."""
         with app.app_context():
+            before = datetime.now(timezone.utc)
             auth_client.post("/change-password", data={
                 "current_password": "testpass",
                 "new_password": "newpassword12",
                 "confirm_password": "newpassword12",
             })
+            after = datetime.now(timezone.utc)
 
-            # Reload user and verify session_invalidated_at is recent.
+            # Reload user from database.
             user = db.session.get(User, seed_user["user"].id)
-            assert user.session_invalidated_at is not None, \
-                "session_invalidated_at was not set after password change"
-            # Column is DateTime(timezone=True); verify within 5s of now
-            now = datetime.now(timezone.utc)
-            delta = abs(now - user.session_invalidated_at)
-            assert delta < timedelta(seconds=5), \
-                f"session_invalidated_at is {delta} from now, expected < 5s"
+            # Verify timestamp is recent, not just non-null (audit section 43 smell fix).
+            assert before <= user.session_invalidated_at <= after
 
     def test_invalidate_sessions_requires_login(self, app, client):
         """POST /invalidate-sessions without login redirects to login."""
@@ -1027,3 +1117,278 @@ class TestRegistration:
             ).all()
             assert len(accounts) == 1
             assert accounts[0].name == "Checking"
+
+
+class TestMfaVerifySecurity:
+    """Security tests for the /mfa/verify endpoint.
+
+    Covers rate limiting, session isolation (IDOR prevention), and
+    rejection of requests with no pending MFA state.
+    """
+
+    def _enable_mfa(self, user_id):
+        """Enable MFA for a user with a known secret and backup codes.
+
+        Args:
+            user_id: The user's primary key.
+
+        Returns:
+            str: The plaintext TOTP secret.
+        """
+        secret = "JBSWY3DPEHPK3PXP"
+        mfa_config = MfaConfig(
+            user_id=user_id,
+            is_enabled=True,
+            totp_secret_encrypted=mfa_service.encrypt_secret(secret),
+            backup_codes=mfa_service.hash_backup_codes(["aaaaaaaa"]),
+        )
+        db.session.add(mfa_config)
+        db.session.commit()
+        return secret
+
+    def test_mfa_verify_rate_limiting(self, app, seed_user):
+        """POST /mfa/verify is rate-limited to 5 attempts per 15 minutes.
+
+        Without rate limiting, a 6-digit TOTP code (1,000,000 possibilities)
+        could be brute-forced in hours. This test verifies the limiter blocks
+        the 6th failed attempt with a 429 status.
+        """
+        with app.app_context():
+            # Create a fresh app with rate limiting enabled (TestConfig disables it).
+            rate_app = create_app("testing")
+            rate_app.config["RATELIMIT_ENABLED"] = True
+
+            # Re-initialize limiter with rate limiting enabled.
+            from app.extensions import limiter  # pylint: disable=import-outside-toplevel
+            limiter.enabled = True
+            limiter.init_app(rate_app)
+
+            rate_client = rate_app.test_client()
+
+            with rate_app.app_context():
+                # Enable MFA for the seed user.
+                self._enable_mfa(seed_user["user"].id)
+
+                # Login to reach MFA pending state.
+                login_resp = rate_client.post("/login", data={
+                    "email": "test@shekel.local",
+                    "password": "testpass",
+                }, follow_redirects=False)
+                assert login_resp.status_code == 302
+                assert "mfa/verify" in login_resp.headers.get("Location", "")
+
+                # Submit 5 wrong TOTP codes (within the limit).
+                for i in range(5):
+                    resp = rate_client.post("/mfa/verify", data={
+                        "totp_code": "000000",
+                    })
+                    # Each attempt should succeed at the HTTP level (invalid code, not rate-limited).
+                    assert resp.status_code == 200, \
+                        f"Attempt {i + 1} should return 200, got {resp.status_code}"
+                    assert b"Invalid verification code." in resp.data
+
+                # 6th attempt should be rate-limited.
+                response = rate_client.post("/mfa/verify", data={
+                    "totp_code": "000000",
+                })
+                assert response.status_code == 429
+
+            # Clean up: dispose the secondary app's engine to release
+            # connections, and reset limiter for other tests.
+            with rate_app.app_context():
+                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                _db.engine.dispose()
+            limiter.enabled = False
+
+    def test_mfa_verify_idor_other_users_pending_session(self, app, client, seed_user):
+        """Session isolation: a second client cannot access another session's MFA state.
+
+        The _mfa_pending_user_id is stored in the Flask session cookie, so a
+        separate client (different session) should have no access to it. This
+        prevents cross-session MFA completion.
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            # Client 1: Login to enter MFA pending state.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Client 2: A separate test client with its own session.
+            client2 = app.test_client()
+
+            # Client 2 has no pending MFA state — should be redirected to login.
+            response = client2.get("/mfa/verify", follow_redirects=False)
+            assert response.status_code == 302
+            assert "login" in response.headers.get("Location", "")
+
+    def test_mfa_verify_no_pending_user_post_rejected(self, app, client):
+        """POST /mfa/verify with no pending MFA user redirects to login.
+
+        Prevents abuse of the verify endpoint when no authentication flow
+        is in progress. The route checks for _mfa_pending_user_id before
+        processing any submitted code.
+        """
+        with app.app_context():
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            assert "login" in response.headers.get("Location", "")
+
+
+class TestPasswordChangeEdgeCases:
+    """Edge-case tests for POST /change-password.
+
+    Covers same-as-current password, double submission, and
+    whitespace-only passwords to document security-relevant behavior.
+    """
+
+    def test_change_password_same_as_current(self, app, auth_client, seed_user):
+        """Changing password to the same value succeeds (no reuse check).
+
+        The auth service does not prevent password reuse. This test
+        documents the current behavior. Consider rejecting same-as-current
+        for improved security posture.
+        """
+        with app.app_context():
+            # First change to a password that meets the 12-char minimum,
+            # since the seed user's initial password ("testpass") is only 8 chars.
+            resp1 = auth_client.post("/change-password", data={
+                "current_password": "testpass",
+                "new_password": "testpass1234",
+                "confirm_password": "testpass1234",
+            }, follow_redirects=True)
+            assert resp1.status_code == 200
+            assert b"Password changed successfully" in resp1.data
+
+            # Now try to change to the exact same password.
+            resp2 = auth_client.post("/change-password", data={
+                "current_password": "testpass1234",
+                "new_password": "testpass1234",
+                "confirm_password": "testpass1234",
+            }, follow_redirects=True)
+
+            # App allows reusing current password (consider rejecting for security).
+            assert resp2.status_code == 200
+            assert b"Password changed successfully" in resp2.data
+
+            # Verify the password still works for login.
+            auth_client.get("/logout")
+            login_resp = auth_client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass1234",
+            }, follow_redirects=False)
+            assert login_resp.status_code == 302
+
+    def test_change_password_double_submit(self, app, auth_client, seed_user):
+        """Second password change fails because current password already changed.
+
+        Simulates a double-submit scenario: the first change succeeds,
+        making the second attempt's 'current_password' incorrect.
+        """
+        with app.app_context():
+            # First change: testpass -> newpassword12.
+            resp1 = auth_client.post("/change-password", data={
+                "current_password": "testpass",
+                "new_password": "newpassword12",
+                "confirm_password": "newpassword12",
+            }, follow_redirects=True)
+            assert resp1.status_code == 200
+            assert b"Password changed successfully" in resp1.data
+
+            # Second change: tries to use "testpass" as current, but it's
+            # now "newpassword12".
+            resp2 = auth_client.post("/change-password", data={
+                "current_password": "testpass",
+                "new_password": "anotherpass12",
+                "confirm_password": "anotherpass12",
+            }, follow_redirects=True)
+            assert resp2.status_code == 200
+            assert b"Current password is incorrect" in resp2.data
+
+            # Verify the password is still "newpassword12" (not "anotherpass12").
+            auth_client.get("/logout")
+            login_resp = auth_client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "newpassword12",
+            }, follow_redirects=False)
+            assert login_resp.status_code == 302
+
+    def test_change_password_whitespace_only(self, app, auth_client, seed_user):
+        """Whitespace-only password of sufficient length is accepted.
+
+        The auth service validates only minimum length (12 chars) and does
+        not strip whitespace from passwords. This test documents that an
+        all-spaces password is accepted. Consider adding whitespace
+        validation for improved security.
+        """
+        with app.app_context():
+            whitespace_password = "            "  # 12 spaces
+            response = auth_client.post("/change-password", data={
+                "current_password": "testpass",
+                "new_password": whitespace_password,
+                "confirm_password": whitespace_password,
+            }, follow_redirects=True)
+
+            # App accepts whitespace-only passwords (consider rejecting for security).
+            assert response.status_code == 200
+            assert b"Password changed successfully" in response.data
+
+            # Verify the whitespace password works for login.
+            auth_client.get("/logout")
+            login_resp = auth_client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": whitespace_password,
+            }, follow_redirects=False)
+            assert login_resp.status_code == 302
+
+
+class TestMfaSetupEdgeCases:
+    """Edge-case tests for the MFA setup/confirm flow.
+
+    Verifies that double-submitting the MFA confirmation code does not
+    create duplicate MfaConfig rows or cause errors.
+    """
+
+    def test_mfa_confirm_double_submit(self, app, auth_client, seed_user, monkeypatch):
+        """Submitting MFA confirmation twice does not create a duplicate MfaConfig.
+
+        The first POST pops the setup secret from the session. The second
+        POST finds no secret and redirects to /mfa/setup with an expiry
+        message. Only one MfaConfig row should exist.
+        """
+        with app.app_context():
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Visit setup to store the secret in the session.
+            auth_client.get("/mfa/setup")
+
+            # First confirm: enables MFA and shows backup codes.
+            resp1 = auth_client.post("/mfa/confirm", data={
+                "totp_code": "123456",
+            })
+            assert resp1.status_code == 200
+            assert b"Save Your Backup Codes" in resp1.data
+
+            # Second confirm: session secret was consumed; should redirect.
+            resp2 = auth_client.post("/mfa/confirm", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+            # Session secret was consumed on first submit; second is rejected.
+            assert resp2.status_code == 302
+            assert "mfa/setup" in resp2.headers.get("Location", "")
+
+            # Verify exactly one MfaConfig exists and it is enabled.
+            config_count = db.session.query(MfaConfig).filter_by(
+                user_id=seed_user["user"].id
+            ).count()
+            assert config_count == 1
+
+            config = db.session.query(MfaConfig).filter_by(
+                user_id=seed_user["user"].id
+            ).first()
+            assert config.is_enabled is True

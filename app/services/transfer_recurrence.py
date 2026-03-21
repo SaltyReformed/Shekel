@@ -15,6 +15,7 @@ import logging
 from collections import defaultdict
 
 from app.extensions import db
+from app.models.scenario import Scenario
 from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
@@ -40,6 +41,17 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     Returns:
         List of newly created Transfer objects.
     """
+    # Defense-in-depth: verify the template and scenario belong to the same
+    # user.  The route layer already enforces this, but a mismatch here would
+    # silently create transfers in another user's scenario (IDOR).
+    scenario = db.session.get(Scenario, scenario_id)
+    if scenario is None or scenario.user_id != template.user_id:
+        logger.warning(
+            "Blocked cross-user transfer generation: template user_id=%s, "
+            "scenario_id=%s", template.user_id, scenario_id,
+        )
+        return []
+
     rule = template.recurrence_rule
     if rule is None:
         return []
@@ -120,6 +132,15 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     Raises:
         RecurrenceConflict: If overridden or deleted entries exist.
     """
+    # Defense-in-depth: verify ownership before deleting and regenerating.
+    scenario = db.session.get(Scenario, scenario_id)
+    if scenario is None or scenario.user_id != template.user_id:
+        logger.warning(
+            "Blocked cross-user transfer regeneration: template user_id=%s, "
+            "scenario_id=%s", template.user_id, scenario_id,
+        )
+        return []
+
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
