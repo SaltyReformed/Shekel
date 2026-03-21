@@ -376,6 +376,11 @@ def add_raise(profile_id):
     # Handle checkbox — form sends "on" or nothing
     data["is_recurring"] = request.form.get("is_recurring") == "on"
 
+    # Convert percentage input (e.g. 3 → 0.03) for storage.
+    if data.get("percentage") is not None:
+        from decimal import Decimal as D
+        data["percentage"] = D(str(data["percentage"])) / D("100")
+
     salary_raise = SalaryRaise(salary_profile_id=profile.id, **data)
     db.session.add(salary_raise)
 

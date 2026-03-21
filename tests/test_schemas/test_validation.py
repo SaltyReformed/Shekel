@@ -452,9 +452,9 @@ class TestRaiseCreateSchema:
         data = RaiseCreateSchema().load({
             "raise_type_id": "1",
             "effective_month": "3",
-            "percentage": "0.0350",
+            "percentage": "3.50",
         })
-        assert data["percentage"] == Decimal("0.0350")
+        assert data["percentage"] == Decimal("3.50")
 
     def test_valid_with_flat_amount(self):
         """Valid raise with flat_amount loads successfully."""
@@ -471,7 +471,7 @@ class TestRaiseCreateSchema:
             RaiseCreateSchema().load({
                 "raise_type_id": "1",
                 "effective_month": "3",
-                "percentage": "0.03",
+                "percentage": "3",
                 "flat_amount": "5000.00",
             })
         assert "_schema" in exc.value.messages
@@ -491,7 +491,7 @@ class TestRaiseCreateSchema:
             RaiseCreateSchema().load({
                 "raise_type_id": "1",
                 "effective_month": "13",
-                "percentage": "0.03",
+                "percentage": "3",
             })
         assert "effective_month" in exc.value.messages
 

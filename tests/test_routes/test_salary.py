@@ -439,7 +439,7 @@ class TestRaises:
                     "raise_type_id": raise_type.id,
                     "effective_month": "7",
                     "effective_year": "2026",
-                    "percentage": "3.0000",
+                    "percentage": "3",
                 },
                 follow_redirects=True,
             )
@@ -975,7 +975,7 @@ class TestSalaryNegativePaths:
                     "raise_type_id": raise_type.id,
                     "effective_month": "7",
                     "effective_year": "2026",
-                    "percentage": "3.0000",
+                    "percentage": "3",
                 },
                 follow_redirects=True,
             )

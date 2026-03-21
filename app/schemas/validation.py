@@ -219,7 +219,7 @@ class RaiseCreateSchema(BaseSchema):
         required=True, validate=validate.Range(min=1, max=12)
     )
     effective_year = fields.Integer()
-    percentage = fields.Decimal(places=4, as_string=True)
+    percentage = fields.Decimal(places=2, as_string=True)
     flat_amount = fields.Decimal(places=2, as_string=True)
     is_recurring = fields.Boolean(load_default=False)
     notes = fields.String(allow_none=True)

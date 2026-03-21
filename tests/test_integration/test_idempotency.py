@@ -156,7 +156,7 @@ class TestRaiseDoubleSubmit:
                 "raise_type_id": raise_type.id,
                 "effective_month": "7",
                 "effective_year": "2026",
-                "percentage": "3.0000",
+                "percentage": "3",
             }
 
             # First submit.
