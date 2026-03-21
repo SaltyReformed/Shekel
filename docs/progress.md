@@ -1,6 +1,6 @@
 # Shekel Budget App -- Progress Report
 
-**Evaluated on:** 2026-03-20
+**Evaluated on:** 2026-03-21
 **Evaluated by:** Claude Code (`/update-docs` skill)
 
 ---
@@ -20,25 +20,55 @@
 ## Recent Development Activity
 
 ```
+693d4b5 Upgrade all dependencies for production readiness
+6084868 Add optional end date to recurring transactions and transfers
+ffa4614 Fixed balance over time chart
+244851c Expand account types from 2 to 18 with categories and proper display names
+1fcde46 Fix pension highest-paid years ignoring recurring raises
+e859f8f Convert all percentage inputs from decimal to human-readable format
+467a2f6 Convert raise percentage input from decimal to human-readable
+4ad4a2e Update tax rates to IRS/SSA/NCDOR 2026 actuals, add state standard deduction
+04149ee Fix currency display truncating instead of rounding
+0e047e8 Fix grid footer doubling after HTMX balance refresh
+cd27c04 Fix effective_from filter excluding current pay period during regeneration
+6c32ee9 Test remediation Phase 8.3. Fixed xFail test.
+73bafcf Test remediation Phases 8.1 and 8.2
+4e54d4f Test remediation Phase 7.2
+77254f7 Test remediation Phases 6.2 and 7.1
+953729d Test remediation Phase 6.1
+b70829a Test remediation Phase 5 implementation
 47c1d56 fix: move inline scripts to external JS files for CSP compliance
 42c890b Test remediation WU4.2 4 bug fixes found during 4.2 test remediation
 90efc11 Test remediation WU4.1
-2a55d02 Onboarding fixes
-918639e Phases 0-3 test remediation and clean up
-d743158 chore: harden test database connection and timeout settings
-43cf662 perf: lower bcrypt work factor in test suite
-e2a5118 fix: increase pytest timeout and update CLAUDE.md test guidelines
-9becd73 Test remediation Phase 3 implementation
-b2c72ae Phase 8E implementation
 ```
 
-Recent work focused on a comprehensive multi-phase test remediation effort
-(Work Units 1.1 through 5.4) that brought the test suite from 1242 to 1502
-test functions. The remediation added negative-path testing, IDOR verification
-with DB state assertions, schema validation boundary tests, auth-required
-coverage, and financial account route hardening across all five account types
-(mortgage, HYSA, auto loan, investment, retirement). Four application bugs
-were discovered and fixed during WU4.2 test remediation.
+Recent work since the last evaluation (2026-03-20) includes:
+
+- **Dependency upgrade** (commit 693d4b5): All Python dependencies upgraded for
+  production readiness.
+- **Optional end dates on recurrence rules** (commit 6084868): Recurring
+  transactions and transfers can now have an end date, stopping auto-generation
+  beyond that date. New migration `f8f8173ff361` adds the column.
+- **Balance-over-time chart fix** (commit ffa4614): Fixed rendering issue in
+  the charts dashboard.
+- **Account type expansion** (commit 244851c): Expanded ref.account_types from
+  2 to 18 entries with proper categories and display names. Updated seed script.
+- **Pension calculator fix** (commit 1fcde46): Corrected highest-paid years
+  calculation to properly account for recurring raises.
+- **Human-readable percentage inputs** (commits e859f8f, 467a2f6): Converted
+  all percentage input fields (raise percentages, APY, interest rates, return
+  rates, escrow inflation, employer contribution rates, SWR, tax rates) from
+  raw decimal (0.05) to human-readable format (5.0%).
+- **2026 tax rate update** (commit 4ad4a2e): Updated federal/state/FICA tax
+  rates to IRS/SSA/NCDOR 2026 actuals. Added state standard deduction support.
+  Two new migrations: `7abcbf372fff` (tax_year on state configs) and
+  `02b1ff12b08c` (standard_deduction on state configs).
+- **Currency rounding fix** (commit 04149ee): Fixed display truncating amounts
+  instead of rounding.
+- **Grid HTMX fix** (commit 0e047e8): Fixed footer row doubling after HTMX
+  balance refresh.
+- **Recurrence engine fix** (commit cd27c04): Fixed effective_from filter that
+  was excluding the current pay period during regeneration.
 
 ---
 
@@ -86,6 +116,7 @@ Additional deliverables beyond requirements: `transfer.py` model,
 `scenario.py` model stub (placeholder for deferred Phase 7). Carry forward service
 named `carry_forward_service.py` (not `carry_forward.py`). Extra services include
 `pay_period_service.py`, `account_resolver.py`, `transfer_recurrence.py`.
+Recurrence rules now support optional `end_date` (migration `f8f8173ff361`).
 
 ---
 
@@ -113,7 +144,8 @@ named `carry_forward_service.py` (not `carry_forward.py`). Extra services includ
 - Templates (all present): `salary/breakdown.html`, `salary/projection.html`,
   `salary/form.html`, `salary/list.html`, `salary/_deductions_section.html`,
   `salary/_raises_section.html`, `salary/tax_config.html`
-- Tests (all present): `test_paycheck_calculator.py`, `test_tax_calculator.py`
+- Tests (all present): `test_paycheck_calculator.py`, `test_tax_calculator.py`,
+  `test_salary.py` (route tests)
 - Scripts (present): `seed_tax_brackets.py`
 
 **Notes:**
@@ -121,7 +153,10 @@ named `carry_forward_service.py` (not `carry_forward.py`). Extra services includ
 Tax models consolidated into single `tax_config.py` file rather than separate files
 per model -- functionally equivalent. W-4 fields integration added beyond original
 requirements. `target_account_id` column on `paycheck_deductions` is present (added
-for Phase 5 integration).
+for Phase 5 integration). Tax rates updated to IRS/SSA/NCDOR 2026 actuals
+(commit 4ad4a2e). State standard deduction support added (migration `02b1ff12b08c`).
+Raise percentage inputs converted to human-readable format (e.g., 3.0% instead of
+0.03). Effective year backfill migration added (`b4c5d6e7f8a9`).
 
 ---
 
@@ -152,7 +187,8 @@ for Phase 5 integration).
 **Notes:**
 
 Savings has its own blueprint (`savings.py`) separate from accounts. Transfer
-templates support recurrence rules for automated recurring transfers.
+templates support recurrence rules for automated recurring transfers. Transfers
+now also support optional end dates on recurrence rules.
 
 ---
 
@@ -184,7 +220,9 @@ templates support recurrence rules for automated recurring transfers.
 Accounts dashboard reorganized into category groupings in `accounts/list.html`. The
 HYSA detail view (`hysa_detail.html`) provides interest projection display. Balance
 calculator integrates HYSA interest projection for HYSA-type accounts (verified by
-dedicated test file `test_balance_calculator_hysa.py`).
+dedicated test file `test_balance_calculator_hysa.py`). Account types expanded from
+2 to 18 entries with proper categories and display names (commit 244851c), updating
+the seed script accordingly.
 
 ---
 
@@ -226,6 +264,8 @@ Marshmallow schemas not split into per-type files (`mortgage.py`, `auto_loan.py`
 validation is consolidated in `schemas/validation.py`. This is a structural deviation
 from the v3 addendum but functionally equivalent. Payoff calculator with Chart.js
 inline chart was built as specified. Setup forms added for both mortgage and auto loan.
+Escrow inflation rate and interest rate inputs converted to human-readable percentage
+format.
 
 ---
 
@@ -271,6 +311,9 @@ inline chart was built as specified. Setup forms added for both mortgage and aut
 Additional service `investment_projection.py` beyond requirements. Retirement
 settings (SWR, tax rate, planned retirement date) integrated into settings dashboard
 (`settings/_retirement.html`). Schemas consolidated rather than per-type files.
+Pension calculator fixed to properly account for recurring raises when computing
+highest-paid years (commit 1fcde46). All percentage inputs (return rates, employer
+contribution rates, SWR) converted to human-readable format.
 
 ---
 
@@ -309,6 +352,7 @@ Exceeds requirements -- includes net worth projection chart, amortization chart,
 Chart.js theming system (`chart_theme.js`), and interactive sliders for SWR/return
 rate adjustments (`chart_slider.js`). Scenario comparison overlay deferred (depends
 on Phase 7). Error handling partial (`_error.html`) for chart load failures.
+Balance-over-time chart rendering issue fixed (commit ffa4614).
 
 ---
 
@@ -504,7 +548,8 @@ Phase 8D was implemented in three sub-phases (8D-1 through 8D-3), each with its
 own implementation plan in `docs/`. The Cloudflare Access zero-trust policy and WAF
 rate limiting are documented in the runbook and implementation plans. Nginx config
 includes `set_real_ip_from` directives for Cloudflare IP ranges and
-`real_ip_header CF-Connecting-IP` for correct client IP propagation.
+`real_ip_header CF-Connecting-IP` for correct client IP propagation. All Python
+dependencies upgraded for production readiness (commit 693d4b5).
 
 ---
 
@@ -550,8 +595,8 @@ as part of the implementation.
 **Status:** Complete (5 phases)
 
 - Phase 1: Visual consistency (icons, active nav state, breadcrumbs, headings)
-- Phase 2: Nomenclature ("Templates" -> "Recurring Transactions", formatting)
-- Phase 3: Settings consolidation (Categories, Pay Periods, Tax Config -> Settings)
+- Phase 2: Nomenclature ("Templates" to "Recurring Transactions", formatting)
+- Phase 3: Settings consolidation (Categories, Pay Periods, Tax Config into Settings)
 - Phase 4: Navigation restructure (dropdown groups, merged "Accounts & Savings")
 - Phase 5: Future-proofing (scenario selector slots for Phase 7)
 
@@ -574,6 +619,17 @@ as part of the implementation.
 
 - **Scenario model stub:** `app/models/scenario.py` exists from Phase 1 as a
   placeholder. No functional scenario logic has been built.
+
+- **Percentage input format:** All percentage inputs have been converted from raw
+  decimal format (e.g., 0.03) to human-readable format (e.g., 3.0%). This is a
+  UX improvement not specified in the original requirements. The conversion happens
+  at the route layer (dividing by 100 before storing, multiplying by 100 before
+  displaying).
+
+- **Account type expansion:** `ref.account_types` has been expanded from the
+  original 2 types (checking, savings) to 18 types covering all supported account
+  categories (asset, liability, retirement, investment). The seed script was updated
+  accordingly.
 
 ---
 
@@ -600,12 +656,12 @@ as part of the implementation.
 
 ## Test Suite Health
 
-**Total:** 1502 test functions across 60 test files (1501 pass, 1 xfailed)
-**Runtime:** ~5.5 minutes (full suite)
+**Total:** 1533 test functions across 61 test files
+**Runtime:** ~9 minutes (full suite)
 
 | Category                | Files | Approx. Tests |
 | ----------------------- | ----- | ------------- |
-| Route tests             | 22    | ~750          |
+| Route tests             | 24    | ~780          |
 | Service tests           | 22    | ~470          |
 | Integration tests       | 6     | ~125          |
 | Schema/model tests      | 2     | ~80           |

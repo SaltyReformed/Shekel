@@ -1,4 +1,4 @@
-# Shekel — Personal Budget App
+# Shekel -- Personal Budget App
 
 A paycheck-centric budget application that replaces a biweekly-paycheck-based spreadsheet. Organizes finances around **pay periods** rather than calendar months, mapping every expense to a specific paycheck and projecting balances forward over a ~2-year horizon.
 
@@ -38,9 +38,9 @@ pip install -r requirements.txt
 # Copy the example and fill in your values
 cp .env.example .env
 
-# Edit .env — at minimum, update:
-#   DATABASE_URL — your local PostgreSQL connection string
-#   SECRET_KEY   — a random string (use: python -c "import secrets; print(secrets.token_hex(32))")
+# Edit .env -- at minimum, update:
+#   DATABASE_URL -- your local PostgreSQL connection string
+#   SECRET_KEY   -- a random string (use: python -c "import secrets; print(secrets.token_hex(32))")
 ```
 
 If you created the databases without a password (peer auth), your DATABASE_URL would be:
@@ -77,9 +77,9 @@ Open http://localhost:5000 and log in with:
 
 ### 6. First-Time Setup in the App
 
-1. **Generate Pay Periods:** Navigate to Pay Periods → enter your next payday → Generate.
+1. **Generate Pay Periods:** Navigate to Pay Periods and enter your next payday, then Generate.
 2. **Set Anchor Balance:** On the grid, click the balance display and enter your current checking balance.
-3. **Create Templates:** Go to Templates → create recurring income/expenses with their recurrence rules.
+3. **Create Templates:** Go to Templates and create recurring income/expenses with their recurrence rules.
 4. **Start Using:** The grid will populate with auto-generated transactions. Mark items done/received as they clear your bank.
 
 ---
@@ -89,14 +89,15 @@ Open http://localhost:5000 and log in with:
 ### Running Tests
 
 ```bash
-# Run all tests
-pytest
+# Run all tests (use timeout -- full suite takes ~9 minutes)
+timeout 660 pytest -v --tb=short
 
 # Run with coverage
-pytest --cov=app --cov-report=term-missing
+timeout 660 pytest --cov=app --cov-report=term-missing
 
-# Run specific test files
+# Run specific test files (fast feedback during development)
 pytest tests/test_services/test_balance_calculator.py -v
+pytest tests/test_routes/test_grid.py -v
 ```
 
 ### Database Migrations
@@ -117,44 +118,6 @@ flask db downgrade
 ```bash
 # Python (Pylint)
 pylint app/
-
-# SQL (SQLFluff) — for raw SQL files
-sqlfluff lint scripts/
-```
-
----
-
-## Project Structure
-
-```
-shekel/
-├── app/
-│   ├── __init__.py              # Application factory (create_app)
-│   ├── config.py                # Dev / Test / Prod configuration
-│   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager, Limiter
-│   ├── exceptions.py            # Domain-specific exceptions
-│   ├── models/                  # SQLAlchemy models (23 files, 5 PG schemas)
-│   ├── routes/                  # Flask Blueprints (19 route modules)
-│   ├── services/                # Business logic (22 service modules)
-│   ├── schemas/                 # Marshmallow validation (750-line consolidated schema)
-│   ├── utils/                   # Logging config, structured log events
-│   ├── templates/               # Jinja2 HTML templates (~90 files, 17 directories)
-│   └── static/                  # CSS, JS (19 chart/grid/form scripts), images
-├── migrations/                  # Alembic database migrations (15 versions)
-├── monitoring/                  # Promtail config and Grafana/Loki runbook
-├── nginx/                       # Nginx reverse proxy configuration
-├── cloudflared/                 # Cloudflare Tunnel configuration
-├── .github/workflows/           # CI (lint + test) and Docker image publishing
-├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite (1502 test functions, 60 test files)
-├── docs/                        # Plans, progress tracking, runbooks
-├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
-├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
-├── Dockerfile                   # Multi-stage production container
-├── gunicorn.conf.py             # Gunicorn WSGI server configuration
-├── entrypoint.sh                # Container startup (DB init, migrate, seed)
-├── requirements.txt             # Python dependencies
-└── run.py                       # Entry point
 ```
 
 ---
@@ -163,19 +126,19 @@ shekel/
 
 The core interaction loop the app supports:
 
-1. **Open the app** — grid loads with current period as leftmost column.
-2. **True-up balance** — click the anchor balance, enter real checking balance.
-3. **Mark paycheck received** — click income row, mark as received, enter actual.
-4. **Carry forward unpaid** — click "Carry Fwd" on past periods with unpaid items.
-5. **Mark cleared expenses** — set done with actual amounts as they post.
-6. **Mark credit card** — expenses charged to CC become payback items next period.
-7. **Check projections** — scan future balances for any danger zones.
+1. **Open the app** -- grid loads with current period as leftmost column.
+2. **True-up balance** -- click the anchor balance, enter real checking balance.
+3. **Mark paycheck received** -- click income row, mark as received, enter actual.
+4. **Carry forward unpaid** -- click "Carry Fwd" on past periods with unpaid items.
+5. **Mark cleared expenses** -- set done with actual amounts as they post.
+6. **Mark credit card** -- expenses charged to CC become payback items next period.
+7. **Check projections** -- scan future balances for any danger zones.
 
 ---
 
 ## Build Status
 
-Last evaluated: 2026-03-20
+Last evaluated: 2026-03-21
 
 | Phase | Name                           | Status      | Notes                                            |
 | ----- | ------------------------------ | ----------- | ------------------------------------------------ |
@@ -195,6 +158,41 @@ Last evaluated: 2026-03-20
 
 **Status key:** Complete | In Progress | Not Started | Deferred
 
-**Test suite:** 1502 test functions across 60 test files (+ 3 performance benchmarks run separately)
+**Test suite:** 1533 test functions across 61 test files (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
+
+---
+
+## Project Structure
+
+```
+shekel/
+├── app/
+│   ├── __init__.py              # Application factory (create_app)
+│   ├── config.py                # Dev / Test / Prod configuration
+│   ├── extensions.py            # SQLAlchemy, Migrate, LoginManager, Limiter
+│   ├── exceptions.py            # Domain-specific exceptions
+│   ├── models/                  # SQLAlchemy models (21 files, 5 PG schemas)
+│   ├── routes/                  # Flask Blueprints (17 route modules)
+│   ├── services/                # Business logic (21 service modules)
+│   ├── schemas/                 # Marshmallow validation (consolidated schema)
+│   ├── utils/                   # Logging config, structured log events, auth helpers
+│   ├── templates/               # Jinja2 HTML templates (78 files, 17 directories)
+│   └── static/                  # CSS, JS (16 chart/grid/form scripts), images
+├── migrations/                  # Alembic database migrations (19 versions)
+├── monitoring/                  # Promtail config and Grafana/Loki runbook
+├── nginx/                       # Nginx reverse proxy configuration
+├── cloudflared/                 # Cloudflare Tunnel configuration
+├── .github/workflows/           # CI (lint + test) and Docker image publishing
+├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
+├── tests/                       # pytest test suite (1533 test functions, 61 test files)
+├── docs/                        # Plans, progress tracking, runbooks
+├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
+├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
+├── Dockerfile                   # Multi-stage production container
+├── gunicorn.conf.py             # Gunicorn WSGI server configuration
+├── entrypoint.sh                # Container startup (DB init, migrate, seed)
+├── requirements.txt             # Python dependencies
+└── run.py                       # Entry point
+```
