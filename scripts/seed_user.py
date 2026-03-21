@@ -1,16 +1,21 @@
 """
-Shekel Budget App — Seed User & Default Data
+Shekel Budget App -- Seed User & Default Data
 
 Creates the single Phase 1 user plus their default checking account,
 baseline scenario, user settings, and starter categories.
+
+Validates that the password is at least 12 characters, matching the
+minimum enforced by the application's change_password() and
+register_user() functions.  Exits with code 1 if the password is
+too short.
 
 Usage:
     python scripts/seed_user.py
 
 Environment variables (or .env file):
-    SEED_USER_EMAIL       — default: admin@shekel.local
-    SEED_USER_PASSWORD    — default: changeme
-    SEED_USER_DISPLAY_NAME — default: Budget Admin
+    SEED_USER_EMAIL        -- default: admin@shekel.local
+    SEED_USER_PASSWORD     -- default: ChangeMe!2026
+    SEED_USER_DISPLAY_NAME -- default: Budget Admin
 """
 
 import os
@@ -30,10 +35,27 @@ from app.services.auth_service import hash_password, DEFAULT_CATEGORIES
 
 
 def seed_user():
-    """Create the seeded user and all associated default data."""
+    """Create the seeded user and all associated default data.
+
+    Validates that the password is at least 12 characters, matching the
+    minimum enforced by the application's change_password() and
+    register_user() functions.  Exits with code 1 if the password is
+    too short.
+    """
     email = os.getenv("SEED_USER_EMAIL", "admin@shekel.local")
-    password = os.getenv("SEED_USER_PASSWORD", "changeme")
+    password = os.getenv("SEED_USER_PASSWORD", "ChangeMe!2026")
     display_name = os.getenv("SEED_USER_DISPLAY_NAME", "Budget Admin")
+
+    # Enforce the same 12-character minimum as the app's change_password()
+    # and register_user() functions.  Prevents deploying with a weak
+    # default that cannot be changed through the UI.
+    if len(password) < 12:
+        print(
+            f"Error: SEED_USER_PASSWORD must be at least 12 characters "
+            f"(got {len(password)}).  Set SEED_USER_PASSWORD in .env or "
+            f"environment."
+        )
+        sys.exit(1)
 
     # Check if user already exists.
     existing = db.session.query(User).filter_by(email=email).first()

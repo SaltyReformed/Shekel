@@ -28,14 +28,29 @@ echo "Seeding tax configuration..."
 python scripts/seed_tax_brackets.py
 echo "Seeding complete."
 
-# ── 6. Copy static files to shared volume ────────────────────────
+# ── 6. Seed initial user (optional, first run only) ────────────
+# Only runs if SEED_USER_EMAIL is set and non-empty.
+# seed_user.py is idempotent -- skips if the user already exists.
+# Alternative: leave SEED_USER_EMAIL empty and use /register instead.
+# Note: the /register route creates the same bootstrap data as this
+# script (user, settings, account, scenario, categories) plus default
+# tax configuration.
+if [ -n "${SEED_USER_EMAIL}" ]; then
+    echo "Seeding initial user..."
+    python scripts/seed_user.py
+    echo "User seeding complete."
+else
+    echo "SEED_USER_EMAIL not set, skipping user seed. Use /register to create your account."
+fi
+
+# ── 7. Copy static files to shared volume ────────────────────────
 # Nginx serves /static/ directly from this volume.  Copying on every
 # start ensures files are current after image updates.
 echo "Copying static files to shared volume..."
 cp -r /home/shekel/app/app/static/* /var/www/static/ 2>/dev/null || true
 echo "Static files ready."
 
-# ── 7. Start the application server ──────────────────────────────
+# ── 8. Start the application server ──────────────────────────────
 # exec "$@" runs the Dockerfile CMD (gunicorn in production, or the
 # docker-compose command override in development).
 echo "=== Starting Application ==="

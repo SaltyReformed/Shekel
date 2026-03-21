@@ -102,7 +102,7 @@ HTMX with server-rendered partials — no SPA. The budget grid uses HTMX for inl
 
 ## Environment
 
-Copy `.env.example` to `.env` and configure. Key vars: `DATABASE_URL`, `SECRET_KEY`, `TOTP_ENCRYPTION_KEY`. Default login: `admin@shekel.local` / `changeme`.
+Copy `.env.example` to `.env` and configure. Key vars: `DATABASE_URL`, `SECRET_KEY`, `TOTP_ENCRYPTION_KEY`. Default login: `admin@shekel.local` / `ChangeMe!2026`. Alternatively, use `/register` to create an account.
 
 ## Development Status
 

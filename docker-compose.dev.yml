@@ -84,7 +84,7 @@ services:
       DB_PASSWORD: shekel_pass
       DB_NAME: shekel
       SEED_USER_EMAIL: admin@shekel.local
-      SEED_USER_PASSWORD: changeme
+      SEED_USER_PASSWORD: ChangeMe!2026
       SEED_USER_DISPLAY_NAME: Budget Admin
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
     ports:

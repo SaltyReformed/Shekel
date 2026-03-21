@@ -221,7 +221,7 @@ docker exec shekel-app python scripts/seed_user.py
 # 7. Verify the application.
 curl -s http://localhost/health
 # Open http://localhost in a browser and log in.
-# Default credentials: admin@shekel.local / changeme
+# Default credentials: admin@shekel.local / ChangeMe!2026
 
 # 8. Set up cron jobs (see §1 Cron Schedule above).
 crontab -e

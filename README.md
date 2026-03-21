@@ -28,8 +28,8 @@ git init shekel && cd shekel  # or clone from your repo
 python -m venv venv
 source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (dev file includes production deps + test/lint tools)
+pip install -r requirements-dev.txt
 ```
 
 ### 3. Configure Environment
@@ -71,9 +71,10 @@ flask run
 python run.py
 ```
 
-Open http://localhost:5000 and log in with:
-- **Email:** `admin@shekel.local`
-- **Password:** `changeme`
+Open http://localhost:5000 and log in with the seed user credentials, or
+register a new account at http://localhost:5000/register.
+- **Default Email:** `admin@shekel.local`
+- **Default Password:** `ChangeMe!2026`
 
 ### 6. First-Time Setup in the App
 
@@ -193,6 +194,7 @@ shekel/
 ├── Dockerfile                   # Multi-stage production container
 ├── gunicorn.conf.py             # Gunicorn WSGI server configuration
 ├── entrypoint.sh                # Container startup (DB init, migrate, seed)
-├── requirements.txt             # Python dependencies
+├── requirements.txt             # Production Python dependencies
+├── requirements-dev.txt         # Dev/test/lint dependencies (includes requirements.txt)
 └── run.py                       # Entry point
 ```
