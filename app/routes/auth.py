@@ -6,6 +6,7 @@ Handles login, registration, and logout with Flask-Login session management.
 
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from flask import Blueprint, flash, redirect, render_template, request, session as flask_session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
@@ -19,6 +20,50 @@ from app.utils.log_events import log_event, AUTH
 logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
+
+
+def _is_safe_redirect(target):
+    """Check that a redirect target is a safe, relative URL.
+
+    Prevents open redirect attacks by rejecting any URL that contains
+    a scheme (http, https, javascript, data, etc.) or a network
+    location (netloc).  Also rejects protocol-relative URLs (//evil.com),
+    backslash-prefixed URLs (\\\\evil.com -- some browsers normalize \\\\ to //),
+    and targets with embedded newlines or whitespace that could bypass
+    parsing.
+
+    Args:
+        target: The redirect URL string from request.args or session.
+
+    Returns:
+        True if the target is a safe relative path (e.g. /templates,
+        /settings?section=security).  False for None, empty strings,
+        absolute URLs, protocol-relative URLs, and malformed inputs.
+    """
+    if not target:
+        return False
+
+    # Strip leading/trailing whitespace -- browsers may normalize this.
+    stripped = target.strip()
+    if not stripped:
+        return False
+
+    # Reject targets containing newlines, carriage returns, or tabs
+    # (header injection / parser confusion), and backslash-prefixed paths
+    # (some browsers normalize \\ to //, making \\evil.com a protocol-
+    # relative URL).
+    if any(c in stripped for c in ("\n", "\r", "\t")) or stripped.startswith("\\"):
+        return False
+
+    parsed = urlparse(stripped)
+
+    # Reject any URL with a scheme (http, https, javascript, data, ftp,
+    # etc.) or a network location (//evil.com parses with netloc="evil.com"
+    # and no scheme).
+    if parsed.scheme or parsed.netloc:
+        return False
+
+    return True
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -47,7 +92,11 @@ def login():
                 # Store pending auth state in session (user is NOT logged in yet).
                 flask_session["_mfa_pending_user_id"] = user.id
                 flask_session["_mfa_pending_remember"] = remember
-                flask_session["_mfa_pending_next"] = request.args.get("next")
+                # Validate the next parameter at storage time (defense in depth).
+                pending_next = request.args.get("next")
+                flask_session["_mfa_pending_next"] = (
+                    pending_next if _is_safe_redirect(pending_next) else None
+                )
                 return redirect(url_for("auth.mfa_verify"))
 
             # No MFA — complete login immediately.
@@ -57,7 +106,10 @@ def login():
                       "User logged in", user_id=user.id, email=email)
 
             # Redirect to the page they originally wanted, or the grid.
+            # Validate the next parameter to prevent open redirect attacks.
             next_page = request.args.get("next")
+            if not _is_safe_redirect(next_page):
+                next_page = None
             return redirect(next_page or url_for("grid.index"))
 
         except AuthError:
@@ -226,9 +278,13 @@ def mfa_verify():
         flash("Invalid verification code.", "danger")
         return render_template("auth/mfa_verify.html")
 
-    # Login completion — both password and TOTP/backup code are verified.
+    # Login completion -- both password and TOTP/backup code are verified.
     remember = flask_session.pop("_mfa_pending_remember", False)
+    # Validate again at redirect time (defense in depth -- the value was
+    # also validated at storage time in the login route).
     next_page = flask_session.pop("_mfa_pending_next", None)
+    if not _is_safe_redirect(next_page):
+        next_page = None
     flask_session.pop("_mfa_pending_user_id", None)
 
     login_user(user, remember=remember)

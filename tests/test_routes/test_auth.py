@@ -1,8 +1,8 @@
 """
-Shekel Budget App — Auth Route Tests
+Shekel Budget App -- Auth Route Tests
 
 Tests login, logout, route protection, disabled accounts, rate limiting,
-password change, and session management.
+password change, session management, and open redirect prevention.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -13,8 +13,86 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
+from app.routes.auth import _is_safe_redirect
 from app.services import mfa_service
 from app.services.auth_service import hash_password
+
+
+class TestIsSafeRedirect:
+    """Unit tests for the _is_safe_redirect() helper function.
+
+    This function is the sole defense against open redirect attacks in
+    the login and MFA flows.  Every known bypass technique must be
+    covered here.
+    """
+
+    def test_none_returns_false(self):
+        """None input must be rejected -- no redirect target was provided."""
+        assert _is_safe_redirect(None) is False
+
+    def test_empty_string_returns_false(self):
+        """Empty string must be rejected -- equivalent to no target."""
+        assert _is_safe_redirect("") is False
+
+    def test_whitespace_only_returns_false(self):
+        """Whitespace-only strings must be rejected after stripping."""
+        assert _is_safe_redirect("   ") is False
+
+    def test_relative_path_returns_true(self):
+        """A simple relative path is the expected legitimate input."""
+        assert _is_safe_redirect("/templates") is True
+
+    def test_relative_path_with_query_returns_true(self):
+        """Relative paths with query strings are legitimate."""
+        assert _is_safe_redirect("/settings?section=security") is True
+
+    def test_absolute_http_url_returns_false(self):
+        """Absolute https:// URLs are the primary open redirect vector."""
+        assert _is_safe_redirect("https://evil.com") is False
+
+    def test_absolute_http_url_with_path_returns_false(self):
+        """Absolute URLs with paths are used for phishing pages."""
+        assert _is_safe_redirect("https://evil.com/phishing") is False
+
+    def test_protocol_relative_url_returns_false(self):
+        """Protocol-relative URLs (//host) bypass scheme-only checks."""
+        assert _is_safe_redirect("//evil.com") is False
+
+    def test_backslash_url_returns_false(self):
+        """Backslash-prefixed URLs are normalized to // by some browsers."""
+        assert _is_safe_redirect("\\evil.com") is False
+
+    def test_javascript_scheme_returns_false(self):
+        """javascript: scheme can execute arbitrary code in the browser."""
+        assert _is_safe_redirect("javascript:alert(1)") is False
+
+    def test_data_scheme_returns_false(self):
+        """data: scheme can render attacker-controlled HTML content."""
+        assert _is_safe_redirect("data:text/html,<h1>phish</h1>") is False
+
+    def test_newline_injection_returns_false(self):
+        """Embedded newlines can confuse URL parsers and inject headers."""
+        assert _is_safe_redirect("/safe\nevil.com") is False
+
+    def test_tab_injection_returns_false(self):
+        """Embedded tabs can confuse URL parsers."""
+        assert _is_safe_redirect("/safe\tevil.com") is False
+
+    def test_carriage_return_injection_returns_false(self):
+        """Embedded carriage returns can inject HTTP headers."""
+        assert _is_safe_redirect("/safe\revil.com") is False
+
+    def test_leading_whitespace_with_scheme_returns_false(self):
+        """Leading whitespace before a scheme must still be caught."""
+        assert _is_safe_redirect("  https://evil.com") is False
+
+    def test_mixed_case_scheme_returns_false(self):
+        """urlparse handles mixed-case schemes (HTTP://) correctly."""
+        assert _is_safe_redirect("HTTP://evil.com") is False
+
+    def test_ftp_scheme_returns_false(self):
+        """Non-HTTP schemes like ftp:// must also be rejected."""
+        assert _is_safe_redirect("ftp://evil.com/file") is False
 
 
 class TestLogin:
@@ -202,6 +280,141 @@ class TestLogin:
             assert response.status_code == 200
             assert b"Invalid email or password" in response.data
             assert b'<script>alert("xss")</script>' not in response.data
+
+    def test_open_redirect_absolute_url_blocked(self, app, client, seed_user):
+        """An attacker-supplied absolute URL in the next parameter must be rejected.
+
+        The user must land on the grid after login, not on the attacker's
+        site.  This is the primary open redirect attack vector: an attacker
+        crafts /login?next=https://evil.com/phishing and sends it to a victim.
+        """
+        with app.app_context():
+            response = client.post("/login?next=https://evil.com", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Must NOT redirect to the attacker's site.
+            assert "evil.com" not in location
+            # Must redirect to the grid index.
+            assert location.endswith("/")
+
+    def test_open_redirect_protocol_relative_blocked(self, app, client, seed_user):
+        """Protocol-relative URLs (//host) are a common bypass for scheme-only checks.
+
+        //evil.com is parsed by browsers as a protocol-relative URL, inheriting
+        the current page's scheme.  Must be rejected.
+        """
+        with app.app_context():
+            response = client.post("/login?next=//evil.com", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "evil.com" not in location
+            assert location.endswith("/")
+
+    def test_open_redirect_backslash_blocked(self, app, client, seed_user):
+        """Backslash-prefixed URLs are normalized to protocol-relative by some browsers.
+
+        \\evil.com may be treated as //evil.com by older IE and some WebKit
+        builds.  Must be rejected.
+        """
+        with app.app_context():
+            response = client.post("/login?next=\\evil.com", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "evil.com" not in location
+
+    def test_open_redirect_javascript_scheme_blocked(self, app, client, seed_user):
+        """javascript: scheme URLs can execute arbitrary code in the browser.
+
+        Must be rejected to prevent XSS via redirect.
+        """
+        with app.app_context():
+            response = client.post(
+                "/login?next=javascript:alert(1)", data={
+                    "email": "test@shekel.local",
+                    "password": "testpass",
+                }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "javascript" not in location
+
+    def test_open_redirect_data_scheme_blocked(self, app, client, seed_user):
+        """data: scheme URLs can render attacker-controlled HTML content.
+
+        Must be rejected to prevent phishing via redirect.
+        """
+        with app.app_context():
+            response = client.post(
+                "/login?next=data:text/html,<h1>phish</h1>", data={
+                    "email": "test@shekel.local",
+                    "password": "testpass",
+                }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "data:" not in location
+
+    def test_safe_next_redirect_allowed(self, app, client, seed_user):
+        """Legitimate relative paths in the next parameter must still work.
+
+        Users should be redirected to the page they originally requested
+        after logging in.
+        """
+        with app.app_context():
+            response = client.post("/login?next=/templates", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Must redirect to the requested page, not the default grid.
+            assert "/templates" in location
+
+    def test_safe_next_with_query_string_allowed(self, app, client, seed_user):
+        """Relative paths with query strings are legitimate and must be preserved.
+
+        Common case: Flask-Login's unauthorized_handler adds
+        ?next=/settings%3Fsection%3Dsecurity to the login URL.
+        """
+        with app.app_context():
+            response = client.post(
+                "/login?next=/settings%3Fsection%3Dsecurity", data={
+                    "email": "test@shekel.local",
+                    "password": "testpass",
+                }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "/settings" in location
+
+    def test_no_next_redirects_to_grid(self, app, client, seed_user):
+        """When no next parameter is provided, the default redirect must be the grid index.
+
+        This is the normal login flow -- no next parameter at all.
+        """
+        with app.app_context():
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Default redirect is the grid index (/).
+            assert location.endswith("/")
 
 
 class TestLogout:
@@ -689,6 +902,96 @@ class TestMfaLogin:
             # User is logged in.
             grid_resp = client.get("/", follow_redirects=False)
             assert grid_resp.status_code == 200
+
+    def test_mfa_open_redirect_absolute_url_blocked(
+        self, app, client, seed_user, monkeypatch
+    ):
+        """Open redirect via the MFA flow must be blocked.
+
+        Attack scenario: attacker puts a malicious next on the login URL.
+        The next value is stored in the session during the MFA pending step
+        and used after TOTP verification.  It must be validated at storage
+        time AND at redirect time (defense in depth).
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Step 1: login with malicious next parameter.
+            client.post("/login?next=https://evil.com", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Step 2: complete MFA verification.
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Must NOT redirect to the attacker's site.
+            assert "evil.com" not in location
+            # Must redirect to the default grid.
+            assert location.endswith("/")
+
+    def test_mfa_open_redirect_protocol_relative_blocked(
+        self, app, client, seed_user, monkeypatch
+    ):
+        """Protocol-relative URLs must be blocked in the MFA flow.
+
+        //evil.com bypasses scheme-only checks and inherits the current
+        page's protocol.  The MFA flow stores next in the session and
+        uses it after TOTP verification -- both steps must validate.
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Step 1: login with protocol-relative next.
+            client.post("/login?next=//evil.com", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Step 2: complete MFA verification.
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            assert "evil.com" not in location
+            assert location.endswith("/")
+
+    def test_mfa_safe_next_redirect_allowed(
+        self, app, client, seed_user, monkeypatch
+    ):
+        """Legitimate next values must survive the MFA two-step flow.
+
+        A safe relative path set on the login URL must be preserved
+        through the MFA pending session state and used as the redirect
+        target after successful TOTP verification.
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Step 1: login with a safe next parameter.
+            client.post("/login?next=/templates", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Step 2: complete MFA verification.
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            location = response.headers.get("Location", "")
+            # Must redirect to the safe requested page.
+            assert "/templates" in location
 
 
 class TestMfaDisable:
