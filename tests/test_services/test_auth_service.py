@@ -504,27 +504,22 @@ class TestNegativeAndBoundaryPaths:
         assert auth_service.verify_password("", hashed) is True
 
     def test_hash_password_long_bcrypt_limit(self):
-        """bcrypt silently truncates passwords at 72 bytes.
+        """hash_password() rejects passwords exceeding 72 bytes.
 
-        A 73-character password and the same password truncated to 72
-        characters both verify against the same hash, because bcrypt only
-        processes the first 72 bytes.
-        If the app ever accepts very long passwords without its own length
-        validation, two different passwords could authenticate to the same account.
+        bcrypt only processes the first 72 bytes of a password. Rather than
+        silently truncating, we raise a ValidationError so the user knows
+        their full password is not being used.
         """
         long_password = "a" * 73  # One byte over bcrypt's 72-byte limit.
-        hashed = auth_service.hash_password(long_password)
+        with pytest.raises(ValidationError, match="72 characters or fewer"):
+            auth_service.hash_password(long_password)
 
+    def test_hash_password_exactly_72_bytes(self):
+        """A password of exactly 72 bytes is accepted."""
+        password_72 = "a" * 72
+        hashed = auth_service.hash_password(password_72)
         assert hashed.startswith("$2b$")
-        assert len(hashed) == 60
-
-        # Full 73-char password verifies.
-        assert auth_service.verify_password(long_password, hashed) is True
-
-        # bcrypt silently truncates passwords at 72 bytes. Bytes 73+ are ignored.
-        # This means a 73-char and a 72-char password that share the first 72
-        # chars are equivalent.
-        assert auth_service.verify_password(long_password[:72], hashed) is True
+        assert auth_service.verify_password(password_72, hashed) is True
 
     def test_authenticate_none_email(self, app, db, seed_user):
         """Authenticating with None email raises AuthError, not a TypeError.

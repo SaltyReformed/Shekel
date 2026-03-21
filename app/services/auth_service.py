@@ -254,7 +254,12 @@ def hash_password(plain_password, rounds=None):
 
     Returns:
         The bcrypt hash as a string.
+
+    Raises:
+        ValidationError: If the password exceeds 72 characters (bcrypt limit).
     """
+    if len(plain_password.encode("utf-8")) > 72:
+        raise ValidationError("Password is too long. Please use 72 characters or fewer.")
     salt = bcrypt.gensalt(rounds=rounds) if rounds else bcrypt.gensalt()
     return bcrypt.hashpw(
         plain_password.encode("utf-8"), salt
@@ -319,6 +324,8 @@ def change_password(user, current_password, new_password):
         raise AuthError("Current password is incorrect.")
     if len(new_password) < 12:
         raise ValidationError("New password must be at least 12 characters.")
+    if len(new_password.encode("utf-8")) > 72:
+        raise ValidationError("Password is too long. Please use 72 characters or fewer.")
     user.password_hash = hash_password(new_password)
 
 
@@ -358,6 +365,8 @@ def register_user(email, password, display_name):
     # Validate password length.
     if len(password) < 12:
         raise ValidationError("Password must be at least 12 characters.")
+    if len(password.encode("utf-8")) > 72:
+        raise ValidationError("Password is too long. Please use 72 characters or fewer.")
 
     # Check email uniqueness.
     if User.query.filter_by(email=email).first():
