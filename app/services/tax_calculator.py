@@ -256,7 +256,11 @@ def calculate_state_tax(annual_gross, state_config):
 
     if state_config.flat_rate:
         rate = Decimal(str(state_config.flat_rate))
-        return (annual_gross * rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
+        taxable = annual_gross - std_ded
+        if taxable < ZERO:
+            taxable = ZERO
+        return (taxable * rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     return ZERO
 

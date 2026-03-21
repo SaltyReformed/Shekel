@@ -123,16 +123,6 @@ def _seed_fica_for_user(user):
 
 def _seed_state_tax_for_user(user):
     """Seed default state tax configuration."""
-    state_code = DEFAULT_STATE_TAX["state_code"]
-    existing = (
-        db.session.query(StateTaxConfig)
-        .filter_by(user_id=user.id, state_code=state_code)
-        .first()
-    )
-    if existing:
-        print(f"  ~ {state_code} state tax config already exists, skipping.")
-        return
-
     tax_type = (
         db.session.query(TaxType)
         .filter_by(name="flat")
@@ -142,14 +132,27 @@ def _seed_state_tax_for_user(user):
         print("  ! Tax type 'flat' not found, skipping state config.")
         return
 
-    state_config = StateTaxConfig(
-        user_id=user.id,
-        tax_type_id=tax_type.id,
-        state_code=state_code,
-        flat_rate=DEFAULT_STATE_TAX["flat_rate"],
-    )
-    db.session.add(state_config)
-    print(f"  + {state_code} state tax config (flat {DEFAULT_STATE_TAX['flat_rate']})")
+    for tax_year, data in DEFAULT_STATE_TAX.items():
+        state_code = data["state_code"]
+        existing = (
+            db.session.query(StateTaxConfig)
+            .filter_by(user_id=user.id, state_code=state_code, tax_year=tax_year)
+            .first()
+        )
+        if existing:
+            print(f"  ~ {tax_year} {state_code} state tax config already exists, skipping.")
+            continue
+
+        state_config = StateTaxConfig(
+            user_id=user.id,
+            tax_type_id=tax_type.id,
+            tax_year=tax_year,
+            state_code=state_code,
+            flat_rate=data["flat_rate"],
+            standard_deduction=data.get("standard_deduction"),
+        )
+        db.session.add(state_config)
+        print(f"  + {tax_year} {state_code} state tax config (flat {data['flat_rate']})")
 
 
 if __name__ == "__main__":

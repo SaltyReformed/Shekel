@@ -468,7 +468,7 @@ class TestRegisterUser:
             assert years == {2025, 2026}
 
     def test_register_user_creates_state_tax_config(self, app, db):
-        """register_user() creates a default NC state tax config."""
+        """register_user() creates default NC state tax configs (one per year)."""
         with app.app_context():
             user = auth_service.register_user(
                 "state@example.com", "securepass123", "State Test"
@@ -478,8 +478,8 @@ class TestRegisterUser:
             state_configs = db.session.query(StateTaxConfig).filter_by(
                 user_id=user.id
             ).all()
-            assert len(state_configs) == 1
-            assert state_configs[0].state_code == "NC"
+            assert len(state_configs) == len(auth_service.DEFAULT_STATE_TAX)
+            assert all(sc.state_code == "NC" for sc in state_configs)
 
 
 class TestNegativeAndBoundaryPaths:

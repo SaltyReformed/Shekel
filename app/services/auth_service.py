@@ -103,61 +103,62 @@ DEFAULT_FEDERAL_BRACKETS = {
             ],
         },
     },
+    # 2026 brackets per IRS Rev. Proc. 2025-32 (One Big Beautiful Bill Act).
     2026: {
         "single": {
-            "standard_deduction": Decimal("15350"),
+            "standard_deduction": Decimal("16100"),
             "child_credit_amount": Decimal("2000"),
             "other_dependent_credit_amount": Decimal("500"),
             "brackets": [
-                (0, 12150, Decimal("0.1000")),
-                (12150, 49475, Decimal("0.1200")),
-                (49475, 105525, Decimal("0.2200")),
-                (105525, 201350, Decimal("0.2400")),
-                (201350, 255800, Decimal("0.3200")),
-                (255800, 639500, Decimal("0.3500")),
-                (639500, None, Decimal("0.3700")),
+                (0, 12400, Decimal("0.1000")),
+                (12400, 50400, Decimal("0.1200")),
+                (50400, 105700, Decimal("0.2200")),
+                (105700, 201775, Decimal("0.2400")),
+                (201775, 256225, Decimal("0.3200")),
+                (256225, 640600, Decimal("0.3500")),
+                (640600, None, Decimal("0.3700")),
             ],
         },
         "married_jointly": {
-            "standard_deduction": Decimal("30700"),
+            "standard_deduction": Decimal("32200"),
             "child_credit_amount": Decimal("2000"),
             "other_dependent_credit_amount": Decimal("500"),
             "brackets": [
-                (0, 24300, Decimal("0.1000")),
-                (24300, 98950, Decimal("0.1200")),
-                (98950, 211050, Decimal("0.2200")),
-                (211050, 402700, Decimal("0.2400")),
-                (402700, 511500, Decimal("0.3200")),
-                (511500, 767200, Decimal("0.3500")),
-                (767200, None, Decimal("0.3700")),
+                (0, 24800, Decimal("0.1000")),
+                (24800, 100800, Decimal("0.1200")),
+                (100800, 211400, Decimal("0.2200")),
+                (211400, 403550, Decimal("0.2400")),
+                (403550, 512450, Decimal("0.3200")),
+                (512450, 768700, Decimal("0.3500")),
+                (768700, None, Decimal("0.3700")),
             ],
         },
         "married_separately": {
-            "standard_deduction": Decimal("15350"),
+            "standard_deduction": Decimal("16100"),
             "child_credit_amount": Decimal("2000"),
             "other_dependent_credit_amount": Decimal("500"),
             "brackets": [
-                (0, 12150, Decimal("0.1000")),
-                (12150, 49475, Decimal("0.1200")),
-                (49475, 105525, Decimal("0.2200")),
-                (105525, 201350, Decimal("0.2400")),
-                (201350, 255800, Decimal("0.3200")),
-                (255800, 383600, Decimal("0.3500")),
-                (383600, None, Decimal("0.3700")),
+                (0, 12400, Decimal("0.1000")),
+                (12400, 50400, Decimal("0.1200")),
+                (50400, 105700, Decimal("0.2200")),
+                (105700, 201775, Decimal("0.2400")),
+                (201775, 256225, Decimal("0.3200")),
+                (256225, 384350, Decimal("0.3500")),
+                (384350, None, Decimal("0.3700")),
             ],
         },
         "head_of_household": {
-            "standard_deduction": Decimal("23000"),
+            "standard_deduction": Decimal("24150"),
             "child_credit_amount": Decimal("2000"),
             "other_dependent_credit_amount": Decimal("500"),
             "brackets": [
-                (0, 17350, Decimal("0.1000")),
-                (17350, 66200, Decimal("0.1200")),
-                (66200, 105525, Decimal("0.2200")),
-                (105525, 201350, Decimal("0.2400")),
-                (201350, 255800, Decimal("0.3200")),
-                (255800, 639500, Decimal("0.3500")),
-                (639500, None, Decimal("0.3700")),
+                (0, 17700, Decimal("0.1000")),
+                (17700, 67450, Decimal("0.1200")),
+                (67450, 105700, Decimal("0.2200")),
+                (105700, 201775, Decimal("0.2400")),
+                (201775, 256200, Decimal("0.3200")),
+                (256200, 640600, Decimal("0.3500")),
+                (640600, None, Decimal("0.3700")),
             ],
         },
     },
@@ -171,9 +172,10 @@ DEFAULT_FICA = {
         "medicare_surtax_rate": Decimal("0.0090"),
         "medicare_surtax_threshold": Decimal("200000"),
     },
+    # 2026 SS wage base per SSA announcement Oct 2025.
     2026: {
         "ss_rate": Decimal("0.0620"),
-        "ss_wage_base": Decimal("180000"),
+        "ss_wage_base": Decimal("184500"),
         "medicare_rate": Decimal("0.0145"),
         "medicare_surtax_rate": Decimal("0.0090"),
         "medicare_surtax_threshold": Decimal("200000"),
@@ -181,8 +183,16 @@ DEFAULT_FICA = {
 }
 
 DEFAULT_STATE_TAX = {
-    "state_code": "NC",
-    "flat_rate": Decimal("0.0450"),
+    2025: {
+        "state_code": "NC",
+        "flat_rate": Decimal("0.0425"),
+        "standard_deduction": Decimal("12750"),
+    },
+    2026: {
+        "state_code": "NC",
+        "flat_rate": Decimal("0.0399"),
+        "standard_deduction": Decimal("12750"),
+    },
 }
 
 
@@ -223,12 +233,15 @@ def _seed_tax_data_for_user(user_id):
 
     tax_type = db.session.query(TaxType).filter_by(name="flat").first()
     if tax_type:
-        db.session.add(StateTaxConfig(
-            user_id=user_id,
-            tax_type_id=tax_type.id,
-            state_code=DEFAULT_STATE_TAX["state_code"],
-            flat_rate=DEFAULT_STATE_TAX["flat_rate"],
-        ))
+        for tax_year, data in DEFAULT_STATE_TAX.items():
+            db.session.add(StateTaxConfig(
+                user_id=user_id,
+                tax_type_id=tax_type.id,
+                tax_year=tax_year,
+                state_code=data["state_code"],
+                flat_rate=data["flat_rate"],
+                standard_deduction=data.get("standard_deduction"),
+            ))
 
 
 def hash_password(plain_password, rounds=None):

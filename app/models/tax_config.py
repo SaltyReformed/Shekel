@@ -87,13 +87,13 @@ class TaxBracket(db.Model):
 
 
 class StateTaxConfig(db.Model):
-    """State-level tax configuration (flat rate or none)."""
+    """State-level tax configuration (flat rate or none), per year."""
 
     __tablename__ = "state_tax_configs"
     __table_args__ = (
         db.UniqueConstraint(
-            "user_id", "state_code",
-            name="uq_state_tax_configs_user_state",
+            "user_id", "state_code", "tax_year",
+            name="uq_state_tax_configs_user_state_year",
         ),
         db.CheckConstraint(
             "flat_rate IS NULL OR (flat_rate >= 0 AND flat_rate <= 1)",
@@ -111,7 +111,9 @@ class StateTaxConfig(db.Model):
         db.Integer, db.ForeignKey("ref.tax_types.id"), nullable=False
     )
     state_code = db.Column(db.String(2), nullable=False)
+    tax_year = db.Column(db.Integer, nullable=False)
     flat_rate = db.Column(db.Numeric(5, 4))
+    standard_deduction = db.Column(db.Numeric(12, 2))
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # Relationships

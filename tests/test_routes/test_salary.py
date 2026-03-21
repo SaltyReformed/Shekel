@@ -790,6 +790,7 @@ class TestTaxConfig:
         with app.app_context():
             # Seed the 'flat' tax type (needed for creating new state config).
             response = auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
                 "state_code": "NC",
                 "flat_rate": "0.045",
             }, follow_redirects=True)
@@ -800,7 +801,7 @@ class TestTaxConfig:
 
             state_config = (
                 db.session.query(StateTaxConfig)
-                .filter_by(user_id=seed_user["user"].id, state_code="NC")
+                .filter_by(user_id=seed_user["user"].id, state_code="NC", tax_year=2026)
                 .one()
             )
             assert state_config.flat_rate == Decimal("0.045")

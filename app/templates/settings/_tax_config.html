@@ -128,20 +128,24 @@
   </div>
   <div class="card-body">
     {% if state_configs %}
-    <table class="table table-sm table-bordered mb-3" style="max-width: 400px;">
+    <table class="table table-sm table-bordered mb-3" style="max-width: 600px;">
       <thead>
         <tr>
+          <th>Year</th>
           <th>State</th>
           <th>Type</th>
           <th>Rate</th>
+          <th>Std. Deduction</th>
         </tr>
       </thead>
       <tbody>
         {% for sc in state_configs %}
         <tr>
+          <td>{{ sc.tax_year }}</td>
           <td>{{ sc.state_code }}</td>
           <td>{{ sc.tax_type.name|title if sc.tax_type else '—' }}</td>
           <td>{{ "%.2f"|format((sc.flat_rate * 100)|float) if sc.flat_rate else '—' }}%</td>
+          <td>{{ '$' ~ "%.0f"|format(sc.standard_deduction|float) if sc.standard_deduction else '—' }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -151,22 +155,34 @@
     <h6>{{ 'Update' if state_configs else 'Add' }} State Tax</h6>
     <form method="POST" action="{{ url_for('salary.update_tax_config') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end" style="max-width: 400px;">
-        <div class="col-3">
+      <div class="row g-2 align-items-end" style="max-width: 700px;">
+        <div class="col">
+          <label class="form-label">Year</label>
+          <input type="number" name="tax_year" class="form-control form-control-sm"
+                 required value="{{ state_configs[0].tax_year if state_configs else '' }}">
+        </div>
+        <div class="col">
           <label class="form-label">State</label>
           <input type="text" name="state_code" class="form-control form-control-sm"
                  maxlength="2" required style="text-transform: uppercase"
                  value="{{ state_configs[0].state_code if state_configs else '' }}"
                  placeholder="NC">
         </div>
-        <div class="col-4">
+        <div class="col">
           <label class="form-label">Flat Rate</label>
           <input type="number" step="0.0001" name="flat_rate"
                  class="form-control form-control-sm" required
                  value="{{ state_configs[0].flat_rate if state_configs else '' }}"
-                 placeholder="e.g. 0.0450">
+                 placeholder="e.g. 0.0399">
         </div>
-        <div class="col-3">
+        <div class="col">
+          <label class="form-label">Std. Deduction</label>
+          <input type="number" step="0.01" name="standard_deduction"
+                 class="form-control form-control-sm"
+                 value="{{ state_configs[0].standard_deduction if state_configs and state_configs[0].standard_deduction else '' }}"
+                 placeholder="e.g. 12750">
+        </div>
+        <div class="col">
           <button type="submit" class="btn btn-sm btn-primary">Save</button>
         </div>
       </div>

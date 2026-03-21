@@ -78,7 +78,7 @@ def _load_tax_configs(user_id, profile):
 
     state_config = (
         db.session.query(StateTaxConfig)
-        .filter_by(user_id=user_id, state_code=profile.state_code)
+        .filter_by(user_id=user_id, state_code=profile.state_code, tax_year=tax_year)
         .first()
     )
 
@@ -598,21 +598,29 @@ def update_tax_config():
     """Update state tax flat rate."""
     state_code = request.form.get("state_code", "").strip().upper()
     flat_rate = request.form.get("flat_rate", "").strip()
+    standard_deduction = request.form.get("standard_deduction", "").strip() or None
+    tax_year = request.form.get("tax_year", "").strip()
 
     if not state_code or len(state_code) != 2:
         flash("Invalid state code.", "danger")
         return redirect(url_for("settings.show", section="tax"))
 
+    if not tax_year or not tax_year.isdigit():
+        tax_year = date.today().year
+    else:
+        tax_year = int(tax_year)
+
     state_config = (
         db.session.query(StateTaxConfig)
-        .filter_by(user_id=current_user.id, state_code=state_code)
+        .filter_by(user_id=current_user.id, state_code=state_code, tax_year=tax_year)
         .first()
     )
 
     if state_config:
         if flat_rate:
             state_config.flat_rate = flat_rate
-        flash(f"State tax config for {state_code} updated.", "success")
+        state_config.standard_deduction = standard_deduction
+        flash(f"State tax config for {state_code} {tax_year} updated.", "success")
     else:
         flat_type = db.session.query(TaxType).filter_by(name="flat").first()
         if flat_type and flat_rate:
@@ -620,10 +628,12 @@ def update_tax_config():
                 user_id=current_user.id,
                 tax_type_id=flat_type.id,
                 state_code=state_code,
+                tax_year=tax_year,
                 flat_rate=flat_rate,
+                standard_deduction=standard_deduction,
             )
             db.session.add(new_config)
-            flash(f"State tax config for {state_code} created.", "success")
+            flash(f"State tax config for {state_code} {tax_year} created.", "success")
 
     db.session.commit()
     logger.info("user_id=%d updated state tax config for %s", current_user.id, state_code)
