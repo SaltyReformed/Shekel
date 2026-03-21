@@ -31,7 +31,13 @@ from app.models.ref import (
 
 
 REF_DATA = {
-    AccountType: ["checking", "savings"],
+    AccountType: [
+        "checking", "savings", "hysa", "money_market", "cd", "hsa",
+        "credit_card", "mortgage", "auto_loan", "student_loan",
+        "personal_loan", "heloc",
+        "401k", "roth_401k", "traditional_ira", "roth_ira",
+        "brokerage", "529",
+    ],
     TransactionType: ["income", "expense"],
     Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
     RecurrencePattern: [
@@ -55,6 +61,23 @@ def seed_ref_tables():
                 continue
             db.session.add(model(name=name))
             print(f"  + {model.__tablename__}: {name}")
+
+    # Backfill category on account types.
+    category_map = {
+        "checking": "asset", "savings": "asset", "hysa": "asset",
+        "money_market": "asset", "cd": "asset", "hsa": "asset",
+        "credit_card": "liability", "mortgage": "liability",
+        "auto_loan": "liability", "student_loan": "liability",
+        "personal_loan": "liability", "heloc": "liability",
+        "401k": "retirement", "roth_401k": "retirement",
+        "traditional_ira": "retirement", "roth_ira": "retirement",
+        "brokerage": "investment", "529": "investment",
+    }
+    for type_name, category in category_map.items():
+        at = db.session.query(AccountType).filter_by(name=type_name).first()
+        if at and at.category != category:
+            at.category = category
+            print(f"  ~ {at.name}: category → {category}")
 
     db.session.commit()
     print("\nRef table seeding complete.")

@@ -3,18 +3,22 @@
  */
 (function() {
   document.querySelectorAll('.account-type-form').forEach(function(form) {
-    var input = form.querySelector('input[name="name"]');
+    var display = form.querySelector('.account-type-display');
+    var input = form.querySelector('.account-type-input');
     var btn = form.querySelector('.save-type-btn');
-    if (!input || !btn) return;
+    if (!input || !btn || !display) return;
     var original = input.value;
 
-    input.addEventListener('focus', function() {
-      this.classList.remove('bg-transparent', 'border-0');
+    display.addEventListener('click', function() {
+      display.classList.add('d-none');
+      input.classList.remove('d-none');
+      input.focus();
     });
 
     input.addEventListener('blur', function() {
       if (!form._changed) {
-        this.classList.add('bg-transparent', 'border-0');
+        input.classList.add('d-none');
+        display.classList.remove('d-none');
       }
     });
 

@@ -886,8 +886,11 @@ def _seed_ref_tables():
     """Populate reference tables for the test database."""
     ref_data = [
         (AccountType, [
-            "checking", "savings", "hysa", "mortgage", "auto_loan",
-            "401k", "roth_401k", "traditional_ira", "roth_ira", "brokerage",
+            "checking", "savings", "hysa", "money_market", "cd", "hsa",
+            "credit_card", "mortgage", "auto_loan", "student_loan",
+            "personal_loan", "heloc",
+            "401k", "roth_401k", "traditional_ira", "roth_ira",
+            "brokerage", "529",
         ]),
         (TransactionType, ["income", "expense"]),
         (Status, ["projected", "done", "received", "credit", "cancelled"]),
@@ -917,10 +920,13 @@ def _seed_ref_tables():
     _db.session.flush()
     category_map = {
         "checking": "asset", "savings": "asset", "hysa": "asset",
-        "mortgage": "liability", "auto_loan": "liability",
+        "money_market": "asset", "cd": "asset", "hsa": "asset",
+        "credit_card": "liability", "mortgage": "liability",
+        "auto_loan": "liability", "student_loan": "liability",
+        "personal_loan": "liability", "heloc": "liability",
         "401k": "retirement", "roth_401k": "retirement",
         "traditional_ira": "retirement", "roth_ira": "retirement",
-        "brokerage": "investment",
+        "brokerage": "investment", "529": "investment",
     }
     for type_name, category in category_map.items():
         at = _db.session.query(AccountType).filter_by(name=type_name).first()

@@ -88,13 +88,21 @@ def create_app(config_name=None):
             "checking": "Checking",
             "savings": "Savings",
             "hysa": "HYSA",
+            "money_market": "Money Market",
+            "cd": "CD",
+            "hsa": "HSA",
+            "credit_card": "Credit Card",
             "mortgage": "Mortgage",
             "auto_loan": "Auto Loan",
+            "student_loan": "Student Loan",
+            "personal_loan": "Personal Loan",
+            "heloc": "HELOC",
             "401k": "401(k)",
             "roth_401k": "Roth 401(k)",
             "traditional_ira": "Traditional IRA",
             "roth_ira": "Roth IRA",
             "brokerage": "Brokerage",
+            "529": "529 Plan",
         }
         return display_names.get(value, value.replace("_", " ").title())
 
@@ -294,7 +302,13 @@ def _seed_ref_tables():
     )
 
     ref_data = {
-        AccountType: ["checking", "savings"],
+        AccountType: [
+            "checking", "savings", "hysa", "money_market", "cd", "hsa",
+            "credit_card", "mortgage", "auto_loan", "student_loan",
+            "personal_loan", "heloc",
+            "401k", "roth_401k", "traditional_ira", "roth_ira",
+            "brokerage", "529",
+        ],
         TransactionType: ["income", "expense"],
         Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
         RecurrencePattern: [
@@ -313,6 +327,24 @@ def _seed_ref_tables():
             for name in names:
                 if not db.session.query(model).filter_by(name=name).first():
                     db.session.add(model(name=name))
+        db.session.flush()
+
+        # Backfill category on account types.
+        category_map = {
+            "checking": "asset", "savings": "asset", "hysa": "asset",
+            "money_market": "asset", "cd": "asset", "hsa": "asset",
+            "credit_card": "liability", "mortgage": "liability",
+            "auto_loan": "liability", "student_loan": "liability",
+            "personal_loan": "liability", "heloc": "liability",
+            "401k": "retirement", "roth_401k": "retirement",
+            "traditional_ira": "retirement", "roth_ira": "retirement",
+            "brokerage": "investment", "529": "investment",
+        }
+        for type_name, category in category_map.items():
+            at = db.session.query(AccountType).filter_by(name=type_name).first()
+            if at and at.category != category:
+                at.category = category
+
         db.session.commit()
     except ProgrammingError:
         db.session.rollback()

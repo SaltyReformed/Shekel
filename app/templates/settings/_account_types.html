@@ -8,7 +8,8 @@
       <form method="POST" action="{{ url_for('accounts.update_account_type', type_id=at.id) }}"
             class="d-flex align-items-center flex-grow-1 me-2 account-type-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="text" name="name" value="{{ at.name }}" class="form-control form-control-sm border-0 bg-transparent"
+        <span class="account-type-display px-1">{{ at.name|format_account_type }}</span>
+        <input type="text" name="name" value="{{ at.name }}" class="form-control form-control-sm border-0 bg-transparent d-none account-type-input"
                aria-label="Account type name">
         <button type="submit" class="btn btn-sm btn-outline-primary ms-1 d-none save-type-btn"
                 aria-label="Save">

@@ -9,7 +9,7 @@ from app.extensions import db
 
 
 class AccountType(db.Model):
-    """Account type reference: 'checking', 'savings', 'hysa'."""
+    """Account type reference (checking, savings, hysa, mortgage, etc.)."""
 
     __tablename__ = "account_types"
     __table_args__ = {"schema": "ref"}
