@@ -236,8 +236,31 @@ def _register_blueprints(app):
 def _register_error_handlers(app):
     """Register custom error pages for common HTTP errors."""
 
+    @app.errorhandler(400)
+    def bad_request(e):
+        """Handle 400 Bad Request errors.
+
+        Common triggers: CSRF token validation failure (Flask-WTF
+        rejects the request), malformed form data, or invalid
+        request syntax.
+        """
+        return render_template("errors/400.html"), 400
+
+    @app.errorhandler(403)
+    def forbidden(e):
+        """Handle 403 Forbidden errors.
+
+        Common triggers: permission denied, accessing a resource
+        that exists but the user is not authorized to view.
+        """
+        return render_template("errors/403.html"), 403
+
     @app.errorhandler(404)
     def page_not_found(e):
+        """Handle 404 Not Found errors.
+
+        Triggers when the requested URL does not match any route.
+        """
         return render_template("errors/404.html"), 404
 
     @app.errorhandler(429)
@@ -252,6 +275,11 @@ def _register_error_handlers(app):
 
     @app.errorhandler(500)
     def internal_server_error(e):
+        """Handle 500 Internal Server Error.
+
+        Triggers on unhandled exceptions in route handlers or
+        service layer code.
+        """
         return render_template("errors/500.html"), 500
 
 

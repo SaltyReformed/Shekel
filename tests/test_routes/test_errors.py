@@ -1,6 +1,7 @@
 """Tests for custom error pages and production configuration."""
 
 import pytest
+from flask import abort
 
 from app import create_app
 from app.config import BaseConfig, ProdConfig
@@ -85,6 +86,157 @@ class TestErrorPages:
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
             limiter.enabled = False
+
+    def test_400_renders_custom_page(self):
+        """400 error returns the custom error template, not Werkzeug default.
+
+        Uses a temporary route that calls abort(400) to trigger the
+        handler, because TestConfig disables CSRF validation (the most
+        common real-world source of 400 errors).
+        """
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-400-trigger")
+        def trigger_400():
+            """Intentional 400 for testing the error handler."""
+            abort(400)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-400-trigger")
+            assert response.status_code == 400
+            html = response.data.decode()
+            assert "Bad Request" in html
+            assert "werkzeug" not in html.lower()
+
+        # Dispose the secondary app's engine to release connections.
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
+
+    def test_400_contains_navigation(self):
+        """400 page contains a link back to the budget grid."""
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-400-trigger")
+        def trigger_400():
+            """Intentional 400 for testing navigation link."""
+            abort(400)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-400-trigger")
+            html = response.data.decode()
+            assert "Back to Budget Grid" in html
+
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
+
+    def test_400_does_not_leak_werkzeug_details(self):
+        """400 response body does not contain Werkzeug version or debug info.
+
+        This is the core security concern from H-001: without a custom
+        handler, Werkzeug's default 400 page reveals the framework name
+        and version, which aids attackers in identifying known
+        vulnerabilities.
+        """
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-400-trigger")
+        def trigger_400():
+            """Intentional 400 for testing information leakage."""
+            abort(400)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-400-trigger")
+            html = response.data.decode()
+            assert "werkzeug" not in html.lower()
+            assert "Traceback" not in html
+            assert "debugger" not in html
+
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
+
+    def test_403_renders_custom_page(self):
+        """403 error returns the custom error template, not Werkzeug default.
+
+        Uses a temporary route that calls abort(403) to trigger the
+        handler.  In production, 403 would be triggered by permission
+        checks in a multi-user context.
+        """
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-403-trigger")
+        def trigger_403():
+            """Intentional 403 for testing the error handler."""
+            abort(403)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-403-trigger")
+            assert response.status_code == 403
+            html = response.data.decode()
+            assert "Access Denied" in html
+            assert "werkzeug" not in html.lower()
+
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
+
+    def test_403_contains_navigation(self):
+        """403 page contains a link back to the budget grid."""
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-403-trigger")
+        def trigger_403():
+            """Intentional 403 for testing navigation link."""
+            abort(403)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-403-trigger")
+            html = response.data.decode()
+            assert "Back to Budget Grid" in html
+
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
+
+    def test_403_does_not_leak_werkzeug_details(self):
+        """403 response body does not contain Werkzeug version or debug info."""
+        error_app = create_app("testing")
+        error_app.config["PROPAGATE_EXCEPTIONS"] = False
+
+        @error_app.route("/test-403-trigger")
+        def trigger_403():
+            """Intentional 403 for testing information leakage."""
+            abort(403)
+
+        error_client = error_app.test_client()
+
+        with error_app.app_context():
+            response = error_client.get("/test-403-trigger")
+            html = response.data.decode()
+            assert "werkzeug" not in html.lower()
+            assert "Traceback" not in html
+            assert "debugger" not in html
+
+        with error_app.app_context():
+            from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+            _db.engine.dispose()
 
     def test_500_renders_custom_page(self):
         """500 error returns the custom error template."""
