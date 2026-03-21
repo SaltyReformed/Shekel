@@ -52,6 +52,9 @@ class RecurrenceRule(db.Model):
         db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Optional end date — recurrence stops generating after this date.
+    # NULL means indefinite (no end).
+    end_date = db.Column(db.Date, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # Relationships

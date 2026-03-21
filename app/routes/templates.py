@@ -99,8 +99,9 @@ def create_template():
         flash("Invalid category.", "danger")
         return redirect(url_for("templates.new_template"))
 
-    # Extract start_period_id before creating the rule.
+    # Extract start_period_id and end_date before creating the rule.
     start_period_id = data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
 
     # Create the recurrence rule if a pattern was specified.
     rule = None
@@ -131,12 +132,13 @@ def create_template():
             day_of_month=data.pop("day_of_month", None),
             month_of_year=data.pop("month_of_year", None),
             start_period_id=start_period_id,
+            end_date=end_date,
         )
         db.session.add(rule)
         db.session.flush()
     else:
         # Remove recurrence-related keys if no pattern.
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     # Create the template.
@@ -223,6 +225,7 @@ def update_template(template_id):
 
     # Remove start_period_id from update data (set once at creation).
     data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
 
     # Update recurrence rule if pattern changed.
     pattern_name = data.pop("recurrence_pattern", None)
@@ -234,6 +237,7 @@ def update_template(template_id):
             template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
             template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
             template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
+            template.recurrence_rule.end_date = end_date
         else:
             rule = RecurrenceRule(
                 user_id=current_user.id,
@@ -242,12 +246,13 @@ def update_template(template_id):
                 offset_periods=data.pop("offset_periods", 0),
                 day_of_month=data.pop("day_of_month", None),
                 month_of_year=data.pop("month_of_year", None),
+                end_date=end_date,
             )
             db.session.add(rule)
             db.session.flush()
             template.recurrence_rule_id = rule.id
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     # Validate ownership if account or category is being changed.
@@ -381,6 +386,8 @@ def preview_recurrence():
     day_of_month = request.args.get("day_of_month", type=int)
     month_of_year = request.args.get("month_of_year", type=int)
     start_period_id = request.args.get("start_period_id", type=int)
+    end_date_str = request.args.get("end_date")
+    end_date = date.fromisoformat(end_date_str) if end_date_str else None
 
     # Build a temporary rule object (not saved).
     pattern = (
@@ -397,6 +404,7 @@ def preview_recurrence():
         day_of_month=day_of_month,
         month_of_year=month_of_year,
         start_period_id=start_period_id,
+        end_date=end_date,
     )
     # Attach the pattern relationship manually for the matcher.
     rule.pattern = pattern

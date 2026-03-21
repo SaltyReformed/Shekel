@@ -100,6 +100,7 @@ class TemplateCreateSchema(BaseSchema):
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
     start_period_id = fields.Integer()
+    end_date = fields.Date(allow_none=True)
 
 
 class TemplateUpdateSchema(TemplateCreateSchema):
@@ -335,6 +336,7 @@ class TransferTemplateCreateSchema(BaseSchema):
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
     start_period_id = fields.Integer()
+    end_date = fields.Date(allow_none=True)
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):

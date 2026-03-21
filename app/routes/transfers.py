@@ -110,6 +110,7 @@ def create_transfer_template():
         return redirect(url_for("transfers.new_transfer_template"))
 
     start_period_id = data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
 
     # Create the recurrence rule if a pattern was specified.
     rule = None
@@ -139,11 +140,12 @@ def create_transfer_template():
             day_of_month=data.pop("day_of_month", None),
             month_of_year=data.pop("month_of_year", None),
             start_period_id=start_period_id,
+            end_date=end_date,
         )
         db.session.add(rule)
         db.session.flush()
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     template = TransferTemplate(
@@ -222,6 +224,7 @@ def update_transfer_template(template_id):
     data = _update_schema.load(request.form)
     effective_from = data.pop("effective_from", date.today())
     data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
 
     # Update recurrence rule if pattern changed.
     pattern_name = data.pop("recurrence_pattern", None)
@@ -233,6 +236,7 @@ def update_transfer_template(template_id):
             template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
             template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
             template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
+            template.recurrence_rule.end_date = end_date
         else:
             rule = RecurrenceRule(
                 user_id=current_user.id,
@@ -241,12 +245,13 @@ def update_transfer_template(template_id):
                 offset_periods=data.pop("offset_periods", 0),
                 day_of_month=data.pop("day_of_month", None),
                 month_of_year=data.pop("month_of_year", None),
+                end_date=end_date,
             )
             db.session.add(rule)
             db.session.flush()
             template.recurrence_rule_id = rule.id
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     # Validate account ownership if accounts are being changed.

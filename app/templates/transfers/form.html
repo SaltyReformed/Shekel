@@ -135,6 +135,14 @@
           <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
         </div>
         {% endif %}
+
+        <div class="mb-3 d-none" id="field-end-date">
+          <label for="end_date" class="form-label">End Date</label>
+          <input type="date" id="end_date" name="end_date" class="form-control"
+                 aria-describedby="end-date-help"
+                 value="{{ template.recurrence_rule.end_date.isoformat() if template and template.recurrence_rule and template.recurrence_rule.end_date else '' }}">
+          <div id="end-date-help" class="form-text">Leave blank for indefinite. Transfers won't be generated after this date.</div>
+        </div>
       </div>
 
       {% if template %}

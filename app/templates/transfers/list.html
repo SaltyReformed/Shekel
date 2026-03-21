@@ -69,6 +69,9 @@
           {% else %}
             {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
           {% endif %}
+          {% if rr.end_date %}
+            <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
+          {% endif %}
         {% else %}
           <span class="text-muted">One-time</span>
         {% endif %}

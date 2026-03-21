@@ -142,6 +142,14 @@
         </div>
         {% endif %}
 
+        <div class="mb-3 d-none" id="field-end-date">
+          <label for="end_date" class="form-label">End Date</label>
+          <input type="date" id="end_date" name="end_date" class="form-control"
+                 aria-describedby="end-date-help"
+                 value="{{ template.recurrence_rule.end_date.isoformat() if template and template.recurrence_rule and template.recurrence_rule.end_date else '' }}">
+          <div id="end-date-help" class="form-text">Leave blank for indefinite. Transactions won't be generated after this date.</div>
+        </div>
+
         <div id="recurrence-preview" class="mt-2 mb-3"
              data-preview-url="{{ url_for('templates.preview_recurrence') }}">
           <small class="text-muted">Select a pattern to see upcoming dates</small>

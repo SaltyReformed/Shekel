@@ -37,7 +37,7 @@ class FakePattern:
 class FakeRule:
     def __init__(self, pattern_name="every_period", interval_n=1,
                  offset_periods=0, day_of_month=None, month_of_year=None,
-                 start_period_id=None, start_period=None):
+                 start_period_id=None, start_period=None, end_date=None):
         self.pattern = FakePattern(pattern_name)
         self.interval_n = interval_n
         self.offset_periods = offset_periods
@@ -45,6 +45,7 @@ class FakeRule:
         self.month_of_year = month_of_year
         self.start_period_id = start_period_id
         self.start_period = start_period
+        self.end_date = end_date
 
 
 class FakePeriod:
@@ -94,6 +95,7 @@ class TestRecurrenceGeneration:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -800,6 +802,7 @@ class TestGenerateForTemplate:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -912,6 +915,7 @@ class TestRegenerateForTemplate:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -1014,6 +1018,7 @@ class TestResolveConflicts:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -1148,6 +1153,7 @@ class TestCrossUserIsolation:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -1235,6 +1241,7 @@ class TestNegativePaths:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
         db.session.flush()
@@ -1467,3 +1474,183 @@ class TestNegativePaths:
             )
             assert preserved.status.name == "credit"
             assert preserved.id == target_id
+
+
+class TestEndDate:
+    """Tests for the optional end_date on recurrence rules."""
+
+    def test_end_date_limits_every_period(self, biweekly_periods):
+        """end_date stops generation after that date (every_period)."""
+        # End date after the 5th period's start_date (period index 4).
+        end = biweekly_periods[4].start_date
+        rule = FakeRule(pattern_name="every_period", end_date=end)
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "every_period", biweekly_periods,
+                                 effective_from)
+
+        assert len(matched) == 5
+        for p in matched:
+            assert p.start_date <= end
+
+    def test_end_date_none_means_indefinite(self, biweekly_periods):
+        """NULL end_date generates for all periods (no change from default)."""
+        rule = FakeRule(pattern_name="every_period", end_date=None)
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "every_period", biweekly_periods,
+                                 effective_from)
+
+        assert len(matched) == 26
+
+    def test_end_date_with_monthly_pattern(self, biweekly_periods):
+        """end_date works with monthly pattern — only months before end."""
+        # End in March 2026.
+        rule = FakeRule(pattern_name="monthly", day_of_month=15,
+                        end_date=date(2026, 3, 31))
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "monthly", biweekly_periods,
+                                 effective_from)
+
+        # Should get Jan, Feb, Mar only.
+        assert len(matched) == 3
+        for p in matched:
+            assert p.start_date <= date(2026, 3, 31)
+
+    def test_end_date_before_first_period(self, biweekly_periods):
+        """end_date before all periods returns empty list."""
+        rule = FakeRule(pattern_name="every_period",
+                        end_date=date(2025, 12, 31))
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "every_period", biweekly_periods,
+                                 effective_from)
+
+        assert matched == []
+
+    def test_end_date_with_effective_from_both_filter(self, biweekly_periods):
+        """Both effective_from and end_date narrow the window."""
+        # effective_from at period 5, end_date at period 10.
+        effective_from = biweekly_periods[5].start_date
+        end = biweekly_periods[10].start_date
+        rule = FakeRule(pattern_name="every_period", end_date=end)
+
+        matched = _match_periods(rule, "every_period", biweekly_periods,
+                                 effective_from)
+
+        # Periods 5 through 10 inclusive.
+        assert len(matched) == 6
+        for p in matched:
+            assert p.start_date >= effective_from
+            assert p.start_date <= end
+
+    def test_end_date_mid_period_includes_that_period(self, biweekly_periods):
+        """A period whose start_date is on the end_date is included."""
+        target_period = biweekly_periods[7]
+        rule = FakeRule(pattern_name="every_period",
+                        end_date=target_period.start_date)
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "every_period", biweekly_periods,
+                                 effective_from)
+
+        assert target_period in matched
+
+    def test_end_date_with_every_n_periods(self, biweekly_periods):
+        """end_date works correctly with every_n_periods pattern."""
+        # Every 3 periods, end at period 12.
+        end = biweekly_periods[11].start_date
+        rule = FakeRule(pattern_name="every_n_periods", interval_n=3,
+                        offset_periods=0, end_date=end)
+        effective_from = biweekly_periods[0].start_date
+
+        matched = _match_periods(rule, "every_n_periods", biweekly_periods,
+                                 effective_from)
+
+        # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).
+        assert len(matched) == 4
+        for p in matched:
+            assert p.period_index % 3 == 0
+            assert p.start_date <= end
+
+
+class TestEndDateIntegration:
+    """Integration tests for end_date with generate_for_template()."""
+
+    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+        """Helper: create a template + recurrence rule."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="expense")
+            .one()
+        )
+
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
+        )
+        db.session.add(rule)
+        db.session.flush()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Test Recurring End Date",
+            default_amount=Decimal("50.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def test_generate_respects_end_date(self, app, db, seed_user, seed_periods):
+        """generate_for_template stops at end_date."""
+        with app.app_context():
+            # Use the 5th period's start_date as end_date.
+            end = seed_periods[4].start_date
+            template = self._make_template_with_rule(
+                seed_user, "every_period", end_date=end,
+            )
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            assert len(created) == 5
+            for txn in created:
+                period = txn.pay_period
+                assert period.start_date <= end
+
+    def test_regenerate_respects_end_date(self, app, db, seed_user, seed_periods):
+        """regenerate_for_template respects end_date on re-creation."""
+        with app.app_context():
+            end = seed_periods[2].start_date
+            template = self._make_template_with_rule(
+                seed_user, "every_period", end_date=end,
+            )
+
+            # Initial generation.
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            assert len(created) == 3
+
+            # Regenerate — should produce the same count.
+            regenerated = recurrence_engine.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            assert len(regenerated) == 3

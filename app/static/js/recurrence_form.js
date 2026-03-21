@@ -11,6 +11,7 @@
   var dom = document.getElementById('field-dom');
   var moy = document.getElementById('field-moy');
   var startPeriod = document.getElementById('field-start-period');
+  var endDate = document.getElementById('field-end-date');
   var preview = document.getElementById('recurrence-preview');
 
   function toggleFields(pattern) {
@@ -26,6 +27,10 @@
 
     if (startPeriod) {
       startPeriod.classList.toggle('d-none', pattern === 'once');
+    }
+
+    if (endDate) {
+      endDate.classList.toggle('d-none', pattern === 'once');
     }
 
     fetchPreview();
@@ -58,6 +63,9 @@
     var spEl = document.querySelector('[name="start_period_id"]');
     if (spEl && spEl.value) params.set('start_period_id', spEl.value);
 
+    var endDateEl = document.getElementById('end_date');
+    if (endDateEl && endDateEl.value) params.set('end_date', endDateEl.value);
+
     fetch(previewUrl + '?' + params.toString())
       .then(function(r) { return r.text(); })
       .then(function(html) { preview.innerHTML = html; })
@@ -69,7 +77,7 @@
 
   // Listen for changes.
   patternSelect.addEventListener('change', function() { toggleFields(this.value); });
-  ['interval_n', 'day_of_month', 'month_of_year'].forEach(function(id) {
+  ['interval_n', 'day_of_month', 'month_of_year', 'end_date'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);
   });
