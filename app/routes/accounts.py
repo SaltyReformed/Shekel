@@ -686,7 +686,9 @@ def update_hysa_params(account_id):
         db.session.add(params)
 
     if "apy" in data:
-        params.apy = data["apy"]
+        # Convert percentage input (e.g. 4.5 → 0.045) for storage.
+        from decimal import Decimal as D
+        params.apy = D(str(data["apy"])) / D("100")
     if "compounding_frequency" in data:
         params.compounding_frequency = data["compounding_frequency"]
 

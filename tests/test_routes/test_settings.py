@@ -55,7 +55,7 @@ class TestSettingsUpdate:
         with app.app_context():
             resp = auth_client.post("/settings", data={
                 "grid_default_periods": "10",
-                "default_inflation_rate": "0.0400",
+                "default_inflation_rate": "4",
                 "low_balance_threshold": "1000",
             }, follow_redirects=True)
 
@@ -379,11 +379,11 @@ class TestSettingsNegativePaths:
             original = seed_user["settings"].default_inflation_rate
 
             resp = auth_client.post("/settings", data={
-                "default_inflation_rate": "-0.05",
+                "default_inflation_rate": "-5",
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Inflation rate must be between 0 and 1." in resp.data
+            assert b"Inflation rate must be between 0 and 100." in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(

@@ -602,9 +602,19 @@ def tax_config():
 def update_tax_config():
     """Update state tax flat rate."""
     state_code = request.form.get("state_code", "").strip().upper()
-    flat_rate = request.form.get("flat_rate", "").strip()
+    flat_rate_raw = request.form.get("flat_rate", "").strip()
     standard_deduction = request.form.get("standard_deduction", "").strip() or None
     tax_year = request.form.get("tax_year", "").strip()
+
+    # Convert percentage input (e.g. 3.99 → 0.0399) for storage.
+    from decimal import Decimal as D, InvalidOperation
+    flat_rate = None
+    if flat_rate_raw:
+        try:
+            flat_rate = D(flat_rate_raw) / D("100")
+        except (InvalidOperation, ValueError):
+            flash("Invalid flat rate.", "danger")
+            return redirect(url_for("settings.show", section="tax"))
 
     if not state_code or len(state_code) != 2:
         flash("Invalid state code.", "danger")
@@ -656,6 +666,12 @@ def update_fica_config():
 
     data = _fica_schema.load(request.form)
     tax_year = data.pop("tax_year")
+
+    # Convert percentage inputs (e.g. 6.2 → 0.062) for storage.
+    from decimal import Decimal as D
+    for rate_field in ("ss_rate", "medicare_rate", "medicare_surtax_rate"):
+        if rate_field in data and data[rate_field] is not None:
+            data[rate_field] = D(str(data[rate_field])) / D("100")
 
     fica = (
         db.session.query(FicaConfig)

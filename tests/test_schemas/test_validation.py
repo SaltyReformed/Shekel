@@ -546,13 +546,13 @@ class TestFicaConfigSchema:
         """Valid FICA config data loads successfully."""
         data = FicaConfigSchema().load({
             "tax_year": "2026",
-            "ss_rate": "0.0620",
+            "ss_rate": "6.20",
             "ss_wage_base": "176100.00",
-            "medicare_rate": "0.0145",
-            "medicare_surtax_rate": "0.0090",
+            "medicare_rate": "1.45",
+            "medicare_surtax_rate": "0.90",
             "medicare_surtax_threshold": "200000.00",
         })
-        assert data["ss_rate"] == Decimal("0.0620")
+        assert data["ss_rate"] == Decimal("6.20")
         assert data["tax_year"] == 2026
 
     def test_missing_required_field(self):
@@ -912,35 +912,28 @@ class TestFicaConfigSchemaBoundary:
         """Return a valid FICA config payload with optional overrides."""
         data = {
             "tax_year": "2026",
-            "ss_rate": "0.0620",
+            "ss_rate": "6.20",
             "ss_wage_base": "176100.00",
-            "medicare_rate": "0.0145",
-            "medicare_surtax_rate": "0.0090",
+            "medicare_rate": "1.45",
+            "medicare_surtax_rate": "0.90",
             "medicare_surtax_threshold": "200000.00",
         }
         data.update(overrides)
         return data
 
-    def test_fica_rate_over_one_rejected(self):
-        """ss_rate=2.0 (200%) is rejected by Range(min=0, max=1) validator.
-
-        A misplaced decimal (6.2 vs 0.062) would produce catastrophically
-        wrong paycheck calculations. The schema catches this before the DB.
-        """
+    def test_fica_rate_over_100_rejected(self):
+        """ss_rate=200 (200%) is rejected by Range(min=0, max=100) validator."""
         with pytest.raises(ValidationError) as exc:
             FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="2.0")
+                self._valid_fica_data(ss_rate="200")
             )
         assert "ss_rate" in exc.value.messages
 
     def test_negative_fica_rate_rejected(self):
-        """Negative ss_rate is rejected by Range(min=0, max=1) validator.
-
-        Negative rates would produce negative tax withholding.
-        """
+        """Negative ss_rate is rejected by Range(min=0, max=100) validator."""
         with pytest.raises(ValidationError) as exc:
             FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="-0.05")
+                self._valid_fica_data(ss_rate="-5")
             )
         assert "ss_rate" in exc.value.messages
 
@@ -957,18 +950,18 @@ class TestFicaConfigSchemaBoundary:
         assert "ss_wage_base" in exc.value.messages
 
     def test_rate_at_zero_accepted(self):
-        """ss_rate=0.0 is accepted — inclusive lower bound of Range(min=0, max=1)."""
+        """ss_rate=0 is accepted — inclusive lower bound of Range(min=0, max=100)."""
         data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="0.0000")
+            self._valid_fica_data(ss_rate="0.00")
         )
-        assert data["ss_rate"] == Decimal("0.0000")
+        assert data["ss_rate"] == Decimal("0.00")
 
-    def test_rate_at_one_accepted(self):
-        """ss_rate=1.0 is accepted — inclusive upper bound of Range(min=0, max=1)."""
+    def test_rate_at_100_accepted(self):
+        """ss_rate=100 is accepted — inclusive upper bound of Range(min=0, max=100)."""
         data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="1.0000")
+            self._valid_fica_data(ss_rate="100.00")
         )
-        assert data["ss_rate"] == Decimal("1.0000")
+        assert data["ss_rate"] == Decimal("100.00")
 
     def test_wage_base_minimum_accepted(self):
         """ss_wage_base=0.01 is accepted — smallest valid value (> 0)."""

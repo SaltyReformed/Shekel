@@ -86,24 +86,24 @@
                  required value="{{ fica_configs[0].tax_year if fica_configs else 2025 }}">
         </div>
         <div class="col">
-          <label class="form-label">SS Rate</label>
-          <input type="number" step="0.0001" name="ss_rate" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].ss_rate if fica_configs else '0.0620' }}">
+          <label class="form-label">SS Rate %</label>
+          <input type="number" step="0.01" name="ss_rate" class="form-control form-control-sm"
+                 required value="{{ "%.2f"|format((fica_configs[0].ss_rate * 100)|float) if fica_configs else '6.20' }}">
         </div>
         <div class="col">
           <label class="form-label">SS Wage Base</label>
           <input type="number" step="0.01" name="ss_wage_base" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].ss_wage_base if fica_configs else '176100' }}">
+                 required value="{{ fica_configs[0].ss_wage_base if fica_configs else '184500' }}">
         </div>
         <div class="col">
-          <label class="form-label">Medicare</label>
-          <input type="number" step="0.0001" name="medicare_rate" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].medicare_rate if fica_configs else '0.0145' }}">
+          <label class="form-label">Medicare %</label>
+          <input type="number" step="0.01" name="medicare_rate" class="form-control form-control-sm"
+                 required value="{{ "%.2f"|format((fica_configs[0].medicare_rate * 100)|float) if fica_configs else '1.45' }}">
         </div>
         <div class="col">
-          <label class="form-label">Surtax</label>
-          <input type="number" step="0.0001" name="medicare_surtax_rate" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].medicare_surtax_rate if fica_configs else '0.0090' }}">
+          <label class="form-label">Surtax %</label>
+          <input type="number" step="0.01" name="medicare_surtax_rate" class="form-control form-control-sm"
+                 required value="{{ "%.2f"|format((fica_configs[0].medicare_surtax_rate * 100)|float) if fica_configs else '0.90' }}">
         </div>
         <div class="col">
           <label class="form-label">Threshold</label>
@@ -169,11 +169,11 @@
                  placeholder="NC">
         </div>
         <div class="col">
-          <label class="form-label">Flat Rate</label>
-          <input type="number" step="0.0001" name="flat_rate"
+          <label class="form-label">Flat Rate %</label>
+          <input type="number" step="0.01" name="flat_rate"
                  class="form-control form-control-sm" required
-                 value="{{ state_configs[0].flat_rate if state_configs else '' }}"
-                 placeholder="e.g. 0.0399">
+                 value="{{ "%.2f"|format((state_configs[0].flat_rate * 100)|float) if state_configs and state_configs[0].flat_rate else '' }}"
+                 placeholder="e.g. 3.99">
         </div>
         <div class="col">
           <label class="form-label">Std. Deduction</label>

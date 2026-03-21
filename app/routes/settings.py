@@ -153,16 +153,16 @@ def update():
             return redirect(url_for("settings.show", section="general"))
         settings.grid_default_periods = val
 
-    # Update default inflation rate.
+    # Update default inflation rate (user enters percentage, e.g. 3 for 3%).
     inflation = request.form.get("default_inflation_rate")
     if inflation:
         try:
-            val = Decimal(inflation)
+            val = Decimal(inflation) / Decimal("100")
         except (InvalidOperation, ValueError, ArithmeticError):
             flash("Invalid inflation rate.", "danger")
             return redirect(url_for("settings.show", section="general"))
         if val < 0 or val > 1:
-            flash("Inflation rate must be between 0 and 1.", "danger")
+            flash("Inflation rate must be between 0 and 100.", "danger")
             return redirect(url_for("settings.show", section="general"))
         settings.default_inflation_rate = val
 

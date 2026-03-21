@@ -109,7 +109,7 @@ class TestHysaParamsUpdate:
         resp = auth_client.post(
             f"/accounts/{account.id}/hysa/params",
             data={
-                "apy": "0.05000",
+                "apy": "5.000",
                 "compounding_frequency": "monthly",
             },
         )
@@ -126,7 +126,7 @@ class TestHysaParamsUpdate:
         resp = auth_client.post(
             f"/accounts/{account.id}/hysa/params",
             data={
-                "apy": "2.00000",  # > 1 is invalid
+                "apy": "200",  # > 100 is invalid
                 "compounding_frequency": "daily",
             },
         )

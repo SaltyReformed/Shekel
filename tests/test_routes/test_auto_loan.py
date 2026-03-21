@@ -122,7 +122,7 @@ class TestAutoLoanParamsUpdate:
             f"/accounts/{acct.id}/auto-loan/params",
             data={
                 "current_principal": "22000.00",
-                "interest_rate": "0.04500",
+                "interest_rate": "4.500",
                 "payment_day": "1",
             },
         )

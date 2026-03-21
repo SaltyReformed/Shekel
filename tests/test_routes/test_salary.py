@@ -792,7 +792,7 @@ class TestTaxConfig:
             response = auth_client.post("/salary/tax-config", data={
                 "tax_year": "2026",
                 "state_code": "NC",
-                "flat_rate": "0.045",
+                "flat_rate": "4.50",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -804,17 +804,17 @@ class TestTaxConfig:
                 .filter_by(user_id=seed_user["user"].id, state_code="NC", tax_year=2026)
                 .one()
             )
-            assert state_config.flat_rate == Decimal("0.045")
+            assert state_config.flat_rate == Decimal("0.0450")
 
     def test_update_fica_config(self, app, auth_client, seed_user):
         """POST /salary/fica-config creates/updates FICA configuration."""
         with app.app_context():
             response = auth_client.post("/salary/fica-config", data={
                 "tax_year": "2026",
-                "ss_rate": "0.0620",
+                "ss_rate": "6.20",
                 "ss_wage_base": "176100.00",
-                "medicare_rate": "0.0145",
-                "medicare_surtax_rate": "0.0090",
+                "medicare_rate": "1.45",
+                "medicare_surtax_rate": "0.90",
                 "medicare_surtax_threshold": "200000.00",
             }, follow_redirects=True)
 
@@ -833,7 +833,7 @@ class TestTaxConfig:
         with app.app_context():
             response = auth_client.post("/salary/tax-config", data={
                 "state_code": "X",
-                "flat_rate": "0.05",
+                "flat_rate": "5",
             }, follow_redirects=True)
 
             assert response.status_code == 200

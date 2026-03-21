@@ -123,6 +123,12 @@ def create_params(account_id):
         return render_template("auto_loan/setup.html", account=account)
 
     data = _create_schema.load(request.form)
+
+    # Convert percentage input (e.g. 5 → 0.05) for storage.
+    if "interest_rate" in data:
+        from decimal import Decimal as D
+        data["interest_rate"] = D(str(data["interest_rate"])) / D("100")
+
     params = AutoLoanParams(account_id=account.id, **data)
     db.session.add(params)
     db.session.commit()
@@ -147,6 +153,11 @@ def update_params(account_id):
         return redirect(url_for("auto_loan.dashboard", account_id=account_id))
 
     data = _params_schema.load(request.form)
+
+    # Convert percentage input (e.g. 5 → 0.05) for storage.
+    if "interest_rate" in data:
+        from decimal import Decimal as D
+        data["interest_rate"] = D(str(data["interest_rate"])) / D("100")
 
     _PARAM_FIELDS = {"current_principal", "interest_rate", "payment_day"}
     for field, value in data.items():

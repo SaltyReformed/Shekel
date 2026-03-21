@@ -265,6 +265,11 @@ def add_escrow(account_id):
 
     data = _escrow_schema.load(request.form)
 
+    # Convert percentage input (e.g. 3 → 0.03) for storage.
+    if data.get("inflation_rate") is not None:
+        from decimal import Decimal as D
+        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+
     # Check for duplicate name.
     existing = (
         db.session.query(EscrowComponent)

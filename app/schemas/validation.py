@@ -284,20 +284,20 @@ class FicaConfigSchema(BaseSchema):
 
     tax_year = fields.Integer(required=True)
     ss_rate = fields.Decimal(
-        required=True, places=4, as_string=True,
-        validate=validate.Range(min=0, max=1),
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, max=100),
     )
     ss_wage_base = fields.Decimal(
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
     medicare_rate = fields.Decimal(
-        required=True, places=4, as_string=True,
-        validate=validate.Range(min=0, max=1),
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, max=100),
     )
     medicare_surtax_rate = fields.Decimal(
-        required=True, places=4, as_string=True,
-        validate=validate.Range(min=0, max=1),
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, max=100),
     )
     medicare_surtax_threshold = fields.Decimal(
         required=True, places=2, as_string=True,
@@ -484,8 +484,8 @@ class HysaParamsCreateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     apy = fields.Decimal(
-        required=True, places=5, as_string=True,
-        validate=validate.Range(min=0, max=1),
+        required=True, places=3, as_string=True,
+        validate=validate.Range(min=0, max=100),
     )
     compounding_frequency = fields.String(
         required=True,
@@ -501,8 +501,8 @@ class HysaParamsUpdateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     apy = fields.Decimal(
-        places=5, as_string=True,
-        validate=validate.Range(min=0, max=1),
+        places=3, as_string=True,
+        validate=validate.Range(min=0, max=100),
     )
     compounding_frequency = fields.String(
         validate=validate.OneOf(["daily", "monthly", "quarterly"]),
@@ -581,7 +581,7 @@ class AutoLoanParamsCreateSchema(BaseSchema):
 
     original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    interest_rate = fields.Decimal(required=True, places=3, as_string=True, validate=validate.Range(min=0, max=100))
     term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=120))
     origination_date = fields.Date(required=True)
     payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
@@ -595,7 +595,7 @@ class AutoLoanParamsUpdateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=1))
+    interest_rate = fields.Decimal(places=3, as_string=True, validate=validate.Range(min=0, max=100))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
 
 
