@@ -4,9 +4,94 @@ A paycheck-centric budget application that replaces a biweekly-paycheck-based sp
 
 **Stack:** Flask · Jinja2 · HTMX · Bootstrap 5 · PostgreSQL
 
+**Two ways to run Shekel:**
+- **Docker (recommended):** Download two files, run `docker compose up`. No Python or PostgreSQL install needed. See [Quick Start (Docker)](#quick-start-docker).
+- **From source:** Clone the repo, set up Python and PostgreSQL locally. See [Developer Setup (from source)](#developer-setup-from-source).
+
 ---
 
-## Quick Start (Arch Linux)
+## Quick Start (Docker)
+
+### 1. Prerequisites
+
+Install [Docker Engine](https://docs.docker.com/engine/install/) (Linux) or Docker Desktop (macOS/Windows). Verify the installation:
+
+```bash
+docker compose version
+```
+
+### 2. Download Configuration Files
+
+```bash
+mkdir shekel && cd shekel
+curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/.env.example
+cp .env.example .env
+```
+
+### 3. Configure Environment
+
+Edit `.env` and set these values:
+
+| Variable | Required | Description |
+|---|---|---|
+| `POSTGRES_PASSWORD` | Yes | Choose a strong database password. |
+| `SECRET_KEY` | Yes | Run `openssl rand -hex 32` and paste the output. |
+| `TOTP_ENCRYPTION_KEY` | No | Only needed before enabling MFA/TOTP. See `.env.example` for generation instructions. |
+| `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local` |
+| `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026` |
+
+### 4. Start the Application
+
+```bash
+docker compose up -d
+```
+
+First startup takes ~30 seconds while the database is initialized. Check progress with:
+
+```bash
+docker compose logs -f app
+```
+
+Look for `=== Starting Application ===` to confirm the app is running.
+
+### 5. Log In
+
+Open http://localhost and log in with the credentials from your `.env` file (or the defaults above).
+
+### 6. First-Time Setup in the App
+
+After logging in you will see a **Welcome to Shekel!** banner with a setup checklist. Your account and budget categories are already created. Complete the remaining steps:
+
+1. **Generate Pay Periods** -- Navigate to Pay Periods and enter your next payday, then generate. This creates ~2 years of biweekly periods.
+2. **Set Up a Salary Profile** -- Go to Salary and create your income profile with deductions and tax info.
+3. **Create Recurring Transactions** -- Go to Templates and add your regular income and expenses with their recurrence patterns.
+
+Once all three steps are done, the welcome banner dismisses and the budget grid populates with your projected transactions. You can then set your **anchor balance** (click the balance display on the grid) to calibrate projections against your real checking account balance.
+
+### Updating
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Database migrations run automatically on startup.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `POSTGRES_PASSWORD` error on startup | Set `POSTGRES_PASSWORD` in your `.env` file. |
+| `SECRET_KEY` error on startup | Set `SECRET_KEY` in your `.env` file. Run `openssl rand -hex 32` to generate one. |
+| MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See `.env.example` for generation instructions. |
+| App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
+| Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
+
+---
+
+## Developer Setup (from source)
+
+For contributing to Shekel or running from source.
 
 ### 1. Prerequisites
 
@@ -71,17 +156,14 @@ flask run
 python run.py
 ```
 
-Open http://localhost:5000 and log in with the seed user credentials, or
+Open http://localhost:5000 (development server) and log in with the seed user credentials, or
 register a new account at http://localhost:5000/register.
 - **Default Email:** `admin@shekel.local`
 - **Default Password:** `ChangeMe!2026`
 
 ### 6. First-Time Setup in the App
 
-1. **Generate Pay Periods:** Navigate to Pay Periods and enter your next payday, then Generate.
-2. **Set Anchor Balance:** On the grid, click the balance display and enter your current checking balance.
-3. **Create Templates:** Go to Templates and create recurring income/expenses with their recurrence rules.
-4. **Start Using:** The grid will populate with auto-generated transactions. Mark items done/received as they clear your bank.
+See [Quick Start (Docker) > First-Time Setup in the App](#6-first-time-setup-in-the-app) for initial configuration steps.
 
 ---
 
