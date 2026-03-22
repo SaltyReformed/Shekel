@@ -30,18 +30,16 @@ python scripts/init_database.py
 echo "Seeding reference data..."
 python scripts/seed_ref_tables.py
 
-# ── 5. Seed tax brackets ──────────────────────────────────────
-echo "Seeding tax configuration..."
-python scripts/seed_tax_brackets.py
-echo "Seeding complete."
-
-# ── 6. Seed initial user (optional, first run only) ────────────
+# ── 5. Seed initial user (optional, first run only) ────────────
 # Only runs if SEED_USER_EMAIL is set and non-empty.
 # seed_user.py is idempotent -- skips if the user already exists.
 # Alternative: leave SEED_USER_EMAIL empty and use /register instead.
-# Note: the /register route creates the same bootstrap data as this
-# script (user, settings, account, scenario, categories) plus default
-# tax configuration.
+# seed_user.py creates: user, settings, checking account, baseline
+# scenario, and default categories.  It does NOT create tax data --
+# that is handled by seed_tax_brackets.py in the next step.
+#
+# The /register web route creates all of the above PLUS tax data in
+# a single transaction via auth_service.register_user().
 if [ -n "${SEED_USER_EMAIL}" ]; then
     echo "Seeding initial user..."
     python scripts/seed_user.py
@@ -49,6 +47,11 @@ if [ -n "${SEED_USER_EMAIL}" ]; then
 else
     echo "SEED_USER_EMAIL not set, skipping user seed. Use /register to create your account."
 fi
+
+# ── 6. Seed tax brackets ──────────────────────────────────────
+echo "Seeding tax configuration..."
+python scripts/seed_tax_brackets.py
+echo "Seeding complete."
 
 # ── 7. Copy static files to shared volume ────────────────────────
 # Nginx serves /static/ directly from this volume.  Copying on every
