@@ -1,5 +1,28 @@
 #!/bin/bash
-set -e
+set -eEo pipefail
+
+# ── Error handler ────────────────────────────────────────────────
+# Prints troubleshooting guidance when any command fails.
+# Fired by the ERR trap before set -e terminates the script.
+entrypoint_failed() {
+    local exit_code=$?
+    echo ""
+    echo "========================================"
+    echo "  Shekel entrypoint failed (exit code: ${exit_code})"
+    echo "========================================"
+    echo ""
+    echo "Check the output above for the specific error."
+    echo ""
+    echo "Common causes:"
+    echo "  - PostgreSQL is not ready or not reachable"
+    echo "  - Missing or invalid values in .env (POSTGRES_PASSWORD, SECRET_KEY)"
+    echo "  - Database migration conflict"
+    echo ""
+    echo "To view full logs:  docker logs shekel-app"
+    echo "Troubleshooting:    https://github.com/SaltyReformed/Shekel#troubleshooting"
+    echo ""
+}
+trap entrypoint_failed ERR
 
 echo "=== Shekel Entrypoint ==="
 
