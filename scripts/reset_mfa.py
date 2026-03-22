@@ -8,7 +8,7 @@ Usage:
     python scripts/reset_mfa.py <user_email>
 
 Example:
-    python scripts/reset_mfa.py josh@saltyreformed.com
+    python scripts/reset_mfa.py admin@shekel.local
 """
 
 import os

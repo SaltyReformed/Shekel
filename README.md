@@ -241,7 +241,7 @@ Last evaluated: 2026-03-21
 
 **Status key:** Complete | In Progress | Not Started | Deferred
 
-**Test suite:** 1772 test functions across 63 test files (+ 3 performance benchmarks run separately)
+**Test suite:** 1780 test functions across 63 test files (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
 
@@ -269,7 +269,7 @@ shekel/
 ├── cloudflared/                 # Cloudflare Tunnel configuration
 ├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite (1772 test functions, 63 test files)
+├── tests/                       # pytest test suite (1780 test functions, 63 test files)
 ├── docs/                        # Plans, progress tracking, runbooks
 ├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
 ├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
