@@ -69,6 +69,11 @@ limit_request_fields = 100
 limit_request_field_size = 8190
 
 # ── Forwarded Headers ────────────────────────────────────────────
-# Trust X-Forwarded-* headers from Nginx.  Required for correct
-# remote_addr logging and HTTPS detection behind a reverse proxy.
+# Trust X-Forwarded-* headers from any source.  This is safe in the
+# current architecture because Gunicorn is only reachable on the
+# Docker internal backend network -- Nginx is the sole client.
+#
+# If Gunicorn is ever exposed directly (without Nginx in front),
+# restrict this to the Nginx container IP or the Docker bridge
+# subnet to prevent X-Forwarded-For spoofing.
 forwarded_allow_ips = "*"

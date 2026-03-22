@@ -49,6 +49,9 @@ services:
       DATABASE_URL: postgresql://shekel_user:${POSTGRES_PASSWORD}@db:5432/shekel
       DB_HOST: db
       DB_USER: shekel_user
+      # DB_PASSWORD must match POSTGRES_PASSWORD (set on the db service
+      # above).  entrypoint.sh reads it as PGPASSWORD for psql commands
+      # that create schemas and run seed scripts.
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: shekel
       SEED_USER_EMAIL: ${SEED_USER_EMAIL:-}

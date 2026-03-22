@@ -80,6 +80,8 @@ def setup_database(app):
     """
     with app.app_context():
         # Create schemas.
+        # DDL identifiers cannot use bind parameters.  Schema names
+        # are from a hardcoded tuple -- not user input.
         for schema_name in ("ref", "auth", "budget", "salary", "system"):
             _db.session.execute(
                 _db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
@@ -103,6 +105,8 @@ def setup_database(app):
     # Teardown: drop all tables after the session.
     with app.app_context():
         _db.drop_all()
+        # DDL identifiers cannot use bind parameters.  Schema names
+        # are from a hardcoded tuple -- not user input.
         for schema_name in ("ref", "auth", "budget", "salary", "system"):
             _db.session.execute(
                 _db.text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")

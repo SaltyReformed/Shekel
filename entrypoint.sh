@@ -10,6 +10,13 @@ until pg_isready -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" -U "${DB_USER:-shekel
 done
 echo "PostgreSQL is ready."
 
+# Validate required environment variables.
+if [ -z "${DB_PASSWORD}" ]; then
+    echo "ERROR: DB_PASSWORD is not set. Set it in .env or docker-compose.yml."
+    echo "       It must match POSTGRES_PASSWORD on the db service."
+    exit 1
+fi
+
 # ── 2. Create schemas ──────────────────────────────────────────
 echo "Creating database schemas..."
 PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" -U "${DB_USER:-shekel_user}" -d "${DB_NAME:-shekel}" -f scripts/init_db.sql -q

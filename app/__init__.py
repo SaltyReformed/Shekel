@@ -305,9 +305,24 @@ def _register_security_headers(app):
         return response
 
 
+# Hardcoded allowlist of PostgreSQL schemas used by the application.
+# Used by _ensure_schemas() for DDL statements that cannot use bind
+# parameters.  Any addition here requires a corresponding Alembic
+# migration and updates to tests/conftest.py and scripts/init_db.sql.
+_ALLOWED_SCHEMAS = frozenset({"ref", "auth", "budget", "salary", "system"})
+
+
 def _ensure_schemas():
-    """Create PostgreSQL schemas if they don't exist (dev/test only)."""
-    for schema_name in ("ref", "auth", "budget", "salary", "system"):
+    """Create PostgreSQL schemas if they do not exist (dev/test only).
+
+    Schema names are validated against _ALLOWED_SCHEMAS, a hardcoded
+    frozenset.  DDL identifiers (schema names, table names) cannot use
+    bind parameters in PostgreSQL, so an f-string is required.  The
+    allowlist ensures only known-safe values are interpolated.
+    """
+    for schema_name in _ALLOWED_SCHEMAS:
+        # DDL identifiers cannot use bind parameters.  Schema names
+        # are from _ALLOWED_SCHEMAS -- not user input.
         db.session.execute(
             db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
         )
