@@ -884,6 +884,10 @@ def _create_audit_infrastructure():
 
 def _seed_ref_tables():
     """Populate reference tables for the test database."""
+    # IMPORTANT: These values must match the production seed data in
+    # scripts/seed_ref_tables.py and app/__init__.py.  Any value that
+    # exists in production but not here will cause tests to miss
+    # behavior that depends on that value.  See audit finding H-002.
     ref_data = [
         (AccountType, [
             "checking", "savings", "hysa", "money_market", "cd", "hsa",
@@ -893,7 +897,7 @@ def _seed_ref_tables():
             "brokerage", "529",
         ]),
         (TransactionType, ["income", "expense"]),
-        (Status, ["projected", "done", "received", "credit", "cancelled"]),
+        (Status, ["projected", "done", "received", "credit", "cancelled", "settled"]),
         (RecurrencePattern, [
             "every_period", "every_n_periods", "monthly",
             "monthly_first", "quarterly", "semi_annual",
