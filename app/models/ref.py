@@ -36,7 +36,10 @@ class TransactionType(db.Model):
 
 
 class Status(db.Model):
-    """Transaction status reference: 'projected', 'done', 'received', 'credit'."""
+    """Transaction status reference.
+
+    Values: projected, done, received, credit, cancelled, settled.
+    """
 
     __tablename__ = "statuses"
     __table_args__ = {"schema": "ref"}

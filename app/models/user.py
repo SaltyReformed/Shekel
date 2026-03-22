@@ -1,8 +1,8 @@
 """
-Shekel Budget App — User & Authentication Models (auth schema)
+Shekel Budget App -- User and Authentication Models (auth schema)
 
 Includes the User model (Flask-Login compatible), user settings,
-and an MFA stub table for Phase 6+.
+and MFA/TOTP configuration.
 """
 
 from flask_login import UserMixin
@@ -89,7 +89,19 @@ class UserSettings(db.Model):
 
 
 class MfaConfig(db.Model):
-    """Stub table for Phase 6+ MFA/TOTP feature.  Schema only — no logic yet."""
+    """MFA/TOTP configuration for a user.
+
+    Stores the encrypted TOTP secret, enabled state, hashed backup
+    codes, and confirmation timestamp.  One-to-one with auth.users
+    (user_id is unique).
+
+    The TOTP secret is encrypted at rest using Fernet symmetric
+    encryption (key from TOTP_ENCRYPTION_KEY env var).  Backup codes
+    are stored as a JSON list of bcrypt hashes.
+
+    Related service: app/services/mfa_service.py
+    Related routes: /mfa/setup, /mfa/confirm, /mfa/verify, /mfa/disable
+    """
 
     __tablename__ = "mfa_configs"
     __table_args__ = {"schema": "auth"}
