@@ -316,6 +316,7 @@ def dashboard():
 
     # Compute current slider defaults from settings / account data.
     settings = data["settings"]
+    # Presentation boundary: float() for template slider defaults.
     current_swr = float(settings.safe_withdrawal_rate or 0.04) * 100 if settings else 4.0
 
     # Derive default return rate from weighted average of account return rates.
@@ -334,6 +335,7 @@ def dashboard():
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:
+        # Presentation boundary: float() for template slider default.
         current_return = float(weighted_return / total_balance) * 100
     else:
         current_return = 7.0

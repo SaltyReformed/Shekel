@@ -51,6 +51,7 @@ def _build_chart_data(schedule):
     balances = []
     for row in schedule:
         labels.append(row.payment_date.strftime("%b %Y"))
+        # Presentation boundary: float() for Chart.js JSON serialization.
         balances.append(float(row.remaining_balance))
     return labels, balances
 

@@ -32,6 +32,26 @@ from app.services import (
 
 logger = logging.getLogger(__name__)
 
+
+def _to_chart_float(value):
+    """Convert a Decimal to float for Chart.js JSON serialization.
+
+    Chart.js requires native Python floats (or ints) for numeric
+    datasets.  Jinja2's ``tojson`` filter serializes Decimal as a
+    string (e.g. ``"1234.56"``), which Chart.js cannot plot.
+
+    This conversion is ONLY for the presentation boundary -- no
+    further arithmetic is performed on these values.  All financial
+    calculations use Decimal exclusively.
+
+    Args:
+        value: A Decimal, int, or numeric value to convert.
+
+    Returns:
+        float: The value as a native Python float.
+    """
+    return float(value)
+
 # Mapping of account type categories to y-axis assignment for dual-axis.
 _LEFT_AXIS_CATEGORIES = {"asset"}
 
@@ -304,7 +324,7 @@ def get_balance_over_time(user_id, account_ids=None, start=None, end=None):
         if balances is None:
             continue
 
-        data = [float(balances.get(p.id, Decimal("0"))) for p in periods]
+        data = [_to_chart_float(balances.get(p.id, Decimal("0"))) for p in periods]
         datasets.append({
             "label": account.name, "data": data,
             "account_id": account.id, "axis": axis,
@@ -386,7 +406,7 @@ def get_spending_by_category(user_id, period_range="current"):
     sorted_groups = sorted(totals.items(), key=lambda x: x[1], reverse=True)
     return {
         "labels": [g[0] for g in sorted_groups],
-        "data": [float(g[1]) for g in sorted_groups],
+        "data": [_to_chart_float(g[1]) for g in sorted_groups],
     }
 
 
@@ -438,8 +458,8 @@ def get_budget_vs_actuals(user_id, period_range="current"):
     )
     return {
         "labels": groups,
-        "estimated": [float(estimated_totals.get(g, Decimal("0"))) for g in groups],
-        "actual": [float(actual_totals.get(g, Decimal("0"))) for g in groups],
+        "estimated": [_to_chart_float(estimated_totals.get(g, Decimal("0"))) for g in groups],
+        "actual": [_to_chart_float(actual_totals.get(g, Decimal("0"))) for g in groups],
     }
 
 
@@ -533,8 +553,8 @@ def get_amortization_breakdown(user_id, account_id=None):
 
     return {
         "labels": [row.payment_date.strftime("%b %Y") for row in schedule],
-        "principal": [float(row.principal) for row in schedule],
-        "interest": [float(row.interest) for row in schedule],
+        "principal": [_to_chart_float(row.principal) for row in schedule],
+        "interest": [_to_chart_float(row.interest) for row in schedule],
         "account_name": account.name,
     }
 
@@ -575,6 +595,9 @@ def get_net_worth_over_time(user_id, start=None, end=None):
 
     return {
         "labels": balance_data["labels"],
+        # Round to 2 decimal places to clean up float arithmetic noise.
+        # The values are already float (converted by _to_chart_float in
+        # get_balance_over_time), so this is not a Decimal conversion.
         "data": [round(v, 2) for v in net_worth],
     }
 
@@ -688,8 +711,8 @@ def _build_step_data(breakdowns, periods):
     prev_net = None
 
     for breakdown in breakdowns:
-        net = float(breakdown.net_pay)
-        gross = float(breakdown.gross_biweekly)
+        net = _to_chart_float(breakdown.net_pay)
+        gross = _to_chart_float(breakdown.gross_biweekly)
 
         if prev_net is None or net != prev_net:
             period = period_map.get(breakdown.period_id)
@@ -704,8 +727,8 @@ def _build_step_data(breakdowns, periods):
         last_label = periods[-1].start_date.strftime("%b %Y")
         if not labels or labels[-1] != last_label:
             labels.append(last_label)
-            data.append(float(breakdowns[-1].net_pay))
-            gross_data.append(float(breakdowns[-1].gross_biweekly))
+            data.append(_to_chart_float(breakdowns[-1].net_pay))
+            gross_data.append(_to_chart_float(breakdowns[-1].gross_biweekly))
 
     return labels, data, gross_data
 
