@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transfer Model (budget schema)
+Shekel Budget App -- Transfer Model (budget schema)
 
 Tracks transfers between accounts (checking ↔ savings) within pay periods.
 Supports both template-generated recurring transfers and ad-hoc one-time transfers.

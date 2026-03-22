@@ -1,5 +1,5 @@
 """
-Shekel Budget App — HYSA Parameters Model (budget schema)
+Shekel Budget App -- HYSA Parameters Model (budget schema)
 
 Stores interest configuration for High-Yield Savings Account accounts:
 APY and compounding frequency.

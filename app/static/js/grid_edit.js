@@ -1,8 +1,8 @@
 /**
- * grid_edit.js — Two-tier editing for the Shekel budget grid.
+ * grid_edit.js -- Two-tier editing for the Shekel budget grid.
  *
- * Tier 1: Quick edit — single inline amount input inside the cell.
- * Tier 2: Full edit — floating popover with all fields, anchored to the cell.
+ * Tier 1: Quick edit -- single inline amount input inside the cell.
+ * Tier 2: Full edit -- floating popover with all fields, anchored to the cell.
  *
  * Supports both editing existing transactions and creating new ones
  * from empty cells. Create-mode forms have data-mode="create".
@@ -169,7 +169,7 @@ function closeFullEdit() {
 }
 
 /**
- * Click-outside handler — closes the popover when clicking anywhere else.
+ * Click-outside handler -- closes the popover when clicking anywhere else.
  */
 function handleClickOutside(event) {
     const popover = document.getElementById('txn-popover');
@@ -210,7 +210,7 @@ document.addEventListener('keydown', function(e) {
         }
     }
 
-    // Escape — cancel quick edit/create or close full edit popover.
+    // Escape -- cancel quick edit/create or close full edit popover.
     if (e.key === 'Escape') {
         // Close full edit/create popover if open.
         if (activePopover) {
@@ -225,7 +225,7 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             const quickForm = quickInput.closest('.txn-quick-edit');
 
-            // Transfer quick edit — revert to display mode.
+            // Transfer quick edit -- revert to display mode.
             const xferBtn = quickForm.querySelector('.xfer-expand-btn');
             if (xferBtn) {
                 const xferId = xferBtn.dataset.xferId;

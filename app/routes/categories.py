@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Category Routes
+Shekel Budget App -- Category Routes
 
 CRUD for the flat two-level category system (group + item name).
 """
@@ -40,7 +40,7 @@ def create_category():
 
     data = _create_schema.load(request.form)
 
-    # Strip whitespace — the schema allows it through Length(min=1).
+    # Strip whitespace -- the schema allows it through Length(min=1).
     data["group_name"] = data["group_name"].strip()
     data["item_name"] = data["item_name"].strip()
     if not data["group_name"] or not data["item_name"]:

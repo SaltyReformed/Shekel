@@ -1,10 +1,10 @@
 """
-Shekel Budget App — Retirement Income Gap Calculator Service
+Shekel Budget App -- Retirement Income Gap Calculator Service
 
 Orchestrates pension calculator, growth engine, and paycheck data to
 produce a retirement income gap analysis.
 
-All functions are pure (no DB access) — data is passed in as arguments.
+All functions are pure (no DB access) -- data is passed in as arguments.
 """
 
 import logging

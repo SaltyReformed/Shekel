@@ -1,11 +1,11 @@
-{# Empty transaction cell — clickable to create a new transaction.
+{# Empty transaction cell -- clickable to create a new transaction.
    Clicking opens a Tier 1 quick-create input inline.
 
    Expected context:
-     category — Category object for this row
-     period   — PayPeriod object for this column
-     txn_type_name — "income" or "expense"
-     scenario — Scenario object (baseline)
+     category -- Category object for this row
+     period   -- PayPeriod object for this column
+     txn_type_name -- "income" or "expense"
+     scenario -- Scenario object (baseline)
 #}
 <div class="txn-cell txn-empty-cell"
      hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period.id, txn_type_name=txn_type_name) }}"

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transfer Template Model (budget schema)
+Shekel Budget App -- Transfer Template Model (budget schema)
 
 A template defines a recurring transfer between accounts (e.g. "Monthly
 savings contribution") along with its recurrence rule and default amount.

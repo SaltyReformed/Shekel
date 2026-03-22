@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Model Computed Property Tests
+Shekel Budget App -- Model Computed Property Tests
 
 Tests for computed properties on models:
   - Transaction: effective_amount, is_income, is_expense
@@ -262,17 +262,17 @@ class TestPayPeriodLabel:
     """Tests for PayPeriod.label property."""
 
     def test_label_format(self, app, db, seed_user, seed_periods):
-        """label returns 'MM/DD – MM/DD' formatted string."""
+        """label returns 'MM/DD - MM/DD' formatted string."""
         with app.app_context():
             period = seed_periods[0]
             # seed_periods start 2026-01-02, cadence 14 days → end 2026-01-15.
-            assert period.label == "01/02 – 01/15"
+            assert period.label == "01/02 - 01/15"
 
     def test_label_cross_month(self, app, db, seed_user):
         """Label formats correctly when period spans two different months.
 
         A period from Jan 25 to Feb 7 should show both month prefixes.
-        Expected: '01/25 – 02/07'.
+        Expected: '01/25 - 02/07'.
         """
         with app.app_context():
             period = PayPeriod(
@@ -283,14 +283,14 @@ class TestPayPeriodLabel:
             )
             db.session.add(period)
             db.session.flush()
-            assert period.label == "01/25 – 02/07"
+            assert period.label == "01/25 - 02/07"
 
     def test_label_cross_year(self, app, db, seed_user):
         """Label includes 2-digit year when period spans a year boundary.
 
-        A Dec 26 – Jan 8 period crosses the year boundary. The label
+        A Dec 26 - Jan 8 period crosses the year boundary. The label
         adds /YY to both dates so the user can distinguish the years.
-        Expected: '12/26/26 – 01/08/27'.
+        Expected: '12/26/26 - 01/08/27'.
         """
         with app.app_context():
             period = PayPeriod(
@@ -301,12 +301,12 @@ class TestPayPeriodLabel:
             )
             db.session.add(period)
             db.session.flush()
-            assert period.label == "12/26/26 – 01/08/27"
+            assert period.label == "12/26/26 - 01/08/27"
 
     def test_label_same_month(self, app, db, seed_user):
         """Label formats correctly when start and end are in the same month.
 
-        Expected: '03/01 – 03/14'.
+        Expected: '03/01 - 03/14'.
         """
         with app.app_context():
             period = PayPeriod(
@@ -317,7 +317,7 @@ class TestPayPeriodLabel:
             )
             db.session.add(period)
             db.session.flush()
-            assert period.label == "03/01 – 03/14"
+            assert period.label == "03/01 - 03/14"
 
 
 # ── PaycheckBreakdown computed totals ────────────────────────────────

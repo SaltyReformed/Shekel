@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Carry Forward Service
+Shekel Budget App -- Carry Forward Service
 
 Moves all 'projected' transactions from a source pay period to a
 target period (typically the current period).  This is the first-class

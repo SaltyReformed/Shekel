@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Mortgage Parameters Models (budget schema)
+Shekel Budget App -- Mortgage Parameters Models (budget schema)
 
 Stores mortgage-specific configuration: loan terms, ARM settings,
 rate change history, and escrow components.

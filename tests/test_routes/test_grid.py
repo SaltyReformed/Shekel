@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Grid & Transaction Route Tests
+Shekel Budget App -- Grid & Transaction Route Tests
 
 Tests the main budget grid view and transaction CRUD endpoints.
 """
@@ -64,7 +64,7 @@ class TestBalanceRow:
     def test_balance_row_no_current_period(self, app, auth_client, seed_user):
         """GET /grid/balance-row with no periods returns 204 empty."""
         with app.app_context():
-            # No periods generated — get_current_period returns None.
+            # No periods generated -- get_current_period returns None.
             resp = auth_client.get("/grid/balance-row")
             assert resp.status_code == 204
             assert resp.data == b""
@@ -80,7 +80,7 @@ class TestBalanceRow:
     def test_grid_periods_large_value(self, app, auth_client, seed_user, seed_periods):
         """GET / with periods larger than available still renders."""
         with app.app_context():
-            # Request 100 periods when only 10 exist — should render what's available.
+            # Request 100 periods when only 10 exist -- should render what's available.
             resp = auth_client.get("/?periods=100")
             assert resp.status_code == 200
             assert b"Projected End Balance" in resp.data
@@ -496,7 +496,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            # Range(min=0) is inclusive by default — 0.00 is accepted.
+            # Range(min=0) is inclusive by default -- 0.00 is accepted.
             assert resp.status_code == 201
 
             txn = db.session.query(Transaction).filter_by(name="Zero Amount").one()

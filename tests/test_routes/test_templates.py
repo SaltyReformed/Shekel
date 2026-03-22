@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Template Route Tests
+Shekel Budget App -- Template Route Tests
 
 Tests for transaction template CRUD and recurrence preview:
   - Template listing (happy path, auth)

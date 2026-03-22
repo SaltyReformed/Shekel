@@ -5,7 +5,7 @@
 
 ## Goal
 
-Package Shekel as a production-ready Docker image published to GitHub Container Registry (GHCR). End users pull a pre-built image and run it with `docker compose up` — no source code, no building, no manual setup. First boot automatically runs migrations, seeds reference data, and creates an initial user from environment variables.
+Package Shekel as a production-ready Docker image published to GitHub Container Registry (GHCR). End users pull a pre-built image and run it with `docker compose up` -- no source code, no building, no manual setup. First boot automatically runs migrations, seeds reference data, and creates an initial user from environment variables.
 
 ## Decisions
 
@@ -40,13 +40,13 @@ GHCR (ghcr.io/<username>/shekel:latest)
 
 ## Multi-Stage Dockerfile
 
-### Stage 1 — Builder
+### Stage 1 -- Builder
 - Base: `python:3.14-slim`
 - Installs gcc + libpq-dev (compile psycopg2)
 - Creates virtualenv, installs all Python dependencies + gunicorn
 - Purpose: compile C extensions in an isolated stage
 
-### Stage 2 — Runtime
+### Stage 2 -- Runtime
 - Base: `python:3.14-slim`
 - Installs only `libpq5` (runtime PostgreSQL client library)
 - Creates non-root `shekel` user
@@ -64,12 +64,12 @@ Runs on every container start, before Gunicorn. Must be idempotent.
 
 ### Execution order
 
-1. **Wait for PostgreSQL** — Loop `pg_isready` until the database is reachable
-2. **Create schemas** — `CREATE SCHEMA IF NOT EXISTS` for ref, auth, budget, salary, system
-3. **Run migrations** — `flask db upgrade` (Alembic skips already-applied migrations)
-4. **Seed reference data** — `seed_ref_tables.py` and `seed_tax_brackets.py` (check before insert)
-5. **Create seed user** — If no users exist AND `SEED_USER_EMAIL` is set, run `seed_user.py`
-6. **Start Gunicorn** — `exec gunicorn ...` (replaces shell, becomes PID 1)
+1. **Wait for PostgreSQL** -- Loop `pg_isready` until the database is reachable
+2. **Create schemas** -- `CREATE SCHEMA IF NOT EXISTS` for ref, auth, budget, salary, system
+3. **Run migrations** -- `flask db upgrade` (Alembic skips already-applied migrations)
+4. **Seed reference data** -- `seed_ref_tables.py` and `seed_tax_brackets.py` (check before insert)
+5. **Create seed user** -- If no users exist AND `SEED_USER_EMAIL` is set, run `seed_user.py`
+6. **Start Gunicorn** -- `exec gunicorn ...` (replaces shell, becomes PID 1)
 
 ### Idempotency guarantees
 - Schemas: `IF NOT EXISTS`
@@ -97,10 +97,10 @@ Two services:
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `SECRET_KEY` | Yes | — | Flask session signing |
-| `POSTGRES_PASSWORD` | Yes | — | Database password |
-| `SEED_USER_EMAIL` | First run | — | Initial user email |
-| `SEED_USER_PASSWORD` | First run | — | Initial user password |
+| `SECRET_KEY` | Yes | -- | Flask session signing |
+| `POSTGRES_PASSWORD` | Yes | -- | Database password |
+| `SEED_USER_EMAIL` | First run | -- | Initial user email |
+| `SEED_USER_PASSWORD` | First run | -- | Initial user password |
 | `SEED_USER_DISPLAY_NAME` | No | `Budget Admin` | Display name |
 
 ## GitHub Actions CI/CD
@@ -108,8 +108,8 @@ Two services:
 Workflow: `.github/workflows/docker-publish.yml`
 
 ### Triggers
-- Push to `main` — tags image as `latest`
-- Git tags `v*` — tags image as version number + `latest`
+- Push to `main` -- tags image as `latest`
+- Git tags `v*` -- tags image as version number + `latest`
 
 ### Steps
 1. Checkout code
@@ -119,8 +119,8 @@ Workflow: `.github/workflows/docker-publish.yml`
 5. Build and push image
 
 ### Image tags
-- `ghcr.io/<username>/shekel:latest` — most recent main build
-- `ghcr.io/<username>/shekel:v1.0.0` — pinned release version
+- `ghcr.io/<username>/shekel:latest` -- most recent main build
+- `ghcr.io/<username>/shekel:v1.0.0` -- pinned release version
 
 ## .dockerignore
 

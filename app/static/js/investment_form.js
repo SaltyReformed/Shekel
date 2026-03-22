@@ -1,5 +1,5 @@
 /**
- * Investment dashboard — toggle employer contribution fields.
+ * Investment dashboard -- toggle employer contribution fields.
  */
 (function() {
   var typeSelect = document.querySelector('select[name="employer_contribution_type"]');

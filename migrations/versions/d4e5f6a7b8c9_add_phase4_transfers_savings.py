@@ -137,7 +137,7 @@ def upgrade():
         ),
         schema="budget",
     )
-    # Remove the server_default after populating — it was just for the migration.
+    # Remove the server_default after populating -- it was just for the migration.
     op.alter_column(
         "savings_goals",
         "user_id",

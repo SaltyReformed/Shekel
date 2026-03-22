@@ -297,7 +297,7 @@ main() {
 
     check_prerequisites
 
-    # Register cleanup trap — always drop the temp database on exit.
+    # Register cleanup trap -- always drop the temp database on exit.
     trap cleanup EXIT
 
     create_temp_database

@@ -1,8 +1,8 @@
-{# Quick edit — single amount input that fits inside the <td>.
+{# Quick edit -- single amount input that fits inside the <td>.
    Replaces cell content on click for fast estimated_amount edits.
    Expand button (⋯) or F2 opens the full edit popover.
 
-   Expected context: txn — a Transaction object.
+   Expected context: txn -- a Transaction object.
 #}
 <form class="txn-quick-edit d-flex align-items-center gap-1"
       hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"

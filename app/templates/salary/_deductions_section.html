@@ -30,7 +30,7 @@
               {{ d.deduction_timing.name|replace('_', '-') }}
             </span>
           </td>
-          <td>{{ d.calc_method.name|title if d.calc_method else '—' }}</td>
+          <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
           <td class="text-end">
             {% if d.calc_method and d.calc_method.name == 'percentage' %}
               {{ "%.2f"|format((d.amount * 100)|float) }}%
@@ -40,13 +40,13 @@
           </td>
           <td>{{ d.deductions_per_year }}</td>
           <td class="text-end">
-            {{ '$' ~ "%.2f"|format(d.annual_cap|float) if d.annual_cap else '—' }}
+            {{ '$' ~ "%.2f"|format(d.annual_cap|float) if d.annual_cap else '--' }}
           </td>
           <td>
             {% if d.target_account %}
               {{ d.target_account.name }}
             {% else %}
-              —
+              --
             {% endif %}
           </td>
           <td>
@@ -101,7 +101,7 @@
           <div class="col-md-6">
             <label class="form-label">Target Account</label>
             <select name="target_account_id" class="form-select form-select-sm">
-              <option value="">— None —</option>
+              <option value="">-- None --</option>
               {% if investment_accounts is defined %}
               {% for acct in investment_accounts %}
               <option value="{{ acct.id }}">{{ acct.name }}</option>

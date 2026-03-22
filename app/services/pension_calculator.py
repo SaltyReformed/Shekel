@@ -1,10 +1,10 @@
 """
-Shekel Budget App — Pension Calculator Service
+Shekel Budget App -- Pension Calculator Service
 
 Pure function service that calculates defined-benefit pension income
 based on years of service, salary projection, and a benefit multiplier.
 
-All functions are pure (no DB access) — data is passed in as arguments.
+All functions are pure (no DB access) -- data is passed in as arguments.
 """
 
 import logging
@@ -35,9 +35,9 @@ def calculate_benefit(benefit_multiplier, consecutive_high_years,
 
     Args:
         benefit_multiplier:      Decimal per-year multiplier (e.g. 0.0185 for 1.85%).
-        consecutive_high_years:  int — number of consecutive highest salary years to average.
-        hire_date:               date — employment start date.
-        planned_retirement_date: date — planned retirement date.
+        consecutive_high_years:  int -- number of consecutive highest salary years to average.
+        hire_date:               date -- employment start date.
+        planned_retirement_date: date -- planned retirement date.
         salary_by_year:          list of (year, annual_salary) tuples, sorted by year.
 
     Returns:

@@ -1,9 +1,9 @@
 """
-Shekel Budget App — Amortization Engine
+Shekel Budget App -- Amortization Engine
 
 Pure-function service for mortgage and auto loan calculations.
 Generates amortization schedules, summary metrics, and payoff analysis.
-No database access — operates only on values passed in.
+No database access -- operates only on values passed in.
 """
 
 import calendar

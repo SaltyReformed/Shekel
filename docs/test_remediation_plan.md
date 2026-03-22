@@ -3,7 +3,7 @@
 **Date:** 2026-03-15
 **Reference:** `docs/test_audit_report.md`
 **Estimated Total Effort:** ~35 hours across 8 phases, 24 work units
-**Approach:** Each work unit is atomic — completable in one session, independently valuable, followed by `pytest` to verify no regressions.
+**Approach:** Each work unit is atomic -- completable in one session, independently valuable, followed by `pytest` to verify no regressions.
 
 ---
 
@@ -19,7 +19,7 @@ Everything in later phases depends on having solid shared fixtures and a reliabl
 
 #### Changes
 
-**0.1a — Assert login success in `auth_client` (line 243)**
+**0.1a -- Assert login success in `auth_client` (line 243)**
 
 The fixture currently fires-and-forgets the login POST. If login fails (e.g., due to a seed_user bug), every downstream test fails with misleading 302 redirects.
 
@@ -34,7 +34,7 @@ assert resp.status_code == 302, f"auth_client login failed: {resp.status_code}"
 return client
 ```
 
-**0.1b — Add `second_user` fixture**
+**0.1b -- Add `second_user` fixture**
 
 At least 5 test files (`test_transaction_auth.py`, `test_hostile_qa.py`, `test_audit_fixes.py`, `test_integrity_check.py`, `test_transfers.py`) independently create second users with varying implementations. Create one shared fixture.
 
@@ -54,10 +54,10 @@ def second_user(app, db):
 Implementation notes:
 
 - Mirror `seed_user` exactly (same keys, same structure) so IDOR tests can swap interchangeably.
-- Do NOT create a `second_auth_client` — IDOR tests should use `auth_client` (logged in as user 1) and attempt to access `second_user` resources.
+- Do NOT create a `second_auth_client` -- IDOR tests should use `auth_client` (logged in as user 1) and attempt to access `second_user` resources.
 - Place after the existing `seed_user` fixture.
 
-**0.1c — Add `seed_periods_52` fixture**
+**0.1c -- Add `seed_periods_52` fixture**
 
 The existing `seed_periods` creates 10 periods. Multiple audit findings require 52+ periods for realistic coverage. Add a second fixture rather than modifying the existing one (avoids breaking ~200 existing tests).
 
@@ -88,7 +88,7 @@ def seed_periods_52(app, db, seed_user):
 
 The most critical gap. A budget app that can't prove penny-level accuracy across its projection window is unreliable. This phase replaces every directional/range assertion on financial values with exact Decimal comparisons and adds long-horizon accuracy tests.
 
-### Work Unit 1.1: Balance Calculator — 52-Period FIN Test
+### Work Unit 1.1: Balance Calculator -- 52-Period FIN Test
 
 **File:** `tests/test_services/test_balance_calculator.py`
 **Addresses:** Audit sections 1 (FIN MISSING), Cross-Cutting Issue 1
@@ -110,7 +110,7 @@ Approach:
    - Sprinkle in status variations: some `done` (with `actual_amount`), some `cancelled` (should be excluded), some `credit` (should be excluded)
 3. Set `anchor_balance = Decimal("3245.67")`, `anchor_period_id = periods[0].id`.
 4. Call `calculate_balances(...)`.
-5. **Hand-compute expected balances for all 52 periods using Python Decimal arithmetic in the test itself** — a simple loop: `expected[0] = anchor + income - expenses` (for anchor period remaining), `expected[n] = expected[n-1] + income[n] - expenses[n]`.
+5. **Hand-compute expected balances for all 52 periods using Python Decimal arithmetic in the test itself** -- a simple loop: `expected[0] = anchor + income - expenses` (for anchor period remaining), `expected[n] = expected[n-1] + income[n] - expenses[n]`.
 6. Assert `result[period.id] == expected[i]` for every single period.
 
 Key design decisions:
@@ -118,7 +118,7 @@ Key design decisions:
 - Use deterministic amounts (no randomness) so the test is reproducible.
 - Include at least one period with only cancelled/credit transactions (verifies zero net effect).
 - Include at least one period with a `done` transaction where `actual_amount != estimated_amount` (verifies actual is used).
-- The hand-computation loop in the test acts as an independent oracle — if the service and the test agree on all 52 values, the implementation is correct.
+- The hand-computation loop in the test acts as an independent oracle -- if the service and the test agree on all 52 values, the implementation is correct.
 
 **`test_negative_anchor_balance_overdraft`**
 
@@ -144,7 +144,7 @@ Call `calculate_balances` twice with identical inputs. Assert `result1 == result
 
 ---
 
-### Work Unit 1.2: Balance Calculator Debt — Exact Assertions
+### Work Unit 1.2: Balance Calculator Debt -- Exact Assertions
 
 **File:** `tests/test_services/test_balance_calculator_debt.py`
 **Addresses:** Audit section 2 (all findings)
@@ -175,7 +175,7 @@ assert principal_by_period[2] == Decimal("<computed_exact_principal>")
 
 **`test_debt_principal_tracking` (line 100)**
 
-Same approach — replace all `> Decimal("0.00")` and relative comparisons with exact values.
+Same approach -- replace all `> Decimal("0.00")` and relative comparisons with exact values.
 
 #### New Tests
 
@@ -211,7 +211,7 @@ Note: since periods are biweekly but mortgage payments are monthly, only ~12 of 
 
 ---
 
-### Work Unit 1.3: Balance Calculator HYSA — Exact Assertions
+### Work Unit 1.3: Balance Calculator HYSA -- Exact Assertions
 
 **File:** `tests/test_services/test_balance_calculator_hysa.py`
 **Addresses:** Audit section 3 (all findings)
@@ -259,7 +259,7 @@ Pass `compounding_frequency="invalid_string"`. Verify behavior (should raise or 
 
 ---
 
-### Work Unit 1.4: Tax Calculator — Exact Assertions
+### Work Unit 1.4: Tax Calculator -- Exact Assertions
 
 **File:** `tests/test_services/test_tax_calculator.py`
 **Addresses:** Audit section 6 (7 range/directional assertions)
@@ -278,7 +278,7 @@ Inputs: `gross_pay=Decimal("1153.85")`, `pay_periods=52`.
 3. `taxable = annual_income - standard_deduction`
 4. Apply marginal brackets iteratively
 5. `per_period = annual_tax / 52`
-6. Assert `result == Decimal("<exact>")` — replace the `Decimal("108") < result < Decimal("111")` range.
+6. Assert `result == Decimal("<exact>")` -- replace the `Decimal("108") < result < Decimal("111")` range.
 
 Repeat for all 7 tests:
 
@@ -297,7 +297,7 @@ Compute `calculate_federal_withholding(...)` for a representative salary ($80,00
 
 ---
 
-### Work Unit 1.5: Paycheck Calculator — Exact Assertions + FICA Cap
+### Work Unit 1.5: Paycheck Calculator -- Exact Assertions + FICA Cap
 
 **File:** `tests/test_services/test_paycheck_calculator.py`
 **Addresses:** Audit section 4 (all findings)
@@ -384,7 +384,7 @@ Note: per-period rounding means the sum of 26 rounded values may differ slightly
 
 ---
 
-### Work Unit 1.6: Recurrence Engine — Safety Guards
+### Work Unit 1.6: Recurrence Engine -- Safety Guards
 
 **File:** `tests/test_services/test_recurrence_engine.py`
 **Addresses:** Audit section 5 (all findings)
@@ -392,7 +392,7 @@ Note: per-period rounding means the sum of 26 rounded values may differ slightly
 
 #### New Tests
 
-**`test_every_n_periods_interval_zero_raises`** — HIGHEST PRIORITY in this unit
+**`test_every_n_periods_interval_zero_raises`** -- HIGHEST PRIORITY in this unit
 
 ```python
 # interval_n=0 in every_n_periods pattern
@@ -460,13 +460,13 @@ assert period_ids == expected_ids  # 1:1 mapping
 
 ---
 
-### Work Unit 1.7: Growth Engine, Pension, Amortization — Exact Assertions
+### Work Unit 1.7: Growth Engine, Pension, Amortization -- Exact Assertions
 
 **Files:** `test_growth_engine.py`, `test_pension_calculator.py`, `test_amortization_engine.py`, `test_retirement_gap_calculator.py`
 **Addresses:** Audit sections 30, 32, 35, 36
 **Estimated time:** 1.5 hours
 
-#### Growth Engine — 3 tests to fix
+#### Growth Engine -- 3 tests to fix
 
 **`test_basic_growth_no_contributions` (line 120)**
 
@@ -479,11 +479,11 @@ assert result[0].growth == expected_growth
 assert result[0].end_balance == Decimal("10000") + expected_growth
 ```
 
-**`test_negative_return_rate` (line 264)** — same approach, exact negative growth.
+**`test_negative_return_rate` (line 264)** -- same approach, exact negative growth.
 
-**`test_with_periodic_contributions` (line 145)** — compute each period's balance incrementally (start + growth + contribution), assert final exactly.
+**`test_with_periodic_contributions` (line 145)** -- compute each period's balance incrementally (start + growth + contribution), assert final exactly.
 
-#### Pension Calculator — 2 tests to fix
+#### Pension Calculator -- 2 tests to fix
 
 **`test_very_short_service` (line 126)**
 
@@ -504,13 +504,13 @@ assert result[0][1] == Decimal("82400.00")
 assert result[1][1] == Decimal("84872.00")
 ```
 
-#### Amortization Engine — 2 tests to fix + 1 missing function
+#### Amortization Engine -- 2 tests to fix + 1 missing function
 
-**`test_achievable_target` (line 266)** — compute exact extra monthly payment.
+**`test_achievable_target` (line 266)** -- compute exact extra monthly payment.
 
-**`test_summary_with_extra` (line 233)** — compute exact months_saved and interest_saved.
+**`test_summary_with_extra` (line 233)** -- compute exact months_saved and interest_saved.
 
-**`test_calculate_remaining_months`** — NEW (zero coverage):
+**`test_calculate_remaining_months`** -- NEW (zero coverage):
 
 ```python
 def test_remaining_months_basic():
@@ -528,11 +528,11 @@ def test_remaining_months_none_as_of():
     assert result >= 0
 ```
 
-#### Retirement Gap Calculator — 2 fixes
+#### Retirement Gap Calculator -- 2 fixes
 
-**`test_surplus` (line 21)** — rename to `test_shortfall_when_savings_insufficient`. Fix docstring.
+**`test_surplus` (line 21)** -- rename to `test_shortfall_when_savings_insufficient`. Fix docstring.
 
-**`test_after_tax_view_traditional` (line 83)** — replace `is not None` with exact computed value.
+**`test_after_tax_view_traditional` (line 83)** -- replace `is not None` with exact computed value.
 
 ---
 
@@ -625,7 +625,7 @@ Implementation notes:
 
 ---
 
-### Work Unit 2.2: IDOR Tests — DB State Verification
+### Work Unit 2.2: IDOR Tests -- DB State Verification
 
 **Files:** `test_auto_loan.py`, `test_hysa.py`, `test_investment.py`, `test_mortgage.py`, `test_retirement.py`
 **Addresses:** Cross-Cutting Issue 4
@@ -696,7 +696,7 @@ Also fix in **`test_transaction_auth.py`:**
 
 #### Application Code Changes
 
-**`app/routes/transfers.py` — `create_transfer_template()`**
+**`app/routes/transfers.py` -- `create_transfer_template()`**
 
 Wrap the commit in a try/except:
 
@@ -709,7 +709,7 @@ except IntegrityError:
     return redirect(url_for("transfers.list_templates"))
 ```
 
-**`app/routes/savings.py` — `create_goal()`**
+**`app/routes/savings.py` -- `create_goal()`**
 
 Same pattern:
 
@@ -724,7 +724,7 @@ except IntegrityError:
 
 #### Test Changes
 
-**`test_transfers.py` — `test_create_template_double_submit` (line 257)**
+**`test_transfers.py` -- `test_create_template_double_submit` (line 257)**
 
 Replace `pytest.raises(IntegrityError)` with:
 
@@ -733,7 +733,7 @@ Replace `pytest.raises(IntegrityError)` with:
 resp1 = auth_client.post("/transfers", data=form_data)
 assert resp1.status_code == 302
 
-# Second submit — now handled gracefully
+# Second submit -- now handled gracefully
 resp2 = auth_client.post("/transfers", data=form_data)
 assert resp2.status_code == 302  # Redirects instead of 500
 
@@ -746,11 +746,11 @@ resp3 = auth_client.get(resp2.headers["Location"])
 assert b"already exists" in resp3.data
 ```
 
-**`test_savings.py` — `test_duplicate_goal_name_same_account` (line 613)**
+**`test_savings.py` -- `test_duplicate_goal_name_same_account` (line 613)**
 
-Same pattern — replace `pytest.raises(IntegrityError)` with graceful redirect + flash assertion.
+Same pattern -- replace `pytest.raises(IntegrityError)` with graceful redirect + flash assertion.
 
-**`test_audit_fixes.py` — lines 452, 476**
+**`test_audit_fixes.py` -- lines 452, 476**
 
 Replace `pytest.raises(Exception)` with `pytest.raises(IntegrityError)` for precision. These test the DB constraint directly (not via routes), so they should still raise.
 
@@ -760,7 +760,7 @@ Replace `pytest.raises(Exception)` with `pytest.raises(IntegrityError)` for prec
 
 Make existing tests meaningful. Every assertion should prove something specific.
 
-### Work Unit 3.1: Shallow Route Assertions — P1 Routes
+### Work Unit 3.1: Shallow Route Assertions -- P1 Routes
 
 **Files:** `test_accounts.py`, `test_salary.py`, `test_transfers.py`, `test_savings.py`, `test_grid.py`
 **Addresses:** Audit sections 8, 10, 11, 12, 21 (assertion depth)
@@ -812,7 +812,7 @@ Implementation approach:
 
 ---
 
-### Work Unit 3.2: Shallow Route Assertions — P2/P3 Routes
+### Work Unit 3.2: Shallow Route Assertions -- P2/P3 Routes
 
 **Files:** `test_templates.py`, `test_categories.py`, `test_pay_periods.py`, `test_settings.py`, `test_charts.py`, `test_mortgage.py`, `test_hysa.py`, `test_auto_loan.py`, `test_investment.py`, `test_retirement.py`, `test_onboarding.py`, `test_transaction_auth.py`, `test_idempotency.py`, `test_hostile_qa.py`
 **Addresses:** Audit sections 17-23, 28, 37-42, 47
@@ -822,21 +822,21 @@ Implementation approach:
 
 **`test_templates.py`:** Fix `test_new_template_form` (163), `test_list_templates_empty` (150).
 
-**`test_categories.py`:** Fix `test_create_category_htmx_validation_error` (127) — assert JSON error body.
+**`test_categories.py`:** Fix `test_create_category_htmx_validation_error` (127) -- assert JSON error body.
 
-**`test_pay_periods.py`:** Fix `test_generate_missing_start_date` (46), `test_generate_cadence_zero` (55) — assert error message content.
+**`test_pay_periods.py`:** Fix `test_generate_missing_start_date` (46), `test_generate_cadence_zero` (55) -- assert error message content.
 
-**`test_settings.py`:** Fix `test_settings_page_renders` (22) — assert form fields. Fix dashboard section tests (184-256) — assert section-specific content.
+**`test_settings.py`:** Fix `test_settings_page_renders` (22) -- assert form fields. Fix dashboard section tests (184-256) -- assert section-specific content.
 
-**`test_charts.py`:** Fix 5 redirect tests — assert Location header. Fix `test_spending_fragment_period_params` (199).
+**`test_charts.py`:** Fix 5 redirect tests -- assert Location header. Fix `test_spending_fragment_period_params` (199).
 
-**`test_mortgage.py`:** Fix 5 shallow tests — add DB verification and Location checks.
+**`test_mortgage.py`:** Fix 5 shallow tests -- add DB verification and Location checks.
 
-**`test_hysa.py`:** Fix `test_hysa_detail_idor` (47) — add Location check. Fix `test_create_hysa_account_auto_params` (157) — strengthen `is not None`.
+**`test_hysa.py`:** Fix `test_hysa_detail_idor` (47) -- add Location check. Fix `test_create_hysa_account_auto_params` (157) -- strengthen `is not None`.
 
-**`test_auto_loan.py`:** Fix `test_create_auto_loan_account` (162) — query DB to verify creation.
+**`test_auto_loan.py`:** Fix `test_create_auto_loan_account` (162) -- query DB to verify creation.
 
-**`test_investment.py`:** Fix `test_dashboard_brokerage` (103) — assert body content.
+**`test_investment.py`:** Fix `test_dashboard_brokerage` (103) -- assert body content.
 
 **`test_retirement.py` (highest volume):**
 
@@ -871,7 +871,7 @@ Implementation approach:
 
 ---
 
-### Work Unit 3.3: Assertion Smells — Exact Counts and Values
+### Work Unit 3.3: Assertion Smells -- Exact Counts and Values
 
 **Files:** Multiple (see list below)
 **Addresses:** Cross-Cutting Issues 6, 7; Audit sections 16, 24, 27, 29, 46, 49
@@ -896,7 +896,7 @@ This work unit is a sweep through all files fixing three specific smell patterns
 | ----------------------------- | ---------------------------------- | --------------------------------------------------------------- |
 | `test_accounts.py:487`        | `test_create_account_type`         | `acct_type.name == "investment"`                                |
 | `test_grid.py:246`            | `test_mark_credit_creates_payback` | Assert `payback.estimated_amount`, `payback.status.name`        |
-| `test_credit_workflow.py:137` | `test_auto_creates_cc_category`    | Already followed by `.id` check — remove the `is not None` line |
+| `test_credit_workflow.py:137` | `test_auto_creates_cc_category`    | Already followed by `.id` check -- remove the `is not None` line |
 | `test_mfa_service.py:17`      | `test_generate_secret`             | `len(secret) == 32`                                             |
 | `test_auth.py:202`            | `test_invalidate_sessions`         | Assert timestamp within 5 seconds of now                        |
 | `test_auth.py:247`            | `test_password_change_invalidates` | Same timestamp check                                            |
@@ -916,7 +916,7 @@ Note: Pattern C overlaps with Work Unit 3.1. If already fixed there, skip here.
 
 ---
 
-## Phase 4: Missing Negative Paths — P0/P1 Services
+## Phase 4: Missing Negative Paths -- P0/P1 Services
 
 ### Work Unit 4.1: P0 Service Negative Paths
 
@@ -1083,7 +1083,7 @@ def test_transaction_create_xss_in_name():
 
 ---
 
-## Phase 5: Missing Negative Paths — Routes
+## Phase 5: Missing Negative Paths -- Routes
 
 ### Work Unit 5.1: P1 Route Negative Paths
 
@@ -1380,7 +1380,7 @@ def test_update_settings_invalid_swr():
 
 ---
 
-## Phase 6: Missing Negative Paths — P2 Services & Other
+## Phase 6: Missing Negative Paths -- P2 Services & Other
 
 ### Work Unit 6.1: P2 Service Negative Paths
 
@@ -1388,7 +1388,7 @@ def test_update_settings_invalid_swr():
 **Addresses:** Audit sections 24, 29, 31, 33, 34
 **Estimated time:** 1.5 hours
 
-#### Chart Data Service (weakest file — needs most work)
+#### Chart Data Service (weakest file -- needs most work)
 
 ```python
 def test_spending_by_category_with_real_data():
@@ -1404,7 +1404,7 @@ def test_balance_projection_verifies_chart_data():
     # Assert chart datasets contain exact balance values from calculator
 
 def test_net_pay_trajectory_with_salary_data():
-    """get_net_pay_trajectory with actual salary profile — must not be empty."""
+    """get_net_pay_trajectory with actual salary profile -- must not be empty."""
     # Seed salary profile + periods
     # Call get_net_pay_trajectory(...)
     # Assert labels and data are not empty
@@ -1419,7 +1419,7 @@ def test_zero_annual_amount():
     assert result == Decimal("0.00")
 
 def test_negative_inflation_rate():
-    # Deflation scenario — should still work
+    # Deflation scenario -- should still work
     result = project_annual_escrow(components, years=3, inflation=Decimal("-0.02"))
     assert result[0] > result[2]  # Amount decreases with deflation
 ```
@@ -1507,7 +1507,7 @@ def test_negative_net_biweekly_pay():
 def test_transaction_create_double_submit():
     """The most financially dangerous double-submit scenario."""
     # POST create transaction twice with identical data
-    # Verify only 1 transaction exists (or 2 if no unique constraint — document behavior)
+    # Verify only 1 transaction exists (or 2 if no unique constraint -- document behavior)
     # If 2 are created, this documents a real risk for the user
 
 def test_double_submit_pay_period_generate():
@@ -1632,7 +1632,7 @@ def test_settled_cannot_revert_to_projected():
 ```python
 def test_update_transfer_with_foreign_account_idor():
     """PATCH transfer template changing to_account to other user's account."""
-    # Should reject — verify DB unchanged
+    # Should reject -- verify DB unchanged
 
 def test_update_goal_with_foreign_account_idor():
     """Update savings goal changing account_id to other user's account."""
@@ -1653,7 +1653,7 @@ def test_self_transfer_rejected():
 
 ## Phase 8: Final Polish
 
-### Work Unit 8.1: Scale Tests — Realistic Data
+### Work Unit 8.1: Scale Tests -- Realistic Data
 
 **Files:** `test_chart_data_service.py`, `test_balance_calculator.py`
 **Addresses:** Audit sections 23, 24 (realistic data gaps), Cross-Cutting Issue 1
@@ -1733,7 +1733,7 @@ def test_delete_trigger_overhead():
 Add minimum absolute time threshold to all performance tests:
 
 ```python
-if time_without < 0.001:  # Less than 1ms — too fast to measure meaningfully
+if time_without < 0.001:  # Less than 1ms -- too fast to measure meaningfully
     pytest.skip("Baseline too fast for reliable overhead measurement")
 ```
 
@@ -1775,27 +1775,27 @@ def test_mfa_verify_rate_limiting():
 | Phase                            | Work Units | Est. Hours | Cumulative |
 | -------------------------------- | ---------- | ---------- | ---------- |
 | **0: Infrastructure**            | 0.1        | 0.75       | 0.75       |
-| **1: Financial Exactness**       | 1.1–1.7    | 11.5       | 12.25      |
-| **2: Security**                  | 2.1–2.3    | 4.0        | 16.25      |
-| **3: Assertion Quality**         | 3.1–3.3    | 5.5        | 21.75      |
-| **4: Negative Paths (Services)** | 4.1–4.2    | 4.0        | 25.75      |
-| **5: Negative Paths (Routes)**   | 5.1–5.4    | 7.0        | 32.75      |
-| **6: Negative Paths (Other)**    | 6.1–6.2    | 3.0        | 35.75      |
-| **7: Security Polish**           | 7.1–7.2    | 2.5        | 38.25      |
-| **8: Final Polish**              | 8.1–8.3    | 3.25       | 41.5       |
+| **1: Financial Exactness**       | 1.1-1.7    | 11.5       | 12.25      |
+| **2: Security**                  | 2.1-2.3    | 4.0        | 16.25      |
+| **3: Assertion Quality**         | 3.1-3.3    | 5.5        | 21.75      |
+| **4: Negative Paths (Services)** | 4.1-4.2    | 4.0        | 25.75      |
+| **5: Negative Paths (Routes)**   | 5.1-5.4    | 7.0        | 32.75      |
+| **6: Negative Paths (Other)**    | 6.1-6.2    | 3.0        | 35.75      |
+| **7: Security Polish**           | 7.1-7.2    | 2.5        | 38.25      |
+| **8: Final Polish**              | 8.1-8.3    | 3.25       | 41.5       |
 
 ### Suggested Execution Order (if time is limited)
 
 If you cannot complete all phases, prioritize in this order:
 
-1. **Phase 0** (0.1) — 45 min. Foundation for everything.
-2. **Phase 1, Units 1.1 + 1.2 + 1.3** — 5 hrs. The most critical financial gaps.
-3. **Phase 2, Unit 2.3** — 1 hr. Fixes two production bugs (IntegrityError 500s).
-4. **Phase 1, Units 1.4 + 1.5** — 3.5 hrs. Tax and paycheck exactness.
-5. **Phase 2, Unit 2.1** — 1.5 hrs. Auth coverage for all routes.
-6. **Phase 1, Unit 1.6** — 1 hr. Recurrence engine safety (interval_n=0 risk).
-7. **Phase 3** — 5.5 hrs. Makes existing tests actually reliable.
-8. **Everything else** — fills remaining gaps.
+1. **Phase 0** (0.1) -- 45 min. Foundation for everything.
+2. **Phase 1, Units 1.1 + 1.2 + 1.3** -- 5 hrs. The most critical financial gaps.
+3. **Phase 2, Unit 2.3** -- 1 hr. Fixes two production bugs (IntegrityError 500s).
+4. **Phase 1, Units 1.4 + 1.5** -- 3.5 hrs. Tax and paycheck exactness.
+5. **Phase 2, Unit 2.1** -- 1.5 hrs. Auth coverage for all routes.
+6. **Phase 1, Unit 1.6** -- 1 hr. Recurrence engine safety (interval_n=0 risk).
+7. **Phase 3** -- 5.5 hrs. Makes existing tests actually reliable.
+8. **Everything else** -- fills remaining gaps.
 
 ### After Each Work Unit
 
@@ -1817,6 +1817,6 @@ The test suite is "first rate" when:
 1. Every financial calculation has at least one test with exact Decimal assertions computed from known inputs.
 2. Every protected route has an unauthenticated access test.
 3. Every IDOR test proves no state change on the victim's data via DB query.
-4. No test has a status-code-only assertion — every test verifies either response content or database state.
-5. No test uses directional assertions (`>`, `<`) on Decimal financial values — all use exact `==`.
+4. No test has a status-code-only assertion -- every test verifies either response content or database state.
+5. No test uses directional assertions (`>`, `<`) on Decimal financial values -- all use exact `==`.
 6. The balance calculator, paycheck calculator, and tax calculator are each tested at production scale (26-52 periods) with penny-level accuracy verification.

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Accounts — Shekel{% endblock %}
+{% block title %}Accounts -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -39,7 +39,7 @@
         {% for acct in accounts %}
         <tr class="{{ 'text-muted' if not acct.is_active else '' }}">
           <td>{{ acct.name }}</td>
-          <td>{{ acct.account_type.name|format_account_type if acct.account_type else '—' }}</td>
+          <td>{{ acct.account_type.name|format_account_type if acct.account_type else '--' }}</td>
           <td class="text-end">
             {% set editing = false %}
             {% include "accounts/_anchor_cell.html" %}

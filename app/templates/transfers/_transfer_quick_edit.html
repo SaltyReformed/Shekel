@@ -1,8 +1,8 @@
-{# Transfer quick edit — single amount input that fits inside the <td>.
+{# Transfer quick edit -- single amount input that fits inside the <td>.
    Replaces cell content on click for fast amount edits.
    Expand button (⋯) or F2 opens the full edit popover.
 
-   Expected context: xfer — a Transfer object.
+   Expected context: xfer -- a Transfer object.
 #}
 <form class="txn-quick-edit d-flex align-items-center gap-1"
       hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"

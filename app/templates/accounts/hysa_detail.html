@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ account.name }} — HYSA Detail — Shekel{% endblock %}
+{% block title %}{{ account.name }} -- HYSA Detail -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -44,7 +44,7 @@
             {% if current_balance is not none %}
               ${{ "{:,.2f}".format(current_balance|float) }}
             {% else %}
-              —
+              --
             {% endif %}
           </span>
         </div>
@@ -118,14 +118,14 @@
           {% for pd in period_data %}
           <tr>
             <td>
-              <small>{{ pd.period.start_date.strftime('%b %-d') }} – {{ pd.period.end_date.strftime('%b %-d, %Y') }}</small>
+              <small>{{ pd.period.start_date.strftime('%b %-d') }} - {{ pd.period.end_date.strftime('%b %-d, %Y') }}</small>
             </td>
             <td class="text-end font-mono">${{ "{:,.2f}".format(pd.balance|float) }}</td>
             <td class="text-end font-mono {% if pd.interest|float > 0 %}text-success{% endif %}">
               {% if pd.interest|float > 0 %}
                 +${{ "{:,.2f}".format(pd.interest|float) }}
               {% else %}
-                —
+                --
               {% endif %}
             </td>
           </tr>

@@ -10,7 +10,7 @@ This plan implements Sub-Phase 8B from the Phase 8 Hardening & Ops Plan. It cove
 - Request ID generation is already in place via `_attach_request_id()` (line 100): generates UUID4 per request, stores in `g.request_id` and `g.request_start`.
 - Request duration tracking is already in place via `_log_request_summary()` (line 105): logs HTTP method, path, status code, and `request_duration` in milliseconds after every request.
 - `python-json-logger==3.3.0` is already installed (`requirements.txt:34`).
-- The `system` schema is already created in `app/__init__.py:258-264` (dev/test) and `scripts/init_db.sql` (Docker). It is empty — no tables exist in it yet.
+- The `system` schema is already created in `app/__init__.py:258-264` (dev/test) and `scripts/init_db.sql` (Docker). It is empty -- no tables exist in it yet.
 - Auth routes already log security events with an `action=` prefix pattern in `app/routes/auth.py` (login success line 56, login failure line 63, logout line 73, password change line 98, session invalidation line 121, MFA events lines 194/268/289/350).
 - Service modules already use `logging.getLogger(__name__)` for business event logging (balance_calculator, carry_forward_service, credit_workflow, growth_engine, recurrence_engine).
 - Docker setup exists (`Dockerfile`, `docker-compose.yml`, `entrypoint.sh`) with Gunicorn outputting access logs to stdout, but not in JSON format.
@@ -28,7 +28,7 @@ This plan implements Sub-Phase 8B from the Phase 8 Hardening & Ops Plan. It cove
 
 ## Pre-Existing Infrastructure
 
-### 1. Structured JSON Logging — FULLY IN PLACE
+### 1. Structured JSON Logging -- FULLY IN PLACE
 
 **File:** `app/utils/logging_config.py` (lines 1-122)
 
@@ -48,7 +48,7 @@ This plan implements Sub-Phase 8B from the Phase 8 Hardening & Ops Plan. It cove
 - Item 10 (request duration tracking): ✅ Partially satisfied. Duration logged on every request at INFO level. Missing: conditional log level (WARNING for slow requests, DEBUG for fast ones).
 - Item 12 (JSON to stdout): ✅ Fully satisfied. Console handler writes to `ext://sys.stdout`.
 
-### 2. System Schema — CREATED BUT EMPTY
+### 2. System Schema -- CREATED BUT EMPTY
 
 **Files:** `app/__init__.py:258-264`, `scripts/init_db.sql:7`, `tests/conftest.py:60-62`
 
@@ -60,7 +60,7 @@ The `system` schema is created via `CREATE SCHEMA IF NOT EXISTS system` in three
 
 No tables exist in the schema. The `system.audit_log` table must be created.
 
-### 3. Auth Event Logging — AD-HOC BUT PRESENT
+### 3. Auth Event Logging -- AD-HOC BUT PRESENT
 
 **File:** `app/routes/auth.py`
 
@@ -78,17 +78,17 @@ No tables exist in the schema. The `system.audit_log` table must be created.
 
 The logging is functional but inconsistent in format. Some use `"User %s logged in"` while others use `"action=login_failed email=%s ip=%s"`. Item 11 (log event standardization) requires unifying these into a consistent structured format with `extra` fields.
 
-### 4. Docker/Gunicorn Configuration — PARTIAL
+### 4. Docker/Gunicorn Configuration -- PARTIAL
 
 **Files:** `Dockerfile:1-47`, `docker-compose.yml:1-54`, `entrypoint.sh:38`
 
 Gunicorn runs with `--access-logfile -` (access logs to stdout) but does not use JSON formatting for access logs. The app's Python logging outputs JSON (via `logging_config.py`), but Gunicorn's native access log format is the default combined format.
 
-### 5. Test Infrastructure — READY
+### 5. Test Infrastructure -- READY
 
 **File:** `tests/conftest.py`
 
-The test setup creates the `system` schema (line 60) and truncates tables between tests. The truncation list (lines 95-125) covers `salary.*`, `budget.*`, and `auth.*` tables. The `system` schema is not truncated — this is correct since `system.audit_log` should accumulate during test transactions and be verified by audit-specific tests.
+The test setup creates the `system` schema (line 60) and truncates tables between tests. The truncation list (lines 95-125) covers `salary.*`, `budget.*`, and `auth.*` tables. The `system` schema is not truncated -- this is correct since `system.audit_log` should accumulate during test transactions and be verified by audit-specific tests.
 
 **Update needed:** Add `system.audit_log` to the truncation list in `conftest.py` so audit rows from one test don't leak into another.
 
@@ -387,7 +387,7 @@ def downgrade():
     op.execute("DROP TABLE IF EXISTS system.audit_log")
 ```
 
-Note: The `transfer_templates` table was not listed in the Phase 8 plan's item 3, but it holds the same class of financial data as `transfers` (which _is_ listed). The plan lists `budget.transfers` — the actual table containing generated transfer instances — and `transfer_templates` should also be audited for completeness. Both are included. This brings the total to 22 triggers across 22 tables (15 budget, 4 salary, 3 auth).
+Note: The `transfer_templates` table was not listed in the Phase 8 plan's item 3, but it holds the same class of financial data as `transfers` (which _is_ listed). The plan lists `budget.transfers` -- the actual table containing generated transfer instances -- and `transfer_templates` should also be audited for completeness. Both are included. This brings the total to 22 triggers across 22 tables (15 budget, 4 salary, 3 auth).
 
 #### Files to Modify
 
@@ -404,7 +404,7 @@ Current truncation block (after the auth tables, around line 123):
 Add after this block:
 
 ```python
-        # System schema — clean audit log between tests.
+        # System schema -- clean audit log between tests.
         db.session.execute(db.text(
             "TRUNCATE system.audit_log"
         ))
@@ -598,7 +598,7 @@ class TestAuditUserIdCapture:
         """Direct database operations without middleware produce user_id=NULL."""
 
     def test_set_local_is_transaction_scoped(self, app, db, seed_user):
-        """SET LOCAL resets after transaction commit — next transaction has no user_id."""
+        """SET LOCAL resets after transaction commit -- next transaction has no user_id."""
 ```
 
 Note: `test_authenticated_request_captures_user_id` creates a transaction via an authenticated POST request (e.g., quick-create a transaction on the budget grid) and then queries `system.audit_log` to verify `user_id` matches `seed_user.id`. This is a route-level integration test.
@@ -675,7 +675,7 @@ def log_event(
     )
 ```
 
-This module intentionally does not define an enum or dataclass for events — the constants are simple strings, and the `log_event()` helper accepts any event name. This keeps the system flexible and avoids forcing every future log call to register a new enum member.
+This module intentionally does not define an enum or dataclass for events -- the constants are simple strings, and the `log_event()` helper accepts any event name. This keeps the system flexible and avoids forcing every future log call to register a new enum member.
 
 #### Files to Modify
 
@@ -779,7 +779,7 @@ class TestEventCategories:
 
 #### Impact on Existing Tests
 
-The log message format changes from positional `%s` to structured `extra` fields. Existing tests that assert on log output (if any) would need updating. However, the existing test suite does not assert on log message content — it tests behavior (HTTP status codes, database state, flash messages). **No existing tests break.**
+The log message format changes from positional `%s` to structured `extra` fields. Existing tests that assert on log output (if any) would need updating. However, the existing test suite does not assert on log message content -- it tests behavior (HTTP status codes, database state, flash messages). **No existing tests break.**
 
 The `auth_client` fixture logs in via `POST /login`, which now emits a `login_success` event instead of `"User %s logged in"`. Since no test captures or asserts on this log line, the change is invisible.
 
@@ -960,7 +960,7 @@ class TestRequestLogFields:
 
 #### Impact on Existing Tests
 
-**Log level change:** The `_log_request_summary` now logs at DEBUG for fast requests instead of INFO. If `LOG_LEVEL` is set to INFO in tests, these per-request log lines will no longer appear in test output. This is intentional — it reduces noise. No test asserts on the log level of request summary lines.
+**Log level change:** The `_log_request_summary` now logs at DEBUG for fast requests instead of INFO. If `LOG_LEVEL` is set to INFO in tests, these per-request log lines will no longer appear in test output. This is intentional -- it reduces noise. No test asserts on the log level of request summary lines.
 
 **X-Request-Id header:** All responses now include this header. No existing test asserts that this header is absent, so no breakage.
 
@@ -1258,7 +1258,7 @@ finally:
 
 #### Test Gate
 
-- [ ] `pytest` passes (all existing tests — performance tests run separately)
+- [ ] `pytest` passes (all existing tests -- performance tests run separately)
 - [ ] Performance tests pass: overhead under 20% for all benchmarked operations
 - [ ] If overhead exceeds 20%: trigger disable/enable pattern documented and tested
 

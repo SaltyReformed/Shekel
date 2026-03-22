@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ account.name }} — Shekel{% endblock %}
+{% block title %}{{ account.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -39,7 +39,7 @@
           {% if params %}
             {{ "%.2f"|format(params.assumed_annual_return|float * 100) }}%
           {% else %}
-            —
+            --
           {% endif %}
         </div>
       </div>

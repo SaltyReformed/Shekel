@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Investment Projection Input Calculator
+Shekel Budget App -- Investment Projection Input Calculator
 
 Pure function that computes all inputs needed for growth_engine.project_balance()
 from raw deduction, transfer, and investment params data.
@@ -39,7 +39,7 @@ def calculate_investment_inputs(
     """Compute projection inputs for an investment account.
 
     Args:
-        account_id:        int — the investment account ID.
+        account_id:        int -- the investment account ID.
         investment_params:  Object with employer fields and annual_contribution_limit.
         deductions:         List of deduction-like objects with:
                             .amount, .calc_method_name, .annual_salary, .pay_periods_per_year

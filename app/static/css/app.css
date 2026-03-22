@@ -1,4 +1,4 @@
-/* Shekel Budget App — Custom Styles
+/* Shekel Budget App -- Custom Styles
    Bootstrap 5 handles most layout. Steel Blue theme with dark/light toggle. */
 
 /* =============================================
@@ -172,7 +172,7 @@
 /* =============================================
    2. GRID TABLE
    ============================================= */
-/* Grid scrollable container — max-height enables sticky tfoot */
+/* Grid scrollable container -- max-height enables sticky tfoot */
 .grid-wrapper {
   max-height: calc(100vh - 160px);
   overflow: auto;

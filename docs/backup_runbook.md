@@ -119,7 +119,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 export BACKUP_ENCRYPTION_PASSPHRASE="your-generated-passphrase"
 ```
 
-**Critical**: Store the passphrase separately from the backups. If you store backups on a NAS, the passphrase should be in a password manager or on the host — not on the NAS. A lost passphrase means unrecoverable backups.
+**Critical**: Store the passphrase separately from the backups. If you store backups on a NAS, the passphrase should be in a password manager or on the host -- not on the NAS. A lost passphrase means unrecoverable backups.
 
 ---
 

@@ -24,22 +24,22 @@ This is the single operational reference for the Shekel budget application. It c
 [Client Browser]
        |
        v
-[Cloudflare Edge]          — TLS termination, Access policy, WAF rate limiting
+[Cloudflare Edge]          -- TLS termination, Access policy, WAF rate limiting
        |
        v
-[cloudflared]              — Proxmox host, systemd service, encrypted tunnel
+[cloudflared]              -- Proxmox host, systemd service, encrypted tunnel
        |
        v
-[Nginx :80]                — Docker container, reverse proxy, static files
+[Nginx :80]                -- Docker container, reverse proxy, static files
        |
        v
-[Gunicorn :8000]           — Docker container, WSGI server, 2 workers
+[Gunicorn :8000]           -- Docker container, WSGI server, 2 workers
        |
        v
-[Flask Application]        — Shekel budget app, structured JSON logging
+[Flask Application]        -- Shekel budget app, structured JSON logging
        |
        v
-[PostgreSQL :5432]         — Docker container, multi-schema, audit triggers
+[PostgreSQL :5432]         -- Docker container, multi-schema, audit triggers
 ```
 
 ### Key Paths on the Proxmox Host
@@ -455,15 +455,15 @@ tail -50 /var/log/shekel_backup.log
 ```
 
 **Flask log format (JSON):** Each log entry contains:
-- `timestamp` — ISO 8601 timestamp
-- `level` — DEBUG, INFO, WARNING, ERROR
-- `logger` — Python logger name (e.g., `app.routes.auth`)
-- `message` — Human-readable description
-- `request_id` — UUID for correlating all logs from a single request
-- `event` — Structured event name (e.g., `login_success`, `slow_request`)
-- `category` — Event category: `auth`, `business`, `error`, `performance`
-- `remote_addr` — Client IP address
-- `user_id` — Authenticated user ID (if applicable)
+- `timestamp` -- ISO 8601 timestamp
+- `level` -- DEBUG, INFO, WARNING, ERROR
+- `logger` -- Python logger name (e.g., `app.routes.auth`)
+- `message` -- Human-readable description
+- `request_id` -- UUID for correlating all logs from a single request
+- `event` -- Structured event name (e.g., `login_success`, `slow_request`)
+- `category` -- Event category: `auth`, `business`, `error`, `performance`
+- `remote_addr` -- Client IP address
+- `user_id` -- Authenticated user ID (if applicable)
 
 ### 5.2 Querying Logs in Grafana
 
@@ -711,7 +711,7 @@ curl -s https://<domain>/health
 
 ### 7.3 Emergency Procedures
 
-#### Application is down — restore service quickly
+#### Application is down -- restore service quickly
 
 ```bash
 # 1. Identify which container is unhealthy.
@@ -732,7 +732,7 @@ docker compose down && docker compose up -d
 curl -s http://localhost/health
 ```
 
-#### Database is corrupted — restore from backup
+#### Database is corrupted -- restore from backup
 
 ```bash
 # 1. Identify the latest good backup.
@@ -753,7 +753,7 @@ cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz /tmp/
 rm /tmp/shekel_backup_20260315_020000.sql.gz
 ```
 
-#### Locked out of the app — MFA device lost
+#### Locked out of the app -- MFA device lost
 
 ```bash
 # SSH to the Proxmox host.
@@ -774,7 +774,7 @@ docker exec shekel-app python scripts/reset_mfa.py your-email@example.com
 4. Access the app and verify the fix
 5. Restore the original policy
 
-#### Complete disaster recovery — host is lost
+#### Complete disaster recovery -- host is lost
 
 1. Provision a new Proxmox host with Docker and Docker Compose
 2. Clone the repository: `git clone <repo-url> /opt/shekel`

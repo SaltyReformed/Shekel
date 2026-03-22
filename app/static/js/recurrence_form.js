@@ -1,5 +1,5 @@
 /**
- * Recurrence form — show/hide fields based on pattern selection.
+ * Recurrence form -- show/hide fields based on pattern selection.
  * Used by both recurring-transaction and recurring-transfer forms.
  */
 (function() {

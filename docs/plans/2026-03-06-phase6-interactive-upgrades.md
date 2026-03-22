@@ -1,4 +1,4 @@
-# Phase 6 Interactive Upgrades — Implementation Plan
+# Phase 6 Interactive Upgrades -- Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -12,7 +12,7 @@
 
 ---
 
-## Task 1: U1 — Mortgage Payoff Calculator Slider
+## Task 1: U1 -- Mortgage Payoff Calculator Slider
 
 The simplest upgrade. The existing `hx-post` form and `_payoff_results.html` fragment need zero backend changes. We add a range slider synced to the text input and have HTMX auto-submit the form on slider change.
 
@@ -72,13 +72,13 @@ Add `from app.models.ref import AccountType` to the file's imports if not alread
 pytest tests/test_routes/test_mortgage.py::TestPayoffSlider -v
 ```
 
-Expected: FAIL — no `data-slider-group` in response.
+Expected: FAIL -- no `data-slider-group` in response.
 
 ### Step 3: Implement the template changes
 
 Edit `app/templates/mortgage/dashboard.html`.
 
-**Lines 163-183 — Extra Payment tab form:** Replace with:
+**Lines 163-183 -- Extra Payment tab form:** Replace with:
 
 ```html
       <div class="tab-pane fade show active" id="extra-tab" role="tabpanel">
@@ -117,7 +117,7 @@ Edit `app/templates/mortgage/dashboard.html`.
       </div>
 ```
 
-**Lines 222-226 — scripts block:** Add `chart_slider.js`:
+**Lines 222-226 -- scripts block:** Add `chart_slider.js`:
 
 ```html
 {% block scripts %}
@@ -153,7 +153,7 @@ git commit -m "feat: add extra payment slider to mortgage payoff calculator (U1)
 
 ---
 
-## Task 2: U2 — Investment Growth Horizon Slider
+## Task 2: U2 -- Investment Growth Horizon Slider
 
 This requires: (a) refactoring `growth_chart.js` from an IIFE to a named function, (b) a new HTMX fragment template, (c) a new route endpoint, and (d) slider controls in the dashboard.
 
@@ -175,7 +175,7 @@ Replace the entire file `app/static/js/growth_chart.js` with:
 'use strict';
 
 /**
- * Shekel Budget App — Investment Growth Chart
+ * Shekel Budget App -- Investment Growth Chart
  *
  * Renders a Chart.js line chart showing projected balance over time
  * with contributions overlaid. Reads data from data-* attributes
@@ -337,7 +337,7 @@ class TestGrowthChartFragment:
 pytest tests/test_routes/test_investment.py::TestGrowthChartFragment -v
 ```
 
-Expected: FAIL — route does not exist.
+Expected: FAIL -- route does not exist.
 
 ### Step 4: Create the fragment template
 
@@ -361,7 +361,7 @@ Create `app/templates/investment/_growth_chart.html`:
 
 ### Step 5: Add the route endpoint
 
-Add to `app/routes/investment.py` — new imports at top (add `date` to the existing datetime import, add `request` to the Flask import if not already there):
+Add to `app/routes/investment.py` -- new imports at top (add `date` to the existing datetime import, add `request` to the Flask import if not already there):
 
 ```python
 from app.services import growth_engine, pay_period_service, paycheck_calculator
@@ -617,7 +617,7 @@ git commit -m "feat: add growth projection horizon slider to investment dashboar
 
 ---
 
-## Task 3: U3 — Retirement Gap Sensitivity Sliders
+## Task 3: U3 -- Retirement Gap Sensitivity Sliders
 
 The most complex upgrade. We need to: (a) refactor `retirement_gap_chart.js`, (b) extract gap computation into a helper, (c) implement the `gap_analysis` HTMX endpoint, (d) create a gap fragment template, and (e) add two sliders to the dashboard.
 
@@ -637,7 +637,7 @@ Replace the entire file `app/static/js/retirement_gap_chart.js` with:
 'use strict';
 
 /**
- * Shekel Budget App — Retirement Income Gap Chart
+ * Shekel Budget App -- Retirement Income Gap Chart
  *
  * Renders a Chart.js horizontal stacked bar chart showing pension income,
  * investment income, and the remaining gap relative to pre-retirement income.
@@ -795,7 +795,7 @@ class TestGapAnalysisFragment:
 pytest tests/test_routes/test_retirement.py::TestGapAnalysisFragment -v
 ```
 
-Expected: FAIL — current `gap_analysis()` just redirects.
+Expected: FAIL -- current `gap_analysis()` just redirects.
 
 ### Step 4: Create the gap analysis fragment template
 
@@ -1318,7 +1318,7 @@ Edit `app/templates/retirement/dashboard.html`.
 {% endblock %}
 ```
 
-Note: Chart.js and chart_theme.js are now loaded unconditionally (the sliders and gap chart need them whenever gap_analysis data exists). The old conditional `{% if gap_analysis and ... %}` is no longer needed because the scripts block handles the case where there's no gap data gracefully — `renderGapChart()` checks for the canvas element and returns early.
+Note: Chart.js and chart_theme.js are now loaded unconditionally (the sliders and gap chart need them whenever gap_analysis data exists). The old conditional `{% if gap_analysis and ... %}` is no longer needed because the scripts block handles the case where there's no gap data gracefully -- `renderGapChart()` checks for the canvas element and returns early.
 
 ### Step 10: Run full retirement test suite
 
@@ -1354,10 +1354,10 @@ Expected: All 763+ tests pass (original 763 + ~9 new = ~772).
 ### Step 2: Verify no regressions
 
 Check that these existing views still render correctly:
-- `GET /accounts/<id>/mortgage` — dashboard with slider visible
-- `GET /accounts/<id>/investment` — dashboard with horizon slider
-- `GET /retirement` — dashboard with sensitivity sliders
-- `GET /charts` — all 6 charts still load via HTMX
+- `GET /accounts/<id>/mortgage` -- dashboard with slider visible
+- `GET /accounts/<id>/investment` -- dashboard with horizon slider
+- `GET /retirement` -- dashboard with sensitivity sliders
+- `GET /charts` -- all 6 charts still load via HTMX
 
 ### Step 3: Commit (if any final fixes needed)
 
@@ -1372,18 +1372,18 @@ git commit -m "chore: final Phase 6 verification pass"
 
 | File | Action | Upgrade |
 |------|--------|---------|
-| `app/templates/mortgage/dashboard.html` | Modify | U1 — add range slider + form trigger |
-| `tests/test_routes/test_mortgage.py` | Modify | U1 — slider test |
-| `app/static/js/growth_chart.js` | Modify | U2 — IIFE → named function |
-| `app/templates/investment/_growth_chart.html` | Create | U2 — chart fragment |
-| `app/templates/investment/dashboard.html` | Modify | U2 — include fragment + slider |
-| `app/routes/investment.py` | Modify | U2 — `growth_chart()` endpoint |
-| `tests/test_routes/test_investment.py` | Modify | U2 — fragment tests |
-| `app/static/js/retirement_gap_chart.js` | Modify | U3 — IIFE → named function |
-| `app/templates/retirement/_gap_analysis.html` | Create | U3 — gap fragment |
-| `app/templates/retirement/dashboard.html` | Modify | U3 — include fragment + sliders |
-| `app/routes/retirement.py` | Modify | U3 — `_compute_gap_data()` + `gap_analysis()` |
-| `tests/test_routes/test_retirement.py` | Modify | U3 — fragment tests |
+| `app/templates/mortgage/dashboard.html` | Modify | U1 -- add range slider + form trigger |
+| `tests/test_routes/test_mortgage.py` | Modify | U1 -- slider test |
+| `app/static/js/growth_chart.js` | Modify | U2 -- IIFE → named function |
+| `app/templates/investment/_growth_chart.html` | Create | U2 -- chart fragment |
+| `app/templates/investment/dashboard.html` | Modify | U2 -- include fragment + slider |
+| `app/routes/investment.py` | Modify | U2 -- `growth_chart()` endpoint |
+| `tests/test_routes/test_investment.py` | Modify | U2 -- fragment tests |
+| `app/static/js/retirement_gap_chart.js` | Modify | U3 -- IIFE → named function |
+| `app/templates/retirement/_gap_analysis.html` | Create | U3 -- gap fragment |
+| `app/templates/retirement/dashboard.html` | Modify | U3 -- include fragment + sliders |
+| `app/routes/retirement.py` | Modify | U3 -- `_compute_gap_data()` + `gap_analysis()` |
+| `tests/test_routes/test_retirement.py` | Modify | U3 -- fragment tests |
 
 **New tests:** 9 (1 mortgage + 4 investment + 4 retirement)
 **New files:** 2 (`_growth_chart.html`, `_gap_analysis.html`)

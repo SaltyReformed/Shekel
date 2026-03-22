@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Grid Routes (Main Budget View)
+Shekel Budget App -- Grid Routes (Main Budget View)
 
 The primary view: a spreadsheet-like grid where columns are pay periods
 and rows are income/expense line items.  Supports HTMX partial swaps

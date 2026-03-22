@@ -106,12 +106,12 @@ create_backup() {
     #   --schema:         dump only application schemas (not pg_catalog, etc.)
     #
     # Schemas dumped:
-    #   public  — contains alembic_version (migration state)
-    #   ref     — lookup/reference tables
-    #   auth    — users, sessions, MFA
-    #   budget  — pay periods, transactions, accounts, templates
-    #   salary  — salary profiles, deductions, tax configs
-    #   system  — audit_log
+    #   public  -- contains alembic_version (migration state)
+    #   ref     -- lookup/reference tables
+    #   auth    -- users, sessions, MFA
+    #   budget  -- pay periods, transactions, accounts, templates
+    #   salary  -- salary profiles, deductions, tax configs
+    #   system  -- audit_log
     #
     # Output is piped through gzip for compression.
     docker exec "${DB_CONTAINER}" pg_dump \
@@ -165,7 +165,7 @@ encrypt_backup() {
 
 copy_to_nas() {
     # Copy the backup file to the NAS mount point.
-    # Returns 0 on success, 1 on failure (non-fatal — local backup already exists).
+    # Returns 0 on success, 1 on failure (non-fatal -- local backup already exists).
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
     local nas_path="${BACKUP_NAS_DIR}/${BACKUP_FILENAME}"
 

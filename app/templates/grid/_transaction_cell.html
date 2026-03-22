@@ -1,8 +1,8 @@
-{# Transaction cell — displays amount with status badge.
+{# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
-   Expected context: found.txn (or txn) — a Transaction object.
-   Optional: wrap_div — if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
+   Expected context: found.txn (or txn) -- a Transaction object.
+   Optional: wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
@@ -15,7 +15,7 @@
      role="button"
      tabindex="0"
      aria-label="{{ t.name }}: ${{ '{:,.0f}'.format(t.effective_amount) }}{% if t.status %} ({{ t.status.name }}){% endif %}"
-     title="{{ t.name }}{% if t.notes %} — {{ t.notes }}{% endif %}">
+     title="{{ t.name }}{% if t.notes %} -- {{ t.notes }}{% endif %}">
 
   {# Show crossed-out estimate + actual when they differ #}
   {% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %}

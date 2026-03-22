@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Seed Federal Tax Brackets, FICA, and State Tax Config
+Shekel Budget App -- Seed Federal Tax Brackets, FICA, and State Tax Config
 
 Seeds 2025 and 2026 federal income tax brackets and standard deductions
 for all filing statuses, plus FICA configuration and a default state

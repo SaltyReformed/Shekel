@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Recurrence Engine
+Shekel Budget App -- Recurrence Engine
 
 The most complex service in the app.  Given a transaction template and
 its recurrence rule, generates Transaction entries into the appropriate
@@ -19,7 +19,7 @@ Supported patterns (§4.7):
   - quarterly:         Every 3 months starting from month_of_year.
   - semi_annual:       Every 6 months starting from month_of_year.
   - annual:            Once per year on month/day.
-  - once:              Single occurrence (no auto-generation — user assigns manually).
+  - once:              Single occurrence (no auto-generation -- user assigns manually).
 """
 
 import logging
@@ -36,7 +36,7 @@ from app.utils.log_events import log_event, BUSINESS
 
 logger = logging.getLogger(__name__)
 
-# Statuses that are historical — never modified by the recurrence engine.
+# Statuses that are historical -- never modified by the recurrence engine.
 IMMUTABLE_STATUSES = frozenset({"done", "received", "credit", "cancelled"})
 
 
@@ -52,7 +52,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         template:       A TransactionTemplate with a loaded recurrence_rule.
         periods:        List of PayPeriod objects to consider (ordered by index).
         scenario_id:    The scenario to generate into.
-        effective_from: Optional date — only generate for periods starting on or
+        effective_from: Optional date -- only generate for periods starting on or
                         after this date.  Defaults to the first period's start_date.
 
     Returns:
@@ -71,7 +71,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
     rule = template.recurrence_rule
     if rule is None:
-        # No recurrence rule — nothing to generate (one-time / manual).
+        # No recurrence rule -- nothing to generate (one-time / manual).
         return []
 
     pattern_name = rule.pattern.name
@@ -112,29 +112,29 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
                 should_skip = True
                 break
 
-            # Skip overridden entries — the user made a deliberate change.
+            # Skip overridden entries -- the user made a deliberate change.
             if existing_txn.is_override:
                 should_skip = True
                 break
 
-            # Skip soft-deleted entries — the user intentionally removed it.
+            # Skip soft-deleted entries -- the user intentionally removed it.
             if existing_txn.is_deleted:
                 should_skip = True
                 break
 
-            # Auto-generated and unmodified — it already exists, skip.
+            # Auto-generated and unmodified -- it already exists, skip.
             should_skip = True
             break
 
         if should_skip:
             continue
 
-        # Determine the amount — use paycheck calculator if salary-linked.
+        # Determine the amount -- use paycheck calculator if salary-linked.
         amount = _get_transaction_amount(
             template, salary_profile, period, periods
         )
 
-        # No existing entry — create a new one.
+        # No existing entry -- create a new one.
         txn = Transaction(
             template_id=template.id,
             pay_period_id=period.id,
@@ -213,21 +213,21 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     for txn in existing:
         status_name = txn.status.name if txn.status else "projected"
 
-        # Immutable — never touch.
+        # Immutable -- never touch.
         if status_name in IMMUTABLE_STATUSES:
             continue
 
-        # Overridden — flag as conflict for user prompt.
+        # Overridden -- flag as conflict for user prompt.
         if txn.is_override:
             overridden_ids.append(txn.id)
             continue
 
-        # Soft-deleted — flag as conflict for user prompt.
+        # Soft-deleted -- flag as conflict for user prompt.
         if txn.is_deleted:
             deleted_ids.append(txn.id)
             continue
 
-        # Auto-generated, unmodified — safe to delete and regenerate.
+        # Auto-generated, unmodified -- safe to delete and regenerate.
         to_delete.append(txn)
 
     # Delete the safe-to-remove entries.
@@ -252,12 +252,12 @@ def resolve_conflicts(transaction_ids, action, new_amount=None):
 
     Args:
         transaction_ids: List of Transaction IDs to resolve.
-        action:          'update' — clear override/delete, apply new amount.
-                         'keep' — leave the transaction unchanged.
+        action:          'update' -- clear override/delete, apply new amount.
+                         'keep' -- leave the transaction unchanged.
         new_amount:      The new default amount (required if action='update').
     """
     if action == "keep":
-        # Nothing to do — the user wants to keep their overrides.
+        # Nothing to do -- the user wants to keep their overrides.
         return
 
     if action == "update":
@@ -291,7 +291,7 @@ def _match_periods(rule, pattern_name, periods, effective_from):
     # pay period is included when effective_from falls mid-period.
     candidates = [p for p in periods if p.end_date >= effective_from]
 
-    # Filter by rule end_date — stop generating after this date.
+    # Filter by rule end_date -- stop generating after this date.
     if rule.end_date is not None:
         candidates = [p for p in candidates if p.start_date <= rule.end_date]
 
@@ -324,7 +324,7 @@ def _match_periods(rule, pattern_name, periods, effective_from):
         day = rule.day_of_month or 1
         return _match_annual(candidates, month, day)
 
-    # Unknown pattern — return nothing.
+    # Unknown pattern -- return nothing.
     logger.warning("Unknown recurrence pattern: %s", pattern_name)
     return []
 

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Spending by Category Chart
+ * Shekel Budget App -- Spending by Category Chart
  *
  * Renders a horizontal bar chart showing spending grouped by category.
  *

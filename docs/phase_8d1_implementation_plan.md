@@ -1,4 +1,4 @@
-# Phase 8D-1: Health Endpoint, Docker Finalization, Nginx, and Gunicorn — Implementation Plan
+# Phase 8D-1: Health Endpoint, Docker Finalization, Nginx, and Gunicorn -- Implementation Plan
 
 ## Overview
 
@@ -6,7 +6,7 @@ This plan implements the first sub-phase of 8D (Production Deployment) from the 
 
 **Pre-existing infrastructure discovered during planning:**
 
-- Gunicorn is already installed in the Docker image (`Dockerfile:17`: `pip install gunicorn`), started via `entrypoint.sh` with minimal inline flags (bind `0.0.0.0:5000`, workers from env var). No `gunicorn.conf.py` configuration file exists. Gunicorn is NOT in `requirements.txt` (Docker-only dependency — this is correct).
+- Gunicorn is already installed in the Docker image (`Dockerfile:17`: `pip install gunicorn`), started via `entrypoint.sh` with minimal inline flags (bind `0.0.0.0:5000`, workers from env var). No `gunicorn.conf.py` configuration file exists. Gunicorn is NOT in `requirements.txt` (Docker-only dependency -- this is correct).
 - The Dockerfile already uses a multi-stage build with a non-root `shekel` user, `python:3.14-slim` base image (pinned to minor version), and production-only dependencies. Missing: HEALTHCHECK instruction, correct port (currently 5000, should be 8000).
 - `docker-compose.yml` has two services (`db` and `app`) but NO Nginx service, NO network isolation, NO app health check. Uses a container registry image (`ghcr.io/saltyreformed/shekel:latest`) instead of local build.
 - `docker-compose.dev.yml` has `db`, `test-db`, and `app` services. The `app` service incorrectly uses `FLASK_ENV: production` and does not mount source code for live reload. The primary dev workflow is `docker compose -f docker-compose.dev.yml up db` + local `flask run`.
@@ -57,7 +57,7 @@ Issues:
 1. Port 5000 instead of 8000.
 2. No config file reference (inline args only).
 3. Gunicorn is `exec`'d directly, preventing CMD override in dev compose.
-4. `--access-logfile ""` disables access log (actually correct — Flask middleware handles request logging — but should be documented in config file).
+4. `--access-logfile ""` disables access log (actually correct -- Flask middleware handles request logging -- but should be documented in config file).
 
 ### `docker-compose.yml` (Production)
 
@@ -91,7 +91,7 @@ Current services: `db`, `test-db`, `app`.
 
 Complete and well-maintained. Excludes `.git`, `.env`, `__pycache__`, `.pytest_cache`, `.venv`, `tests/`, `logs/`, `docs/`, `*.md`, `.github/`, `.vscode/`, `docker-compose*.yml`, `Dockerfile`, `.dockerignore`, `.pylintrc`. **No changes needed.**
 
-### Security Headers — Overlap Analysis
+### Security Headers -- Overlap Analysis
 
 **Flask currently sets** (in `app/__init__.py:239-254` via `_register_security_headers`):
 
@@ -107,8 +107,8 @@ Complete and well-maintained. Excludes `.git`, `.env`, `__pycache__`, `.pytest_c
 
 | Header | Currently in Flask? | Risk |
 |--------|-------------------|------|
-| `X-Content-Type-Options` | **Yes** | Duplicate — harmless but untidy |
-| `X-Frame-Options` | **Yes** | Duplicate — harmless but untidy |
+| `X-Content-Type-Options` | **Yes** | Duplicate -- harmless but untidy |
+| `X-Frame-Options` | **Yes** | Duplicate -- harmless but untidy |
 | `X-XSS-Protection` | No | Deprecated header, ignored by modern browsers |
 | `Strict-Transport-Security` | No | Transport-level, but Cloudflare handles TLS |
 | `Content-Security-Policy` | **Yes** | **DANGEROUS: duplicate CSP headers break pages** |
@@ -116,8 +116,8 @@ Complete and well-maintained. Excludes `.git`, `.env`, `__pycache__`, `.pytest_c
 **Duplication risk for CSP:** Per the CSP specification, when a browser receives multiple `Content-Security-Policy` headers, it enforces ALL of them (intersection). This is almost always stricter than intended and will likely break the application (e.g., blocking CDN scripts or inline styles that only one policy allows). This is the most critical overlap to prevent.
 
 **Headers Flask sets that the Nginx plan does not mention:**
-- `Referrer-Policy` — Flask only
-- `Permissions-Policy` — Flask only
+- `Referrer-Policy` -- Flask only
+- `Permissions-Policy` -- Flask only
 
 ### Structured Logging (`app/utils/logging_config.py`)
 
@@ -359,7 +359,7 @@ WU-5 depends on WU-3, WU-4, and implicitly on WU-1 and WU-2 (compose references 
 
 #### Files to Create
 
-**`app/routes/health.py`** — New Blueprint with a single GET `/health` route.
+**`app/routes/health.py`** -- New Blueprint with a single GET `/health` route.
 
 ```python
 """
@@ -407,7 +407,7 @@ def health_check():
         }), 500
 ```
 
-**`tests/test_routes/test_health.py`** — Pytest tests for the health endpoint.
+**`tests/test_routes/test_health.py`** -- Pytest tests for the health endpoint.
 
 ```python
 """Tests for the /health endpoint."""
@@ -473,7 +473,7 @@ class TestHealthEndpoint:
 
 #### Files to Modify
 
-**`app/__init__.py`** — Register the health Blueprint in `_register_blueprints()`.
+**`app/__init__.py`** -- Register the health Blueprint in `_register_blueprints()`.
 
 Add import after `from app.routes.charts import charts_bp` (line 194):
 
@@ -487,7 +487,7 @@ Add registration after `app.register_blueprint(charts_bp)` (line 211):
     app.register_blueprint(health_bp)
 ```
 
-**`app/utils/logging_config.py`** — Exclude `/health` from request logging hooks.
+**`app/utils/logging_config.py`** -- Exclude `/health` from request logging hooks.
 
 **Change 1:** Modify `_attach_request_id()` (line 100). Add early return for health checks.
 
@@ -589,7 +589,7 @@ The `skip_request_logging` flag defaults to `False` via `getattr(g, "skip_reques
 
 #### Files to Create
 
-**`gunicorn.conf.py`** — Complete Gunicorn configuration file.
+**`gunicorn.conf.py`** -- Complete Gunicorn configuration file.
 
 ```python
 """
@@ -607,7 +607,7 @@ import os
 
 # ── Binding ──────────────────────────────────────────────────────
 # Listen on all interfaces, port 8000.  Nginx reverse-proxies to
-# this port.  Not exposed externally — only reachable on the Docker
+# this port.  Not exposed externally -- only reachable on the Docker
 # backend network.
 bind = f"0.0.0.0:{os.getenv('GUNICORN_PORT', '8000')}"
 
@@ -670,7 +670,7 @@ forwarded_allow_ips = "*"
 
 #### Files to Modify
 
-**`entrypoint.sh`** — Restructure to use ENTRYPOINT/CMD pattern and remove inline gunicorn args.
+**`entrypoint.sh`** -- Restructure to use ENTRYPOINT/CMD pattern and remove inline gunicorn args.
 
 Current ending (`entrypoint.sh:37-44`):
 
@@ -704,7 +704,7 @@ exec "$@"
 
 The `exec "$@"` pattern delegates the server command to the Dockerfile CMD, which can be overridden by docker-compose. The `2>/dev/null || true` guard on the static file copy handles the case where the shared volume is not mounted (standalone container without docker-compose).
 
-**`Dockerfile`** — Add CMD instruction after ENTRYPOINT.
+**`Dockerfile`** -- Add CMD instruction after ENTRYPOINT.
 
 Current (`Dockerfile:46`):
 
@@ -740,7 +740,7 @@ None. Tests use the Flask test client, not Gunicorn. The `gunicorn.conf.py` file
 
 #### Files to Modify
 
-**`Dockerfile`** — Four changes.
+**`Dockerfile`** -- Four changes.
 
 **Change 1:** Update EXPOSE from 5000 to 8000.
 
@@ -770,7 +770,7 @@ New:
 
 ```dockerfile
 # Ensure writable directories exist for logs and shared static files.
-# /var/www/static is a shared volume mount point — Nginx reads from it.
+# /var/www/static is a shared volume mount point -- Nginx reads from it.
 RUN mkdir -p /home/shekel/app/logs /var/www/static \
     && chown -R shekel:shekel /home/shekel/app /var/www/static
 ```
@@ -805,7 +805,7 @@ CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
 #### Complete Dockerfile (after all changes)
 
 ```dockerfile
-# Shekel Budget App — Multi-Stage Dockerfile
+# Shekel Budget App -- Multi-Stage Dockerfile
 # Stage 1: Build Python dependencies (includes gcc for psycopg2).
 # Stage 2: Slim runtime image (no build tools).
 
@@ -844,7 +844,7 @@ COPY --chown=shekel:shekel . .
 COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
 # Ensure writable directories exist for logs and shared static files.
-# /var/www/static is a shared volume mount point — Nginx reads from it.
+# /var/www/static is a shared volume mount point -- Nginx reads from it.
 RUN mkdir -p /home/shekel/app/logs /var/www/static \
     && chown -R shekel:shekel /home/shekel/app /var/www/static
 
@@ -935,10 +935,10 @@ None. Tests use the Flask test client and do not interact with Docker.
 
 #### Files to Create
 
-**`nginx/nginx.conf`** — Complete Nginx configuration.
+**`nginx/nginx.conf`** -- Complete Nginx configuration.
 
 ```nginx
-# Shekel Budget App — Nginx Reverse Proxy Configuration
+# Shekel Budget App -- Nginx Reverse Proxy Configuration
 #
 # Nginx sits in front of Gunicorn and handles:
 #   - Reverse proxying application requests to Gunicorn (port 8000)
@@ -1068,7 +1068,7 @@ http {
             add_header Cache-Control "public, immutable";
 
             # Prevent MIME type sniffing on static files.  This is
-            # the only security header Nginx sets — Flask owns all
+            # the only security header Nginx sets -- Flask owns all
             # others on proxied responses (see Security Header
             # Ownership decision in the implementation plan).
             add_header X-Content-Type-Options nosniff;
@@ -1130,10 +1130,10 @@ None. Nginx is not used in the test environment.
 
 #### Files to Modify
 
-**`docker-compose.yml`** — Complete rewrite for production with Nginx.
+**`docker-compose.yml`** -- Complete rewrite for production with Nginx.
 
 ```yaml
-# Shekel Budget App — Production Docker Compose
+# Shekel Budget App -- Production Docker Compose
 #
 # Architecture:
 #   [Client] --> [Nginx :80] --> [Gunicorn :8000] --> [PostgreSQL :5432]
@@ -1246,18 +1246,18 @@ networks:
   # Frontend network: Nginx only.  Externally accessible via port mapping.
   frontend:
     driver: bridge
-  # Backend network: all services.  Internal only — not reachable from host.
+  # Backend network: all services.  Internal only -- not reachable from host.
   backend:
     driver: bridge
     internal: true
 ```
 
-**`docker-compose.dev.yml`** — Fix for proper development workflow.
+**`docker-compose.dev.yml`** -- Fix for proper development workflow.
 
 Current state: `app` service uses `FLASK_ENV: production`, no source mount, no live reload, no `TOTP_ENCRYPTION_KEY`, conflicting container name.
 
 ```yaml
-# Shekel Budget App — Development Docker Compose
+# Shekel Budget App -- Development Docker Compose
 #
 # Provides PostgreSQL for local development.
 #
@@ -1366,7 +1366,7 @@ volumes:
 - [ ] `docker compose ps` shows all services as `healthy`
 - [ ] App is reachable via Nginx at `http://localhost/` (or configured `NGINX_PORT`)
 - [ ] `/health` returns 200 via Nginx
-- [ ] Static files served by Nginx (verify with `curl -I http://localhost/static/css/app.css` — response has `Server: nginx` header, no `X-Request-Id`)
+- [ ] Static files served by Nginx (verify with `curl -I http://localhost/static/css/app.css` -- response has `Server: nginx` header, no `X-Request-Id`)
 - [ ] App not directly reachable from host (no port mapping on app service)
 - [ ] `docker compose -f docker-compose.dev.yml up db` starts only the database
 - [ ] `docker compose -f docker-compose.dev.yml up` starts db + app with Flask dev server

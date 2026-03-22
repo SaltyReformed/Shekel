@@ -1,4 +1,4 @@
-# Shekel Budget App — Continuous Integration
+# Shekel Budget App -- Continuous Integration
 #
 # Runs linting (pylint) and the full test suite (pytest) on every push
 # to main and on pull requests.  Uses a PostgreSQL 16 service container

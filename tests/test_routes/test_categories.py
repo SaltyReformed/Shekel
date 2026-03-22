@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Category Route Tests
+Shekel Budget App -- Category Route Tests
 
 Tests for category CRUD endpoints:
   - Listing categories grouped by group_name

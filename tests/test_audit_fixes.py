@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Audit Fix Tests
+Shekel Budget App -- Audit Fix Tests
 
 Tests for fixes identified in the 2026-02-27 adversarial code audit:
 - effective_amount Decimal type invariant
@@ -192,7 +192,7 @@ class TestEffectiveAmountDecimal:
         assert xfer.effective_amount == Decimal("200.00")
 
 
-# ── Section 2: IDOR — Transfer Account Ownership ────────────────────
+# ── Section 2: IDOR -- Transfer Account Ownership ────────────────────
 
 
 class TestTransferAccountOwnership:
@@ -339,7 +339,7 @@ class TestTransferAccountOwnership:
         assert template.to_account_id == original_to
 
 
-# ── Section 3: IDOR — Savings Goal Account Ownership ────────────────
+# ── Section 3: IDOR -- Savings Goal Account Ownership ────────────────
 
 
 class TestSavingsGoalAccountOwnership:
@@ -403,7 +403,7 @@ class TestSavingsGoalAccountOwnership:
         assert goal.account_id == original_account_id
 
 
-# ── Section 4: IDOR — Template Account/Category Ownership ───────────
+# ── Section 4: IDOR -- Template Account/Category Ownership ───────────
 
 
 class TestTemplateOwnership:

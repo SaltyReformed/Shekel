@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Test Fixtures
+Shekel Budget App -- Test Fixtures
 
 Provides reusable pytest fixtures for the test suite: a configured
 test app, a clean database session, an authenticated client, and
@@ -159,7 +159,7 @@ def db(app, setup_database):
             "auth.users "
             "CASCADE"
         ))
-        # System schema — clean audit log between tests.
+        # System schema -- clean audit log between tests.
         _db.session.execute(_db.text("TRUNCATE system.audit_log"))
         _db.session.commit()
 

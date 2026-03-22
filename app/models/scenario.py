@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Scenario Model (budget schema)
+Shekel Budget App -- Scenario Model (budget schema)
 
 A scenario is a named version of the budget.  Phase 1 uses only the
 baseline scenario; Phase 3 adds clone, compare, and diff features.

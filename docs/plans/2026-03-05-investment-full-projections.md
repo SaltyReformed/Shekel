@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make savings dashboard cards for investment/retirement accounts project balances using ALL inputs: compound growth, employee contributions (paycheck deductions), employer contributions, transfer-based contributions, annual contribution limits, and YTD contributions — matching the investment detail page exactly.
+**Goal:** Make savings dashboard cards for investment/retirement accounts project balances using ALL inputs: compound growth, employee contributions (paycheck deductions), employer contributions, transfer-based contributions, annual contribution limits, and YTD contributions -- matching the investment detail page exactly.
 
 **Architecture:** Extract the contribution calculation logic (paycheck deductions, transfer averages, employer params, YTD) into a shared helper function in `app/services/investment_projection.py`. Both the investment detail route and the savings dashboard call it, eliminating duplication. The savings dashboard batch-loads PaycheckDeductions for all investment accounts in one query, then passes per-account data through the shared helper.
 
@@ -25,15 +25,15 @@ The investment detail page (`investment.py:60-146`) computes 6 inputs for `growt
 
 ### Data Sources for Missing Inputs
 
-1. **`periodic_contribution`** — Sum of:
+1. **`periodic_contribution`** -- Sum of:
    - PaycheckDeduction records where `target_account_id == account.id`, joined to active SalaryProfiles. Percentage-based deductions use `gross_biweekly = annual_salary / pay_periods_per_year`.
    - Average per-period Transfer amount into the account (from `all_transfers`, already loaded).
 
-2. **`employer_params`** — Built from `InvestmentParams` fields (`employer_contribution_type`, `employer_flat_percentage`, `employer_match_percentage`, `employer_match_cap_percentage`) plus `gross_biweekly` from the SalaryProfile.
+2. **`employer_params`** -- Built from `InvestmentParams` fields (`employer_contribution_type`, `employer_flat_percentage`, `employer_match_percentage`, `employer_match_cap_percentage`) plus `gross_biweekly` from the SalaryProfile.
 
-3. **`annual_contribution_limit`** — Direct from `InvestmentParams.annual_contribution_limit` (already loaded).
+3. **`annual_contribution_limit`** -- Direct from `InvestmentParams.annual_contribution_limit` (already loaded).
 
-4. **`ytd_contributions_start`** — Sum of Transfer amounts into the account for periods in the current year up to the current period. Can compute from `all_transfers` (already loaded).
+4. **`ytd_contributions_start`** -- Sum of Transfer amounts into the account for periods in the current year up to the current period. Can compute from `all_transfers` (already loaded).
 
 ### Key Models
 
@@ -210,7 +210,7 @@ class TestCalculateInvestmentInputs:
             FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
             FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=2),
             FakeTransfer(to_account_id=10, amount=Decimal("300"), pay_period_id=3),
-            # Transfer to different account — should be ignored.
+            # Transfer to different account -- should be ignored.
             FakeTransfer(to_account_id=99, amount=Decimal("1000"), pay_period_id=1),
         ]
         periods = [
@@ -312,12 +312,12 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4),  # future
         ]
         transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=1),  # 2025 — excluded
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=2),  # 2026 — included
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=3),  # 2026 — included
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=4),  # current — included
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=5),  # future — excluded
-            FakeTransfer(to_account_id=99, amount=Decimal("999"), pay_period_id=2),  # other acct — excluded
+            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=1),  # 2025 -- excluded
+            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=2),  # 2026 -- included
+            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=3),  # 2026 -- included
+            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=4),  # current -- included
+            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=5),  # future -- excluded
+            FakeTransfer(to_account_id=99, amount=Decimal("999"), pay_period_id=2),  # other acct -- excluded
         ]
         current_period = periods[3]  # id=4
 
@@ -395,7 +395,7 @@ class TestCalculateInvestmentInputs:
 
 Run: `pytest tests/test_services/test_investment_projection.py -v`
 
-Expected: ImportError — `app.services.investment_projection` does not exist yet.
+Expected: ImportError -- `app.services.investment_projection` does not exist yet.
 
 **Step 3: Implement the helper**
 
@@ -403,7 +403,7 @@ Create `app/services/investment_projection.py`:
 
 ```python
 """
-Shekel Budget App — Investment Projection Input Calculator
+Shekel Budget App -- Investment Projection Input Calculator
 
 Pure function that computes all inputs needed for growth_engine.project_balance()
 from raw deduction, transfer, and investment params data.
@@ -442,7 +442,7 @@ def calculate_investment_inputs(
     """Compute projection inputs for an investment account.
 
     Args:
-        account_id:        int — the investment account ID.
+        account_id:        int -- the investment account ID.
         investment_params:  Object with employer fields and annual_contribution_limit.
         deductions:         List of deduction-like objects with:
                             .amount, .calc_method_name, .annual_salary, .pay_periods_per_year
@@ -656,7 +656,7 @@ def test_dashboard_investment_account_includes_contributions(
 
 Run: `pytest tests/test_routes/test_savings.py::TestDashboard::test_dashboard_investment_account_includes_contributions -v`
 
-Expected: FAIL — contributions are not yet passed to `project_balance()`.
+Expected: FAIL -- contributions are not yet passed to `project_balance()`.
 
 **Step 3: Implement full projection in savings.py**
 
@@ -769,7 +769,7 @@ git commit -m "feat: include contributions and employer match in savings card pr
 **Files:**
 - Modify: `app/routes/investment.py`
 
-This task DRYs up the investment detail route by replacing its inline contribution calculation with the shared helper. No behavior change — pure refactor.
+This task DRYs up the investment detail route by replacing its inline contribution calculation with the shared helper. No behavior change -- pure refactor.
 
 **Step 1: Run baseline investment route tests**
 
@@ -846,7 +846,7 @@ Remove the now-unused `_calculate_ytd_contributions()` helper at the bottom of t
 
 Run: `pytest tests/test_routes/test_investment.py -v`
 
-Expected: All 11 tests still pass (same count as baseline — pure refactor).
+Expected: All 11 tests still pass (same count as baseline -- pure refactor).
 
 **Step 4: Commit**
 

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Unit Tests for Pension Calculator
+Shekel Budget App -- Unit Tests for Pension Calculator
 
 Tests the pension benefit calculation including years of service,
 high-salary average computation, and salary projection integration.

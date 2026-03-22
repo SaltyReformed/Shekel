@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Budget Grid — Shekel{% endblock %}
+{% block title %}Budget Grid -- Shekel{% endblock %}
 
 {% block content %}
 {# --- Scenario Controls (Phase 7) --- #}
@@ -22,7 +22,7 @@
 
   {# --- Date Range Controls --- #}
   <div class="d-flex align-items-center gap-2">
-    {# Left arrow — shift window back #}
+    {# Left arrow -- shift window back #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset - 1) }}"
        class="btn btn-sm btn-outline-secondary" title="Earlier" aria-label="Show earlier periods">
       <i class="bi bi-chevron-left"></i>
@@ -42,7 +42,7 @@
     {% endfor %}
     </div>
 
-    {# Right arrow — shift window forward #}
+    {# Right arrow -- shift window forward #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset + 1) }}"
        class="btn btn-sm btn-outline-secondary" title="Later" aria-label="Show later periods">
       <i class="bi bi-chevron-right"></i>
@@ -276,7 +276,7 @@
     {% include "grid/_balance_row.html" %}
   </table>
 
-  {# Popover container for the full edit form — positioned absolutely within the grid wrapper #}
+  {# Popover container for the full edit form -- positioned absolutely within the grid wrapper #}
   <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
 </div>
 

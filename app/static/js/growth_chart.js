@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Investment Growth Chart
+ * Shekel Budget App -- Investment Growth Chart
  *
  * Renders a Chart.js line chart showing projected balance over time
  * with contributions overlaid. Reads data from data-* attributes

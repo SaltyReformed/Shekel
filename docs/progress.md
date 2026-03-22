@@ -20,6 +20,19 @@
 ## Recent Development Activity
 
 ```
+ed7c63d docs: document f-string SQL safety, Gunicorn forwarded_allow_ips, and DB_PASSWORD coupling
+276ca37 docs: update stale model docstrings to reflect implemented state
+97efa6e fix: add DevConfig and TestConfig DATABASE_URL fallbacks for local development
+752eef7 test: add dedicated carry_forward_service unit tests
+03acb69 refactor: isolate float() conversions at Chart.js presentation boundary
+de9e456 fix: add CSRF hidden inputs to all HTMX forms with POST fallback for graceful degradation
+d0a6c0e fix: remove unnecessary Decimal(str()) double conversion in amortization engine
+9c0185f fix: add settled status to test conftest ref data to match production
+89c83ed fix: add custom 400 and 403 error handlers
+848ee91 fix: remove external network requirement, wire up seed user, enforce password minimum
+a774b06 fix: split dev dependencies into requirements-dev.txt, update CI
+fa2e44c fix: prevent open redirect on login and MFA verify routes
+a23ed30 Updated docs
 693d4b5 Upgrade all dependencies for production readiness
 6084868 Add optional end date to recurring transactions and transfers
 ffa4614 Fixed balance over time chart
@@ -27,48 +40,32 @@ ffa4614 Fixed balance over time chart
 1fcde46 Fix pension highest-paid years ignoring recurring raises
 e859f8f Convert all percentage inputs from decimal to human-readable format
 467a2f6 Convert raise percentage input from decimal to human-readable
-4ad4a2e Update tax rates to IRS/SSA/NCDOR 2026 actuals, add state standard deduction
-04149ee Fix currency display truncating instead of rounding
-0e047e8 Fix grid footer doubling after HTMX balance refresh
-cd27c04 Fix effective_from filter excluding current pay period during regeneration
-6c32ee9 Test remediation Phase 8.3. Fixed xFail test.
-73bafcf Test remediation Phases 8.1 and 8.2
-4e54d4f Test remediation Phase 7.2
-77254f7 Test remediation Phases 6.2 and 7.1
-953729d Test remediation Phase 6.1
-b70829a Test remediation Phase 5 implementation
-47c1d56 fix: move inline scripts to external JS files for CSP compliance
-42c890b Test remediation WU4.2 4 bug fixes found during 4.2 test remediation
-90efc11 Test remediation WU4.1
 ```
 
 Recent work since the last evaluation (2026-03-20) includes:
 
-- **Dependency upgrade** (commit 693d4b5): All Python dependencies upgraded for
-  production readiness.
-- **Optional end dates on recurrence rules** (commit 6084868): Recurring
-  transactions and transfers can now have an end date, stopping auto-generation
-  beyond that date. New migration `f8f8173ff361` adds the column.
-- **Balance-over-time chart fix** (commit ffa4614): Fixed rendering issue in
-  the charts dashboard.
-- **Account type expansion** (commit 244851c): Expanded ref.account_types from
-  2 to 18 entries with proper categories and display names. Updated seed script.
-- **Pension calculator fix** (commit 1fcde46): Corrected highest-paid years
-  calculation to properly account for recurring raises.
-- **Human-readable percentage inputs** (commits e859f8f, 467a2f6): Converted
-  all percentage input fields (raise percentages, APY, interest rates, return
-  rates, escrow inflation, employer contribution rates, SWR, tax rates) from
-  raw decimal (0.05) to human-readable format (5.0%).
-- **2026 tax rate update** (commit 4ad4a2e): Updated federal/state/FICA tax
-  rates to IRS/SSA/NCDOR 2026 actuals. Added state standard deduction support.
-  Two new migrations: `7abcbf372fff` (tax_year on state configs) and
-  `02b1ff12b08c` (standard_deduction on state configs).
-- **Currency rounding fix** (commit 04149ee): Fixed display truncating amounts
-  instead of rounding.
-- **Grid HTMX fix** (commit 0e047e8): Fixed footer row doubling after HTMX
-  balance refresh.
-- **Recurrence engine fix** (commit cd27c04): Fixed effective_from filter that
-  was excluding the current pay period during regeneration.
+- **Production readiness audit** (commits ed7c63d, 276ca37): Documented f-string
+  SQL safety rationale, updated stale model docstrings, documented Gunicorn
+  forwarded_allow_ips and DB_PASSWORD coupling.
+- **DevConfig/TestConfig fallbacks** (commit 97efa6e): Added DATABASE_URL fallback
+  defaults for local development without .env file.
+- **Carry-forward tests** (commit 752eef7): Added dedicated carry_forward_service
+  unit tests.
+- **Chart.js boundary refactor** (commit 03acb69): Isolated float() conversions
+  at the Chart.js presentation boundary rather than in service layer.
+- **CSRF HTMX fix** (commit de9e456): Added CSRF hidden inputs to all HTMX forms
+  with POST fallback for graceful degradation.
+- **Error handler expansion** (commit 89c83ed): Added custom 400 and 403 error
+  handlers (previously only 404, 429, 500 existed).
+- **Seed user hardening** (commit 848ee91): Removed external network requirement,
+  wired up seed user env vars in docker-compose, enforced 12-char password minimum.
+- **Open redirect prevention** (commit fa2e44c): Prevented open redirect on login
+  and MFA verify routes.
+- **Dev dependencies split** (commit a774b06): Split dev dependencies into
+  requirements-dev.txt, updated CI.
+- **New-user setup audit** (docs only): Comprehensive audit of the end-user Docker
+  setup experience with implementation plan. See `docs/new_user_setup_audit.md`
+  and `docs/new_user_setup_implementation_plan.md`.
 
 ---
 
@@ -104,7 +101,7 @@ Recent work since the last evaluation (2026-03-20) includes:
   `categories/` (2 files), `auth/` (6 files), `settings/` (10 files),
   `pay_periods/` (1 file), `accounts/` (4 files)
 - Tests (all present): `test_balance_calculator.py`, `test_recurrence_engine.py`,
-  `test_credit_workflow.py`, `test_carry_forward` (in test_services),
+  `test_credit_workflow.py`, `test_carry_forward_service.py` (dedicated unit tests),
   `test_auth.py`, `test_grid.py`, `test_transactions.py` (via test_transaction_auth.py),
   `test_auth_required.py` (91 auth-required tests across all blueprints)
 - Scripts (all present): `seed_user.py`, `seed_ref_tables.py`
@@ -352,7 +349,8 @@ Exceeds requirements -- includes net worth projection chart, amortization chart,
 Chart.js theming system (`chart_theme.js`), and interactive sliders for SWR/return
 rate adjustments (`chart_slider.js`). Scenario comparison overlay deferred (depends
 on Phase 7). Error handling partial (`_error.html`) for chart load failures.
-Balance-over-time chart rendering issue fixed (commit ffa4614).
+Balance-over-time chart rendering issue fixed (commit ffa4614). Float() conversions
+isolated at Chart.js presentation boundary (commit 03acb69).
 
 ---
 
@@ -403,25 +401,27 @@ UI/UX remediation Phase 5).
 **Found:**
 
 - Password change (present): Route in `auth.py`, service in `auth_service.py`
-- CSRF (present): All 70 forms covered, HTMX header injection in `base.html`
+- CSRF (present): All 70+ forms covered, HTMX header injection in `base.html`,
+  CSRF hidden inputs added to all HTMX forms with POST fallback (commit de9e456)
 - Session management (present): `session_invalidated_at` column (migration
   `2ae345ea9048`), logout-all-sessions functionality
 - Rate limiting (present): Flask-Limiter on login and MFA verify (5/15min)
 - MFA/TOTP (all present): `mfa_service.py`, routes in `auth.py`, templates
   (`mfa_setup.html`, `mfa_verify.html`, `mfa_backup_codes.html`, `mfa_disable.html`),
   settings partial (`_mfa_setup.html`, `_security.html`)
-- Custom error pages (present): `errors/404.html`, `errors/429.html`, `errors/500.html`
+- Custom error pages (all present): `errors/400.html`, `errors/403.html`,
+  `errors/404.html`, `errors/429.html`, `errors/500.html`
 - Tests (all present): `test_mfa_service.py`, `test_errors.py`, `test_auth.py`
 - Scripts: `reset_mfa.py` (MFA recovery)
 - Additional: Security headers (CSP, X-Frame-Options, Referrer-Policy),
-  encrypted MFA secrets (Fernet)
+  encrypted MFA secrets (Fernet), open redirect prevention (commit fa2e44c)
 
 **Notes:**
 
-Custom 403 error page not listed in templates (only 404, 429, 500 present).
-Security headers exceed Phase 8A requirements -- CSP implemented with external
-JS migration (commit 47c1d56). Inline scripts moved to external files for CSP
-compliance.
+All 5 custom error pages now present (400 and 403 added in commit 89c83ed,
+completing the set from the previous evaluation). Security headers exceed Phase 8A
+requirements -- CSP implemented with external JS migration (commit 47c1d56). Inline
+scripts moved to external files for CSP compliance.
 
 ---
 
@@ -551,6 +551,12 @@ includes `set_real_ip_from` directives for Cloudflare IP ranges and
 `real_ip_header CF-Connecting-IP` for correct client IP propagation. All Python
 dependencies upgraded for production readiness (commit 693d4b5).
 
+A new-user setup audit (`docs/new_user_setup_audit.md`) identified several issues
+with the end-user Docker setup experience: docker-compose.yml uses `build: .`
+instead of the GHCR image, entrypoint runs seed_tax_brackets before seed_user, and
+the README lacks Docker Quick Start documentation. An implementation plan
+(`docs/new_user_setup_implementation_plan.md`) has been drafted to address these.
+
 ---
 
 ### Phase 8E -- Multi-User Groundwork
@@ -631,43 +637,52 @@ as part of the implementation.
   categories (asset, liability, retirement, investment). The seed script was updated
   accordingly.
 
+- **Docker end-user setup:** The end-user Docker setup path (download two files,
+  run compose) is not yet functional. docker-compose.yml uses `build: .` instead
+  of the published GHCR image, and the README lacks Docker Quick Start
+  documentation. See `docs/new_user_setup_audit.md` for full findings.
+
 ---
 
 ## Suggested Next Steps
 
-1. **Phase 7 -- Scenarios:** The only remaining deferred feature phase. The
+1. **New-user setup fixes:** Implement the plan in
+   `docs/new_user_setup_implementation_plan.md`. This unblocks the Docker
+   end-user setup path by switching docker-compose.yml to the GHCR image,
+   fixing the entrypoint seed ordering bug, making TOTP_ENCRYPTION_KEY optional
+   at startup, and adding Docker Quick Start documentation to the README.
+
+2. **Phase 7 -- Scenarios:** The only remaining deferred feature phase. The
    `scenario.py` model stub and UI spec (`docs/scenario_ui_requirements.md`)
    are in place. Depends on all current phases being stable, which they are.
    This adds clone, compare, and diff functionality for what-if budget analysis.
 
-2. **v3 Phase 9 -- Smart Features:** Rolling averages for expense tracking,
+3. **v3 Phase 9 -- Smart Features:** Rolling averages for expense tracking,
    inflation adjustment on long-term projections. The inflation field on paycheck
    deductions already exists but global projection adjustment is not implemented.
 
-3. **v3 Phase 10 -- Notifications:** In-app alerts and email notifications
+4. **v3 Phase 10 -- Notifications:** In-app alerts and email notifications
    including loan payoff milestones, retirement goal milestones, and contribution
    limit warnings. Requires the least architectural change.
-
-4. **Production hardening follow-up:** Consider adding a 403 custom error page
-   (currently missing from `app/templates/errors/`), and building a simple audit
-   log viewer UI (currently backend-only via psql).
 
 ---
 
 ## Test Suite Health
 
-**Total:** 1533 test functions across 61 test files
+**Total:** 1772 test functions across 63 test files
 **Runtime:** ~9 minutes (full suite)
 
 | Category                | Files | Approx. Tests |
 | ----------------------- | ----- | ------------- |
-| Route tests             | 24    | ~780          |
-| Service tests           | 22    | ~470          |
+| Route tests             | 23    | ~830          |
+| Service tests           | 22    | ~530          |
 | Integration tests       | 6     | ~125          |
 | Schema/model tests      | 2     | ~80           |
-| Script tests            | 3     | ~33           |
-| Utility tests           | 3     | ~28           |
+| Script tests            | 3     | ~40           |
+| Utility tests           | 3     | ~30           |
 | Adversarial tests       | 1     | ~26           |
+| Performance benchmarks  | 1     | ~3            |
+| Config tests            | 2     | ~20           |
 
 Test remediation work units (WU0 through WU5.4) systematically added:
 - Auth-required coverage for all 19 blueprints (91 tests)
@@ -676,3 +691,4 @@ Test remediation work units (WU0 through WU5.4) systematically added:
 - Account type guard tests (wrong type redirects)
 - Nonexistent resource handling (404/302 with flash messages)
 - Financial account negative paths across all 5 account types
+- Dedicated carry_forward_service unit tests (commit 752eef7)

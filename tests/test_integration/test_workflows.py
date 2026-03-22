@@ -1,5 +1,5 @@
 """
-Shekel Budget App — End-to-End Workflow Tests
+Shekel Budget App -- End-to-End Workflow Tests
 
 Tests multi-step workflows that span services and routes:
   - Salary profile → income transactions in grid
@@ -195,7 +195,7 @@ class TestCreditPaybackBalance:
             db.session.add(txn)
             db.session.commit()
 
-            # Mark as credit — creates payback in next period.
+            # Mark as credit -- creates payback in next period.
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.commit()
 
@@ -539,7 +539,7 @@ class TestCarryForwardEdgeCases:
     def test_carry_forward_empty_source_period(self, app, db, seed_user, seed_periods):
         """Carry forward from a period with no projected transactions is a no-op.
 
-        Source has 1 done and 1 cancelled — nothing to move. Target is unchanged.
+        Source has 1 done and 1 cancelled -- nothing to move. Target is unchanged.
         """
         with app.app_context():
             done = db.session.query(Status).filter_by(name="done").one()
@@ -610,7 +610,7 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
             assert count == 0
 
-            # Transaction is still in period 0 — nothing changed.
+            # Transaction is still in period 0 -- nothing changed.
             db.session.expire_all()
             txn_check = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id, name="SelfCarry",
@@ -670,7 +670,7 @@ class TestCreditWorkflowEdgeCases:
     def test_mark_as_credit_on_already_credit_transaction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Marking as credit twice is idempotent — returns existing payback.
+        """Marking as credit twice is idempotent -- returns existing payback.
 
         The source code has an idempotency guard: if already credit with
         an existing payback, it returns that payback instead of creating
@@ -698,7 +698,7 @@ class TestCreditWorkflowEdgeCases:
             db.session.commit()
             payback1_id = payback1.id
 
-            # Second mark-as-credit — idempotent, returns same payback.
+            # Second mark-as-credit -- idempotent, returns same payback.
             payback2 = credit_workflow.mark_as_credit(txn_id, seed_user["user"].id)
             db.session.commit()
 
@@ -712,7 +712,7 @@ class TestCreditWorkflowEdgeCases:
             assert payback_count == 1
 
     def test_mark_as_credit_on_done_transaction(self, app, db, seed_user, seed_periods):
-        """Cannot mark a 'done' transaction as credit — raises ValidationError.
+        """Cannot mark a 'done' transaction as credit -- raises ValidationError.
 
         Only projected transactions can be newly marked as credit. The
         source code raises ValidationError for any non-projected status.
@@ -738,7 +738,7 @@ class TestCreditWorkflowEdgeCases:
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_mark_as_credit_on_cancelled_transaction(self, app, db, seed_user, seed_periods):
-        """Cannot mark a 'cancelled' transaction as credit — raises ValidationError.
+        """Cannot mark a 'cancelled' transaction as credit -- raises ValidationError.
 
         Cancelled transactions should not generate payback entries.
         """
@@ -765,7 +765,7 @@ class TestCreditWorkflowEdgeCases:
     def test_mark_as_credit_last_period_no_next_period(
         self, app, db, seed_user, seed_periods,
     ):
-        """Credit on last period raises ValidationError — no next period for payback.
+        """Credit on last period raises ValidationError -- no next period for payback.
 
         The source calls pay_period_service.get_next_period() which returns
         None for the last period. The source then raises ValidationError.
@@ -839,7 +839,7 @@ class TestCreditWorkflowEdgeCases:
     def test_mark_as_credit_income_raises_validation_error(
         self, app, db, seed_user, seed_periods,
     ):
-        """Cannot mark income as credit — raises ValidationError.
+        """Cannot mark income as credit -- raises ValidationError.
 
         Marking a paycheck as 'credit' makes no financial sense.
         """
@@ -943,7 +943,7 @@ class TestFullBudgetWorkflow:
             # Step 6: Assert final state.
             db.session.expire_all()
 
-            # Period 0: 2 transactions — 1 done (Rent), 1 credit (Dining Out).
+            # Period 0: 2 transactions -- 1 done (Rent), 1 credit (Dining Out).
             period0_txns = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id,
             ).filter(Transaction.is_deleted.is_(False)).all()
@@ -961,7 +961,7 @@ class TestFullBudgetWorkflow:
             p0_projected = [t for t in period0_txns if t.status.name == "projected"]
             assert len(p0_projected) == 0
 
-            # Period 1: 2 transactions — payback + carried-forward Gas Station.
+            # Period 1: 2 transactions -- payback + carried-forward Gas Station.
             period1_txns = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[1].id,
             ).filter(Transaction.is_deleted.is_(False)).all()

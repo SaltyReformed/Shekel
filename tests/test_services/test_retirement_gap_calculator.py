@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Unit Tests for Retirement Income Gap Calculator
+Shekel Budget App -- Unit Tests for Retirement Income Gap Calculator
 
 Tests the gap analysis pipeline including income calculation,
 pension integration, required savings, and after-tax views.
@@ -233,7 +233,7 @@ class TestCalculateGap:
         )
 
     def test_pension_not_taxed_without_tax_rate(self):
-        """Without tax rate, pension used as-is (gross) — backward compatible."""
+        """Without tax rate, pension used as-is (gross) -- backward compatible."""
         result = calculate_gap(
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("5000"),
@@ -261,7 +261,7 @@ class TestCalculateGap:
         )
 
     def test_pension_tax_zero_pension(self):
-        """Tax on zero pension is still zero — no division issues."""
+        """Tax on zero pension is still zero -- no division issues."""
         result = calculate_gap(
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
@@ -304,9 +304,9 @@ class TestCalculateGap:
 
         The source guard `if safe_withdrawal_rate > 0:` is False for negative
         values, so required_retirement_savings = ZERO. No validation is
-        performed — a negative SWR silently produces the same result as SWR=0.
+        performed -- a negative SWR silently produces the same result as SWR=0.
 
-        # BUG: Source does not validate SWR > 0 — negative SWR silently
+        # BUG: Source does not validate SWR > 0 -- negative SWR silently
         # accepted. Should raise ValidationError.
         # TODO: Source should validate safe_withdrawal_rate > 0.
 

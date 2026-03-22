@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Auth Service Tests
+Shekel Budget App -- Auth Service Tests
 
 Tests for password hashing, verification, user authentication,
 and user registration (§1.10 of the test plan).
@@ -543,7 +543,7 @@ class TestNegativeAndBoundaryPaths:
                 auth_service.authenticate("test@shekel.local", None)
 
     def test_change_password_new_equals_old(self, app, db, seed_user):
-        """Changing to the same password succeeds — no password-history enforcement.
+        """Changing to the same password succeeds -- no password-history enforcement.
 
         The service does not prevent changing to the same password. This is a
         UX concern, not a security one. bcrypt generates a new salt each time,

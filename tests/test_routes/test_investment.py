@@ -343,7 +343,7 @@ class TestInvestmentNegativePaths:
                 "employer_contribution_type": "none",
             },
         )
-        # The route checks account is None or user_id mismatch — checking account
+        # The route checks account is None or user_id mismatch -- checking account
         # passes ownership but the route does NOT check account type; it will
         # create params. However, let's verify the actual behavior.
         # Reading the route: update_params only checks ownership, not account type.

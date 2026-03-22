@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Mortgage Routes
+Shekel Budget App -- Mortgage Routes
 
 Dashboard, parameter updates, escrow management, rate history,
 and payoff calculator for mortgage accounts.
@@ -115,7 +115,7 @@ def dashboard(account_id):
             .all()
         )
 
-    # Chart data — schedule starts from now, not origination.
+    # Chart data -- schedule starts from now, not origination.
     schedule = amortization_engine.generate_schedule(
         Decimal(str(params.current_principal)),
         Decimal(str(params.interest_rate)),

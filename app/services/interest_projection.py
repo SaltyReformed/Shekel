@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Interest Projection Service
+Shekel Budget App -- Interest Projection Service
 
 Pure function that calculates projected interest earned on a HYSA
 account during a pay period.  No database access, no side effects.

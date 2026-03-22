@@ -1,4 +1,4 @@
-# Shekel — Phase 6 Visualization Plan
+# Shekel -- Phase 6 Visualization Plan
 
 **Version:** 1.1
 **Date:** March 5, 2026
@@ -30,7 +30,7 @@ Phase 6 is the dedicated visualization phase. It builds a centralized **Charts p
 
 **Build principle:** No placeholders. Charts are added to the page as they are ready. The Charts
 page starts with whatever charts are built first and grows incrementally. Scenario Comparison will
-be added to the Charts page when Phase 7 (Scenarios) is built — it is not part of Phase 6.
+be added to the Charts page when Phase 7 (Scenarios) is built -- it is not part of Phase 6.
 
 ---
 
@@ -83,7 +83,7 @@ Register in `app/__init__.py` alongside existing blueprints.
 
 ### 3.3 Service Layer
 
-Create a new `chart_data_service.py` that orchestrates data from existing services. This service does **not** duplicate business logic — it calls `balance_calculator`, `amortization_engine`, `growth_engine`, etc. and reshapes their output into chart-ready structures (labels + datasets).
+Create a new `chart_data_service.py` that orchestrates data from existing services. This service does **not** duplicate business logic -- it calls `balance_calculator`, `amortization_engine`, `growth_engine`, etc. and reshapes their output into chart-ready structures (labels + datasets).
 
 ```
 app/services/chart_data_service.py
@@ -139,7 +139,7 @@ app/
 
 The existing `payoff_chart.js` hardcodes colors like `#6c757d` and `#adb5bd`. These work in dark mode but break in light mode. Phase 6 introduces a shared theme configuration that reads CSS custom properties so charts respond to theme toggles automatically.
 
-### 4.2 Implementation — `chart_theme.js`
+### 4.2 Implementation -- `chart_theme.js`
 
 This file sets Chart.js global defaults and exposes a `ShekelChart` namespace.
 
@@ -170,13 +170,13 @@ When the user toggles dark/light mode, the theme toggle handler (already in `app
 
 ### 4.4 Retrofitting Existing Charts
 
-After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline chart scripts to use `ShekelChart.create()` instead of raw `new Chart()`. This ensures all charts—inline and Charts page—share consistent theming.
+After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline chart scripts to use `ShekelChart.create()` instead of raw `new Chart()`. This ensures all charts--inline and Charts page--share consistent theming.
 
 ---
 
 ## 5. Detailed Chart Specifications
 
-### 5.1 C1 — Balance Over Time (All Accounts)
+### 5.1 C1 -- Balance Over Time (All Accounts)
 
 **Purpose:** Show projected balances for all accounts on a single timeline, giving the user a holistic view of their financial position over the 2-year projection horizon.
 
@@ -196,7 +196,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 **Chart.js config notes:** Use `tension: 0.3` for smooth curves. `pointRadius: 0` with `pointHitRadius: 10` for clean lines with hover activation. Use `fill: false` to avoid visual clutter with multiple lines.
 
-### 5.2 C2 — Spending by Category
+### 5.2 C2 -- Spending by Category
 
 **Purpose:** Show where money goes, grouped by category, for a selected time range.
 
@@ -211,11 +211,11 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 **Colors:** Use the rose/expense palette for bars. Each category group gets a shade from a gradient scale.
 
-### 5.3 C3 — Budget vs. Actuals
+### 5.3 C3 -- Budget vs. Actuals
 
 **Purpose:** Compare budgeted (estimated) amounts to actual amounts per category, highlighting where the user is over or under budget.
 
-**Chart type:** Grouped bar chart. Each category has two bars side by side — estimated (muted color) and actual (vivid color). Overspend highlighted in red.
+**Chart type:** Grouped bar chart. Each category has two bars side by side -- estimated (muted color) and actual (vivid color). Overspend highlighted in red.
 
 **Data source:** Estimated vs. actual amounts from transactions, grouped by category, for selected periods.
 
@@ -226,7 +226,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 **Visual treatment:** If actual exceeds estimated, the overspend portion of the actual bar is filled in danger red. If actual is under estimated, the bar is green-tinted.
 
-### 5.4 C4 — Amortization Breakdown
+### 5.4 C4 -- Amortization Breakdown
 
 **Purpose:** Show the principal vs. interest composition of each loan payment over the full life of the loan.
 
@@ -239,7 +239,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 - Loan selector: dropdown to switch between mortgage and auto loan (if multiple).
 - Hover tooltip: shows payment number, date, principal portion, interest portion, remaining balance.
 
-### 5.5 C5 — Net Worth Over Time
+### 5.5 C5 -- Net Worth Over Time
 
 **Purpose:** A single-line summary of total assets minus total liabilities projected over time.
 
@@ -249,7 +249,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 **Interactivity:** Same date range controls as C1.
 
-### 5.6 C6 — Net Pay Trajectory
+### 5.6 C6 -- Net Pay Trajectory
 
 **Purpose:** Show how net biweekly pay changes over time due to scheduled raises (merit, COLA, custom), visualizing the impact of salary growth.
 
@@ -265,7 +265,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 ## 6. Interactive Upgrade Specifications
 
-### 6.1 U1 — Payoff Calculator Slider (Mortgage Dashboard)
+### 6.1 U1 -- Payoff Calculator Slider (Mortgage Dashboard)
 
 **Current:** User types an extra payment amount into a form field, clicks Calculate, HTMX posts to `/accounts/<id>/mortgage/payoff`, results fragment renders below.
 
@@ -275,17 +275,17 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 
 **Implementation:**
 
-- Add `chart_slider.js` — a reusable module that binds a range input to a text input and triggers an HTMX request on debounced change.
+- Add `chart_slider.js` -- a reusable module that binds a range input to a text input and triggers an HTMX request on debounced change.
 - Update `mortgage/_payoff_form.html` to include the range slider.
 - The existing `hx-post` endpoint and `_payoff_results.html` fragment require no changes.
 
-### 6.2 U2 — Investment Growth Horizon Slider
+### 6.2 U2 -- Investment Growth Horizon Slider
 
 **Current:** Investment dashboard shows growth projection to the planned retirement date.
 
 **Upgrade:** Add a year slider (current year to retirement year + 10) that adjusts the projection horizon. The chart re-renders via HTMX fragment swap when the slider value changes.
 
-### 6.3 U3 — Retirement Gap Sensitivity Controls
+### 6.3 U3 -- Retirement Gap Sensitivity Controls
 
 **Current:** Gap analysis uses the fixed 4% safe withdrawal rate from `user_settings`.
 
@@ -294,7 +294,7 @@ After `chart_theme.js` is built, refactor `payoff_chart.js` and any other inline
 - Safe withdrawal rate: 2.0% to 6.0%, step 0.25%.
 - Assumed annual return: 3.0% to 12.0%, step 0.5%.
 
-Moving either slider triggers an HTMX request to `/retirement/gap` with the slider values as query params. The endpoint recalculates the gap with the provided rates (without saving them to `user_settings` — these are exploratory, not persistent changes).
+Moving either slider triggers an HTMX request to `/retirement/gap` with the slider values as query params. The endpoint recalculates the gap with the provided rates (without saving them to `user_settings` -- these are exploratory, not persistent changes).
 
 ---
 
@@ -374,7 +374,7 @@ Each chart card renders immediately with a loading skeleton (a muted placeholder
 
 Add "Charts" to the navbar. Per the UI/UX design doc §3.1, this was already planned:
 
-> **Navigation items (added in later phases):** ... Charts (`/charts`) — Phase 5.
+> **Navigation items (added in later phases):** ... Charts (`/charts`) -- Phase 5.
 
 (Phase 5 in v2 numbering = Phase 6 in v3 numbering.)
 
@@ -424,7 +424,7 @@ Since the project does not use a JS test framework, chart rendering is validated
 
 ## 10. Implementation Order
 
-### Sprint 1 — Foundation (Week 1)
+### Sprint 1 -- Foundation (Week 1)
 
 - [ ] Create `chart_theme.js` with shared Chart.js defaults, CSS variable reading, palette, and `ShekelChart.create()` wrapper.
 - [ ] Create `chart_theme.js` theme toggle listener and re-render logic.
@@ -434,24 +434,24 @@ Since the project does not use a JS test framework, chart rendering is validated
 - [ ] Add "Charts" to navbar.
 - [ ] Write route auth tests.
 
-### Sprint 2 — Core Charts (Weeks 2–3)
+### Sprint 2 -- Core Charts (Weeks 2-3)
 
 - [ ] Build `chart_data_service.py` scaffolding with `get_balance_over_time()`.
-- [ ] Build C1 (Balance Over Time) — route, fragment template, JS, account selector.
-- [ ] Build C2 (Spending by Category) — route, fragment, JS, period selector.
-- [ ] Build C3 (Budget vs. Actuals) — route, fragment, JS, period selector.
+- [ ] Build C1 (Balance Over Time) -- route, fragment template, JS, account selector.
+- [ ] Build C2 (Spending by Category) -- route, fragment, JS, period selector.
+- [ ] Build C3 (Budget vs. Actuals) -- route, fragment, JS, period selector.
 - [ ] Write service tests for C1, C2, C3.
 - [ ] Write route tests for C1, C2, C3 fragments.
 
-### Sprint 3 — Extended Charts (Week 4)
+### Sprint 3 -- Extended Charts (Week 4)
 
-- [ ] Build C4 (Amortization Breakdown) — route, fragment, JS, loan selector.
-- [ ] Build C5 (Net Worth Over Time) — route, fragment, JS.
-- [ ] Build C6 (Net Pay Trajectory) — route, fragment, JS, profile selector.
+- [ ] Build C4 (Amortization Breakdown) -- route, fragment, JS, loan selector.
+- [ ] Build C5 (Net Worth Over Time) -- route, fragment, JS.
+- [ ] Build C6 (Net Pay Trajectory) -- route, fragment, JS, profile selector.
 - [ ] Write service tests for C4, C5, C6.
 - [ ] Write route tests for C4, C5, C6 fragments.
 
-### Sprint 4 — Interactive Upgrades + Polish (Week 5)
+### Sprint 4 -- Interactive Upgrades + Polish (Week 5)
 
 - [ ] Build `chart_slider.js` reusable module.
 - [ ] U1: Add payoff calculator slider to mortgage dashboard.
@@ -460,13 +460,13 @@ Since the project does not use a JS test framework, chart rendering is validated
 - [ ] Manual visual QA: both themes, all charts, empty states, tooltips.
 - [ ] Retrofit any remaining inline charts to `ShekelChart.create()`.
 
-### Sprint 5 — Hardening (Week 6)
+### Sprint 5 -- Hardening (Week 6)
 
 - [ ] Performance: ensure chart data queries use appropriate indexes (check `EXPLAIN ANALYZE`).
 - [ ] Add loading error states (if HTMX fragment fetch fails, show a retry message).
 - [ ] Empty state handling: each chart shows a helpful message when there is no data.
 - [ ] Accessibility: ensure chart cards have proper `aria-label` attributes and that keyboard users can navigate between chart controls.
-- [ ] Final test pass — run full test suite, fix any regressions.
+- [ ] Final test pass -- run full test suite, fix any regressions.
 
 ---
 
@@ -475,7 +475,7 @@ Since the project does not use a JS test framework, chart rendering is validated
 | Dependency | Status | Notes |
 |-----------|--------|-------|
 | Chart.js already in project | ✅ | Used by `payoff_chart.js`; no new CDN dependency needed |
-| Phases 1–4 (v3) complete | ✅ | All prerequisite engines and services are built |
+| Phases 1-4 (v3) complete | ✅ | All prerequisite engines and services are built |
 | Phase 5 (v3) finishing | 🔧 | Growth engine, pension calculator, retirement gap needed for C5 and Charts page |
 | No new Python packages | ✅ | All data reshaping is plain Python dicts; no pandas or plotting libs |
 | No new JS build pipeline | ✅ | All JS is vanilla, loaded via `<script>` tags; consistent with project philosophy |

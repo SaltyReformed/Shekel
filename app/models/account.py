@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Account Models (budget schema)
+Shekel Budget App -- Account Models (budget schema)
 
 Tracks checking and savings accounts with anchor balance history
 for the true-up workflow.

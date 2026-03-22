@@ -1,8 +1,8 @@
 """
-Shekel Budget App — Domain-Specific Exceptions for Tax Calculations
+Shekel Budget App -- Domain-Specific Exceptions for Tax Calculations
 
 Raised by the withholding calculation layer when inputs fail validation.
-These are *not* Flask/HTTP errors — they are pure domain errors suitable
+These are *not* Flask/HTTP errors -- they are pure domain errors suitable
 for use in service-layer code that has no web dependency.
 """
 

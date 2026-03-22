@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Recurrence Rule Model (budget schema)
+Shekel Budget App -- Recurrence Rule Model (budget schema)
 
 Defines the pattern by which transactions are auto-generated into
 future pay periods (every_period, monthly, annual, etc.).
@@ -52,7 +52,7 @@ class RecurrenceRule(db.Model):
         db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # Optional end date — recurrence stops generating after this date.
+    # Optional end date -- recurrence stops generating after this date.
     # NULL means indefinite (no end).
     end_date = db.Column(db.Date, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())

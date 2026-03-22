@@ -1,4 +1,4 @@
-# Phase 8D-3: Cloudflare Tunnel, Access, WAF & Runbook — Implementation Plan
+# Phase 8D-3: Cloudflare Tunnel, Access, WAF & Runbook -- Implementation Plan
 
 ## Overview
 
@@ -6,7 +6,7 @@ This plan implements the final sub-phase of Phase 8D from the Phase 8 Hardening 
 
 **Pre-existing infrastructure discovered during planning:**
 
-- Nginx reverse proxy listens on HTTP port 80 (`nginx/nginx.conf:117`) and forwards to Gunicorn on port 8000. TLS is explicitly deferred to Cloudflare Tunnel (comment on lines 9-11). Proxy headers (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) are set on lines 148-151, but **no `set_real_ip_from` or `real_ip_header` directives exist** — this is a critical gap that must be fixed before Cloudflare traffic flows correctly.
+- Nginx reverse proxy listens on HTTP port 80 (`nginx/nginx.conf:117`) and forwards to Gunicorn on port 8000. TLS is explicitly deferred to Cloudflare Tunnel (comment on lines 9-11). Proxy headers (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) are set on lines 148-151, but **no `set_real_ip_from` or `real_ip_header` directives exist** -- this is a critical gap that must be fixed before Cloudflare traffic flows correctly.
 - Flask-Limiter is configured with `key_func=get_remote_address` (`app/extensions.py:30-31`), which reads `X-Forwarded-For` automatically. Rate limits are 5 per 15 minutes on both `/login` POST (`app/routes/auth.py:26`) and `/mfa/verify` POST (`app/routes/auth.py:133`).
 - Gunicorn trusts forwarded headers from all upstreams (`gunicorn.conf.py:74`: `forwarded_allow_ips = "*"`).
 - Structured JSON logging is fully configured (`app/utils/logging_config.py`). Request summaries log `remote_addr` from `request.remote_addr` (line 157). Health checks are excluded from logging (line 104).
@@ -34,7 +34,7 @@ This plan implements the final sub-phase of Phase 8D from the Phase 8 Hardening 
 |--------|--------------|-----------------|
 | Listen port | HTTP 80 (line 117) | Cloudflared will connect to `http://localhost:80` (host mode) or `http://nginx:80` (container mode) |
 | Proxy to Gunicorn | `proxy_pass http://gunicorn` → `app:8000` (lines 109-111, 143) | No change needed |
-| `X-Forwarded-For` header | Set via `$proxy_add_x_forwarded_for` (line 150) | Appends Nginx's view of `$remote_addr` to the chain — but `$remote_addr` will be cloudflared's IP, not the client's, without `set_real_ip_from` |
+| `X-Forwarded-For` header | Set via `$proxy_add_x_forwarded_for` (line 150) | Appends Nginx's view of `$remote_addr` to the chain -- but `$remote_addr` will be cloudflared's IP, not the client's, without `set_real_ip_from` |
 | `X-Real-IP` header | Set to `$remote_addr` (line 149) | Same problem: will contain cloudflared's IP |
 | `set_real_ip_from` | **MISSING** | Must be added to trust cloudflared's IP and extract the real client IP from incoming headers |
 | `real_ip_header` | **MISSING** | Must be added to tell Nginx which header carries the real client IP |
@@ -65,7 +65,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[], storage_uri="m
 
 | Setting | Value | Line | Impact |
 |---------|-------|------|--------|
-| `forwarded_allow_ips` | `"*"` | 74 | Trusts `X-Forwarded-*` headers from any upstream — required since Nginx and Gunicorn are on the same Docker network |
+| `forwarded_allow_ips` | `"*"` | 74 | Trusts `X-Forwarded-*` headers from any upstream -- required since Nginx and Gunicorn are on the same Docker network |
 | Bind | `0.0.0.0:8000` | 46 | Internal only (not exposed to host) |
 | Workers | 2 | 34 | Sufficient for single-user |
 | Access log | Disabled (`None`) | 54 | Flask's `_log_request_summary()` handles request logging |
@@ -125,8 +125,8 @@ The `monitoring/README.md` (lines 27-39) documents that the app service needs a 
 | `docs/backup_runbook.md` | Backup, restore, verify, retention procedures | 353 | Runbook §Backup & Restore |
 | `docs/runbook_secrets.md` | Secret inventory, rotation, DR reconstruction | 94 | Runbook §Security Operations |
 | `monitoring/README.md` | Loki/Grafana/Promtail setup, LogQL queries | 150 | Runbook §Monitoring |
-| `docs/phase_8d1_implementation_plan.md` | Docker, Nginx, Gunicorn (reference for deploy) | — | Runbook §Deployment (selected excerpts) |
-| `docs/phase_8d2_implementation_plan.md` | CI, deploy script, .env setup (reference) | — | Runbook §Deployment (selected excerpts) |
+| `docs/phase_8d1_implementation_plan.md` | Docker, Nginx, Gunicorn (reference for deploy) | -- | Runbook §Deployment (selected excerpts) |
+| `docs/phase_8d2_implementation_plan.md` | CI, deploy script, .env setup (reference) | -- | Runbook §Deployment (selected excerpts) |
 
 **Scripts with built-in documentation:**
 
@@ -200,22 +200,22 @@ The full request chain with Cloudflare Tunnel:
 
 | Aspect | Assessment |
 |--------|-----------|
-| Tunnel availability | Survives `docker compose down/up` restarts — the tunnel stays up while containers cycle |
-| Networking | Connects to `http://localhost:${NGINX_PORT:-80}` — no Docker network complexity |
+| Tunnel availability | Survives `docker compose down/up` restarts -- the tunnel stays up while containers cycle |
+| Networking | Connects to `http://localhost:${NGINX_PORT:-80}` -- no Docker network complexity |
 | Management | Managed by systemd (`systemctl start/stop/status cloudflared`), consistent with Linux service management |
 | Logging | Logs to journald (`journalctl -u cloudflared`), standard sysadmin tooling |
 | Precedent | Backup scripts already run on the host via cron (established in 8C); `deploy.sh` runs on the host (8D-2) |
 | Upgrades | Updated via package manager independently of the application stack |
-| Credential storage | Tunnel credentials stored in `/root/.cloudflared/` with `chmod 600` — standard for host-level secrets |
+| Credential storage | Tunnel credentials stored in `/root/.cloudflared/` with `chmod 600` -- standard for host-level secrets |
 
 ### Option B: Docker Container in docker-compose.yml
 
 | Aspect | Assessment |
 |--------|-----------|
-| Tunnel availability | Goes down with `docker compose down` — tunnel drops during deployments, meaning the app is unreachable externally until containers restart |
+| Tunnel availability | Goes down with `docker compose down` -- tunnel drops during deployments, meaning the app is unreachable externally until containers restart |
 | Networking | Must be on the `frontend` network to reach Nginx, or Nginx port must be exposed to host |
 | Management | Managed via docker-compose, consistent with the containerized app stack |
-| Credentials | Tunnel token must be in `.env` or mounted as a volume — adds another secret to manage |
+| Credentials | Tunnel token must be in `.env` or mounted as a volume -- adds another secret to manage |
 | Coupling | If docker-compose has an issue, both the app and the external tunnel go down simultaneously |
 
 ### Recommendation
@@ -288,7 +288,7 @@ WU-3 and WU-4 are independent of each other and can be done in either order (bot
 
 #### Files to Modify
 
-**`nginx/nginx.conf`** — Add `set_real_ip_from` and `real_ip_header` directives in the `http` block, after the request size limit section (after line 104) and before the upstream block (line 106):
+**`nginx/nginx.conf`** -- Add `set_real_ip_from` and `real_ip_header` directives in the `http` block, after the request size limit section (after line 104) and before the upstream block (line 106):
 
 Current (lines 100-106):
 ```nginx
@@ -314,12 +314,12 @@ New (insert between line 104 and line 106):
     # Docker bridge network.  Trust these sources and extract the
     # real client IP from the CF-Connecting-IP header, which
     # Cloudflare always sets to the true client IP (single value,
-    # not a chain — immune to X-Forwarded-For spoofing).
+    # not a chain -- immune to X-Forwarded-For spoofing).
     #
-    # 127.0.0.1     — cloudflared running on the host (connects via localhost)
-    # 172.16.0.0/12 — Docker bridge networks (if cloudflared runs in a container)
-    # 192.168.0.0/16 — local network (direct access without tunnel during testing)
-    # 10.0.0.0/8    — alternative private network ranges
+    # 127.0.0.1     -- cloudflared running on the host (connects via localhost)
+    # 172.16.0.0/12 -- Docker bridge networks (if cloudflared runs in a container)
+    # 192.168.0.0/16 -- local network (direct access without tunnel during testing)
+    # 10.0.0.0/8    -- alternative private network ranges
     set_real_ip_from 127.0.0.1;
     set_real_ip_from 172.16.0.0/12;
     set_real_ip_from 192.168.0.0/16;
@@ -331,7 +331,7 @@ New (insert between line 104 and line 106):
     # $remote_addr remains unchanged.
     real_ip_header CF-Connecting-IP;
 
-    # Do not recurse through chained proxies — CF-Connecting-IP is
+    # Do not recurse through chained proxies -- CF-Connecting-IP is
     # always a single value, so recursion is unnecessary.
     real_ip_recursive off;
 
@@ -341,9 +341,9 @@ New (insert between line 104 and line 106):
 **Rationale:**
 
 - `CF-Connecting-IP` is preferred over `X-Forwarded-For` because it is always a single IP set by Cloudflare's edge, not a chain that can be spoofed by the client.
-- `set_real_ip_from` trusts private IP ranges because cloudflared always runs on the local network (whether on the host or in a container). Traffic from the public internet cannot reach Nginx directly — only through cloudflared.
+- `set_real_ip_from` trusts private IP ranges because cloudflared always runs on the local network (whether on the host or in a container). Traffic from the public internet cannot reach Nginx directly -- only through cloudflared.
 - `real_ip_recursive off` because `CF-Connecting-IP` is a single value, not a comma-separated chain.
-- When `CF-Connecting-IP` is absent (e.g., direct LAN access during development), `$remote_addr` is unchanged — the directive is a no-op when the header is missing.
+- When `CF-Connecting-IP` is absent (e.g., direct LAN access during development), `$remote_addr` is unchanged -- the directive is a no-op when the header is missing.
 
 **Impact on downstream components:**
 
@@ -425,7 +425,7 @@ Expected: `remote_addr` shows `198.51.100.42`.
 
 #### Files to Create
 
-**`cloudflared/config.yml`** — Template configuration file with placeholder values. The user fills in tunnel-specific values after creating the tunnel.
+**`cloudflared/config.yml`** -- Template configuration file with placeholder values. The user fills in tunnel-specific values after creating the tunnel.
 
 ```yaml
 # Cloudflare Tunnel Configuration for Shekel Budget App
@@ -464,7 +464,7 @@ ingress:
   - hostname: <DOMAIN>
     service: http://localhost:80
     originRequest:
-      # Do not verify TLS on the origin — Nginx listens on plain HTTP.
+      # Do not verify TLS on the origin -- Nginx listens on plain HTTP.
       noTLSVerify: true
       # Pass the connecting client's IP to the origin via headers.
       # cloudflared sets CF-Connecting-IP and X-Forwarded-For by default.
@@ -527,7 +527,7 @@ cloudflared --version
 cloudflared tunnel login
 ```
 
-This creates `~/.cloudflared/cert.pem` — the account-level certificate used to manage tunnels.
+This creates `~/.cloudflared/cert.pem` -- the account-level certificate used to manage tunnels.
 
 ##### Step 3: Create the tunnel
 
@@ -902,7 +902,7 @@ The two rate limiting layers work together:
 Request → Cloudflare WAF (20/10s) → Cloudflare Access → cloudflared → Nginx → Flask-Limiter (5/15m) → Route
 ```
 
-- A fast automated attack (>20 POST requests in 10 seconds) is blocked at Cloudflare — it never reaches the origin server, so no Flask resources are consumed.
+- A fast automated attack (>20 POST requests in 10 seconds) is blocked at Cloudflare -- it never reaches the origin server, so no Flask resources are consumed.
 - A slow, persistent attack (1 request every 3 minutes, but wrong password each time) passes Cloudflare's rate limit but hits Flask-Limiter's 5/15m limit on the 6th attempt.
 - A legitimate user with a few typos (2-3 attempts) is never rate limited by either layer.
 
@@ -916,7 +916,7 @@ To modify thresholds after deployment:
 4. Adjust the **Rate** or **Period** fields.
 5. Click **Save**.
 
-Changes take effect within seconds — no deployment or restart required.
+Changes take effect within seconds -- no deployment or restart required.
 
 #### Test Gate
 
@@ -941,7 +941,7 @@ The Promtail configuration (`monitoring/promtail-config.yml`) and monitoring sta
 
 #### Files to Modify
 
-**`docker-compose.yml`** — Add the external `monitoring` network to the `app` service so Promtail can discover and scrape its logs. This change was documented in `monitoring/README.md` (lines 27-39) but has not been applied to the production compose file.
+**`docker-compose.yml`** -- Add the external `monitoring` network to the `app` service so Promtail can discover and scrape its logs. This change was documented in `monitoring/README.md` (lines 27-39) but has not been applied to the production compose file.
 
 Current `app` service networks (line 66-67):
 ```yaml
@@ -962,7 +962,7 @@ networks:
   # Frontend network: Nginx only.  Externally accessible via port mapping.
   frontend:
     driver: bridge
-  # Backend network: all services.  Internal only — not reachable from host.
+  # Backend network: all services.  Internal only -- not reachable from host.
   backend:
     driver: bridge
     internal: true
@@ -974,7 +974,7 @@ networks:
   # Frontend network: Nginx only.  Externally accessible via port mapping.
   frontend:
     driver: bridge
-  # Backend network: all services.  Internal only — not reachable from host.
+  # Backend network: all services.  Internal only -- not reachable from host.
   backend:
     driver: bridge
     internal: true
@@ -986,13 +986,13 @@ networks:
     external: true
 ```
 
-**Rationale:** Promtail uses Docker socket service discovery (SD) to find containers matching the label `com.docker.compose.service=app`. Docker SD returns container metadata regardless of which network the container is on — the Docker socket provides access to all containers on the host. However, if Promtail needs to make HTTP connections to containers (for some scrape configs), they must share a network. More importantly, adding the `monitoring` network follows the architecture documented in `monitoring/README.md` and ensures consistency between documentation and configuration.
+**Rationale:** Promtail uses Docker socket service discovery (SD) to find containers matching the label `com.docker.compose.service=app`. Docker SD returns container metadata regardless of which network the container is on -- the Docker socket provides access to all containers on the host. However, if Promtail needs to make HTTP connections to containers (for some scrape configs), they must share a network. More importantly, adding the `monitoring` network follows the architecture documented in `monitoring/README.md` and ensures consistency between documentation and configuration.
 
 **Note:** The `monitoring` network must be created before starting the Shekel stack:
 ```bash
 docker network create monitoring
 ```
-If the network does not exist, `docker compose up` will fail with an error about the external network not being found. This is intentional — it forces the operator to set up the monitoring network before deploying.
+If the network does not exist, `docker compose up` will fail with an error about the external network not being found. This is intentional -- it forces the operator to set up the monitoring network before deploying.
 
 #### Validation Procedure
 
@@ -1117,7 +1117,7 @@ Expected: The output shows the actual client IP (e.g., `203.0.113.45`), not `127
 
 #### Files to Create
 
-**`docs/runbook.md`** — Unified operations runbook. This is the single document an operator should consult for any operational task.
+**`docs/runbook.md`** -- Unified operations runbook. This is the single document an operator should consult for any operational task.
 
 Structure:
 
@@ -1202,7 +1202,7 @@ Structure:
 
 ## 3. Backup & Restore
 
-[Consolidated from docs/backup_runbook.md — backup strategy, automated setup, cron configuration, NAS mount, encryption, manual backup, retention policy, restore procedure, verification, integrity checks, troubleshooting]
+[Consolidated from docs/backup_runbook.md -- backup strategy, automated setup, cron configuration, NAS mount, encryption, manual backup, retention policy, restore procedure, verification, integrity checks, troubleshooting]
 
 ---
 
@@ -1210,7 +1210,7 @@ Structure:
 
 ### Secret Management
 
-[Consolidated from docs/runbook_secrets.md — secret inventory, rotation procedures, disaster recovery]
+[Consolidated from docs/runbook_secrets.md -- secret inventory, rotation procedures, disaster recovery]
 
 ### Resetting MFA for a User
 
@@ -1322,13 +1322,13 @@ When: A user has lost their TOTP device and exhausted all backup codes.
 
 ### Emergency Procedures
 
-#### App is down — restore service quickly
-1. `docker compose ps` — identify which container is unhealthy
-2. `docker compose restart <service>` — restart the unhealthy service
-3. `curl http://localhost/health` — verify recovery
-4. If the app container won't start: `docker logs shekel-app --tail 50` — check for errors
+#### App is down -- restore service quickly
+1. `docker compose ps` -- identify which container is unhealthy
+2. `docker compose restart <service>` -- restart the unhealthy service
+3. `curl http://localhost/health` -- verify recovery
+4. If the app container won't start: `docker logs shekel-app --tail 50` -- check for errors
 
-#### Database is corrupted — restore from backup
+#### Database is corrupted -- restore from backup
 1. Identify the latest good backup: `ls -lht /var/backups/shekel/`
 2. Run the restore: `./scripts/restore.sh <backup_file>`
 3. Verify: `docker exec shekel-app python scripts/integrity_check.py`
@@ -1360,7 +1360,7 @@ The above is the structural outline. The full content of each section is written
 
 After the consolidated runbook is complete:
 
-- **`docs/backup_runbook.md`**: Retain as-is. The consolidated runbook's §3 references it for the detailed backup procedures, or incorporates its content directly. Either approach works — the key is that `docs/runbook.md` is the single entry point.
+- **`docs/backup_runbook.md`**: Retain as-is. The consolidated runbook's §3 references it for the detailed backup procedures, or incorporates its content directly. Either approach works -- the key is that `docs/runbook.md` is the single entry point.
 - **`docs/runbook_secrets.md`**: Retain as-is. Referenced from §4 of the consolidated runbook.
 - **`monitoring/README.md`**: Retain as-is. Referenced from §5 for monitoring stack setup details.
 
@@ -1434,15 +1434,15 @@ Execute this sequence after completing all Phase 8D-3 work to verify the full pr
 These are the master plan (Phase 8D) test gate items that 8D-3 is responsible for, mapped to specific verification steps.
 
 - [ ] **Cloudflare Tunnel routes traffic to the app**
-  - Verification: Smoke test #1 — `curl https://<domain>/health` returns 200
+  - Verification: Smoke test #1 -- `curl https://<domain>/health` returns 200
   - Work unit: WU-2
 
 - [ ] **Cloudflare Access blocks unauthenticated requests**
-  - Verification: Smoke test #2 — unauthenticated `curl` is redirected to Access login; smoke test #3 — authorized user reaches Flask
+  - Verification: Smoke test #2 -- unauthenticated `curl` is redirected to Access login; smoke test #3 -- authorized user reaches Flask
   - Work unit: WU-3
 
 - [ ] **Application logs appear in JSON format in container stdout**
-  - Verification: Smoke test #7 — `docker logs shekel-app` outputs valid JSON with structured fields
+  - Verification: Smoke test #7 -- `docker logs shekel-app` outputs valid JSON with structured fields
   - Work unit: WU-5 (validation only; logging was implemented in 8B)
 
 - [ ] **Promtail (or equivalent) scrapes logs and they appear in Grafana/Loki**

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Salary Raise Model (salary schema)
+Shekel Budget App -- Salary Raise Model (salary schema)
 
 Tracks scheduled salary raises (merit, COLA, custom) that apply at
 a specific month/year to adjust the annual salary for paycheck calculation.

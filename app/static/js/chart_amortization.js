@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Amortization Breakdown Chart
+ * Shekel Budget App -- Amortization Breakdown Chart
  *
  * Renders a stacked area chart showing principal vs. interest
  * composition of each loan payment over the life of the loan.

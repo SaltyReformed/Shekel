@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Adversarial QA Test Suite
+Shekel Budget App -- Adversarial QA Test Suite
 
 Hostile QA tests that probe for bugs, validation gaps, and edge cases
 the happy-path suite doesn't cover.  Each test documents the vulnerability
@@ -74,7 +74,7 @@ class TestStateMachineViolations:
     status_id and the mark_done endpoint for missing guards."""
 
     def test_update_status_to_nonexistent_id(self, app, auth_client, seed_user, seed_periods):
-        """PATCH with status_id=9999 — no FK validation in schema.
+        """PATCH with status_id=9999 -- no FK validation in schema.
 
         Bug: TransactionUpdateSchema.status_id is fields.Integer() with no
         OneOf constraint.  The DB FK to ref.statuses catches it, but the
@@ -95,7 +95,7 @@ class TestStateMachineViolations:
             db.session.rollback()
 
     def test_update_done_back_to_projected(self, app, auth_client, seed_user, seed_periods):
-        """Mark done then PATCH back to projected — no transition guard.
+        """Mark done then PATCH back to projected -- no transition guard.
 
         Bug: There is no domain logic preventing backward status transitions.
         A 'done' transaction can be freely reverted to 'projected'.
@@ -109,14 +109,14 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
             )
-            # Current behavior: allowed — no transition guard.
+            # Current behavior: allowed -- no transition guard.
             assert resp.status_code == 200
 
             db.session.refresh(txn)
             assert txn.status.name == "projected"
 
     def test_mark_done_negative_actual_amount(self, app, auth_client, seed_user, seed_periods):
-        """POST mark_done with actual_amount=-500 — no range check.
+        """POST mark_done with actual_amount=-500 -- no range check.
 
         Bug: mark_done parses actual_amount with Decimal() directly,
         bypassing Marshmallow entirely.  No Range(min=0) check.
@@ -139,7 +139,7 @@ class TestStateMachineViolations:
     def test_mark_done_already_done_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST mark_done on an already-done transaction.
 
-        Bug: No idempotency check — re-setting status is harmless but
+        Bug: No idempotency check -- re-setting status is harmless but
         the actual_amount could be overwritten if a new value is posted.
         """
         with app.app_context():
@@ -147,7 +147,7 @@ class TestStateMachineViolations:
             txn.actual_amount = Decimal("75.00")
             db.session.commit()
 
-            # Call mark_done again without an actual_amount — should keep the old one.
+            # Call mark_done again without an actual_amount -- should keep the old one.
             resp = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp.status_code == 200
 
@@ -279,7 +279,7 @@ class TestStateMachineViolations:
             txn = _make_transaction(seed_user, seed_periods, period_index=0)
             db.session.commit()
 
-            # Mark as credit — creates payback in next period.
+            # Mark as credit -- creates payback in next period.
             resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
             assert resp.status_code == 200
 
@@ -389,7 +389,7 @@ class TestStateMachineViolations:
     def test_mark_credit_on_done_transaction(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """POST mark-credit on a done transaction — rejected by service.
+        """POST mark-credit on a done transaction -- rejected by service.
 
         credit_workflow.mark_as_credit only allows projected transactions.
         Attempting to mark a done transaction as credit returns 400.
@@ -454,7 +454,7 @@ class TestReferentialIntegrity:
             assert acct.is_active is True
 
     def test_delete_category_with_transactions_blocked(self, app, auth_client, seed_user, seed_periods):
-        """DELETE category when transactions reference it — blocked by route guard.
+        """DELETE category when transactions reference it -- blocked by route guard.
 
         The route checks for templates and transactions using the category
         before allowing deletion.
@@ -556,13 +556,13 @@ class TestCreditWorkflowEdgeCases:
 
         Bug: unmark_credit deletes the payback regardless of its status.
         If the payback was already paid (done), this represents real money
-        lost from the tracking — data loss.
+        lost from the tracking -- data loss.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, period_index=0)
             db.session.commit()
 
-            # Mark as credit — creates payback in next period.
+            # Mark as credit -- creates payback in next period.
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
             db.session.commit()
             payback_id = payback.id
@@ -573,7 +573,7 @@ class TestCreditWorkflowEdgeCases:
             payback.actual_amount = Decimal("100.00")
             db.session.commit()
 
-            # Unmark credit — payback is deleted even though it was done.
+            # Unmark credit -- payback is deleted even though it was done.
             credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
             db.session.commit()
 
@@ -581,7 +581,7 @@ class TestCreditWorkflowEdgeCases:
             assert db.session.get(Transaction, payback_id) is None
 
     def test_mark_credit_on_income_transaction(self, app, auth_client, seed_user, seed_periods):
-        """Mark credit on an income transaction — rejected by service.
+        """Mark credit on an income transaction -- rejected by service.
 
         The service correctly raises ValidationError for income.
         """
@@ -597,7 +597,7 @@ class TestCreditWorkflowEdgeCases:
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_mark_credit_on_last_period(self, app, auth_client, seed_user, seed_periods):
-        """Mark credit on a transaction in the last period — no next period.
+        """Mark credit on a transaction in the last period -- no next period.
 
         Bug: get_next_period() returns None when the transaction is in the
         last pay period.  mark_as_credit raises ValidationError.
@@ -651,7 +651,7 @@ class TestCarryForwardEdgeCases:
             count = carry_forward_service.carry_forward_unpaid(period_id, period_id, seed_user["user"].id)
             db.session.commit()
 
-            # Guard returns 0 — no items processed, no side effects.
+            # Guard returns 0 -- no items processed, no side effects.
             assert count == 0
             db.session.refresh(txn)
             assert txn.pay_period_id == period_id
@@ -782,7 +782,7 @@ class TestBalanceCalculatorBoundary:
 
         Bug: calculate_balances silently returns an empty OrderedDict
         when the anchor period is not found in the periods list.
-        No error raised — caller gets silent wrong results.
+        No error raised -- caller gets silent wrong results.
         """
         with app.app_context():
             result = balance_calculator.calculate_balances(
@@ -791,7 +791,7 @@ class TestBalanceCalculatorBoundary:
                 periods=seed_periods,
                 transactions=[],
             )
-            # Current behavior: returns empty dict — all periods are "pre-anchor".
+            # Current behavior: returns empty dict -- all periods are "pre-anchor".
             assert result == OrderedDict()
 
     def test_balance_calc_empty_periods_list(self, app, seed_user, seed_periods):
@@ -858,7 +858,7 @@ class TestNumericEdgeCases:
     """Probe Numeric(12,2) field boundaries."""
 
     def test_transaction_amount_at_db_max(self, app, auth_client, seed_user, seed_periods):
-        """Decimal("9999999999.99") — at the Numeric(12,2) max.
+        """Decimal("9999999999.99") -- at the Numeric(12,2) max.
 
         Should store OK: 10 digits before decimal + 2 after = 12 total.
         """
@@ -871,7 +871,7 @@ class TestNumericEdgeCases:
             assert txn.estimated_amount == Decimal("9999999999.99")
 
     def test_transaction_amount_exceeds_db_max(self, app, auth_client, seed_user, seed_periods):
-        """Decimal("99999999999.99") — exceeds Numeric(12,2).
+        """Decimal("99999999999.99") -- exceeds Numeric(12,2).
 
         Bug: No application-level guard.  PostgreSQL raises a
         NumericValueOutOfRange (DataError) on flush.
@@ -927,7 +927,7 @@ class TestNumericEdgeCases:
 
 
 class TestAuthEdgeCases:
-    """Cross-user resource access — confirm defense in depth."""
+    """Cross-user resource access -- confirm defense in depth."""
 
     def test_access_other_users_transaction(
         self, app, auth_client, seed_user, seed_periods, second_user,
@@ -965,7 +965,7 @@ class TestAuthEdgeCases:
             db.session.add(txn2)
             db.session.commit()
 
-            # Auth client is logged in as user 1 — try to access user 2's txn.
+            # Auth client is logged in as user 1 -- try to access user 2's txn.
             resp = auth_client.get(f"/transactions/{txn2.id}/cell")
             assert resp.status_code == 404
 
@@ -992,7 +992,7 @@ class TestAuthEdgeCases:
         Uses the shared second_user fixture from conftest.py.
         """
         with app.app_context():
-            # Auth client is logged in as user 1 — try to edit user 2's account.
+            # Auth client is logged in as user 1 -- try to edit user 2's account.
             resp = auth_client.get(f"/accounts/{second_user['account'].id}/edit")
             # Current behavior: redirect to accounts list with flash.
             assert resp.status_code == 302

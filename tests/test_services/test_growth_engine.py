@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Unit Tests for Compound Growth Engine
+Shekel Budget App -- Unit Tests for Compound Growth Engine
 
 Tests the growth projection service including compound growth,
 contribution limits, employer contributions, and year boundary resets.

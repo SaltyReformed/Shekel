@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transfer Routes
+Shekel Budget App -- Transfer Routes
 
 CRUD for transfer templates and inline grid cell endpoints for transfers.
 Follows the same patterns as templates.py (template CRUD) and

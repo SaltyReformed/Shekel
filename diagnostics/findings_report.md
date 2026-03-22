@@ -1,4 +1,4 @@
-# Pytest Freeze/Error Diagnostic — Findings Report
+# Pytest Freeze/Error Diagnostic -- Findings Report
 
 **Date:** 2026-03-19
 **Test suite:** 1258 tests (1257 passed, 1 xfailed)
@@ -15,7 +15,7 @@ When pytest is killed at 120s, it appears to have "frozen" at ~15% completion.
 
 The test infrastructure is well-designed:
 
-- `NullPool` eliminates connection pooling entirely — each operation opens/closes
+- `NullPool` eliminates connection pooling entirely -- each operation opens/closes
   its own connection immediately
 - `session.remove()` in fixture teardown properly cleans up
 - Kill-and-restart leaves no zombie connections or held locks
@@ -39,7 +39,7 @@ The test infrastructure is well-designed:
 | TEST_DATABASE_URL                   | Correct (localhost:5433) | OK         |
 | SQLAlchemy pool class               | **NullPool**             | Excellent  |
 
-\*Low risk because NullPool makes these largely irrelevant — connections are
+\*Low risk because NullPool makes these largely irrelevant -- connections are
 opened and closed per-operation, never held idle.
 
 ## Phase 2: Connection Monitoring
@@ -64,7 +64,7 @@ This confirms NullPool is working as intended.
 
 - **Result:** Exit code 124 (timeout killed it at ~15%)
 - **Root cause:** 120s timeout < 526s suite duration
-- This is NOT a freeze — the suite simply hadn't finished
+- This is NOT a freeze -- the suite simply hadn't finished
 
 ### Scenario 3: Kill-and-restart
 
@@ -111,13 +111,13 @@ averaging ~0.42s each.
 
 ### What does NOT cause the "freeze"
 
-- Connection pool exhaustion — NullPool has no pool to exhaust
-- Stale/leaked connections — NullPool closes immediately after use
-- Lock contention from prior tests — NullPool + session.remove() prevents this
-- Killed processes leaving zombie connections — verified: 0 connections after kill
-- Multiple Flask app instances — test_errors.py runs cleanly
-- File descriptor exhaustion — max 2 concurrent connections vs. 524K limit
-- Docker container health — both containers healthy
+- Connection pool exhaustion -- NullPool has no pool to exhaust
+- Stale/leaked connections -- NullPool closes immediately after use
+- Lock contention from prior tests -- NullPool + session.remove() prevents this
+- Killed processes leaving zombie connections -- verified: 0 connections after kill
+- Multiple Flask app instances -- test_errors.py runs cleanly
+- File descriptor exhaustion -- max 2 concurrent connections vs. 524K limit
+- Docker container health -- both containers healthy
 
 ---
 

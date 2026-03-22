@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Net Pay Trajectory Chart
+ * Shekel Budget App -- Net Pay Trajectory Chart
  *
  * Renders a step line chart showing how net biweekly pay changes
  * over time due to scheduled raises. Includes gross pay as a

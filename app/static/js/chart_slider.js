@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Reusable Chart Slider Module
+ * Shekel Budget App -- Reusable Chart Slider Module
  *
  * Syncs a range input with a text/number input bidirectionally and
  * triggers debounced HTMX requests when the value changes.
@@ -10,9 +10,9 @@
  * and a text/number input. The module will automatically bind them.
  *
  * Attributes:
- *   data-slider-group="groupName" — links the range and text inputs.
- *   data-slider-target="elementId" — the HTMX target element to trigger.
- *   data-slider-debounce="250"    — debounce delay in ms (default 250).
+ *   data-slider-group="groupName" -- links the range and text inputs.
+ *   data-slider-target="elementId" -- the HTMX target element to trigger.
+ *   data-slider-debounce="250"    -- debounce delay in ms (default 250).
  */
 var ChartSlider = (function () {
 

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Recurring Transactions — Shekel{% endblock %}
+{% block title %}Recurring Transactions -- Shekel{% endblock %}
 
 
 {% set month_names = {
@@ -43,7 +43,7 @@
     {% for t in templates %}
     <tr class="{{ 'text-muted' if not t.is_active else '' }}">
       <td>{{ t.name }}</td>
-      <td>{{ t.category.display_name if t.category else '—' }}</td>
+      <td>{{ t.category.display_name if t.category else '--' }}</td>
       <td>
         {% if t.transaction_type.name == 'income' %}
           <span class="badge bg-success">Income</span>

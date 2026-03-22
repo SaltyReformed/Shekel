@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Pension Profile Model (salary schema)
+Shekel Budget App -- Pension Profile Model (salary schema)
 
 Models a defined-benefit pension plan linked to a salary profile.
 Used for retirement income gap analysis.

@@ -1,10 +1,10 @@
 """
-Shekel Budget App — Grid Account Resolver
+Shekel Budget App -- Grid Account Resolver
 
 Shared helper to deterministically pick the account used by the budget
 grid for balance calculations.  Fallback chain:
 
-1. override_account_id  (query param — future URL-based override)
+1. override_account_id  (query param -- future URL-based override)
 2. user_settings.default_grid_account_id  (if set and still active)
 3. First active checking account  (by sort_order, id)
 4. First active account of any type  (by sort_order, id)

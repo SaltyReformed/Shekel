@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Chart.js Theme Layer
+ * Shekel Budget App -- Chart.js Theme Layer
  *
  * Provides a shared configuration layer for all Chart.js charts.
  * Reads CSS custom properties for dark/light mode support, exposes

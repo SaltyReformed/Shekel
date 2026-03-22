@@ -1,8 +1,8 @@
 """
-Shekel Budget App — Balance Calculator Service
+Shekel Budget App -- Balance Calculator Service
 
 A pure function that computes projected balances across pay periods.
-No database writes, no side effects — given an anchor and transactions,
+No database writes, no side effects -- given an anchor and transactions,
 it returns balances.  Called on every grid load.
 
 Calculation rules:
@@ -23,7 +23,7 @@ from app.services.interest_projection import calculate_interest
 
 logger = logging.getLogger(__name__)
 
-# Status names that indicate "already settled" — amounts baked into anchor.
+# Status names that indicate "already settled" -- amounts baked into anchor.
 SETTLED_STATUSES = frozenset({"done", "received"})
 
 
@@ -32,8 +32,8 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
     """Compute projected end balances from the anchor forward.
 
     Args:
-        anchor_balance:    Decimal — the real checking balance at the anchor period.
-        anchor_period_id:  int — the pay_period.id of the anchor.
+        anchor_balance:    Decimal -- the real checking balance at the anchor period.
+        anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
                            Must start at or before the anchor period.
         transactions:      List of Transaction objects covering all supplied periods.
@@ -90,7 +90,7 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
             )
 
         else:
-            # Pre-anchor period — we don't calculate balances before the anchor.
+            # Pre-anchor period -- we don't calculate balances before the anchor.
             continue
 
         balances[period.id] = running_balance
@@ -108,8 +108,8 @@ def calculate_balances_with_interest(
     interest is projected for each period and added to the running balance.
 
     Args:
-        anchor_balance:    Decimal — the real balance at the anchor period.
-        anchor_period_id:  int — the pay_period.id of the anchor.
+        anchor_balance:    Decimal -- the real balance at the anchor period.
+        anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
         transactions:      List of Transaction objects.
         transfers:         Optional list of Transfer objects.
@@ -175,8 +175,8 @@ def calculate_balances_with_amortization(
     Interest portion is the cost of the loan.
 
     Args:
-        anchor_balance:    Decimal — the current principal at the anchor period.
-        anchor_period_id:  int — the pay_period.id of the anchor.
+        anchor_balance:    Decimal -- the current principal at the anchor period.
+        anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
         transactions:      List of Transaction objects.
         transfers:         Optional list of Transfer objects.
@@ -280,7 +280,7 @@ def _sum_remaining(transactions):
         if status_name in ("credit", "cancelled"):
             continue
 
-        # Settled items are already in the anchor — skip.
+        # Settled items are already in the anchor -- skip.
         if status_name in SETTLED_STATUSES:
             continue
 
@@ -297,7 +297,7 @@ def _sum_remaining(transactions):
 def _sum_all(transactions):
     """Sum remaining (projected) transactions for a non-anchor period.
 
-    Done/received and credit items are excluded — they are either already
+    Done/received and credit items are excluded -- they are either already
     reflected in the anchor balance or represent settled items that should
     not change the projected balance.  Only projected items contribute.
 

@@ -27,7 +27,7 @@
       <tbody>
         {% for r in profile.raises %}
         <tr>
-          <td>{{ r.raise_type.name|title if r.raise_type else '—' }}</td>
+          <td>{{ r.raise_type.name|title if r.raise_type else '--' }}</td>
           <td>
             {{ month_names.get(r.effective_month, '?') }}
             {{ r.effective_year }}

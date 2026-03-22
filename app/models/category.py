@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Category Model (budget schema)
+Shekel Budget App -- Category Model (budget schema)
 
 Flat two-level category structure: group_name + item_name.
 Example: group='Auto', item='Car Payment'.

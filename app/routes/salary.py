@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Salary Management Routes
+Shekel Budget App -- Salary Management Routes
 
 CRUD for salary profiles, raises, deductions, tax config,
 paycheck breakdown, and salary projection views.
@@ -375,7 +375,7 @@ def add_raise(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _raise_schema.load(request.form)
-    # Handle checkbox — form sends "on" or nothing
+    # Handle checkbox -- form sends "on" or nothing
     data["is_recurring"] = request.form.get("is_recurring") == "on"
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.

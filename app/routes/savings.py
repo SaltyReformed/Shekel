@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Savings Routes
+Shekel Budget App -- Savings Routes
 
 Dashboard showing account balances, savings goals with progress tracking,
 and emergency fund metrics.

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Pay Period Service
+Shekel Budget App -- Pay Period Service
 
 Generates, extends, and queries biweekly pay periods.  Each period
 is defined by a start_date (payday) and end_date (day before next

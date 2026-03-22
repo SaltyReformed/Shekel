@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transaction Ownership Authorization Tests
+Shekel Budget App -- Transaction Ownership Authorization Tests
 
 Verifies that transaction routes enforce user ownership:
 an authenticated user cannot read, modify, or delete another

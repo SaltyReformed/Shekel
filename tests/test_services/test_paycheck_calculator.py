@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Unit Tests for Paycheck Calculator
+Shekel Budget App -- Unit Tests for Paycheck Calculator
 
 Tests the recurring raise compounding logic in
 paycheck_calculator._apply_raises() and the full calculate_paycheck()
@@ -287,7 +287,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.05", effective_month=1,
                               effective_year=2026, is_recurring=False)],
         )
-        # Check in 2027 — still just one application.
+        # Check in 2027 -- still just one application.
         period = FakePeriod(start_date=date(2027, 6, 1))
         result = _apply_raises(profile, period)
         assert result == Decimal("105000.00")
@@ -326,7 +326,7 @@ class TestRecurringRaiseCompounding:
     def test_recurring_raise_no_effective_year(self):
         """Recurring raise with no effective_year applies once if month reached.
 
-        This is a legacy edge case — the UI now requires effective_year for
+        This is a legacy edge case -- the UI now requires effective_year for
         all raises.  Without an effective_year the function cannot count
         compounding applications, so it falls back to a single application.
         """

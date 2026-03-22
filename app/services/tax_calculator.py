@@ -1,16 +1,16 @@
 """
-Shekel Budget App — Tax Calculator Service
+Shekel Budget App -- Tax Calculator Service
 
 Pure functions for computing federal, state, and FICA taxes.
-No database access — all data is passed in as arguments.
+No database access -- all data is passed in as arguments.
 
 Federal withholding follows the IRS Publication 15-T Percentage Method:
-  Step 1 — Annualize income
-  Step 2 — Apply pre-tax adjustments
-  Step 3 — Subtract standard deduction
-  Step 4 — Apply marginal tax brackets (data-driven)
-  Step 5 — Apply credits (W-4 Step 3)
-  Step 6 — De-annualize to per-period withholding
+  Step 1 -- Annualize income
+  Step 2 -- Apply pre-tax adjustments
+  Step 3 -- Subtract standard deduction
+  Step 4 -- Apply marginal tax brackets (data-driven)
+  Step 5 -- Apply credits (W-4 Step 3)
+  Step 6 -- De-annualize to per-period withholding
 """
 
 import logging
@@ -56,21 +56,21 @@ def calculate_federal_withholding(
         bracket_set:            TaxBracketSet with .standard_deduction,
                                 .child_credit_amount, .other_dependent_credit_amount,
                                 and .brackets (list of TaxBracket).
-        additional_income:      W-4 Step 4(a) — other annual income (default 0).
+        additional_income:      W-4 Step 4(a) -- other annual income (default 0).
         pre_tax_deductions:     Total annual pre-tax deductions (retirement,
                                 Section 125, health premiums) already subtracted
                                 from gross before this function (default 0).
-        additional_deductions:  W-4 Step 4(b) — additional annual deductions
+        additional_deductions:  W-4 Step 4(b) -- additional annual deductions
                                 (default 0).
-        qualifying_children:    W-4 Step 3 — number of qualifying children
+        qualifying_children:    W-4 Step 3 -- number of qualifying children
                                 under 17 (default 0).
-        other_dependents:       W-4 Step 3 — number of other dependents
+        other_dependents:       W-4 Step 3 -- number of other dependents
                                 (default 0).
-        extra_withholding:      W-4 Step 4(c) — extra withholding per period
+        extra_withholding:      W-4 Step 4(c) -- extra withholding per period
                                 (default 0).
 
     Returns:
-        Decimal — per-period federal withholding amount.
+        Decimal -- per-period federal withholding amount.
 
     Raises:
         InvalidGrossPayError:       If gross_pay < 0.
@@ -99,29 +99,29 @@ def calculate_federal_withholding(
     if other_dependents < 0:
         raise InvalidDependentCountError("other_dependents", other_dependents)
 
-    # ── Step 1 — Annualize income ─────────────────────────────────
+    # ── Step 1 -- Annualize income ─────────────────────────────────
     # IRS Pub 15-T: multiply periodic gross pay by the number of
     # pay periods, then add any additional annual income from W-4 4(a).
     annual_income = (gross_pay * pay_periods) + additional_income
 
-    logger.debug("Step 1 — annual_income: %s", annual_income)
+    logger.debug("Step 1 -- annual_income: %s", annual_income)
 
-    # ── Step 2 — Pre-tax adjustments ──────────────────────────────
+    # ── Step 2 -- Pre-tax adjustments ──────────────────────────────
     # Subtract annualized pre-tax deductions (retirement, Sec 125, etc.)
     # and W-4 Step 4(b) additional deductions.
     adjusted_income = annual_income - pre_tax_deductions - additional_deductions
     if adjusted_income < ZERO:
         adjusted_income = ZERO
 
-    # ── Step 3 — Subtract standard deduction ──────────────────────
+    # ── Step 3 -- Subtract standard deduction ──────────────────────
     standard_deduction = Decimal(str(bracket_set.standard_deduction))
     taxable_income = adjusted_income - standard_deduction
     if taxable_income < ZERO:
         taxable_income = ZERO
 
-    logger.debug("Step 3 — taxable_income: %s", taxable_income)
+    logger.debug("Step 3 -- taxable_income: %s", taxable_income)
 
-    # ── Step 4 — Apply marginal tax brackets ──────────────────────
+    # ── Step 4 -- Apply marginal tax brackets ──────────────────────
     # Brackets are data-driven: iterate sorted bracket tiers and apply
     # the marginal rate to the portion of income within each tier.
     annual_tax_before_credits = _apply_marginal_brackets(
@@ -129,10 +129,10 @@ def calculate_federal_withholding(
     )
 
     logger.debug(
-        "Step 4 — annual_tax_before_credits: %s", annual_tax_before_credits
+        "Step 4 -- annual_tax_before_credits: %s", annual_tax_before_credits
     )
 
-    # ── Step 5 — Apply credits (W-4 Step 3) ───────────────────────
+    # ── Step 5 -- Apply credits (W-4 Step 3) ───────────────────────
     child_credit_amount = Decimal(
         str(getattr(bracket_set, "child_credit_amount", 0) or 0)
     )
@@ -144,17 +144,17 @@ def calculate_federal_withholding(
     other_credit_total = other_dependents * other_credit_amount
     total_credits = child_credit_total + other_credit_total
 
-    logger.debug("Step 5 — total_credits: %s", total_credits)
+    logger.debug("Step 5 -- total_credits: %s", total_credits)
 
     annual_tax_after_credits = annual_tax_before_credits - total_credits
     if annual_tax_after_credits < ZERO:
         annual_tax_after_credits = ZERO
 
     logger.debug(
-        "Step 5 — annual_tax_after_credits: %s", annual_tax_after_credits
+        "Step 5 -- annual_tax_after_credits: %s", annual_tax_after_credits
     )
 
-    # ── Step 6 — De-annualize ─────────────────────────────────────
+    # ── Step 6 -- De-annualize ─────────────────────────────────────
     per_period_withholding = (
         annual_tax_after_credits / pay_periods
     ) + extra_withholding
@@ -164,7 +164,7 @@ def calculate_federal_withholding(
     )
 
     logger.debug(
-        "Step 6 — per_period_withholding: %s", per_period_withholding
+        "Step 6 -- per_period_withholding: %s", per_period_withholding
     )
 
     return per_period_withholding
@@ -178,11 +178,11 @@ def _apply_marginal_brackets(taxable_income, brackets):
     max_income = None (open-ended).
 
     Args:
-        taxable_income: Decimal — income after standard deduction.
+        taxable_income: Decimal -- income after standard deduction.
         brackets:       Iterable of TaxBracket objects.
 
     Returns:
-        Decimal — annual tax before credits, rounded to 2 places.
+        Decimal -- annual tax before credits, rounded to 2 places.
     """
     if taxable_income <= ZERO:
         return ZERO
@@ -225,7 +225,7 @@ def calculate_federal_tax(annual_gross, bracket_set):
                        `standard_deduction`.
 
     Returns:
-        Decimal — annual federal tax owed.
+        Decimal -- annual federal tax owed.
     """
     if bracket_set is None:
         return ZERO
@@ -246,7 +246,7 @@ def calculate_state_tax(annual_gross, state_config):
                        returns 0.
 
     Returns:
-        Decimal — annual state tax owed.
+        Decimal -- annual state tax owed.
     """
     if state_config is None:
         return ZERO
@@ -293,7 +293,7 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
     surtax_rate = Decimal(str(fica_config.medicare_surtax_rate))
     surtax_threshold = Decimal(str(fica_config.medicare_surtax_threshold))
 
-    # Social Security — capped at wage base
+    # Social Security -- capped at wage base
     if cumulative >= ss_wage_base:
         ss_tax = ZERO
     elif cumulative + gross > ss_wage_base:
@@ -302,7 +302,7 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
     else:
         ss_tax = (gross * ss_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    # Medicare — base rate on all income + surtax above threshold
+    # Medicare -- base rate on all income + surtax above threshold
     medicare_tax = (gross * medicare_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     if cumulative + gross > surtax_threshold:

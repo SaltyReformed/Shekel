@@ -4,7 +4,7 @@
 
 **Goal:** Make savings dashboard account cards show compound-growth-projected balances for investment/retirement accounts, matching what the investment detail charts already show.
 
-**Architecture:** Mirror the existing debt-account pattern in `savings.py` — when an account has `InvestmentParams`, bypass the flat `balance_calculator.calculate_balances()` and instead use `growth_engine.project_balance()` to compute the 3-month, 6-month, and 1-year milestone projections. The `current_balance` stays as the anchor (real balance); only `projected` changes.
+**Architecture:** Mirror the existing debt-account pattern in `savings.py` -- when an account has `InvestmentParams`, bypass the flat `balance_calculator.calculate_balances()` and instead use `growth_engine.project_balance()` to compute the 3-month, 6-month, and 1-year milestone projections. The `current_balance` stays as the anchor (real balance); only `projected` changes.
 
 **Tech Stack:** Flask, SQLAlchemy, growth_engine.py (pure functions), pytest
 
@@ -30,15 +30,15 @@ Only one production file changes: `app/routes/savings.py`. The fix adds a third 
 
 ### Key References
 
-- **Growth engine API:** `app/services/growth_engine.py:73-172` — `project_balance()` returns `List[ProjectedBalance]` with `.end_balance` per period
-- **Investment route example:** `app/routes/investment.py:128-155` — shows how to call `project_balance()` with contributions, employer params, etc.
-- **Debt account pattern:** `app/routes/savings.py:198-224` — the pattern we're mirroring (special-case block that replaces `projected` dict)
-- **Savings test helpers:** `tests/test_routes/test_savings.py` — `_create_savings_account()`, `_create_goal()` patterns
-- **Investment test helpers:** `tests/test_routes/test_investment.py` — `_create_investment_account()`, `_create_investment_params()` patterns
+- **Growth engine API:** `app/services/growth_engine.py:73-172` -- `project_balance()` returns `List[ProjectedBalance]` with `.end_balance` per period
+- **Investment route example:** `app/routes/investment.py:128-155` -- shows how to call `project_balance()` with contributions, employer params, etc.
+- **Debt account pattern:** `app/routes/savings.py:198-224` -- the pattern we're mirroring (special-case block that replaces `projected` dict)
+- **Savings test helpers:** `tests/test_routes/test_savings.py` -- `_create_savings_account()`, `_create_goal()` patterns
+- **Investment test helpers:** `tests/test_routes/test_investment.py` -- `_create_investment_account()`, `_create_investment_params()` patterns
 
 ---
 
-### Task 1: Write failing test — investment account card shows growth projections
+### Task 1: Write failing test -- investment account card shows growth projections
 
 **Files:**
 - Modify: `tests/test_routes/test_savings.py`
@@ -125,7 +125,7 @@ def test_dashboard_investment_account_shows_growth_projections(
 
 Run: `pytest tests/test_routes/test_savings.py::TestDashboard::test_dashboard_investment_account_shows_growth_projections -v`
 
-Expected: FAIL — the current code uses flat `calculate_balances()` so projected amounts won't exceed $50,000.
+Expected: FAIL -- the current code uses flat `calculate_balances()` so projected amounts won't exceed $50,000.
 
 **Step 3: Commit the failing test**
 

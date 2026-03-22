@@ -1,9 +1,9 @@
 """
-Shekel Budget App — Chart Data Service
+Shekel Budget App -- Chart Data Service
 
 Orchestrates existing services to reshape data into chart-ready dicts
 (labels + datasets) for the Charts dashboard. Does not duplicate
-business logic — calls balance_calculator, amortization_engine,
+business logic -- calls balance_calculator, amortization_engine,
 growth_engine, paycheck_calculator, etc. and transforms their output.
 
 All methods return plain Python dicts suitable for Jinja2 ``tojson``.

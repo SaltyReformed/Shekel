@@ -4,7 +4,7 @@
 
 This plan addresses all findings from the Shekel UI/UX audit (`docs/ui_ux_audit.md`) across 6 phases of work. The audit identified 7 critical issues, 18 major issues, and ~25 minor issues spanning navigation architecture, nomenclature, settings sprawl, visual consistency, and Phase 7 readiness.
 
-**Scope:** 6 phases, approximately 50–60 files modified across templates, routes, CSS, and tests. No database model or schema changes. All phases are independently shippable.
+**Scope:** 6 phases, approximately 50-60 files modified across templates, routes, CSS, and tests. No database model or schema changes. All phases are independently shippable.
 
 **Key risks:** Flash message text changes affect 7 test assertions. Settings dashboard consolidation is the largest new feature (new route, templates, redirects). Navigation restructure touches the globally-included `base.html`. Nomenclature changes span ~30 files but are text-only.
 
@@ -18,7 +18,7 @@ This plan addresses all findings from the Shekel UI/UX audit (`docs/ui_ux_audit.
 
 3. **Old URLs redirect.** When a page is absorbed into the settings dashboard, its old URL redirects (302) to the corresponding settings section. Test updates for redirected URLs are deferred to a follow-up phase after the new settings page is confirmed functional.
 
-4. **Test gates are mandatory.** Every phase ends with `pytest` — all 770+ existing tests must pass. If a phase changes flash message text or page content that tests assert on, those test updates are part of the same phase.
+4. **Test gates are mandatory.** Every phase ends with `pytest` -- all 770+ existing tests must pass. If a phase changes flash message text or page content that tests assert on, those test updates are part of the same phase.
 
 5. **Lower risk first.** Phases are ordered from lowest to highest risk. Early phases touch only templates and CSS; later phases restructure navigation and consolidate settings.
 
@@ -51,7 +51,7 @@ None.
    - `app/templates/charts/dashboard.html` (line 103): change `bi-wallet2` to `bi-cash-coin`
 
 3. **Add navbar active state (1.6).** Add conditional `active` class to nav-link items based on `request.path`. Use Jinja2 `startswith` checks to highlight the current section.
-   - `app/templates/base.html` (lines 46–100): add `{% if request.path == '/' %}active{% endif %}` (and similar) to each `nav-link`
+   - `app/templates/base.html` (lines 46-100): add `{% if request.path == '/' %}active{% endif %}` (and similar) to each `nav-link`
 
 4. **Fix Settings "Phase 7" help text (2.4).** Replace developer jargon with user-facing text.
    - `app/templates/settings/settings.html` (line 31): change `"Used for Phase 7 expense inflation adjustments."` to `"Annual inflation rate used for long-term expense projections."`
@@ -154,7 +154,7 @@ Phase 1 (breadcrumbs reference the new labels).
    - `tests/test_routes/test_templates.py` (lines 322, 338, 419, 433, 487): change `b"Template not found"` to `b"Recurring transaction not found"`
 
 8. **Onboarding banner.**
-   - `app/templates/base.html` (lines 174–176): change "Create transaction templates" to "Set up recurring transactions"
+   - `app/templates/base.html` (lines 174-176): change "Create transaction templates" to "Set up recurring transactions"
    - `app/templates/base.html` (line 175): change icon from `bi-file-earmark-ruled` to `bi-arrow-repeat`
 
 #### "Transfer Template" → "Recurring Transfer" (3.2)
@@ -197,7 +197,7 @@ Phase 1 (breadcrumbs reference the new labels).
 #### Mortgage rate input format (3.6)
 
 17. **Change mortgage rate input to accept percentage values** (e.g., user enters `6.5` for 6.5% instead of `0.065`).
-    - `app/templates/mortgage/dashboard.html` (lines 92–94): change input to accept percentage (value displayed as `params.interest_rate * 100`, step="0.001", min="0", max="100"), add `%` suffix in input group
+    - `app/templates/mortgage/dashboard.html` (lines 92-94): change input to accept percentage (value displayed as `params.interest_rate * 100`, step="0.001", min="0", max="100"), add `%` suffix in input group
     - `app/routes/mortgage.py` (in `update_params` and `create_params`): divide the submitted interest_rate by 100 before saving
     - `app/templates/mortgage/setup.html`: same input format change
     - `app/templates/mortgage/_rate_history.html`: same format change for rate input in ARM rate change form
@@ -219,7 +219,7 @@ Phase 1 (breadcrumbs reference the new labels).
 20. **Sanitize validation error flash messages.** Replace raw Marshmallow error dicts with user-friendly messages.
     - `app/routes/templates.py` (line 87): change `f"Validation error: {errors}"` to a user-friendly message (e.g., "Please correct the errors below." with field-level display)
     - `app/routes/transfers.py` (line 90): same pattern
-    - `app/routes/accounts.py` (lines 103–106): same pattern
+    - `app/routes/accounts.py` (lines 103-106): same pattern
     - `app/routes/salary.py` (line 149): same pattern
     - `app/routes/savings.py` (line 486): same pattern
     - `app/routes/retirement.py` (line 380): same pattern
@@ -250,11 +250,11 @@ Phase 1 (breadcrumbs reference the new labels).
 
 ### Depends On
 
-Phase 2 (nomenclature applied — labels should be correct before building the settings dashboard content).
+Phase 2 (nomenclature applied -- labels should be correct before building the settings dashboard content).
 
 ### Risk Level
 
-**Medium.** This phase creates a new route and template structure but does not modify the navbar. The existing standalone pages still work and are still linked from the navbar — the settings dashboard is an additional path to reach them. Redirects from old URLs are added, but existing tests continue to pass because GET requests to redirected URLs receive 302 responses (tests that don't follow redirects will still get a valid HTTP status).
+**Medium.** This phase creates a new route and template structure but does not modify the navbar. The existing standalone pages still work and are still linked from the navbar -- the settings dashboard is an additional path to reach them. Redirects from old URLs are added, but existing tests continue to pass because GET requests to redirected URLs receive 302 responses (tests that don't follow redirects will still get a valid HTTP status).
 
 ### Changes
 
@@ -264,12 +264,12 @@ Phase 2 (nomenclature applied — labels should be correct before building the s
    - `app/templates/settings/dashboard.html`: new template extending `base.html` with a Bootstrap two-column layout (`col-md-3` sidebar + `col-md-9` content area). The sidebar lists all sections with the active one highlighted based on the `section` query parameter.
 
 2. **Sidebar sections (flat list):**
-   - **General** (`?section=general`, default) — the current 4 settings fields (grid periods, inflation rate, low balance threshold, default grid account)
-   - **Categories** (`?section=categories`) — category management (add/delete, grouped by group name)
-   - **Pay Periods** (`?section=pay-periods`) — period generation form
-   - **Tax Config** (`?section=tax`) — federal tax brackets, FICA rates, state tax configuration
-   - **Account Types** (`?section=account-types`) — account type CRUD (currently a sidebar card on `/accounts`)
-   - **Retirement** (`?section=retirement`) — SWR, planned retirement date, estimated retirement tax rate
+   - **General** (`?section=general`, default) -- the current 4 settings fields (grid periods, inflation rate, low balance threshold, default grid account)
+   - **Categories** (`?section=categories`) -- category management (add/delete, grouped by group name)
+   - **Pay Periods** (`?section=pay-periods`) -- period generation form
+   - **Tax Config** (`?section=tax`) -- federal tax brackets, FICA rates, state tax configuration
+   - **Account Types** (`?section=account-types`) -- account type CRUD (currently a sidebar card on `/accounts`)
+   - **Retirement** (`?section=retirement`) -- SWR, planned retirement date, estimated retirement tax rate
 
 #### Section content templates
 
@@ -294,16 +294,16 @@ Phase 2 (nomenclature applied — labels should be correct before building the s
    - `app/routes/accounts.py` (account type routes): change redirects from `url_for("accounts.list_accounts")` to `url_for("settings.show", section="account-types")`
    - `app/routes/retirement.py` (`update_settings`): change redirect from `url_for("retirement.dashboard")` to `url_for("settings.show", section="retirement")`
    - `app/routes/settings.py` (`update`): change redirect from `url_for("settings.show")` to `url_for("settings.show", section="general")`
-   - Note: `pay_periods.generate` currently redirects to `url_for("grid.index")` after generating periods — this is correct behavior (user wants to see their grid), so it stays as-is.
+   - Note: `pay_periods.generate` currently redirects to `url_for("grid.index")` after generating periods -- this is correct behavior (user wants to see their grid), so it stays as-is.
 
 7. **Add 302 redirects from old standalone GET URLs** to the corresponding settings section.
    - `app/routes/categories.py`: `list_categories()` (GET handler) returns `redirect(url_for("settings.show", section="categories"))`
    - `app/routes/pay_periods.py`: `generate_form()` (GET handler) returns `redirect(url_for("settings.show", section="pay-periods"))`
    - `app/routes/salary.py`: `tax_config()` (GET handler) returns `redirect(url_for("settings.show", section="tax"))`
-   - Note: POST endpoints are unaffected by these redirects — they are separate route registrations and continue to process form submissions normally.
+   - Note: POST endpoints are unaffected by these redirects -- they are separate route registrations and continue to process form submissions normally.
 
 8. **Remove retirement settings card from retirement dashboard.** The SWR, planned retirement date, and estimated tax rate fields move to the settings dashboard. The retirement dashboard keeps its sensitivity sliders (those are interactive analysis tools, not persistent settings).
-   - `app/templates/retirement/dashboard.html`: remove the "Retirement Settings" card (lines ~162–196)
+   - `app/templates/retirement/dashboard.html`: remove the "Retirement Settings" card (lines ~162-196)
    - The retirement dashboard should add a small link or note: "Retirement settings are in Settings > Retirement" with a link to `url_for("settings.show", section="retirement")`
 
 9. **Remove account types sidebar from accounts list page.** Account type management moves to the settings dashboard.
@@ -319,11 +319,11 @@ Phase 2 (nomenclature applied — labels should be correct before building the s
     - `tests/test_routes/test_salary.py`: hits `GET /salary/tax-config`
     - `tests/test_routes/test_settings.py`: hits `GET /settings` (this one still works since `/settings` is the dashboard)
 
-    Note: `GET /settings` is NOT redirected — it IS the dashboard. Only the absorbed standalone pages redirect.
+    Note: `GET /settings` is NOT redirected -- it IS the dashboard. Only the absorbed standalone pages redirect.
 
 ### Test Gate
 
-- [ ] `pytest` passes (all existing tests — tests hitting redirected URLs get 302 which is still a valid response; update any that strictly assert `200` on now-redirected GET endpoints)
+- [ ] `pytest` passes (all existing tests -- tests hitting redirected URLs get 302 which is still a valid response; update any that strictly assert `200` on now-redirected GET endpoints)
 - [ ] New tests: `GET /settings` renders the dashboard with General section by default
 - [ ] New tests: `GET /settings?section=categories` renders category management content
 - [ ] New tests: `GET /settings?section=tax` renders tax configuration content
@@ -346,11 +346,11 @@ Phase 2 (nomenclature applied — labels should be correct before building the s
 
 ### Depends On
 
-Phase 3 (settings dashboard must exist before removing setup pages from the navbar — otherwise Categories, Pay Periods, and Tax Config become undiscoverable).
+Phase 3 (settings dashboard must exist before removing setup pages from the navbar -- otherwise Categories, Pay Periods, and Tax Config become undiscoverable).
 
 ### Risk Level
 
-**Medium.** The navbar in `base.html` is included on every authenticated page. However, this is a straightforward reduction from 11 items to 8 flat links — no dropdowns, no complex restructuring. All url_for endpoint names and URL paths remain unchanged.
+**Medium.** The navbar in `base.html` is included on every authenticated page. However, this is a straightforward reduction from 11 items to 8 flat links -- no dropdowns, no complex restructuring. All url_for endpoint names and URL paths remain unchanged.
 
 ### Changes
 
@@ -359,21 +359,21 @@ Phase 3 (settings dashboard must exist before removing setup pages from the navb
 1. **Replace the 11-item flat navbar with 8 flat top-level links.** The reduced set covers all daily-use and weekly-use pages. Setup/config pages are now accessible through the Settings dashboard (Phase 3).
 
    New navbar items (in order):
-   - **Budget** (`grid.index`, `/`) — `bi-grid-3x3`
-   - **Recurring** (`templates.list_templates`, `/templates`) — `bi-arrow-repeat`
-   - **Accounts** (`savings.dashboard`, `/savings`) — `bi-wallet2`
-   - **Salary** (`salary.list_profiles`, `/salary`) — `bi-cash-coin`
-   - **Transfers** (`transfers.list_transfer_templates`, `/transfers`) — `bi-arrow-left-right`
-   - **Retirement** (`retirement.dashboard`, `/retirement`) — `bi-briefcase`
-   - **Charts** (`charts.dashboard`, `/charts`) — `bi-bar-chart-line`
-   - **Settings** (`settings.show`, `/settings`) — `bi-gear`
+   - **Budget** (`grid.index`, `/`) -- `bi-grid-3x3`
+   - **Recurring** (`templates.list_templates`, `/templates`) -- `bi-arrow-repeat`
+   - **Accounts** (`savings.dashboard`, `/savings`) -- `bi-wallet2`
+   - **Salary** (`salary.list_profiles`, `/salary`) -- `bi-cash-coin`
+   - **Transfers** (`transfers.list_transfer_templates`, `/transfers`) -- `bi-arrow-left-right`
+   - **Retirement** (`retirement.dashboard`, `/retirement`) -- `bi-briefcase`
+   - **Charts** (`charts.dashboard`, `/charts`) -- `bi-bar-chart-line`
+   - **Settings** (`settings.show`, `/settings`) -- `bi-gear`
 
    Removed from navbar (now accessible via Settings dashboard):
-   - ~~Accounts~~ (`accounts.list_accounts`) — replaced by "Accounts" pointing to `savings.dashboard`
-   - ~~Categories~~ (`categories.list_categories`) — in Settings > Categories
-   - ~~Pay Periods~~ (`pay_periods.generate_form`) — in Settings > Pay Periods
+   - ~~Accounts~~ (`accounts.list_accounts`) -- replaced by "Accounts" pointing to `savings.dashboard`
+   - ~~Categories~~ (`categories.list_categories`) -- in Settings > Categories
+   - ~~Pay Periods~~ (`pay_periods.generate_form`) -- in Settings > Pay Periods
 
-   File: `app/templates/base.html` (lines 44–101): rewrite the `<ul class="navbar-nav me-auto">` section.
+   File: `app/templates/base.html` (lines 44-101): rewrite the `<ul class="navbar-nav me-auto">` section.
 
 2. **Resolve the two "Accounts" navbar items (1.1).** The savings dashboard (`savings.dashboard`) becomes the sole "Accounts" link in the navbar. The CRUD accounts page (`accounts.list_accounts`) is accessible from the savings dashboard via a "Manage Accounts" link and from Settings > Account Types for type management.
 
@@ -391,14 +391,14 @@ Phase 3 (settings dashboard must exist before removing setup pages from the navb
    - `app/routes/transfers.py` (in `new_transfer_template`): read optional `from_account` / `to_account` query params to pre-select dropdowns
    - `app/templates/transfers/form.html`: pre-select account dropdowns when query params are provided
 
-7. **Update onboarding banner.** The onboarding banner references `templates.list_templates` and `pay_periods.generate_form` — both url_for names still work. The `pay_periods.generate_form` link will now redirect to settings, which is fine for onboarding. Verify it still works; no code change expected.
+7. **Update onboarding banner.** The onboarding banner references `templates.list_templates` and `pay_periods.generate_form` -- both url_for names still work. The `pay_periods.generate_form` link will now redirect to settings, which is fine for onboarding. Verify it still works; no code change expected.
 
 ### Test Gate
 
 - [ ] `pytest` passes (all 770+ existing tests)
 - [ ] New test: `GET /transfers/new?from_account=<id>` pre-selects the source account dropdown
 - [ ] Manual verification: navbar displays 8 items correctly at desktop width (>992px)
-- [ ] Manual verification: navbar displays correctly at tablet width (768–992px)
+- [ ] Manual verification: navbar displays correctly at tablet width (768-992px)
 - [ ] Manual verification: navbar hamburger menu works at mobile width (<768px)
 - [ ] Manual verification: all 8 navbar items link to correct pages
 - [ ] Manual verification: active state highlights correctly for each page
@@ -425,13 +425,13 @@ Phase 2 (nomenclature fixes applied before workflow text changes).
 ### Changes
 
 1. **Improve target account field prominence in deduction form (4C).** Move the "Target Account" field higher in the deduction form layout and improve help text.
-   - `app/templates/salary/_deductions_section.html` (lines 148–158): move "Target Account" dropdown to appear after the "Name" and "Timing" fields (before amount/method), and change help text from "Credits deduction to a retirement/investment account" to "Select the retirement or investment account this deduction contributes to. The deducted amount will appear as a contribution in that account's growth projection."
+   - `app/templates/salary/_deductions_section.html` (lines 148-158): move "Target Account" dropdown to appear after the "Name" and "Timing" fields (before amount/method), and change help text from "Credits deduction to a retirement/investment account" to "Select the retirement or investment account this deduction contributes to. The deducted amount will appear as a contribution in that account's growth projection."
 
 2. **Conditional visibility for investment employer fields (Section 5, investment).** Hide employer contribution fields when employer type is "None."
-   - `app/templates/investment/dashboard.html` (lines ~170–208): wrap employer contribution fields in a container that is shown/hidden based on the employer type dropdown value
+   - `app/templates/investment/dashboard.html` (lines ~170-208): wrap employer contribution fields in a container that is shown/hidden based on the employer type dropdown value
    - `app/static/js/app.js` or inline `<script>` in `investment/dashboard.html`: add JS to toggle visibility when employer type changes
 
-3. **Add tooltip/hint to empty grid cells (4D).** Make the `—` dash cells more obviously clickable.
+3. **Add tooltip/hint to empty grid cells (4D).** Make the `--` dash cells more obviously clickable.
    - `app/templates/grid/_transaction_empty_cell.html`: add `title="Click to add a transaction"` to the cell content
    - `app/static/css/app.css`: add a subtle hover cursor change for empty cells (e.g., `cursor: cell` or increase the hover background opacity)
 
@@ -446,15 +446,15 @@ Phase 2 (nomenclature fixes applied before workflow text changes).
 
 7. **Add "View on Grid" link after template creation (4A).** After creating a recurring transaction, flash message or redirect includes a way to see it on the grid.
    - `app/routes/templates.py` (around line 165): change the flash message to include guidance, e.g., `f"Recurring transaction '{template.name}' created. View it on the Budget grid."`
-   - (Optional: redirect to grid instead of template list, but this changes existing behavior — note as optional)
+   - (Optional: redirect to grid instead of template list, but this changes existing behavior -- note as optional)
 
 ### Deferred / No Change Required
 
 The following workflow friction points are noted but do not require changes:
 
-- **4A: Category dropdown shows all categories for expense creation.** The dropdown shows income and expense categories together. Filtering by type would require knowing the transaction type before displaying categories. Current behavior is acceptable — the category list is typically short.
+- **4A: Category dropdown shows all categories for expense creation.** The dropdown shows income and expense categories together. Filtering by type would require knowing the transaction type before displaying categories. Current behavior is acceptable -- the category list is typically short.
 
-- **4C: Deduction linked to savings-type accounts.** The audit notes that only retirement/investment accounts appear in the target account dropdown. This is by design — deductions model paycheck withholdings that flow to employer-sponsored accounts. Linking to savings accounts would be a feature addition, not a UX fix.
+- **4C: Deduction linked to savings-type accounts.** The audit notes that only retirement/investment accounts appear in the target account dropdown. This is by design -- deductions model paycheck withholdings that flow to employer-sponsored accounts. Linking to savings accounts would be a feature addition, not a UX fix.
 
 - **4D: Quick-create auto-names from category.** Already good UX, no change needed.
 
@@ -497,11 +497,11 @@ Phase 4 (navbar restructure must be complete before adding scenario UI elements)
 
 ### Changes
 
-1. **Reserve space for scenario indicator in navbar (6.2).** Add a placeholder/slot in the navbar structure for a future scenario selector. This is a structural change only — no functionality yet.
+1. **Reserve space for scenario indicator in navbar (6.2).** Add a placeholder/slot in the navbar structure for a future scenario selector. This is a structural change only -- no functionality yet.
    - `app/templates/base.html`: add a commented-out or `d-none` element in the navbar between the brand and main nav items where the scenario selector will go. Include a comment: `{# Phase 7: scenario selector goes here #}`
 
 2. **Reserve space for scenario controls in grid header (6.3).** Add a structural slot in the grid header for future scenario controls.
-   - `app/templates/grid/grid.html` (lines 6–56): add a commented-out row or `d-none` container for the scenario selector, separate from the period navigation controls
+   - `app/templates/grid/grid.html` (lines 6-56): add a commented-out row or `d-none` container for the scenario selector, separate from the period navigation controls
 
 3. **Document scenario UI requirements.** Create a brief specification of what the scenario UI will need:
    - Global scenario indicator (navbar or sub-navbar bar)
@@ -576,7 +576,7 @@ Phase 6: Phase 7 Readiness
 
 ## Appendix: url_for Reference Map
 
-Every `url_for` endpoint name used across templates, routes, and tests. This serves as the safety reference — any phase that modifies navigation must verify these remain intact.
+Every `url_for` endpoint name used across templates, routes, and tests. This serves as the safety reference -- any phase that modifies navigation must verify these remain intact.
 
 ### auth blueprint
 
@@ -777,7 +777,7 @@ Every `url_for` endpoint name used across templates, routes, and tests. This ser
 
 ### Test Files With Route Assertions
 
-All route tests use hardcoded URL paths (e.g., `client.get("/templates")`) rather than `url_for()`. This means URL path changes would break tests, but url_for endpoint name changes would not. Since this plan does not change any URL paths (only adds redirects), test path references are safe — tests will receive 302 instead of 200 for redirected GET endpoints.
+All route tests use hardcoded URL paths (e.g., `client.get("/templates")`) rather than `url_for()`. This means URL path changes would break tests, but url_for endpoint name changes would not. Since this plan does not change any URL paths (only adds redirects), test path references are safe -- tests will receive 302 instead of 200 for redirected GET endpoints.
 
 **Flash message assertions that reference "Template" (must be updated in Phase 2):**
 

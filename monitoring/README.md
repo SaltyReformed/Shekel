@@ -125,7 +125,7 @@ The `scripts/audit_cleanup.py` script deletes old audit log rows from
 PostgreSQL. Schedule it via cron on the Proxmox host:
 
 ```cron
-# Daily at 3:00 AM — delete audit rows older than 365 days.
+# Daily at 3:00 AM -- delete audit rows older than 365 days.
 0 3 * * * docker exec shekel-app python scripts/audit_cleanup.py
 ```
 

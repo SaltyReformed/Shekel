@@ -1,5 +1,5 @@
 """
-Shekel Budget App — MFA Reset Script
+Shekel Budget App -- MFA Reset Script
 
 Emergency script to disable MFA for a user when backup codes are
 exhausted and the TOTP device is lost.  Requires direct database access.

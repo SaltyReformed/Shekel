@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Budget vs. Actuals Chart
+ * Shekel Budget App -- Budget vs. Actuals Chart
  *
  * Renders a grouped bar chart comparing estimated and actual amounts
  * per category. Overspend is highlighted in red.

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Pay Period Routes
+Shekel Budget App -- Pay Period Routes
 
 Provides the pay period generation form and handles creating
 the biweekly schedule.

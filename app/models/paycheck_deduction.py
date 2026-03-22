@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Paycheck Deduction Model (salary schema)
+Shekel Budget App -- Paycheck Deduction Model (salary schema)
 
 Defines payroll deductions (pre-tax and post-tax) that reduce a salary
 profile's gross pay to arrive at net pay.

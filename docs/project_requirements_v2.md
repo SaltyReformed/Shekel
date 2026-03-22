@@ -1,4 +1,4 @@
-# Budget App — Requirements & Architecture Document
+# Budget App -- Requirements & Architecture Document
 
 **Version:** 2.0 **Date:** February 20, 2026 **Stack:** Flask · Jinja2 · HTMX · Bootstrap 5 ·
 PostgreSQL
@@ -24,14 +24,14 @@ expense to a specific paycheck and projecting balances forward over a ~2-year ho
 
 The following are explicitly out of scope to prevent scope creep:
 
-- **Bank account syncing** — no Plaid, no OFX import, no screen scraping.
-- **Receipt scanning or OCR** — amounts are entered manually.
-- **Multi-currency** — USD only.
-- **Shared household budgets with separate logins** — single-user for now; kid accounts are a future
+- **Bank account syncing** -- no Plaid, no OFX import, no screen scraping.
+- **Receipt scanning or OCR** -- amounts are entered manually.
+- **Multi-currency** -- USD only.
+- **Shared household budgets with separate logins** -- single-user for now; kid accounts are a future
   stretch goal.
-- **Spreadsheet import** — the user starts fresh from the current period forward.
-- **Mobile app** — web-only; mobile-responsive layout is a later enhancement.
-- **Debt amortization schedules** — credit card is tracked as an expense line item, not a debt
+- **Spreadsheet import** -- the user starts fresh from the current period forward.
+- **Mobile app** -- web-only; mobile-responsive layout is a later enhancement.
+- **Debt amortization schedules** -- credit card is tracked as an expense line item, not a debt
   module.
 
 ---
@@ -40,14 +40,14 @@ The following are explicitly out of scope to prevent scope creep:
 
 | Phase                                 | Features                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Phase 1 — Replace the Spreadsheet** | Session-based auth (one seeded user), pay period generation, transaction CRUD, flat categories, budget grid with HTMX inline editing, balance roll-forward (calculated on read), anchor balance true-up, status workflow (projected → done → credit), carry-forward for unpaid items, recurrence engine with templates and override handling, grid date range controls |
-| **Phase 2 — Paycheck Calculator**     | Salary profiles (multi-income ready), raises (merit, COLA, custom), paycheck deductions (pre-tax, post-tax, with deductions_per_year), 3rd paycheck detection, tax calculator (federal brackets, state flat rate, FICA with wage base cap), paycheck breakdown view, salary projection view                                                                            |
-| **Phase 3 — Scenarios**               | Named scenarios, clone from baseline (deep copy), scenario-scoped transactions and salary profiles, side-by-side comparison view, balance diff highlighting                                                                                                                                                                                                            |
-| **Phase 4 — Savings & Accounts**      | Savings account balance tracking, transfers (checking ↔ savings), savings goals (target amount, target date, auto-calculated contributions), accounts dashboard                                                                                                                                                                                                        |
-| **Phase 5 — Visualization**           | Balance over time (Chart.js), spending by category, budget vs. actuals, scenario comparison overlay, net pay trajectory                                                                                                                                                                                                                                                |
-| **Phase 6 — Hardening & Ops**         | Audit logging (PostgreSQL triggers), structured request logging, automated pg_dump backups, MFA/TOTP, export to CSV, mobile-responsive layout, registration flow for kid accounts                                                                                                                                                                                      |
-| **Phase 7 — Smart Features**          | Smart estimates (rolling average of actuals), expense inflation (global + per-template rates), deduction inflation at open enrollment                                                                                                                                                                                                                                  |
-| **Phase 8 — Notifications**           | In-app alerts for large expenses, low projected balances, savings milestones; optional email notifications                                                                                                                                                                                                                                                             |
+| **Phase 1 -- Replace the Spreadsheet** | Session-based auth (one seeded user), pay period generation, transaction CRUD, flat categories, budget grid with HTMX inline editing, balance roll-forward (calculated on read), anchor balance true-up, status workflow (projected → done → credit), carry-forward for unpaid items, recurrence engine with templates and override handling, grid date range controls |
+| **Phase 2 -- Paycheck Calculator**     | Salary profiles (multi-income ready), raises (merit, COLA, custom), paycheck deductions (pre-tax, post-tax, with deductions_per_year), 3rd paycheck detection, tax calculator (federal brackets, state flat rate, FICA with wage base cap), paycheck breakdown view, salary projection view                                                                            |
+| **Phase 3 -- Scenarios**               | Named scenarios, clone from baseline (deep copy), scenario-scoped transactions and salary profiles, side-by-side comparison view, balance diff highlighting                                                                                                                                                                                                            |
+| **Phase 4 -- Savings & Accounts**      | Savings account balance tracking, transfers (checking ↔ savings), savings goals (target amount, target date, auto-calculated contributions), accounts dashboard                                                                                                                                                                                                        |
+| **Phase 5 -- Visualization**           | Balance over time (Chart.js), spending by category, budget vs. actuals, scenario comparison overlay, net pay trajectory                                                                                                                                                                                                                                                |
+| **Phase 6 -- Hardening & Ops**         | Audit logging (PostgreSQL triggers), structured request logging, automated pg_dump backups, MFA/TOTP, export to CSV, mobile-responsive layout, registration flow for kid accounts                                                                                                                                                                                      |
+| **Phase 7 -- Smart Features**          | Smart estimates (rolling average of actuals), expense inflation (global + per-template rates), deduction inflation at open enrollment                                                                                                                                                                                                                                  |
+| **Phase 8 -- Notifications**           | In-app alerts for large expenses, low projected balances, savings milestones; optional email notifications                                                                                                                                                                                                                                                             |
 
 ---
 
@@ -74,13 +74,13 @@ against: **does this make the payday workflow faster than the spreadsheet?**
    (cash flow timing), set its status to "credit." The app automatically creates a corresponding
    payback expense in the next pay period.
 7. **Check projections.** Scan the projected end balance across upcoming periods. If any period
-   shows negative or dangerously low, adjust — move an expense to a later period, or decide to use
+   shows negative or dangerously low, adjust -- move an expense to a later period, or decide to use
    the credit card.
 8. **Close.** Everything saves automatically on each edit. No save button needed.
 
 ### Frequency
 
-The user performs this workflow every payday (biweekly) and checks the app 1–2 additional times per
+The user performs this workflow every payday (biweekly) and checks the app 1-2 additional times per
 week to update the true-up balance and mark newly cleared expenses.
 
 ---
@@ -101,12 +101,12 @@ week to update the true-up balance and mark newly cleared expenses.
 
 - Each income entry belongs to a specific pay period.
 - Income types include:
-  - **Recurring salary** — auto-generated per recurrence rule (e.g., every pay period). In Phase 1,
+  - **Recurring salary** -- auto-generated per recurrence rule (e.g., every pay period). In Phase 1,
     the net amount is entered manually. In Phase 2, the paycheck calculator computes it.
-  - **Recurring other** — e.g., phone stipend (first paycheck of month), with its own recurrence
+  - **Recurring other** -- e.g., phone stipend (first paycheck of month), with its own recurrence
     rule.
-  - **One-time income** — e.g., tax return, other windfalls. Assigned to a specific period.
-  - **Transfer from savings** — modeled as income to checking (see §4.7).
+  - **One-time income** -- e.g., tax return, other windfalls. Assigned to a specific period.
+  - **Transfer from savings** -- modeled as income to checking (see §4.7).
 - Each income entry has: **name, category, estimated amount, actual amount (nullable), status**
   (projected / received).
 
@@ -116,17 +116,17 @@ week to update the true-up balance and mark newly cleared expenses.
 - Expense categories use a **flat two-level structure**: a top-level **group** and a specific
   **name**.
   - Examples: `Auto: Car Payment`, `Home: Electricity`, `Family: Kayla Spending Money`
-  - Stored as two columns (`group` and `name`) on the category model — no self-referencing hierarchy
+  - Stored as two columns (`group` and `name`) on the category model -- no self-referencing hierarchy
     needed.
   - If a third level is needed later, the model can be migrated to an adjacency list.
 - Each expense entry has:
   - **Name** and **category**
   - **Estimated amount** (the budgeted figure)
-  - **Actual amount** (nullable — filled in when the real cost is known)
+  - **Actual amount** (nullable -- filled in when the real cost is known)
   - **Status:** `projected` → `done` | `credit` | `received` (for income)
   - **Remainder behavior:** When an item is marked `done`, the balance calculator uses the actual
     amount instead of the estimate. Any difference (e.g., budgeted $500, spent $487) naturally stays
-    in the checking balance — no explicit reallocation needed. The grid displays both amounts so the
+    in the checking balance -- no explicit reallocation needed. The grid displays both amounts so the
     user can see the savings at a glance.
 
 ### 4.4 Transaction Statuses
@@ -140,7 +140,7 @@ week to update the true-up balance and mark newly cleared expenses.
 
 ### 4.5 Credit Card Workflow
 
-The credit card is not tracked as a separate account — it's a cash flow timing tool modeled as a
+The credit card is not tracked as a separate account -- it's a cash flow timing tool modeled as a
 status and a payback mechanism.
 
 **When an expense is marked `credit`:**
@@ -171,7 +171,7 @@ A first-class operation for moving unpaid items from a past period to the curren
 1. Finds all transactions in that period with status `projected` (not done, not received, not
    credit).
 2. Moves them to the **current** pay period (updates `pay_period_id`).
-3. The amount does not change — it's the same expense, just paid from a different paycheck.
+3. The amount does not change -- it's the same expense, just paid from a different paycheck.
 4. If any of the carried-forward items were auto-generated from a recurrence rule, they are flagged
    as `is_override = True` (since they're no longer in the period the rule assigned them to).
 5. All balances recalculate automatically.
@@ -201,7 +201,7 @@ Each income or expense template can have a recurrence rule:
 - For `monthly_first` rules, the transaction is assigned to the first pay period whose start date
   falls in each calendar month.
 
-### 4.8 Recurrence Engine — State Machine
+### 4.8 Recurrence Engine -- State Machine
 
 This section defines exactly how the recurrence engine handles every combination of rule changes and
 manual overrides.
@@ -212,7 +212,7 @@ manual overrides.
 | ------------------------------ | ------------------------------------------------------------- | ---------------------------------------------- |
 | `auto_generated`               | Created by the recurrence engine, unmodified                  | Recurrence engine                              |
 | `overridden`                   | User has manually changed the amount, period, or other fields | User edit (sets `is_override = True`)          |
-| `done` / `received` / `credit` | Finalized — represents a historical record                    | User action                                    |
+| `done` / `received` / `credit` | Finalized -- represents a historical record                    | User action                                    |
 | `deleted_by_user`              | User intentionally removed an auto-generated entry            | User delete (soft-delete: `is_deleted = True`) |
 
 #### Rule Change: Template default amount changes
@@ -278,7 +278,7 @@ This is the financial backbone of the app.
 Balances are never stored in the database. Every time the UI requests balance data, the server
 calculates the full chain from the anchor forward in real time. This approach was chosen because:
 
-- It is the simplest to keep correct — there is no risk of stored balances drifting out of sync with
+- It is the simplest to keep correct -- there is no risk of stored balances drifting out of sync with
   transactions.
 - The balance calculator is a **pure function**: given an anchor and a list of transactions, it
   returns a list of balances. No side effects, no state to manage, easy to test.
@@ -324,7 +324,7 @@ calculates the full chain from the anchor forward in real time. This approach wa
   - Change recurrence rules
   - Adjust salary amounts
   - Add large one-time expenses (e.g., "new car down payment")
-- Scenarios are **independent** — changes to one don't affect others.
+- Scenarios are **independent** -- changes to one don't affect others.
 - The app supports **side-by-side comparison** of any two scenarios, showing:
   - Differences in projected end balance over time
   - Net difference per period
@@ -355,15 +355,15 @@ Since expense assignment is a **mix of due dates and manual decisions:**
   into. The rule engine handles the rest.
 - For monthly bills, the app calculates which pay period contains the bill's due date and assigns it
   there by default.
-- The user can always **reassign** an expense to a different period (override — see §4.8 for state
+- The user can always **reassign** an expense to a different period (override -- see §4.8 for state
   machine behavior).
 - The grid view makes the assignment visible and editable.
 
 ### 4.13 Paycheck Calculator & Salary Projection (Phase 2)
 
-The user's income in the budget is a **net biweekly paycheck** — the amount that actually lands in
+The user's income in the budget is a **net biweekly paycheck** -- the amount that actually lands in
 checking. To project this accurately over a 2-year horizon, the app models the full pipeline from
-annual salary to net pay, including raises, taxes, and deductions — some of which inflate over time.
+annual salary to net pay, including raises, taxes, and deductions -- some of which inflate over time.
 
 **Calculation pipeline:**
 
@@ -402,7 +402,7 @@ raises, deductions, and tax treatment:
 - **COLA raise:** recurring annual, configurable month (default: July), percentage (default: 2.5%)
 - **Custom raise:** one-time, specific effective date, percentage or flat amount (e.g., promotion)
 - Raises apply to the **annual salary** and compound in chronological order.
-- Raises are **scenario-aware** — each scenario can have different raise assumptions.
+- Raises are **scenario-aware** -- each scenario can have different raise assumptions.
 
 **Deductions:**
 
@@ -425,7 +425,7 @@ Each deduction is a separate record with:
 **3rd paycheck handling:**
 
 In biweekly pay (26 checks/year), 2 months have 3 paychecks. Many employers only deduct benefits
-from the first 2 paychecks of each calendar month — the 3rd paycheck has higher net pay because
+from the first 2 paychecks of each calendar month -- the 3rd paycheck has higher net pay because
 benefit deductions are skipped.
 
 The paycheck calculator detects 3rd paychecks by counting how many pay period start dates fall in a
@@ -467,7 +467,7 @@ is disclosed to the user.
 
 - For variable expenses (groceries, fuel), the app can **suggest an estimate** for future periods
   based on a rolling average of the last N actuals.
-- The suggestion is displayed but never auto-applied — the user accepts or adjusts.
+- The suggestion is displayed but never auto-applied -- the user accepts or adjusts.
 
 ### 4.16 Expense Inflation Adjustment (Phase 7)
 
@@ -489,7 +489,7 @@ Tunnel or Tailscale.
   needed yet.
 - **Password hashing:** bcrypt.
 - **Protected routes:** All routes except `/login` require an authenticated session.
-- **Login page:** Simple form — email + password. On success, redirects to the budget grid.
+- **Login page:** Simple form -- email + password. On success, redirects to the budget grid.
 - **"Remember me":** Optional longer session duration (configurable, default 30 days).
 
 **Multi-user (deferred):**
@@ -504,7 +504,7 @@ Tunnel or Tailscale.
 
 - The database schema includes an `auth.mfa_configs` table stub so the schema is ready.
 - Feature implementation: TOTP setup, QR code, backup codes, two-step login flow.
-- Additive to session auth — no rework of the login system needed.
+- Additive to session auth -- no rework of the login system needed.
 
 ### 4.18 Audit Logging (Phase 6)
 
@@ -576,20 +576,20 @@ ref (lookup/enum tables)
 auth
  ├── users
  │    ├── user_settings (1:1)
- │    └── mfa_configs (1:1 stub — feature Phase 6+)
+ │    └── mfa_configs (1:1 stub -- feature Phase 6+)
 
 budget
  ├── accounts (1:N per user) → ref.account_types
- │    └── account_anchor_history (1:N — true-up audit trail)
- ├── pay_periods (1:N — auto-generated biweekly dates)
- ├── categories (1:N — flat: group + name)
+ │    └── account_anchor_history (1:N -- true-up audit trail)
+ ├── pay_periods (1:N -- auto-generated biweekly dates)
+ ├── categories (1:N -- flat: group + name)
  ├── recurrence_rules (1:N) → ref.recurrence_patterns
- ├── scenarios (1:N — named budget versions)
+ ├── scenarios (1:N -- named budget versions)
  ├── transaction_templates (1:N) → ref.transaction_types
  │    └── transactions (1:N per period per scenario) → ref.statuses
  │         └── credit_payback_for_id (nullable self-FK for CC payback)
- ├── transfers (1:N — scenario-scoped)
- └── savings_goals (1:N — per account, Phase 4)
+ ├── transfers (1:N -- scenario-scoped)
+ └── savings_goals (1:N -- per account, Phase 4)
 
 salary (Phase 2)
  ├── salary_profiles (N per scenario)
@@ -601,7 +601,7 @@ salary (Phase 2)
  └── fica_configs (by year)
 ```
 
-### Tables — Phase 1 (Core Schema)
+### Tables -- Phase 1 (Core Schema)
 
 ```sql
 -- ============================================================
@@ -614,7 +614,7 @@ CREATE SCHEMA IF NOT EXISTS salary;   -- tables created in Phase 2
 CREATE SCHEMA IF NOT EXISTS system;   -- tables created in Phase 6
 
 -- ============================================================
--- REF SCHEMA — Reference / Lookup Tables
+-- REF SCHEMA -- Reference / Lookup Tables
 -- ============================================================
 
 CREATE TABLE ref.account_types (
@@ -883,7 +883,7 @@ CREATE TABLE budget.savings_goals (
 );
 ```
 
-### Tables — Phase 2 (Salary Schema)
+### Tables -- Phase 2 (Salary Schema)
 
 ```sql
 CREATE TABLE salary.salary_profiles (
@@ -1025,7 +1025,7 @@ parsing, response formatting, status codes, auth checks. They delegate business 
 layer.
 
 **Service Layer.** All business logic lives in `services/`. Services are plain Python classes or
-modules — not Flask-aware. They accept and return Python objects and raise domain-specific
+modules -- not Flask-aware. They accept and return Python objects and raise domain-specific
 exceptions. Independently testable.
 
 **Server-rendered UI with HTMX.** The frontend is Jinja2 templates enhanced with HTMX for
@@ -1156,7 +1156,7 @@ budget-app/
 │   │
 │   ├── static/                      # Static assets
 │   │   ├── css/
-│   │   │   └── app.css              # Custom styles (minimal — Bootstrap handles most)
+│   │   │   └── app.css              # Custom styles (minimal -- Bootstrap handles most)
 │   │   └── js/
 │   │       └── app.js               # Minimal JS (HTMX config, confirm dialogs)
 │   │
@@ -1211,11 +1211,11 @@ budget-app/
   - Prompts for override conflicts (returns a list of conflicts for the route to present to the
     user).
   - For salary templates (Phase 2): delegates to PaycheckCalculator for net amount.
-- The most complex service in the app — test thoroughly.
+- The most complex service in the app -- test thoroughly.
 
 **Balance Calculator** (`balance_calculator.py`)
 
-- A **pure function** — no database writes, no side effects.
+- A **pure function** -- no database writes, no side effects.
 - Input: account, anchor balance, anchor period, all transactions from anchor forward.
 - Output: list of `(period_id, projected_end_balance)` tuples.
 - Uses actual amounts where status is `done`/`received`, estimated amounts where `projected`.
@@ -1240,7 +1240,7 @@ budget-app/
   3. Flag as `is_override = True` if they were auto-generated from a template.
   4. Return count of moved items.
 
-**Paycheck Calculator** (`paycheck_calculator.py`) — Phase 2
+**Paycheck Calculator** (`paycheck_calculator.py`) -- Phase 2
 
 - Pure function: given a salary profile and a target date → net biweekly paycheck.
 - Pipeline: annual salary → apply raises → gross biweekly → pre-tax deductions → taxes → post-tax
@@ -1248,13 +1248,13 @@ budget-app/
 - 3rd paycheck detection: skip 24-per-year deductions.
 - Handles annual caps.
 
-**Tax Calculator** (`tax_calculator.py`) — Phase 2
+**Tax Calculator** (`tax_calculator.py`) -- Phase 2
 
 - Pure function: taxable income + filing status + state + year → federal tax, state tax, SS,
   Medicare.
 - Tracks cumulative wages for SS wage base cap.
 
-**Scenario Service** (`scenario_service.py`) — Phase 3
+**Scenario Service** (`scenario_service.py`) -- Phase 3
 
 - Clone baseline → new scenario (deep copy: transactions, templates, salary profiles).
 - Diff two scenarios → balance deltas per period.
@@ -1301,7 +1301,7 @@ Since the app is server-rendered with HTMX, routes return either full HTML pages
 
 ---
 
-## 7. Frontend — Key Views
+## 7. Frontend -- Key Views
 
 ### 7.1 Budget Grid (Primary View)
 
@@ -1332,18 +1332,18 @@ input → display on save). Every edit triggers a balance recalculation across a
 - Status changes (mark done, mark credit) are single-click actions via `hx-post`.
 - "Carry Forward Unpaid" button on past periods: `hx-post` → server moves items → returns refreshed
   period columns.
-- Save on every edit — no explicit save button.
+- Save on every edit -- no explicit save button.
 
 **Date range controls:**
 
 - Quick-select buttons: "3 Periods" · "6 Periods" · "3 Months" · "6 Months" · "1 Year" · "2 Years"
 - Left/right arrows to shift the visible window without changing the range size.
-- The full 2-year projection is always calculated — the range only controls what's displayed.
+- The full 2-year projection is always calculated -- the range only controls what's displayed.
 
 **Column sizing:**
 
-- 1–6 periods visible: wide columns with full detail (name, estimated, actual, status icon)
-- 7–13 periods: medium columns (amount + status icon)
+- 1-6 periods visible: wide columns with full detail (name, estimated, actual, status icon)
+- 7-13 periods: medium columns (amount + status icon)
 - 14+ periods: compact columns (amount only, hover/click for detail)
 
 ### 7.2 Transaction Detail (Inline or Modal)
@@ -1393,7 +1393,7 @@ Projected compensation over the 2-year horizon:
 
 ## 8. Development Roadmap
 
-### Phase 1 — Replace the Spreadsheet (Weeks 1–4)
+### Phase 1 -- Replace the Spreadsheet (Weeks 1-4)
 
 **Goal:** Stop opening the spreadsheet. Use the app for the payday workflow.
 
@@ -1405,7 +1405,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Seed scripts: ref tables, single user, default checking account, baseline scenario
 - [ ] Flask-Login session auth (login page, one seeded user)
 - [ ] Pay period model + generation service (start date, biweekly, 2-year horizon)
-- [ ] Transaction model (manual entries — no templates yet)
+- [ ] Transaction model (manual entries -- no templates yet)
 - [ ] Category model (flat: group_name + item_name)
 - [ ] Base Jinja2 layout with Bootstrap 5 + HTMX script tags
 - [ ] Basic grid template: periods as columns, transactions as rows
@@ -1444,10 +1444,10 @@ Projected compensation over the 2-year horizon:
 
 **Milestone:** Full payday workflow works in the app. Ready for daily use.
 
-### Phase 2 — Paycheck Calculator (Weeks 5–8)
+### Phase 2 -- Paycheck Calculator (Weeks 5-8)
 
 - [ ] Salary profiles CRUD (name, annual salary, filing status, state)
-- [ ] Salary raises CRUD (merit, COLA, custom — per profile)
+- [ ] Salary raises CRUD (merit, COLA, custom -- per profile)
 - [ ] Paycheck deductions CRUD (pre-tax, post-tax, deductions_per_year, inflation)
 - [ ] Tax bracket + FICA config seeding and CRUD
 - [ ] Paycheck calculator service (annual salary → net biweekly)
@@ -1458,7 +1458,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Salary projection view (raises + net pay over time, per profile)
 - [ ] Test suite: paycheck calculator, tax calculator
 
-### Phase 3 — Scenarios (Weeks 9–12)
+### Phase 3 -- Scenarios (Weeks 9-12)
 
 - [ ] Scenario CRUD: create, clone from baseline (deep copy), rename, delete
 - [ ] Scenario switcher in grid header
@@ -1467,7 +1467,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Balance diff calculation and visual highlighting
 - [ ] Test suite: scenario clone, diff
 
-### Phase 4 — Savings & Accounts (Weeks 13–15)
+### Phase 4 -- Savings & Accounts (Weeks 13-15)
 
 - [ ] Savings account setup (tracked balance separate from checking)
 - [ ] Transfer creation and tracking (checking ↔ savings, scenario-scoped)
@@ -1476,7 +1476,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Paychecks-in-savings, months-in-savings, years-in-savings metrics
 - [ ] Accounts dashboard view
 
-### Phase 5 — Visualization (Weeks 16–18)
+### Phase 5 -- Visualization (Weeks 16-18)
 
 - [ ] Balance-over-time line chart (Chart.js)
 - [ ] Category spending breakdown (bar chart)
@@ -1484,7 +1484,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Scenario comparison overlay chart
 - [ ] Net pay trajectory chart (from salary projection view)
 
-### Phase 6 — Hardening & Ops (Weeks 19–24)
+### Phase 6 -- Hardening & Ops (Weeks 19-24)
 
 - [ ] Audit logging: audit_log table + trigger function + attach to all tables
 - [ ] Structured request logging (JSON, request_id correlation)
@@ -1496,7 +1496,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Mobile-responsive layout refinement
 - [ ] Production deployment guide (Docker Compose on Proxmox, Nginx, HTTPS, Cloudflare Tunnel)
 
-### Phase 7 — Smart Features (Weeks 25–28)
+### Phase 7 -- Smart Features (Weeks 25-28)
 
 - [ ] Smart estimates: rolling average of actuals for variable expenses
 - [ ] Expense inflation: global default + per-template rates
@@ -1504,7 +1504,7 @@ Projected compensation over the 2-year horizon:
 - [ ] Recurrence engine: inflation formula integration
 - [ ] Grid indicators for inflation-adjusted amounts
 
-### Phase 8 — Notifications (Weeks 29–31)
+### Phase 8 -- Notifications (Weeks 29-31)
 
 - [ ] Notification settings (per-type toggle, thresholds)
 - [ ] In-app notification generation after balance recalculations
@@ -1559,9 +1559,9 @@ Projected compensation over the 2-year horizon:
 | Credit card         | Not a separate account; `credit` status excludes from checking balance; auto-generates payback expense in next period                  |
 | Recurrence engine   | Full state machine with override/delete tracking; user prompted on conflicts; done/received/credit items never touched by regeneration |
 | Categories          | Flat two-level (group + name); adjacency list deferred                                                                                 |
-| Expense line items  | ~31 total, ~10–15 active per period; flat list grouped by category header (no collapse/expand needed)                                  |
+| Expense line items  | ~31 total, ~10-15 active per period; flat list grouped by category header (no collapse/expand needed)                                  |
 | Paycheck calculator | Deferred to Phase 2; manual net pay entry in Phase 1                                                                                   |
-| Scenarios           | Deferred to Phase 3; baseline-only in Phases 1–2                                                                                       |
+| Scenarios           | Deferred to Phase 3; baseline-only in Phases 1-2                                                                                       |
 | Audit logging       | Deferred to Phase 6; schema should stabilize first                                                                                     |
 | Structured logging  | Basic logging in Phase 1; structured JSON deferred to Phase 6                                                                          |
 | Undo/redo           | Deferred; not built until needed                                                                                                       |
@@ -1573,7 +1573,7 @@ Projected compensation over the 2-year horizon:
 | Salary modeling     | Full paycheck calculator in Phase 2; scenario-aware; multi-income from day one                                                         |
 | Tax estimation      | Reasonable estimate, not exact payroll; user-updatable brackets                                                                        |
 | 3rd paycheck        | Detected by counting paychecks in calendar month; 24-per-year deductions skipped                                                       |
-| Data import         | Start fresh — no spreadsheet import                                                                                                    |
+| Data import         | Start fresh -- no spreadsheet import                                                                                                    |
 | Hosting             | Proxmox LXC/VM, Docker Compose, Nginx reverse proxy                                                                                    |
 | External access     | Cloudflare Tunnel or Tailscale (no port forwarding; ISP double-NAT)                                                                    |
 | Dev environment     | Arch Linux, NeoVim/LazyVim, native PostgreSQL                                                                                          |

@@ -1,4 +1,4 @@
-# Budget App — Requirements Addendum: Extended Accounts & Financial Planning
+# Budget App -- Requirements Addendum: Extended Accounts & Financial Planning
 
 **Version:** 3.0 **Date:** February 28, 2026 **Parent Document:** project_requirements_v2.md
 **Scope:** Adds debt accounts, investment/retirement accounts, pension modeling, and HYSA interest
@@ -9,16 +9,16 @@ projection. Restructures the phase roadmap accordingly.
 ## 1. Addendum Overview
 
 This document extends the v2 requirements with support for tracking the full lifecycle of personal
-finances — not just income and expenses flowing through checking, but where money goes and what it
+finances -- not just income and expenses flowing through checking, but where money goes and what it
 does once it gets there. The core additions are:
 
 - **High-yield savings accounts** with interest projection.
-- **Debt accounts** — mortgage (fixed and ARM) and auto loan — with amortization, escrow, and payoff
+- **Debt accounts** -- mortgage (fixed and ARM) and auto loan -- with amortization, escrow, and payoff
   analysis.
-- **Investment & retirement accounts** — 401(k), Roth 401(k), Traditional IRA, Roth IRA, and taxable
-  brokerage — with compound growth projection, contribution limits, and employer contributions.
-- **Pension modeling** — projected pension income based on years of service and salary.
-- **Retirement income gap analysis** — how much additional savings are needed to maintain
+- **Investment & retirement accounts** -- 401(k), Roth 401(k), Traditional IRA, Roth IRA, and taxable
+  brokerage -- with compound growth projection, contribution limits, and employer contributions.
+- **Pension modeling** -- projected pension income based on years of service and salary.
+- **Retirement income gap analysis** -- how much additional savings are needed to maintain
   pre-retirement income.
 
 ### Core Principle: Follow the Money
@@ -33,14 +33,14 @@ support new account types with type-specific financial properties.
 
 The following remain out of scope:
 
-- **Real-time market data** — investment returns use a user-defined assumed annual rate, not live
+- **Real-time market data** -- investment returns use a user-defined assumed annual rate, not live
   prices.
-- **Individual stock/fund tracking** — accounts have a single blended rate of return, not
+- **Individual stock/fund tracking** -- accounts have a single blended rate of return, not
   per-holding performance.
-- **Tax optimization advice** — the app shows projections, not recommendations.
-- **Exact tax calculations on withdrawals** — the user can apply a flat estimated tax rate to
+- **Tax optimization advice** -- the app shows projections, not recommendations.
+- **Exact tax calculations on withdrawals** -- the user can apply a flat estimated tax rate to
   traditional account withdrawals.
-- **Automated rebalancing** — portfolio allocation is out of scope.
+- **Automated rebalancing** -- portfolio allocation is out of scope.
 
 ---
 
@@ -54,9 +54,9 @@ first.
 
 | Phase                                 | Status                                                                       |
 | ------------------------------------- | ---------------------------------------------------------------------------- |
-| **Phase 1 — Replace the Spreadsheet** | ✅ Built                                                                     |
-| **Phase 2 — Paycheck Calculator**     | ✅ Built                                                                     |
-| **Phase 4 — Savings & Accounts**      | ✅ Built (savings dashboard, transfers, savings goals, balance roll-forward) |
+| **Phase 1 -- Replace the Spreadsheet** | ✅ Built                                                                     |
+| **Phase 2 -- Paycheck Calculator**     | ✅ Built                                                                     |
+| **Phase 4 -- Savings & Accounts**      | ✅ Built (savings dashboard, transfers, savings goals, balance roll-forward) |
 
 **Note:** v2 Phase 3 (Scenarios) was **not** built and is deferred in this addendum to Phase 7.
 
@@ -64,14 +64,14 @@ first.
 
 | Phase                                        | Features                                                                                                                                                                                                                                                                                          |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Phase 3 — HYSA & Accounts Reorganization** | Extends the existing savings infrastructure (v2 Phase 4, already built) with: HYSA account type with interest projection, `category` column on `ref.account_types`, accounts dashboard reorganized by category (Asset / Liability / Retirement / Investment)                                      |
-| **Phase 4 — Debt Accounts**                  | Mortgage (fixed-rate and ARM), auto loan, escrow modeling, linked transactions (payment from checking → principal reduction), amortization engine, payoff calculator with basic inline chart                                                                                                      |
-| **Phase 5 — Investments & Retirement**       | 401(k), Roth 401(k), Traditional IRA, Roth IRA, taxable brokerage, compound growth engine, contribution limits, employer contributions (extends the existing paycheck deduction system from v2 Phase 2, already built), pension modeling, retirement income gap dashboard with basic inline chart |
-| **Phase 6 — Visualization**                  | Balance-over-time (all account types), spending by category, budget vs. actuals, amortization chart (principal vs. interest over time), investment growth curve, retirement gap waterfall, scenario comparison overlay, net pay trajectory                                                        |
-| **Phase 7 — Scenarios**                      | _(moved from v2 Phase 3, never built)_ Named scenarios, clone from baseline, scenario-scoped transactions, salary profiles, and account parameters; side-by-side comparison; balance diff highlighting; now includes debt and investment what-ifs                                                 |
-| **Phase 8 — Hardening & Ops**                | _(unchanged from v2 Phase 6)_ Audit logging, structured logging, backups, MFA, CSV export, mobile layout, registration                                                                                                                                                                            |
-| **Phase 9 — Smart Features**                 | _(unchanged from v2 Phase 7)_ Smart estimates, expense inflation, deduction inflation                                                                                                                                                                                                             |
-| **Phase 10 — Notifications**                 | _(unchanged from v2 Phase 8)_ In-app alerts, email notifications; extended to include loan payoff milestones, retirement goal milestones, contribution limit warnings                                                                                                                             |
+| **Phase 3 -- HYSA & Accounts Reorganization** | Extends the existing savings infrastructure (v2 Phase 4, already built) with: HYSA account type with interest projection, `category` column on `ref.account_types`, accounts dashboard reorganized by category (Asset / Liability / Retirement / Investment)                                      |
+| **Phase 4 -- Debt Accounts**                  | Mortgage (fixed-rate and ARM), auto loan, escrow modeling, linked transactions (payment from checking → principal reduction), amortization engine, payoff calculator with basic inline chart                                                                                                      |
+| **Phase 5 -- Investments & Retirement**       | 401(k), Roth 401(k), Traditional IRA, Roth IRA, taxable brokerage, compound growth engine, contribution limits, employer contributions (extends the existing paycheck deduction system from v2 Phase 2, already built), pension modeling, retirement income gap dashboard with basic inline chart |
+| **Phase 6 -- Visualization**                  | Balance-over-time (all account types), spending by category, budget vs. actuals, amortization chart (principal vs. interest over time), investment growth curve, retirement gap waterfall, scenario comparison overlay, net pay trajectory                                                        |
+| **Phase 7 -- Scenarios**                      | _(moved from v2 Phase 3, never built)_ Named scenarios, clone from baseline, scenario-scoped transactions, salary profiles, and account parameters; side-by-side comparison; balance diff highlighting; now includes debt and investment what-ifs                                                 |
+| **Phase 8 -- Hardening & Ops**                | _(unchanged from v2 Phase 6)_ Audit logging, structured logging, backups, MFA, CSV export, mobile layout, registration                                                                                                                                                                            |
+| **Phase 9 -- Smart Features**                 | _(unchanged from v2 Phase 7)_ Smart estimates, expense inflation, deduction inflation                                                                                                                                                                                                             |
+| **Phase 10 -- Notifications**                 | _(unchanged from v2 Phase 8)_ In-app alerts, email notifications; extended to include loan payoff milestones, retirement goal milestones, contribution limit warnings                                                                                                                             |
 
 ---
 
@@ -80,19 +80,19 @@ first.
 The v2 requirements document lists "Debt amortization schedules" as explicitly out of scope. This
 addendum removes that exclusion. The updated "What This App Is Not" section should read:
 
-> ~~**Debt amortization schedules** — credit card is tracked as an expense line item, not a debt
+> ~~**Debt amortization schedules** -- credit card is tracked as an expense line item, not a debt
 > module.~~
 
 Replace with:
 
-> **Credit card balance tracking** — credit cards remain a cash flow timing tool (status + payback),
+> **Credit card balance tracking** -- credit cards remain a cash flow timing tool (status + payback),
 > not a tracked debt account. Mortgage and auto loan amortization are supported.
 
 ---
 
-## 4. Detailed Requirements — New Sections
+## 4. Detailed Requirements -- New Sections
 
-### 4.22 Extended Account Types (Phases 3–5)
+### 4.22 Extended Account Types (Phases 3-5)
 
 The `ref.account_types` table is extended with new types. Each type has different financial
 properties stored in type-specific parameter tables. The `budget.accounts` table remains the
@@ -131,21 +131,21 @@ UPDATE ref.account_types SET category = 'retirement' WHERE name IN ('401k', 'rot
 UPDATE ref.account_types SET category = 'investment' WHERE name = 'brokerage';
 ```
 
-### 4.23 High-Yield Savings — Interest Projection (Phase 3)
+### 4.23 High-Yield Savings -- Interest Projection (Phase 3)
 
 An HYSA behaves like a regular savings account but earns interest. The app projects future balances
 by compounding interest on the projected balance.
 
 **Account parameters (`budget.hysa_params`):**
 
-- `account_id` — FK to `budget.accounts`
-- `apy` — annual percentage yield (e.g., 0.0450 for 4.50%)
-- `compounding_frequency` — enum: `daily`, `monthly`, `quarterly` (default: `daily`)
+- `account_id` -- FK to `budget.accounts`
+- `apy` -- annual percentage yield (e.g., 0.0450 for 4.50%)
+- `compounding_frequency` -- enum: `daily`, `monthly`, `quarterly` (default: `daily`)
 
 **Interest projection calculation:**
 
 Interest is projected per pay period using the APY and compounding frequency. The calculation is
-applied during the balance roll-forward — after all transactions and transfers for a period are
+applied during the balance roll-forward -- after all transactions and transfers for a period are
 applied, the projected interest earned during that period is added.
 
 ```
@@ -159,7 +159,7 @@ For monthly compounding:
   interest_earned = balance_after_transactions * monthly_rate * (period_days / days_in_month)
 ```
 
-Interest is projected only — it is not auto-generated as a transaction. It appears as a separate
+Interest is projected only -- it is not auto-generated as a transaction. It appears as a separate
 line in the balance projection (e.g., "Projected interest: $X.XX") so the user can see the
 contribution of interest to balance growth.
 
@@ -171,7 +171,7 @@ tracking is needed for actuals.
 projection is shown as a tooltip or subtitle on future period balances (e.g., "$12,450.00 (incl.
 ~$18.50 interest)").
 
-### 4.24 Debt Accounts — Mortgage (Phase 4)
+### 4.24 Debt Accounts -- Mortgage (Phase 4)
 
 #### 4.24.1 Mortgage Account Setup
 
@@ -188,7 +188,7 @@ over time as payments are made.
 | `interest_rate`                  | NUMERIC(7,5)  | Annual interest rate (e.g., 0.06500 for 6.5%)                                    |
 | `term_months`                    | INT           | Original loan term in months (e.g., 360 for 30 years)                            |
 | `origination_date`               | DATE          | Loan start date                                                                  |
-| `payment_day`                    | INT           | Day of month payment is due (1–31)                                               |
+| `payment_day`                    | INT           | Day of month payment is due (1-31)                                               |
 | `is_arm`                         | BOOLEAN       | Whether this is an adjustable-rate mortgage                                      |
 | `arm_first_adjustment_months`    | INT           | Months before first rate adjustment (e.g., 60 for 5/1 ARM); NULL if fixed        |
 | `arm_adjustment_interval_months` | INT           | Months between adjustments after the first (e.g., 12 for 5/1 ARM); NULL if fixed |
@@ -286,12 +286,12 @@ For each month:
 - Interest saved (if extra payments are being made)
 - Months saved (if extra payments are being made)
 
-**Full amortization schedule (deferred — nice-to-have):**
+**Full amortization schedule (deferred -- nice-to-have):**
 
 A toggle to show the full month-by-month breakdown table. Lower priority than summary metrics and
 payoff scenarios.
 
-#### 4.24.4 Linked Transactions — Mortgage Payments
+#### 4.24.4 Linked Transactions -- Mortgage Payments
 
 A mortgage payment is modeled as a **transfer from checking to the mortgage account**, extending the
 existing `budget.transfers` table. This ensures:
@@ -304,7 +304,7 @@ existing `budget.transfers` table. This ensures:
 
 The amortization engine determines how much of each payment goes to principal vs. interest. The
 transfer reduces checking by the full payment amount. On the mortgage account side, only the
-principal portion reduces the balance — interest is the cost of the loan and does not reduce the
+principal portion reduces the balance -- interest is the cost of the loan and does not reduce the
 principal.
 
 **Implementation detail:** The transfer stores the full payment amount. The mortgage balance
@@ -320,14 +320,14 @@ payments made outside the app.
 
 An interactive tool on the mortgage dashboard for exploring payoff scenarios.
 
-**Mode 1 — Extra payment:** User enters an extra monthly amount. The calculator shows:
+**Mode 1 -- Extra payment:** User enters an extra monthly amount. The calculator shows:
 
 - New payoff date
 - Months saved
 - Total interest saved
 - New monthly payment amount (base P&I + extra)
 
-**Mode 2 — Target payoff date:** User enters a desired payoff date. The calculator shows:
+**Mode 2 -- Target payoff date:** User enters a desired payoff date. The calculator shows:
 
 - Required extra monthly payment
 - Total interest at the new payoff date
@@ -335,7 +335,7 @@ An interactive tool on the mortgage dashboard for exploring payoff scenarios.
 
 **UI approach:** Start with a form-based input (enter value, click calculate, see results). Build
 interactivity (slider or live-updating input) in Phase 6 (Visualization) or when revisiting the UI
-for polish. The form approach is simpler to build with HTMX — an `hx-post` to a calculation endpoint
+for polish. The form approach is simpler to build with HTMX -- an `hx-post` to a calculation endpoint
 that returns a results fragment.
 
 **Basic inline chart:** A simple line chart (Chart.js) showing the principal balance over time for
@@ -343,9 +343,9 @@ the standard schedule vs. the accelerated schedule. This is built alongside the 
 not deferred to the Visualization phase, because the chart is core to understanding the payoff
 scenario.
 
-### 4.25 Debt Accounts — Auto Loan (Phase 4)
+### 4.25 Debt Accounts -- Auto Loan (Phase 4)
 
-The auto loan is a simplified version of the mortgage — a standard fixed-rate installment loan with
+The auto loan is a simplified version of the mortgage -- a standard fixed-rate installment loan with
 no escrow and no ARM complexity.
 
 **Account parameters (`budget.auto_loan_params`):**
@@ -365,7 +365,7 @@ no escrow and no ARM complexity.
 - Uses the same amortization engine as the mortgage (the engine is loan-type-agnostic).
 - Payment flows through checking as a transfer, same as the mortgage.
 - Summary metrics: current balance, monthly payment, payoff date, total interest remaining.
-- No payoff scenario calculator needed (per user requirements — tracking balance and schedule is
+- No payoff scenario calculator needed (per user requirements -- tracking balance and schedule is
   sufficient).
 - A basic balance-over-time chart is shown on the auto loan dashboard.
 
@@ -390,7 +390,7 @@ post-checking expense) and contribution limits.
 | `employer_match_percentage`     | NUMERIC(5,4)  | For `match`: employer matches up to this % of salary                                             |
 | `employer_match_cap_percentage` | NUMERIC(5,4)  | For `match`: maximum salary % matched (e.g., 0.0600 = matches on first 6% of salary)             |
 
-**Contribution limits (2025 values for reference — user-updatable):**
+**Contribution limits (2025 values for reference -- user-updatable):**
 
 | Account Type    | Employee Limit | Catch-up (50+) |
 | --------------- | -------------- | -------------- |
@@ -401,10 +401,10 @@ post-checking expense) and contribution limits.
 | Brokerage       | No limit       | N/A            |
 
 The app tracks cumulative contributions per calendar year and warns the user when a projected
-contribution would exceed the annual limit. Projections are capped at the annual limit — the growth
+contribution would exceed the annual limit. Projections are capped at the annual limit -- the growth
 engine does not project contributions beyond the limit.
 
-#### 4.26.2 Contribution Flow — How Money Enters Accounts
+#### 4.26.2 Contribution Flow -- How Money Enters Accounts
 
 **Pre-tax paycheck deductions (401(k), Roth 401(k)):**
 
@@ -491,7 +491,7 @@ GROUP BY account_id, EXTRACT(YEAR FROM pp.start_date);
 - The account dashboard shows: "2026 contributions: $4,500 / $7,000 (64%)" with a progress bar.
 - If a projected future contribution would exceed the annual limit, the app displays a warning icon
   on that period's transfer in the grid.
-- The growth engine caps contributions at the limit in projections — it does not project overage.
+- The growth engine caps contributions at the limit in projections -- it does not project overage.
 
 #### 4.26.5 Employer Contributions
 
@@ -523,7 +523,7 @@ contributes $150 (6%): matched = MIN($150, $150) \* 1.00 = $150. Total to 401(k)
 
 #### 4.27.1 Pension Profile
 
-The pension is not an account the user contributes to — it is a defined-benefit plan that pays
+The pension is not an account the user contributes to -- it is a defined-benefit plan that pays
 income in retirement based on service and salary. It is modeled as a separate entity, not an account
 type.
 
@@ -580,7 +580,7 @@ Step 3: Calculate the monthly income gap
 
 Step 4: Determine required retirement savings
   = monthly_gap * 12 / safe_withdrawal_rate
-  (Default safe withdrawal rate: 0.04 — the "4% rule". Configurable in user settings.)
+  (Default safe withdrawal rate: 0.04 -- the "4% rule". Configurable in user settings.)
 
 Step 5: Project total retirement savings at planned retirement date
   = SUM of projected balances for all retirement + investment accounts at retirement date
@@ -592,9 +592,9 @@ Step 6: Determine the gap (or surplus)
 
 **User settings additions (`auth.user_settings`):**
 
-- `safe_withdrawal_rate` — NUMERIC(5,4), default 0.0400
-- `planned_retirement_date` — DATE, nullable
-- `estimated_retirement_tax_rate` — NUMERIC(5,4), nullable. If set, applied to traditional account
+- `safe_withdrawal_rate` -- NUMERIC(5,4), default 0.0400
+- `planned_retirement_date` -- DATE, nullable
+- `estimated_retirement_tax_rate` -- NUMERIC(5,4), nullable. If set, applied to traditional account
   (401(k), Traditional IRA) projected withdrawals to estimate net retirement income.
 
 **Dashboard display:**
@@ -633,7 +633,7 @@ INSERT INTO ref.account_types (name, category) VALUES
     ('brokerage', 'investment');
 ```
 
-### 5.2 New Tables — Phase 3 (HYSA)
+### 5.2 New Tables -- Phase 3 (HYSA)
 
 ```sql
 CREATE TABLE budget.hysa_params (
@@ -647,7 +647,7 @@ CREATE TABLE budget.hysa_params (
 );
 ```
 
-### 5.3 New Tables — Phase 4 (Debt Accounts)
+### 5.3 New Tables -- Phase 4 (Debt Accounts)
 
 ```sql
 CREATE TABLE budget.mortgage_params (
@@ -703,7 +703,7 @@ CREATE TABLE budget.auto_loan_params (
 );
 ```
 
-### 5.4 New Tables — Phase 5 (Investment & Retirement)
+### 5.4 New Tables -- Phase 5 (Investment & Retirement)
 
 ```sql
 CREATE TABLE budget.investment_params (
@@ -760,35 +760,35 @@ ALTER TABLE auth.user_settings
 budget (extended)
  ├── accounts (1:N per user) → ref.account_types
  │    ├── account_anchor_history (1:N)
- │    ├── hysa_params (1:1 — Phase 3, for HYSA accounts only)
- │    ├── mortgage_params (1:1 — Phase 4, for mortgage accounts only)
+ │    ├── hysa_params (1:1 -- Phase 3, for HYSA accounts only)
+ │    ├── mortgage_params (1:1 -- Phase 4, for mortgage accounts only)
  │    │    ├── mortgage_rate_history (1:N)
  │    │    └── escrow_components (1:N)
- │    ├── auto_loan_params (1:1 — Phase 4, for auto loan accounts only)
- │    └── investment_params (1:1 — Phase 5, for investment/retirement accounts)
- ├── transfers (1:N — now used for all inter-account flows)
- └── savings_goals (1:N — unchanged)
+ │    ├── auto_loan_params (1:1 -- Phase 4, for auto loan accounts only)
+ │    └── investment_params (1:1 -- Phase 5, for investment/retirement accounts)
+ ├── transfers (1:N -- now used for all inter-account flows)
+ └── savings_goals (1:N -- unchanged)
 
 salary (extended)
  ├── salary_profiles (existing)
- │    └── paycheck_deductions (existing — gains target_account_id)
- └── pension_profiles (1:N per user — Phase 5)
+ │    └── paycheck_deductions (existing -- gains target_account_id)
+ └── pension_profiles (1:N per user -- Phase 5)
 ```
 
 ---
 
 ## 6. New Services
 
-### 6.1 Interest Projection Service (`services/interest_projection.py`) — Phase 3
+### 6.1 Interest Projection Service (`services/interest_projection.py`) -- Phase 3
 
 - Pure function: given HYSA params, balance, and date range → projected interest per period.
 - Called by the balance calculator when computing HYSA balances.
 
-### 6.2 Amortization Engine (`services/amortization_engine.py`) — Phase 4
+### 6.2 Amortization Engine (`services/amortization_engine.py`) -- Phase 4
 
 - Pure function: given loan params (principal, rate, term) and optional extra payment → full
   schedule or summary metrics.
-- Shared by mortgage and auto loan — the engine is loan-type-agnostic.
+- Shared by mortgage and auto loan -- the engine is loan-type-agnostic.
 - Handles both fixed-rate and ARM (using rate history for rate changes).
 - Methods:
   - `calculate_monthly_payment(principal, annual_rate, remaining_months) → Decimal`
@@ -796,14 +796,14 @@ salary (extended)
   - `calculate_summary(params, extra_monthly=0) → AmortizationSummary`
   - `calculate_payoff_by_date(params, target_date) → Decimal` (returns required extra monthly)
 
-### 6.3 Escrow Calculator (`services/escrow_calculator.py`) — Phase 4
+### 6.3 Escrow Calculator (`services/escrow_calculator.py`) -- Phase 4
 
 - Pure function: given escrow components → monthly escrow amount.
 - Projects escrow forward using per-component inflation rates.
 - `calculate_monthly_escrow(components, as_of_date=None) → Decimal`
 - `project_annual_escrow(components, years_forward) → list[(year, amount)]`
 
-### 6.4 Compound Growth Engine (`services/growth_engine.py`) — Phase 5
+### 6.4 Compound Growth Engine (`services/growth_engine.py`) -- Phase 5
 
 - Pure function: given account params, current balance, contributions, and horizon → projected
   balances per period.
@@ -811,13 +811,13 @@ salary (extended)
 - Incorporates employer contributions when applicable.
 - `project_balance(params, current_balance, contributions, periods) → list[ProjectedBalance]`
 
-### 6.5 Pension Calculator (`services/pension_calculator.py`) — Phase 5
+### 6.5 Pension Calculator (`services/pension_calculator.py`) -- Phase 5
 
 - Pure function: given pension profile and salary projection → annual and monthly benefit.
 - Uses the salary projection from Phase 2 to compute the high-salary average.
 - `calculate_benefit(pension_profile, salary_projections) → PensionBenefit`
 
-### 6.6 Retirement Gap Calculator (`services/retirement_gap_calculator.py`) — Phase 5
+### 6.6 Retirement Gap Calculator (`services/retirement_gap_calculator.py`) -- Phase 5
 
 - Orchestrates pension calculator, growth engine, and paycheck calculator to produce the gap
   analysis.
@@ -861,17 +861,17 @@ salary (extended)
 
 ---
 
-## 8. UI — New Views
+## 8. UI -- New Views
 
 ### 8.1 Accounts Dashboard (Phase 3, extended in 4 & 5)
 
 The existing savings dashboard is expanded into a unified accounts dashboard that groups accounts by
 category:
 
-- **Assets** — Checking, Savings, HYSA (with interest projection)
-- **Liabilities** — Mortgage, Auto Loan (with remaining balance and payoff date)
-- **Retirement** — 401(k), Roth 401(k), IRA, Roth IRA (with projected balances)
-- **Investments** — Brokerage (with projected balance)
+- **Assets** -- Checking, Savings, HYSA (with interest projection)
+- **Liabilities** -- Mortgage, Auto Loan (with remaining balance and payoff date)
+- **Retirement** -- 401(k), Roth 401(k), IRA, Roth IRA (with projected balances)
+- **Investments** -- Brokerage (with projected balance)
 
 Each account card shows: current balance, a key metric (interest rate, rate of return, payoff date),
 and a link to the account-specific dashboard.
@@ -882,9 +882,9 @@ and a link to the account-specific dashboard.
   original and projected payoff dates.
 - **Escrow section:** List of escrow components with individual amounts and inflation rates.
   Editable inline.
-- **Payoff calculator:** Form with two tabs — "Extra Payment" (input: extra $/month) and "Target
+- **Payoff calculator:** Form with two tabs -- "Extra Payment" (input: extra $/month) and "Target
   Date" (input: desired payoff date). Results update via HTMX.
-- **Payoff chart:** Chart.js line chart — principal balance over time for standard vs. accelerated
+- **Payoff chart:** Chart.js line chart -- principal balance over time for standard vs. accelerated
   schedule.
 - **Rate history:** For ARM accounts, a table of historical rate changes.
 
@@ -894,16 +894,16 @@ and a link to the account-specific dashboard.
   progress bar), projected balance at retirement.
 - **Employer contribution display:** Shows employer contribution amount per paycheck and type (flat
   or match).
-- **Growth projection chart:** Chart.js line chart — balance over time with contributions and growth
+- **Growth projection chart:** Chart.js line chart -- balance over time with contributions and growth
   layered (stacked area or dual-line).
 
 ### 8.4 Retirement Planning Dashboard (Phase 5)
 
-- **Income gap summary:** The table from §4.28 — current income, pension, gap, required savings,
+- **Income gap summary:** The table from §4.28 -- current income, pension, gap, required savings,
   projected savings, surplus/shortfall.
 - **Pension details:** Benefit multiplier, years of service (current and projected), high-salary
   average, projected monthly benefit.
-- **Gap chart:** Bar or waterfall chart — income sources stacked, gap highlighted.
+- **Gap chart:** Bar or waterfall chart -- income sources stacked, gap highlighted.
 - **Sensitivity note:** A disclaimer that projections are estimates based on assumed rates of return
   and the 4% rule, and actual results will vary.
 
@@ -976,9 +976,9 @@ app/
 
 ---
 
-## 10. Development Roadmap — New Phases
+## 10. Development Roadmap -- New Phases
 
-### Phase 3 — HYSA & Accounts Reorganization (Weeks 9–12)
+### Phase 3 -- HYSA & Accounts Reorganization (Weeks 9-12)
 
 This phase extends the **already-built** savings infrastructure (v2 Phase 4) rather than building it
 from scratch. The existing savings dashboard, savings goals, transfers, and balance roll-forward are
@@ -998,13 +998,13 @@ all in place.
       rendering
 - [ ] Verify all existing savings tests still pass (no regressions)
 
-### Phase 4 — Debt Accounts (Weeks 13–18)
+### Phase 4 -- Debt Accounts (Weeks 13-18)
 
 - [ ] Seed new account types: `mortgage`, `auto_loan`
 - [ ] Mortgage parameter table + model
 - [ ] Mortgage rate history table + model
 - [ ] Escrow components table + model
-- [ ] Amortization engine service (pure function — shared by mortgage and auto loan)
+- [ ] Amortization engine service (pure function -- shared by mortgage and auto loan)
 - [ ] Escrow calculator service
 - [ ] Auto loan parameter table + model
 - [ ] Linked transactions: mortgage/loan payments as transfers from checking
@@ -1012,11 +1012,11 @@ all in place.
 - [ ] Auto loan balance calculator
 - [ ] Mortgage dashboard with summary metrics, escrow management, rate history
 - [ ] Payoff calculator (form-based: extra payment mode + target date mode)
-- [ ] Payoff chart (Chart.js — standard vs. accelerated schedule)
+- [ ] Payoff chart (Chart.js -- standard vs. accelerated schedule)
 - [ ] Auto loan dashboard with summary metrics and balance chart
 - [ ] Test suite: amortization engine, escrow calculator, payoff scenarios
 
-### Phase 5 — Investments & Retirement (Weeks 19–26)
+### Phase 5 -- Investments & Retirement (Weeks 19-26)
 
 This phase extends the **already-built** paycheck calculator (v2 Phase 2). The salary profiles,
 paycheck deductions, and tax calculator are all in place. The key integration point is adding

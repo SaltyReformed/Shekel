@@ -1,10 +1,10 @@
 """
-Shekel Budget App — Paycheck Calculator Service
+Shekel Budget App -- Paycheck Calculator Service
 
 Core Phase 2 service: calculates net biweekly paycheck amounts from a
 salary profile including raises, deductions, and taxes.
 
-All functions are pure (no DB access) — data is passed in as arguments.
+All functions are pure (no DB access) -- data is passed in as arguments.
 """
 
 import logging
@@ -96,7 +96,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
     )
     total_pre_tax = sum((d.amount for d in pre_tax_deductions), ZERO)
 
-    # Step 5: Taxable income (for display — taxes computed via Pub 15-T)
+    # Step 5: Taxable income (for display -- taxes computed via Pub 15-T)
     taxable_biweekly = gross_biweekly - total_pre_tax
     if taxable_biweekly < ZERO:
         taxable_biweekly = ZERO
@@ -133,7 +133,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
         TWO_PLACES, rounding=ROUND_HALF_UP
     )
 
-    # Step 7: FICA — use cumulative wages for SS cap tracking
+    # Step 7: FICA -- use cumulative wages for SS cap tracking
     cumulative_wages = _get_cumulative_wages(
         profile, period, all_periods
     )
@@ -219,7 +219,7 @@ def _apply_raises(profile, period):
             # Count total applications: one per year from eff_year onward
             # where the effective month has been reached.
             if not eff_year:
-                # No start year — apply once if month reached this year.
+                # No start year -- apply once if month reached this year.
                 if period_month >= eff_month:
                     salary = _apply_single_raise(salary, raise_obj)
             elif period_year >= eff_year:

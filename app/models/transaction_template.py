@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transaction Template Model (budget schema)
+Shekel Budget App -- Transaction Template Model (budget schema)
 
 A template defines a recurring income or expense (e.g. "Car Payment")
 along with its recurrence rule and default amount.  The recurrence

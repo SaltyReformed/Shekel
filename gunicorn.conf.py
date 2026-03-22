@@ -13,7 +13,7 @@ import os
 
 # ── Binding ──────────────────────────────────────────────────────
 # Listen on all interfaces, port 8000.  Nginx reverse-proxies to
-# this port.  Not exposed externally — only reachable on the Docker
+# this port.  Not exposed externally -- only reachable on the Docker
 # backend network.
 bind = f"0.0.0.0:{os.getenv('GUNICORN_PORT', '8000')}"
 

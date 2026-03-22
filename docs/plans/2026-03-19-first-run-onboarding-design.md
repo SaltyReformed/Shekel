@@ -17,8 +17,8 @@ Every user-facing action that creates data has prerequisites. This table shows t
 | **View budget grid (with data)** | Baseline scenario + pay periods | Scenario from seed, pay periods from user | Renders `grid/no_periods.html` (acceptable) |
 | **Generate pay periods** | User must be logged in | Auth | Login redirect (correct) |
 | **Create account** | User must be logged in, AccountType ref data | Auth + `seed_ref_tables.py` | No failure (account types always available if ref tables seeded) |
-| **Create salary profile** | Baseline scenario + active account + Income:Salary category (auto-created) + pay periods (for transaction generation) | Scenario from seed, account from seed, category auto-created in route | `salary.py:161` — `"No baseline scenario found. Set up your budget first."` → redirect to salary list. `salary.py:190` — `"No active account found."` → redirect to salary list. No link to fix either. |
-| **Create recurring transaction** | Account + category (for form dropdowns) + baseline scenario (for transaction generation) | Account from seed, categories from seed, scenario from seed | Form renders with empty dropdowns (no accounts or categories). No flash or error — just an unusable form. |
+| **Create salary profile** | Baseline scenario + active account + Income:Salary category (auto-created) + pay periods (for transaction generation) | Scenario from seed, account from seed, category auto-created in route | `salary.py:161` -- `"No baseline scenario found. Set up your budget first."` → redirect to salary list. `salary.py:190` -- `"No active account found."` → redirect to salary list. No link to fix either. |
+| **Create recurring transaction** | Account + category (for form dropdowns) + baseline scenario (for transaction generation) | Account from seed, categories from seed, scenario from seed | Form renders with empty dropdowns (no accounts or categories). No flash or error -- just an unusable form. |
 | **Create transfer template** | 2+ active accounts | Seed creates 1 account; user must create a 2nd | Form renders with only 1 account in both From and To dropdowns. No validation prevents same-account transfer. |
 | **Create savings goal** | At least one account | Account from seed | No guard; form will render but has no useful target. |
 
@@ -130,8 +130,8 @@ Grid renders (baseline scenario exists, so no_setup.html is NOT shown)
 Onboarding banner shows with dependency-aware steps:
     Step 1: ✓ Account created (auto-provisioned)
     Step 2: Generate pay periods ← link to Settings > Pay Periods
-    Step 3: (locked) Set up salary profile — requires pay periods first
-    Step 4: (locked) Set up recurring transactions — requires pay periods first
+    Step 3: (locked) Set up salary profile -- requires pay periods first
+    Step 4: (locked) Set up recurring transactions -- requires pay periods first
     ↓
 User generates pay periods → steps 3 & 4 unlock
     ↓
@@ -192,11 +192,11 @@ Every prerequisite-failure flash message in the codebase, with its file location
 **Description:** Add default categories to the existing `auth_service.register_user()` function. The login page shows a "Create an account" link (already exists). The Docker entrypoint drops the `seed_user.py` step. The `no_setup.html` template is replaced with guidance for non-technical users.
 
 **Changes:**
-- `app/services/auth_service.py` — add default category creation to `register_user()`
-- `app/templates/grid/no_setup.html` — replace "run the seed script" with "Create an account" link to `/register`
-- `entrypoint.sh` — remove the `SEED_USER_*` block (steps 5-6 become just step 5: tax brackets)
-- `docker-compose.yml` — remove `SEED_USER_*` environment variables
-- `.env.example` — remove `SEED_USER_*` variables
+- `app/services/auth_service.py` -- add default category creation to `register_user()`
+- `app/templates/grid/no_setup.html` -- replace "run the seed script" with "Create an account" link to `/register`
+- `entrypoint.sh` -- remove the `SEED_USER_*` block (steps 5-6 become just step 5: tax brackets)
+- `docker-compose.yml` -- remove `SEED_USER_*` environment variables
+- `.env.example` -- remove `SEED_USER_*` variables
 
 **Pros:**
 - Smallest change. `register_user()` already creates 4 of 5 items.
@@ -222,11 +222,11 @@ Every prerequisite-failure flash message in the codebase, with its file location
 - New route: `app/routes/setup.py` (wizard blueprint)
 - New templates: `app/templates/setup/step1.html` through `step5.html`
 - New service: `app/services/setup_service.py` (orchestrates wizard)
-- `app/__init__.py` — add `before_request` hook to redirect to `/setup` when no users
-- `app/routes/auth.py` — exempt `/setup` routes from login requirement
+- `app/__init__.py` -- add `before_request` hook to redirect to `/setup` when no users
+- `app/routes/auth.py` -- exempt `/setup` routes from login requirement
 
 **Pros:**
-- Best first-run UX — user is guided through everything.
+- Best first-run UX -- user is guided through everything.
 - Eliminates both the seed script AND the onboarding banner for new users.
 
 **Cons:**
@@ -255,7 +255,7 @@ Every prerequisite-failure flash message in the codebase, with its file location
 
 **Cons:**
 - Still requires new routes and templates.
-- Marginal improvement over A1 — user can rename account and set balance later from the accounts page.
+- Marginal improvement over A1 -- user can rename account and set balance later from the accounts page.
 
 **Complexity:** Medium
 **Migration needed:** No
@@ -268,9 +268,9 @@ Every prerequisite-failure flash message in the codebase, with its file location
 **Description:** Keep the banner pattern but add all steps including account creation. Enforce visual dependency ordering: gray out steps whose prerequisites are not met, show "requires X first" helper text next to locked steps.
 
 **Changes:**
-- `app/__init__.py` (`inject_onboarding`) — add checks for `has_account`, `has_categories`, `has_scenario`
-- `app/templates/base.html` — expand banner to show 5+ steps with dependency locking
-- `tests/test_routes/test_onboarding.py` — add tests for dependency locking
+- `app/__init__.py` (`inject_onboarding`) -- add checks for `has_account`, `has_categories`, `has_scenario`
+- `app/templates/base.html` -- expand banner to show 5+ steps with dependency locking
+- `tests/test_routes/test_onboarding.py` -- add tests for dependency locking
 
 **Context processor additions:**
 ```python
@@ -342,11 +342,11 @@ After pay periods are generated:
 **Description:** Replace every vague prerequisite-failure flash with a specific message naming the missing resource and including an HTML link. Uses `Markup()` for safe HTML in flash messages.
 
 **Changes:**
-- `app/routes/salary.py:161` — `Markup('No baseline scenario found. <a href="...">Create your budget setup</a> first.')`
-- `app/routes/salary.py:190` — `Markup('You need an active account before creating a salary profile. <a href="/accounts/new">Create an account</a>.')`
-- `app/routes/salary.py:540` — `Markup('No pay periods found. <a href="...">Generate pay periods</a> first.')`
-- `app/templates/grid/no_setup.html` — Replace "run the seed script" with registration/login guidance
-- `app/templates/base.html` toast rendering — ensure `| safe` filter is used for flash message HTML
+- `app/routes/salary.py:161` -- `Markup('No baseline scenario found. <a href="...">Create your budget setup</a> first.')`
+- `app/routes/salary.py:190` -- `Markup('You need an active account before creating a salary profile. <a href="/accounts/new">Create an account</a>.')`
+- `app/routes/salary.py:540` -- `Markup('No pay periods found. <a href="...">Generate pay periods</a> first.')`
+- `app/templates/grid/no_setup.html` -- Replace "run the seed script" with registration/login guidance
+- `app/templates/base.html` toast rendering -- ensure `| safe` filter is used for flash message HTML
 
 **Pros:**
 - Direct improvement. User sees exactly what to do and can click to do it.
@@ -365,7 +365,7 @@ After pay periods are generated:
 **Description:** Instead of flashing and redirecting to the list page, redirect directly to the prerequisite creation page.
 
 **Pros:** Fewest clicks for the user.
-**Cons:** Surprising UX — user tried to go to page A and ended up on page B. May be disorienting.
+**Cons:** Surprising UX -- user tried to go to page A and ended up on page B. May be disorienting.
 
 **Complexity:** Small
 **Migration needed:** No
@@ -401,7 +401,7 @@ This is the minimum-viable solution that solves all three problems with the leas
 - The existing registration + banner flow already covers the same ground with less code.
 - A wizard would partially duplicate existing routes (account creation, pay period generation).
 - The wizard only helps the first user. Subsequent users in multi-user mode would still need the banner.
-- YAGNI — the hybrid approach delivers 90% of the UX benefit at 20% of the complexity.
+- YAGNI -- the hybrid approach delivers 90% of the UX benefit at 20% of the complexity.
 
 ### Alignment with Existing Plans
 
@@ -420,7 +420,7 @@ This is the minimum-viable solution that solves all three problems with the leas
 
 #### Service Layer
 
-**`app/services/auth_service.py`** — Add default category creation to `register_user()`.
+**`app/services/auth_service.py`** -- Add default category creation to `register_user()`.
 
 After the baseline scenario creation (line 162), add:
 
@@ -466,7 +466,7 @@ This list should be a module-level constant shared between `auth_service.py` and
 
 #### Context Processor
 
-**`app/__init__.py`** — Expand `inject_onboarding` to check all prerequisites.
+**`app/__init__.py`** -- Expand `inject_onboarding` to check all prerequisites.
 
 ```python
 from app.models.account import Account
@@ -497,7 +497,7 @@ return {
 
 #### Templates
 
-**`app/templates/base.html`** — Expand the welcome banner with dependency-aware steps.
+**`app/templates/base.html`** -- Expand the welcome banner with dependency-aware steps.
 
 Replace the current 3-item checklist (lines 140-178) with a 5-item list:
 
@@ -509,7 +509,7 @@ Replace the current 3-item checklist (lines 140-178) with a 5-item list:
 
 Locked items show grayed-out text with "(generate pay periods first)" helper text.
 
-**`app/templates/grid/no_setup.html`** — Replace seed script message.
+**`app/templates/grid/no_setup.html`** -- Replace seed script message.
 
 ```html
 <h3><i class="bi bi-rocket-takeoff text-primary"></i> Welcome to Shekel</h3>
@@ -523,7 +523,7 @@ Locked items show grayed-out text with "(generate pay periods first)" helper tex
 
 Note: This page should only appear if a user is logged in but has no baseline scenario. After the `register_user()` change, this should never happen for newly registered users. It would only appear for users created through some other path that bypasses `register_user()`. Consider making this a fallback that redirects to registration if no users exist, or shows a "contact your administrator" message if users exist but the current user has no scenario.
 
-**`app/templates/base.html`** — Update toast rendering to support HTML in flash messages.
+**`app/templates/base.html`** -- Update toast rendering to support HTML in flash messages.
 
 Change line 127 from:
 ```html
@@ -565,11 +565,11 @@ flash(Markup(
 ), "warning")
 ```
 
-**`app/templates/grid/no_periods.html`** — Verify it links to pay period generation. If not, add a link.
+**`app/templates/grid/no_periods.html`** -- Verify it links to pay period generation. If not, add a link.
 
 #### Docker
 
-**`entrypoint.sh`** — Remove the seed user block (lines 27-30).
+**`entrypoint.sh`** -- Remove the seed user block (lines 27-30).
 
 Before:
 ```bash
@@ -582,9 +582,9 @@ fi
 
 After: (removed entirely)
 
-**`docker-compose.yml`** — Remove `SEED_USER_*` environment variables.
+**`docker-compose.yml`** -- Remove `SEED_USER_*` environment variables.
 
-**`.env.example`** — Remove the `SEED_USER_*` section. Add a note:
+**`.env.example`** -- Remove the `SEED_USER_*` section. Add a note:
 ```
 # User accounts are created through the app's registration page.
 # No seed user variables are needed.
@@ -595,24 +595,24 @@ After: (removed entirely)
 **New tests to add:**
 
 1. `tests/test_services/test_auth_service.py`:
-   - `test_register_user_creates_default_categories` — verify 22 categories are created
-   - `test_register_user_categories_have_correct_groups` — verify group names
+   - `test_register_user_creates_default_categories` -- verify 22 categories are created
+   - `test_register_user_categories_have_correct_groups` -- verify group names
 
 2. `tests/test_routes/test_onboarding.py`:
-   - `test_banner_shows_locked_steps_when_no_periods` — salary and template steps show locked state
-   - `test_banner_unlocks_steps_when_periods_exist` — salary and template steps show links after pay periods created
-   - `test_banner_shows_account_and_categories_as_complete` — auto-provisioned items show checkmarks
+   - `test_banner_shows_locked_steps_when_no_periods` -- salary and template steps show locked state
+   - `test_banner_unlocks_steps_when_periods_exist` -- salary and template steps show links after pay periods created
+   - `test_banner_shows_account_and_categories_as_complete` -- auto-provisioned items show checkmarks
 
 3. `tests/test_routes/test_auth.py`:
-   - `test_register_creates_categories` — end-to-end registration creates categories
-   - `test_register_user_sees_banner_not_no_setup` — after registration, grid shows banner not no_setup.html
+   - `test_register_creates_categories` -- end-to-end registration creates categories
+   - `test_register_user_sees_banner_not_no_setup` -- after registration, grid shows banner not no_setup.html
 
 4. `tests/test_routes/test_grid.py`:
-   - `test_no_setup_page_not_shown_for_registered_user` — registered user sees grid (or no_periods), never no_setup
+   - `test_no_setup_page_not_shown_for_registered_user` -- registered user sees grid (or no_periods), never no_setup
 
 5. `tests/test_routes/test_salary.py`:
-   - `test_create_profile_missing_scenario_flash_has_link` — verify flash message contains `<a href`
-   - `test_create_profile_missing_account_flash_has_link` — verify flash message contains link to create account
+   - `test_create_profile_missing_scenario_flash_has_link` -- verify flash message contains `<a href`
+   - `test_create_profile_missing_account_flash_has_link` -- verify flash message contains link to create account
 
 ---
 

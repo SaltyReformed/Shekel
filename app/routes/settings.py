@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Settings Routes
+Shekel Budget App -- Settings Routes
 
 User preferences management (grid defaults, inflation rate, etc.).
 Settings dashboard consolidating all configuration sections.

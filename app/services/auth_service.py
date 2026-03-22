@@ -1,8 +1,8 @@
 """
-Shekel Budget App — Authentication Service
+Shekel Budget App -- Authentication Service
 
 Handles password hashing, verification, and user registration.
-No Flask imports — this is a pure service module.
+No Flask imports -- this is a pure service module.
 """
 
 import re

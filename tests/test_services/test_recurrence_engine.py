@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Recurrence Engine Tests
+Shekel Budget App -- Recurrence Engine Tests
 
 Tests the auto-generation of transactions from templates with
 recurrence rules (§4.7) and the state machine behavior (§4.8).
@@ -161,7 +161,7 @@ class TestRecurrenceGeneration:
                 assert (period.period_index - 1) % 2 == 0
 
     def test_once_pattern_generates_nothing(self, app, db, seed_user, seed_periods):
-        """'once' pattern does not auto-generate — user places it manually."""
+        """'once' pattern does not auto-generate -- user places it manually."""
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, "once",
@@ -186,7 +186,7 @@ class TestRecurrenceGeneration:
             db.session.flush()
             assert len(first_run) == len(seed_periods)
 
-            # Second generation — should create nothing new.
+            # Second generation -- should create nothing new.
             second_run = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )
@@ -210,7 +210,7 @@ class TestRecurrenceGeneration:
             created[0].estimated_amount = Decimal("999.99")
             db.session.flush()
 
-            # Regenerate — the overridden entry should be preserved.
+            # Regenerate -- the overridden entry should be preserved.
             from app.exceptions import RecurrenceConflict
 
             try:
@@ -242,7 +242,7 @@ class TestRecurrenceGeneration:
             created[0].actual_amount = Decimal("95.00")
             db.session.flush()
 
-            # Regenerate — should not delete the done transaction.
+            # Regenerate -- should not delete the done transaction.
             recurrence_engine.regenerate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )
@@ -257,13 +257,13 @@ class TestRecurrenceGeneration:
 
 
 class TestMatchMonthly:
-    """Tests for _match_monthly() — pure function, no DB."""
+    """Tests for _match_monthly() -- pure function, no DB."""
 
     def test_monthly_day_15(self, biweekly_periods):
         """Finds the period containing the 15th of each month."""
         matched = _match_monthly(biweekly_periods, day_of_month=15)
 
-        # 26 biweekly periods span Jan–Dec 2026 → one match per month = 12.
+        # 26 biweekly periods span Jan-Dec 2026 → one match per month = 12.
         assert len(matched) == 12
 
         # Each matched period's range must contain the 15th of some month.
@@ -276,7 +276,7 @@ class TestMatchMonthly:
                     found = True
                     break
             assert found, (
-                f"Period {period.period_index} ({period.start_date}–"
+                f"Period {period.period_index} ({period.start_date}-"
                 f"{period.end_date}) doesn't contain a 15th"
             )
 
@@ -315,7 +315,7 @@ class TestMatchMonthly:
 
 
 class TestMatchMonthlyFirst:
-    """Tests for _match_monthly_first() — pure function, no DB."""
+    """Tests for _match_monthly_first() -- pure function, no DB."""
 
     def test_picks_first_period_starting_in_each_month(self, biweekly_periods):
         """One period per calendar month, the earliest starting in that month."""
@@ -344,14 +344,14 @@ class TestMatchMonthlyFirst:
 
 
 class TestMatchQuarterly:
-    """Tests for _match_quarterly() — pure function, no DB."""
+    """Tests for _match_quarterly() -- pure function, no DB."""
 
     def test_quarterly_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan, Apr, Jul, Oct."""
         matched = _match_quarterly(biweekly_periods, start_month=1,
                                    day_of_month=15)
 
-        # 26 biweekly periods cover Jan–Dec 2026 → 4 quarterly months.
+        # 26 biweekly periods cover Jan-Dec 2026 → 4 quarterly months.
         assert len(matched) == 4
 
         matched_months = set()
@@ -379,7 +379,7 @@ class TestMatchQuarterly:
 
 
 class TestMatchSemiAnnual:
-    """Tests for _match_semi_annual() — pure function, no DB."""
+    """Tests for _match_semi_annual() -- pure function, no DB."""
 
     def test_semi_annual_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan and Jul."""
@@ -413,7 +413,7 @@ class TestMatchSemiAnnual:
 
 
 class TestMatchAnnual:
-    """Tests for _match_annual() — pure function, no DB."""
+    """Tests for _match_annual() -- pure function, no DB."""
 
     def test_annual_one_per_year(self, biweekly_periods):
         """One match per calendar year on a specific month/day."""
@@ -437,7 +437,7 @@ class TestMatchAnnual:
 
 
 class TestMatchPeriodsEdgeCases:
-    """Edge case tests for _match_periods() — pure function, no DB."""
+    """Edge case tests for _match_periods() -- pure function, no DB."""
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
@@ -448,7 +448,7 @@ class TestMatchPeriodsEdgeCases:
         matched = _match_periods(rule, "every_period", biweekly_periods,
                                  effective_from)
 
-        assert len(matched) == 26 - 3  # Periods 3–25.
+        assert len(matched) == 26 - 3  # Periods 3-25.
         for period in matched:
             assert period.start_date >= effective_from
 
@@ -464,7 +464,7 @@ class TestMatchPeriodsEdgeCases:
 
 
 class TestMatchPeriodsFull:
-    """Integration tests for _match_periods() dispatch — pure, no DB."""
+    """Integration tests for _match_periods() dispatch -- pure, no DB."""
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
@@ -535,7 +535,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         """interval_n=None (DB NULL): 'None or 1' = 1.
 
         Expected: matches every period (same as interval_n=1).
-        Different failure mode than interval_n=0 — None means
+        Different failure mode than interval_n=0 -- None means
         the DB column default (1) was not applied.
         """
         rule = FakeRule(
@@ -606,7 +606,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         """
         # Prevented in production by ck_recurrence_rules_dom.
         # _match_periods applies 'or 1' for falsy values.
-        # Direct call bypasses both — date(y, m, 0) raises.
+        # Direct call bypasses both -- date(y, m, 0) raises.
         with pytest.raises(ValueError):
             _match_monthly(biweekly_periods, day_of_month=0)
 
@@ -684,7 +684,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         """
         effective = biweekly_periods[0].start_date
 
-        # Path (a): via _match_periods — 0 or 1 = 1.
+        # Path (a): via _match_periods -- 0 or 1 = 1.
         # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
         # Prevented in production by ck_recurrence_rules_moy.
         rule_zero = FakeRule(
@@ -755,14 +755,14 @@ class TestMatchPeriodsEdgeCaseSafety:
         DB constraint ck_recurrence_rules_moy prevents
         month_of_year > 12 from being stored.
         """
-        # Direct call — crashes on monthrange(year, 13).
+        # Direct call -- crashes on monthrange(year, 13).
         # Prevented in production by ck_recurrence_rules_moy.
         with pytest.raises(ValueError):
             _match_annual(
                 biweekly_periods, month=13, day=15,
             )
 
-        # Via _match_periods — 13 or 1 = 13 (truthy).
+        # Via _match_periods -- 13 or 1 = 13 (truthy).
         # No fallback; passes 13 to _match_annual.
         rule = FakeRule(
             pattern_name="annual",
@@ -863,7 +863,7 @@ class TestGenerateForTemplate:
             created[2].is_deleted = True
             db.session.flush()
 
-            # Second generation — should not duplicate the deleted entry.
+            # Second generation -- should not duplicate the deleted entry.
             second_run = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )
@@ -956,7 +956,7 @@ class TestRegenerateForTemplate:
             template.default_amount = Decimal("200.00")
             db.session.flush()
 
-            # Regenerate — should delete old and create new.
+            # Regenerate -- should delete old and create new.
             new_created = recurrence_engine.regenerate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )
@@ -986,7 +986,7 @@ class TestRegenerateForTemplate:
             created[0].is_deleted = True
             db.session.flush()
 
-            # Regenerate — should raise with deleted list.
+            # Regenerate -- should raise with deleted list.
             with pytest.raises(RecurrenceConflict) as exc_info:
                 recurrence_engine.regenerate_for_template(
                     template, seed_periods, seed_user["scenario"].id,
@@ -1351,7 +1351,7 @@ class TestNegativePaths:
             target_txn.status_id = received_status.id
             db.session.flush()
 
-            # Regenerate — received transaction must survive.
+            # Regenerate -- received transaction must survive.
             recurrence_engine.regenerate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )
@@ -1504,7 +1504,7 @@ class TestEndDate:
         assert len(matched) == 26
 
     def test_end_date_with_monthly_pattern(self, biweekly_periods):
-        """end_date works with monthly pattern — only months before end."""
+        """end_date works with monthly pattern -- only months before end."""
         # End in March 2026.
         rule = FakeRule(pattern_name="monthly", day_of_month=15,
                         end_date=date(2026, 3, 31))
@@ -1649,7 +1649,7 @@ class TestEndDateIntegration:
             )
             assert len(created) == 3
 
-            # Regenerate — should produce the same count.
+            # Regenerate -- should produce the same count.
             regenerated = recurrence_engine.regenerate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )

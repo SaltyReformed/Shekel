@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transfer Recurrence Engine
+Shekel Budget App -- Transfer Recurrence Engine
 
 Parallel to recurrence_engine.py but generates Transfer records instead
 of Transaction records.  Reuses _match_periods from the transaction
@@ -24,7 +24,7 @@ from app.exceptions import RecurrenceConflict
 
 logger = logging.getLogger(__name__)
 
-# Statuses that are historical — never modified by the recurrence engine.
+# Statuses that are historical -- never modified by the recurrence engine.
 IMMUTABLE_STATUSES = frozenset({"done", "received", "credit", "cancelled"})
 
 
@@ -35,7 +35,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         template:       A TransferTemplate with a loaded recurrence_rule.
         periods:        List of PayPeriod objects to consider (ordered by index).
         scenario_id:    The scenario to generate into.
-        effective_from: Optional date — only generate for periods starting on or
+        effective_from: Optional date -- only generate for periods starting on or
                         after this date.
 
     Returns:
@@ -192,8 +192,8 @@ def resolve_conflicts(transfer_ids, action, new_amount=None):
 
     Args:
         transfer_ids: List of Transfer IDs to resolve.
-        action:       'update' — clear override/delete, apply new amount.
-                      'keep' — leave the transfer unchanged.
+        action:       'update' -- clear override/delete, apply new amount.
+                      'keep' -- leave the transfer unchanged.
         new_amount:   The new default amount (required if action='update').
     """
     if action == "keep":

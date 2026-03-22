@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if template else 'New' }} Transfer — Shekel{% endblock %}
+{% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock %}
 
 
 {% set prefill_from = prefill_from | default(None) %}
@@ -111,7 +111,7 @@
           <div class="col d-none" id="field-moy">
             <label for="month_of_year" class="form-label">Month</label>
             <select id="month_of_year" name="month_of_year" class="form-select">
-              <option value="">—</option>
+              <option value="">--</option>
               {% for num, name in month_names.items() %}
               <option value="{{ num }}"
                 {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>

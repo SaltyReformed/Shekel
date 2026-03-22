@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Settings Route Tests
+Shekel Budget App -- Settings Route Tests
 
 Tests for user settings page:
   - Rendering settings (with existing and auto-created settings)
@@ -110,7 +110,7 @@ class TestSettingsUpdate:
             settings.low_balance_threshold = 750
             db.session.commit()
 
-            # Submit with all blank — should not change anything.
+            # Submit with all blank -- should not change anything.
             resp = auth_client.post("/settings", data={
                 "grid_default_periods": "",
                 "default_inflation_rate": "",

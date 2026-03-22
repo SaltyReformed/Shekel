@@ -1,4 +1,4 @@
-# Fix Retirement Projection Calculations — Implementation Plan
+# Fix Retirement Projection Calculations -- Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -12,7 +12,7 @@
 
 ## Task 1: Add Synthetic Period Generator to Growth Engine
 
-**Why:** The retirement dashboard needs to project balances 20+ years into the future, but the DB only stores ~2 years of pay periods. The growth engine needs period objects with `.id`, `.start_date`, `.end_date` — we generate lightweight synthetic ones.
+**Why:** The retirement dashboard needs to project balances 20+ years into the future, but the DB only stores ~2 years of pay periods. The growth engine needs period objects with `.id`, `.start_date`, `.end_date` -- we generate lightweight synthetic ones.
 
 **Files:**
 - Modify: `app/services/growth_engine.py` (add to end of file)
@@ -94,7 +94,7 @@ class TestGenerateProjectionPeriods:
 ### Step 2: Run tests to verify they fail
 
 Run: `python -m pytest tests/test_services/test_growth_engine.py::TestGenerateProjectionPeriods -v`
-Expected: FAIL — `ImportError: cannot import name 'generate_projection_periods'`
+Expected: FAIL -- `ImportError: cannot import name 'generate_projection_periods'`
 
 ### Step 3: Implement the synthetic period generator
 
@@ -111,12 +111,12 @@ def generate_projection_periods(start_date, end_date, cadence_days=14):
     """Generate synthetic biweekly periods for long-term projections.
 
     Creates lightweight period objects compatible with project_balance().
-    No database interaction — pure function.
+    No database interaction -- pure function.
 
     Args:
-        start_date:    date — first period start.
-        end_date:      date — generate periods until start_date would exceed this.
-        cadence_days:  int — days per period (default 14 for biweekly).
+        start_date:    date -- first period start.
+        end_date:      date -- generate periods until start_date would exceed this.
+        cadence_days:  int -- days per period (default 14 for biweekly).
 
     Returns:
         List of SyntheticPeriod namedtuples with .id, .start_date, .end_date.
@@ -178,7 +178,7 @@ Add to the end of class `TestCalculateGap` in `tests/test_services/test_retireme
         assert result.required_retirement_savings > ZERO
 
     def test_pension_not_taxed_without_tax_rate(self):
-        """Without tax rate, pension used as-is (gross) — backward compatible."""
+        """Without tax rate, pension used as-is (gross) -- backward compatible."""
         result = calculate_gap(
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("5000"),
@@ -202,7 +202,7 @@ Add to the end of class `TestCalculateGap` in `tests/test_services/test_retireme
         assert result.required_retirement_savings > ZERO
 
     def test_pension_tax_zero_pension(self):
-        """Tax on zero pension is still zero — no division issues."""
+        """Tax on zero pension is still zero -- no division issues."""
         result = calculate_gap(
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
@@ -215,7 +215,7 @@ Add to the end of class `TestCalculateGap` in `tests/test_services/test_retireme
 ### Step 2: Run tests to verify they fail
 
 Run: `python -m pytest tests/test_services/test_retirement_gap_calculator.py::TestCalculateGap::test_pension_taxed_when_tax_rate_provided -v`
-Expected: FAIL — `AttributeError: 'RetirementGapAnalysis' has no attribute 'after_tax_monthly_pension'`
+Expected: FAIL -- `AttributeError: 'RetirementGapAnalysis' has no attribute 'after_tax_monthly_pension'`
 
 ### Step 3: Implement pension tax adjustment
 
@@ -229,7 +229,7 @@ class RetirementGapAnalysis:
     """Result of a retirement income gap calculation."""
     pre_retirement_net_monthly: Decimal
     monthly_pension_income: Decimal
-    after_tax_monthly_pension: Decimal  # NEW — None when no tax rate provided
+    after_tax_monthly_pension: Decimal  # NEW -- None when no tax rate provided
     monthly_income_gap: Decimal
     required_retirement_savings: Decimal
     projected_total_savings: Decimal
@@ -290,7 +290,7 @@ With:
 Run: `python -m pytest tests/test_services/test_retirement_gap_calculator.py -v`
 Expected: All 16 tests PASS (12 existing + 4 new)
 
-**Note:** The existing `test_after_tax_view_traditional` and `test_after_tax_all_roth` tests use `monthly_pension_income=ZERO`, so taxing zero pension doesn't change the gap. These tests remain unaffected. The existing `test_pension_covers_all_income` test does NOT provide `estimated_tax_rate`, so it uses gross pension — still backward compatible.
+**Note:** The existing `test_after_tax_view_traditional` and `test_after_tax_all_roth` tests use `monthly_pension_income=ZERO`, so taxing zero pension doesn't change the gap. These tests remain unaffected. The existing `test_pension_covers_all_income` test does NOT provide `estimated_tax_rate`, so it uses gross pension -- still backward compatible.
 
 ### Step 5: Commit
 
@@ -457,7 +457,7 @@ from app.services.investment_projection import calculate_investment_inputs
 
 ### Step 4: Rewrite the projection loop in the dashboard function
 
-Replace the entire account projection block in `app/routes/retirement.py` `dashboard()` function (lines 108–164, from `# Load retirement/investment accounts` through building `retirement_account_projections`) with:
+Replace the entire account projection block in `app/routes/retirement.py` `dashboard()` function (lines 108-164, from `# Load retirement/investment accounts` through building `retirement_account_projections`) with:
 
 ```python
     # Load retirement/investment accounts and project balances.
@@ -657,7 +657,7 @@ This inserts between the "Projected Monthly Pension" and "Monthly Income Gap" ro
 ### Step 2: Verify template renders
 
 Run: `python -m pytest tests/test_routes/test_retirement.py::TestRetirementProjections::test_dashboard_pension_tax_shown -v`
-Expected: PASS — the "After-Tax Monthly Pension" text is now in the HTML.
+Expected: PASS -- the "After-Tax Monthly Pension" text is now in the HTML.
 
 ### Step 3: Commit
 

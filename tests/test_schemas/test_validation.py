@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Schema Validation Tests
+Shekel Budget App -- Schema Validation Tests
 
 Tests each Marshmallow schema's load() method directly for:
   - Required field enforcement (missing → ValidationError)
@@ -84,7 +84,7 @@ class TestTransactionUpdateSchema:
     """Tests for TransactionUpdateSchema."""
 
     def test_empty_strings_stripped(self):
-        """@pre_load strips empty strings — empty update is valid."""
+        """@pre_load strips empty strings -- empty update is valid."""
         data = TransactionUpdateSchema().load({
             "name": "",
             "estimated_amount": "",
@@ -204,7 +204,7 @@ class TestTemplateCreateSchema:
             "interval_n": "",
             "day_of_month": "",
         })
-        # Empty strings stripped — optional fields absent.
+        # Empty strings stripped -- optional fields absent.
         assert "recurrence_pattern" not in data
         assert "interval_n" not in data
 
@@ -374,7 +374,7 @@ class TestSavingsGoalUpdateSchema:
     """Tests for SavingsGoalUpdateSchema."""
 
     def test_empty_strings_stripped(self):
-        """@pre_load strips empty strings — empty update is valid."""
+        """@pre_load strips empty strings -- empty update is valid."""
         data = SavingsGoalUpdateSchema().load({
             "name": "",
             "target_amount": "",
@@ -706,7 +706,7 @@ class TestTransactionCreateSchemaBoundary:
         assert data["estimated_amount"] == Decimal("100.12")
 
     def test_xss_in_name_field(self):
-        """Schema accepts raw HTML in name field — no sanitization at this layer.
+        """Schema accepts raw HTML in name field -- no sanitization at this layer.
 
         # Schema accepts raw HTML. XSS prevention relies on Jinja2 auto-escaping
         # in templates ({{ name }} auto-escapes by default). Verify template
@@ -789,7 +789,7 @@ class TestTemplateCreateSchemaBoundary:
         assert "day_of_month" in exc.value.messages
 
     def test_day_of_month_31_accepted(self):
-        """day_of_month=31 is valid — months with 31 days exist."""
+        """day_of_month=31 is valid -- months with 31 days exist."""
         data = TemplateCreateSchema().load(
             self._valid_template_data(day_of_month="31")
         )
@@ -835,7 +835,7 @@ class TestTransferCreateSchemaBoundary:
         assert "amount" in exc.value.messages
 
     def test_zero_amount_rejected(self):
-        """Zero amount fails Range(min=0, min_inclusive=False) — must be > 0.
+        """Zero amount fails Range(min=0, min_inclusive=False) -- must be > 0.
 
         Zero-amount transfers are meaningless and should be blocked at the
         schema level.
@@ -906,7 +906,7 @@ class TestSalaryProfileCreateSchemaBoundary:
         assert "state_code" in exc.value.messages
 
     def test_lowercase_state_code_accepted(self):
-        """Lowercase state_code is accepted — no uppercase normalization in schema.
+        """Lowercase state_code is accepted -- no uppercase normalization in schema.
 
         # Schema accepts lowercase state codes. Normalization to uppercase
         # (if needed) must happen at the route or service level.
@@ -965,28 +965,28 @@ class TestFicaConfigSchemaBoundary:
         assert "ss_wage_base" in exc.value.messages
 
     def test_rate_at_zero_accepted(self):
-        """ss_rate=0 is accepted — inclusive lower bound of Range(min=0, max=100)."""
+        """ss_rate=0 is accepted -- inclusive lower bound of Range(min=0, max=100)."""
         data = FicaConfigSchema().load(
             self._valid_fica_data(ss_rate="0.00")
         )
         assert data["ss_rate"] == Decimal("0.00")
 
     def test_rate_at_100_accepted(self):
-        """ss_rate=100 is accepted — inclusive upper bound of Range(min=0, max=100)."""
+        """ss_rate=100 is accepted -- inclusive upper bound of Range(min=0, max=100)."""
         data = FicaConfigSchema().load(
             self._valid_fica_data(ss_rate="100.00")
         )
         assert data["ss_rate"] == Decimal("100.00")
 
     def test_wage_base_minimum_accepted(self):
-        """ss_wage_base=0.01 is accepted — smallest valid value (> 0)."""
+        """ss_wage_base=0.01 is accepted -- smallest valid value (> 0)."""
         data = FicaConfigSchema().load(
             self._valid_fica_data(ss_wage_base="0.01")
         )
         assert data["ss_wage_base"] == Decimal("0.01")
 
     def test_threshold_minimum_accepted(self):
-        """medicare_surtax_threshold=0.01 is accepted — smallest valid value (> 0)."""
+        """medicare_surtax_threshold=0.01 is accepted -- smallest valid value (> 0)."""
         data = FicaConfigSchema().load(
             self._valid_fica_data(medicare_surtax_threshold="0.01")
         )
@@ -1019,7 +1019,7 @@ class TestCategoryCreateSchemaBoundary:
         assert "group_name" in exc.value.messages
 
     def test_xss_in_group_name(self):
-        """Schema accepts raw HTML in group_name — no sanitization at this layer.
+        """Schema accepts raw HTML in group_name -- no sanitization at this layer.
 
         # Schema accepts raw HTML. XSS prevention relies on Jinja2 auto-escaping
         # in templates ({{ name }} auto-escapes by default). Verify template

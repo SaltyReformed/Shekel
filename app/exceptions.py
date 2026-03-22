@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Domain-Specific Exceptions
+Shekel Budget App -- Domain-Specific Exceptions
 
 Raised by the service layer, caught and translated to HTTP responses
 by the route layer.  Keeps business logic free of Flask concerns.

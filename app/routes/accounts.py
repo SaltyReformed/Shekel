@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Account Routes
+Shekel Budget App -- Account Routes
 
 CRUD for accounts and account types, plus anchor balance true-up.
 Returns HTMX fragments for inline editing at the top of the grid.
@@ -251,7 +251,7 @@ def deactivate_account(account_id):
     )
     if active_transfers:
         flash(
-            "Cannot deactivate this account — it is used by active recurring transfers. "
+            "Cannot deactivate this account -- it is used by active recurring transfers. "
             "Deactivate those recurring transfers first.",
             "warning",
         )
@@ -432,7 +432,7 @@ def delete_account_type(type_id):
     )
     if in_use:
         flash(
-            "Cannot delete this account type — it is in use by one or more accounts.",
+            "Cannot delete this account type -- it is in use by one or more accounts.",
             "warning",
         )
         return redirect(url_for("settings.show", section="account-types"))

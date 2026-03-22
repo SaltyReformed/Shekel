@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Ensure employer contributions (flat_percentage and match) use the user's actual gross salary per period, sourced from the active salary profile — not derived as a side effect of deductions targeting the account.
+**Goal:** Ensure employer contributions (flat_percentage and match) use the user's actual gross salary per period, sourced from the active salary profile -- not derived as a side effect of deductions targeting the account.
 
 **Architecture:** Add an optional `salary_gross_biweekly` parameter to `calculate_investment_inputs()`. When provided, use it as the `gross_biweekly` for employer params instead of only deriving it from deductions. Both callers (savings.py and investment.py) load the active salary profile and pass it in.
 
@@ -78,7 +78,7 @@ Add these two tests to `TestCalculateInvestmentInputs`:
             all_transfers=[],
             all_periods=[current_period],
             current_period=current_period,
-            salary_gross_biweekly=Decimal("3846.15"),  # from $100k — should be overridden
+            salary_gross_biweekly=Decimal("3846.15"),  # from $100k -- should be overridden
         )
 
         # Deduction has $120k salary → gross = 120000/26 = $4615.38
@@ -90,7 +90,7 @@ Add these two tests to `TestCalculateInvestmentInputs`:
 
 Run: `pytest tests/test_services/test_investment_projection.py::TestCalculateInvestmentInputs::test_employer_flat_uses_salary_gross_when_no_deductions tests/test_services/test_investment_projection.py::TestCalculateInvestmentInputs::test_deduction_gross_overrides_salary_gross -v`
 
-Expected: FAIL — `calculate_investment_inputs()` doesn't accept `salary_gross_biweekly` yet.
+Expected: FAIL -- `calculate_investment_inputs()` doesn't accept `salary_gross_biweekly` yet.
 
 **Step 3: Commit the failing tests**
 
@@ -125,7 +125,7 @@ def calculate_investment_inputs(
 Update the docstring Args to add:
 
 ```
-        salary_gross_biweekly: Optional Decimal — gross pay per period from the
+        salary_gross_biweekly: Optional Decimal -- gross pay per period from the
                             user's salary profile. Used as fallback for employer
                             contribution calculation when no deductions target
                             the account.
@@ -147,7 +147,7 @@ Expected: All 11 tests PASS (9 existing + 2 new).
 
 **Step 3: Run existing tests to verify no regressions**
 
-Existing tests don't pass `salary_gross_biweekly` (it defaults to None), so they should all still pass with their current behavior — deduction-derived gross is used when deductions exist, and the fallback is never triggered.
+Existing tests don't pass `salary_gross_biweekly` (it defaults to None), so they should all still pass with their current behavior -- deduction-derived gross is used when deductions exist, and the fallback is never triggered.
 
 **Step 4: Commit**
 
@@ -245,7 +245,7 @@ Add this test to `TestDashboard` in `tests/test_routes/test_savings.py`:
 
 Run: `pytest tests/test_routes/test_savings.py::TestDashboard::test_dashboard_employer_contribution_without_employee_deduction -v`
 
-Expected: FAIL — `salary_gross_biweekly` is not yet passed by the caller.
+Expected: FAIL -- `salary_gross_biweekly` is not yet passed by the caller.
 
 **Step 3: Update savings.py**
 

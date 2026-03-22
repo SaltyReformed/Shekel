@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Entry Point
+Shekel Budget App -- Entry Point
 
 Usage:
     flask run                   # Development server

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Savings Route Tests
+Shekel Budget App -- Savings Route Tests
 
 Tests for the savings dashboard and goal CRUD endpoints:
   - Dashboard rendering (with/without accounts, goals)
@@ -202,7 +202,7 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
 
 
 class TestDashboard:
-    """Tests for GET /savings — the savings dashboard."""
+    """Tests for GET /savings -- the savings dashboard."""
 
     def test_dashboard_renders(self, app, auth_client, seed_user, seed_periods):
         """Dashboard renders successfully with accounts and periods."""
@@ -214,7 +214,7 @@ class TestDashboard:
     def test_dashboard_no_savings_accounts(self, app, auth_client, seed_user, seed_periods):
         """Dashboard renders even when user has no savings-type accounts."""
         with app.app_context():
-            # seed_user only has a checking account — no savings accounts.
+            # seed_user only has a checking account -- no savings accounts.
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             assert b"Accounts Dashboard" in resp.data
@@ -536,7 +536,7 @@ class TestGoalUpdate:
             goal = _create_goal(seed_user, acct)
 
             resp = auth_client.post(f"/savings/goals/{goal.id}", data={
-                "target_amount": "-100.00",  # Negative — fails Range validator.
+                "target_amount": "-100.00",  # Negative -- fails Range validator.
             }, follow_redirects=True)
 
             assert resp.status_code == 200

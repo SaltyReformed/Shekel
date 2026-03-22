@@ -1,8 +1,8 @@
 """
-Shekel Budget App — Escrow Calculator
+Shekel Budget App -- Escrow Calculator
 
 Pure-function service for mortgage escrow calculations.
-No database access — operates only on values passed in.
+No database access -- operates only on values passed in.
 """
 
 from datetime import date

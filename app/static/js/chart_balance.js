@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Balance Over Time Chart
+ * Shekel Budget App -- Balance Over Time Chart
  *
  * Renders a multi-line chart showing account balances over time.
  * Supports dual Y-axis mode for separating small balances (checking/savings)
@@ -98,7 +98,7 @@ function renderBalanceOverTime(canvasId) {
   });
 }
 
-// Client-side dual-axis toggle — no server round-trip needed.
+// Client-side dual-axis toggle -- no server round-trip needed.
 document.addEventListener('change', function(e) {
   if (e.target && e.target.id === 'dual-axis-toggle') {
     renderBalanceOverTime('chart-balance-over-time');

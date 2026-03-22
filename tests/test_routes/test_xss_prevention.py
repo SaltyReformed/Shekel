@@ -31,8 +31,8 @@ from app.services.auth_service import hash_password
 # ── XSS Payload Vectors ─────────────────────────────────────────
 #
 # Each pytest.param provides:
-#   payload          — the raw XSS string submitted in form fields
-#   escaped_fragment — a bytes substring that MUST appear in the
+#   payload          -- the raw XSS string submitted in form fields
+#   escaped_fragment -- a bytes substring that MUST appear in the
 #                      rendered HTML (proves Jinja2 escaped it)
 #
 # All payloads contain HTML metacharacters (<, >, ", &) that Jinja2

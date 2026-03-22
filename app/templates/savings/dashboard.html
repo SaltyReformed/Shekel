@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Accounts Dashboard — Shekel{% endblock %}
+{% block title %}Accounts Dashboard -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -75,13 +75,13 @@
                 {{ ad.account.account_type.name|format_account_type }}
               {% endif %}
               {% if ad.hysa_params is defined and ad.hysa_params %}
-                — APY: {{ "%.2f"|format(ad.hysa_params.apy|float * 100) }}%
+                -- APY: {{ "%.2f"|format(ad.hysa_params.apy|float * 100) }}%
               {% endif %}
               {% if ad.loan_params is defined and ad.loan_params %}
-                — {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
+                -- {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
               {% endif %}
               {% if ad.investment_params is defined and ad.investment_params %}
-                — Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|float * 100) }}%
+                -- Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|float * 100) }}%
               {% endif %}
             </small>
           </div>
@@ -119,7 +119,7 @@
             {% if ad.current_balance is not none %}
               ${{ "{:,.2f}".format(ad.current_balance|float) }}
             {% else %}
-              —
+              --
             {% endif %}
           </div>
         </div>

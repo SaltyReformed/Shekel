@@ -351,7 +351,7 @@ class TestBalanceAnomalies:
         compares the anchor period's index to the max period_index for the
         account's user.  To trigger it, we create a period owned by a
         different (fake) user with a high index and point the real
-        account's anchor to it — bypassing FK constraints via replica mode.
+        account's anchor to it -- bypassing FK constraints via replica mode.
         """
         user = seed_user["user"]
         account = seed_user["account"]

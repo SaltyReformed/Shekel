@@ -1,4 +1,4 @@
-{# Full edit popover — renders inside #txn-popover container.
+{# Full edit popover -- renders inside #txn-popover container.
    Contains all editable fields and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
 
@@ -69,7 +69,7 @@
     </div>
   </form>
 
-  {# Quick status actions — these also target the cell by ID #}
+  {# Quick status actions -- these also target the cell by ID #}
   <div class="d-flex gap-1 flex-wrap">
     {% if txn.is_expense and txn.status.name != 'done' %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"

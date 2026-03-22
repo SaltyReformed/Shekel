@@ -1,5 +1,5 @@
 /**
- * Shekel Budget App — Client-Side JavaScript
+ * Shekel Budget App -- Client-Side JavaScript
  *
  * Minimal JS: HTMX handles most interactivity server-side.
  * This file provides the theme toggle and small UX helpers.
@@ -74,11 +74,11 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
   }
 });
 
-// Consolidated htmx:afterSwap handler — save flash, popover close, focus restore.
+// Consolidated htmx:afterSwap handler -- save flash, popover close, focus restore.
 document.body.addEventListener("htmx:afterSwap", function(event) {
   const el = event.detail.elt;
 
-  // Save flash animation — only for transaction cell saves.
+  // Save flash animation -- only for transaction cell saves.
   if (el && el.closest && el.closest('td.cell')) {
     el.classList.add("save-flash");
     el.addEventListener("animationend", function() {

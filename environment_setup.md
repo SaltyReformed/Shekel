@@ -1,4 +1,4 @@
-# Budget App — Development Environment Setup
+# Budget App -- Development Environment Setup
 
 **Platform:** Arch Linux **Editor:** NeoVim + LazyVim **Stack:** Flask · Jinja2 · HTMX · Bootstrap 5
 · PostgreSQL
@@ -34,7 +34,7 @@ psql budget_app -c "SELECT version();"
 
 If `createuser` fails with a peer authentication error, check `/var/lib/postgres/data/pg_hba.conf`
 and ensure the `local` line uses `peer` (the Arch default). Peer auth maps your Linux username to a
-PostgreSQL role with the same name — no password needed for local development.
+PostgreSQL role with the same name -- no password needed for local development.
 
 ### Python
 
@@ -374,7 +374,7 @@ EOF
 
 ## 4. Key LazyVim Keybindings to Learn
 
-You don't need to memorize everything — learn these first and add more as you go. LazyVim uses
+You don't need to memorize everything -- learn these first and add more as you go. LazyVim uses
 `<Space>` as the leader key.
 
 ### Navigation
@@ -437,7 +437,7 @@ This is where you'll run Flask, pytest, and database commands without leaving nv
 | ---------------- | ------------------------------------ |
 | `<Space>` (wait) | Show all available keybinding groups |
 
-LazyVim has a which-key popup. Press `<Space>` and wait — it shows every keybinding group. Press a
+LazyVim has a which-key popup. Press `<Space>` and wait -- it shows every keybinding group. Press a
 letter to drill in. This is how you discover keybindings you've forgotten.
 
 ---
@@ -445,7 +445,7 @@ letter to drill in. This is how you discover keybindings you've forgotten.
 ## 5. Workflow: Terminal + NeoVim
 
 On your Windows/VS Code setup, you probably have an integrated terminal panel and click-to-run
-buttons. The NeoVim workflow is different — you'll use tmux or nvim's built-in terminal.
+buttons. The NeoVim workflow is different -- you'll use tmux or nvim's built-in terminal.
 
 ### Recommended: tmux
 
@@ -550,8 +550,8 @@ Inside nvim:
 
 3. After typing `app.`, you should see autocomplete suggestions from pyright (route, config, etc.).
 4. Delete the file: `:!rm test_setup.py`
-5. Run `:LspInfo` — should show pyright attached.
-6. Run `:Mason` — should show pyright, ruff, and pylint installed.
+5. Run `:LspInfo` -- should show pyright attached.
+6. Run `:Mason` -- should show pyright, ruff, and pylint installed.
 
 ### Pylint
 
@@ -565,9 +565,9 @@ rm /tmp/test_lint.py
 
 ---
 
-## 7. Project Scaffolding — First Files
+## 7. Project Scaffolding -- First Files
 
-Once everything above checks out, create the initial project structure. This is just the skeleton —
+Once everything above checks out, create the initial project structure. This is just the skeleton --
 enough to prove the stack works end-to-end.
 
 ```bash
@@ -639,12 +639,12 @@ source .venv/bin/activate
 flask run --debug
 ```
 
-Open `http://localhost:5000` in a browser. You should see "Budget App — It works." When you do, your
+Open `http://localhost:5000` in a browser. You should see "Budget App -- It works." When you do, your
 development environment is confirmed working and you're ready to start building the real app.
 
 ---
 
-## Appendix: VS Code vs NeoVim — Mental Model Shift
+## Appendix: VS Code vs NeoVim -- Mental Model Shift
 
 Coming from VS Code, the biggest adjustment is that NeoVim is **keyboard-first**. Here are the
 equivalents for things you're used to:
@@ -666,7 +666,7 @@ equivalents for things you're used to:
 | Ctrl+Shift+Z (redo)           | `<Ctrl-r>`                    |
 
 **The learning curve is real.** For the first few days you'll be slower. That's expected. Resist the
-urge to go back to VS Code — the speed comes after you internalize the keybindings. Two suggestions:
+urge to go back to VS Code -- the speed comes after you internalize the keybindings. Two suggestions:
 
 1. **Keep `vimtutor` accessible.** Run `:Tutor` inside nvim for LazyVim's built-in tutorial. The
    original `vimtutor` (run from the terminal) covers core vim motions.

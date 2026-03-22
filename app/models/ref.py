@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Reference Table Models (ref schema)
+Shekel Budget App -- Reference Table Models (ref schema)
 
 Lookup / enum tables that are rarely written and frequently joined.
 New values are added via INSERT, never via schema migration.

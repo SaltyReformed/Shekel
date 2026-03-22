@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Charts Routes
+Shekel Budget App -- Charts Routes
 
 Centralized Charts dashboard with HTMX-loaded chart fragments.
 Each fragment endpoint returns an HTML partial with chart data

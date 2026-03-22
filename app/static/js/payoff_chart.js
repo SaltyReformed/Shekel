@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Payoff Chart (Chart.js)
+ * Shekel Budget App -- Payoff Chart (Chart.js)
  *
  * Renders a line chart showing loan balance over time.
  * Data is read from data-* attributes on the canvas element (CSP-compliant).

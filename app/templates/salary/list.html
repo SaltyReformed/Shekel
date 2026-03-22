@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Salary Profiles — Shekel{% endblock %}
+{% block title %}Salary Profiles -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -42,14 +42,14 @@
     {% set p = item.profile %}
     <tr class="{{ 'text-muted' if not p.is_active }}">
       <td>{{ p.name }}</td>
-      <td>{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '—' }}</td>
+      <td>{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
       <td>{{ p.state_code }}</td>
       <td class="text-end">${{ "%.2f"|format(p.annual_salary|float) }}</td>
       <td class="text-end">
         {% if item.net_pay is not none %}
           <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay|float) }}</span>
         {% else %}
-          —
+          --
         {% endif %}
       </td>
       <td>

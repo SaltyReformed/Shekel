@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Charts Route Tests
+Shekel Budget App -- Charts Route Tests
 
 Tests for the Charts dashboard and HTMX fragment endpoints:
   - Authentication required

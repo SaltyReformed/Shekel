@@ -26,10 +26,10 @@
 #        sudo systemctl start cloudflared
 #
 # ── Placeholder Reference ────────────────────────────────────────
-#   <TUNNEL_ID>       — UUID from `cloudflared tunnel create shekel`
+#   <TUNNEL_ID>       -- UUID from `cloudflared tunnel create shekel`
 #                       Find it with: cloudflared tunnel list
-#   <DOMAIN>          — Production subdomain (e.g., budget.example.com)
-#   <STAGING_DOMAIN>  — Staging subdomain for pre-production testing
+#   <DOMAIN>          -- Production subdomain (e.g., budget.example.com)
+#   <STAGING_DOMAIN>  -- Staging subdomain for pre-production testing
 #                       (e.g., staging-budget.example.com)
 #
 # See docs/runbook.md for the full step-by-step setup procedure.
@@ -53,7 +53,7 @@ ingress:
   - hostname: <DOMAIN>
     service: http://localhost:80
     originRequest:
-      # Nginx listens on plain HTTP — no TLS on the origin.
+      # Nginx listens on plain HTTP -- no TLS on the origin.
       noTLSVerify: true
 
   # Staging: uncomment during initial setup to test with a

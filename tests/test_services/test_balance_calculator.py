@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Balance Calculator Tests
+Shekel Budget App -- Balance Calculator Tests
 
 Tests the pure-function balance calculator against the rules
 defined in §4.9 of the requirements:
@@ -77,7 +77,7 @@ class TestCalculateBalances:
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txns = []
-            # A 'done' expense — already reflected in anchor, should be skipped.
+            # A 'done' expense -- already reflected in anchor, should be skipped.
             done_exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
@@ -91,7 +91,7 @@ class TestCalculateBalances:
             db.session.add(done_exp)
             txns.append(done_exp)
 
-            # A projected expense — NOT yet in anchor, should be subtracted.
+            # A projected expense -- NOT yet in anchor, should be subtracted.
             proj_exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
@@ -145,7 +145,7 @@ class TestCalculateBalances:
                 transactions=txns,
             )
 
-            # Credit excluded — balance unchanged.
+            # Credit excluded -- balance unchanged.
             assert balances[periods[0].id] == Decimal("1000.00")
 
     def test_multi_period_roll_forward(self, app, db, seed_user, seed_periods):
@@ -239,7 +239,7 @@ class FakeTransfer:
 
 
 class TestBalanceCalculatorEdgeCases:
-    """Pure-function edge-case tests — no DB fixtures needed."""
+    """Pure-function edge-case tests -- no DB fixtures needed."""
 
     def test_anchor_balance_none_defaults_to_zero(self):
         """anchor_balance=None → Decimal('0.00'), projected income still added."""
@@ -462,7 +462,7 @@ class TestBalanceCalculatorEdgeCases:
 
 
 # -------------------------------------------------------------------
-# FIN tests — Financial accuracy (penny-level precision)
+# FIN tests -- Financial accuracy (penny-level precision)
 # -------------------------------------------------------------------
 
 
@@ -510,7 +510,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(0, "projected", "expense", "200.00")
         )
 
-        # --- Period 1 (S2): done expense — excluded ---
+        # --- Period 1 (S2): done expense -- excluded ---
         # Projected paycheck.
         txns.append(
             FakeTxn(1, "projected", "income", "2500.00")
@@ -520,12 +520,12 @@ class TestBalanceCalculatorFIN:
             FakeTxn(1, "projected", "expense", "850.00")
         )
         # Done expense (actual would be 275.50); service
-        # excludes done entirely — never reads actual_amount.
+        # excludes done entirely -- never reads actual_amount.
         txns.append(
             FakeTxn(1, "done", "expense", "300.00")
         )
 
-        # --- Period 2 (S3): cancelled expense — excluded ---
+        # --- Period 2 (S3): cancelled expense -- excluded ---
         # Projected paycheck.
         txns.append(
             FakeTxn(2, "projected", "income", "2500.00")
@@ -539,7 +539,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(2, "cancelled", "expense", "500.00")
         )
 
-        # --- Period 3 (S4): credit expense — excluded ---
+        # --- Period 3 (S4): credit expense -- excluded ---
         # Projected paycheck.
         txns.append(
             FakeTxn(3, "projected", "income", "2500.00")
@@ -548,7 +548,7 @@ class TestBalanceCalculatorFIN:
         txns.append(
             FakeTxn(3, "projected", "expense", "850.00")
         )
-        # Credit: on credit card, not checking — excluded.
+        # Credit: on credit card, not checking -- excluded.
         txns.append(
             FakeTxn(3, "credit", "expense", "450.00")
         )
@@ -575,7 +575,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(5, "projected", "expense", "150.00")
         )
 
-        # --- Period 6 (S7): received income — excluded ---
+        # --- Period 6 (S7): received income -- excluded ---
         # Projected paycheck.
         txns.append(
             FakeTxn(6, "projected", "income", "2500.00")
@@ -584,7 +584,7 @@ class TestBalanceCalculatorFIN:
         txns.append(
             FakeTxn(6, "projected", "expense", "850.00")
         )
-        # Received: already settled — excluded.
+        # Received: already settled -- excluded.
         txns.append(
             FakeTxn(6, "received", "income", "100.00")
         )
@@ -619,7 +619,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(8, "projected", "expense", "33.33")
         )
 
-        # --- Period 9 (S2 repeat): done income — excluded ---
+        # --- Period 9 (S2 repeat): done income -- excluded ---
         # Projected paycheck.
         txns.append(
             FakeTxn(9, "projected", "income", "2500.00")
@@ -628,7 +628,7 @@ class TestBalanceCalculatorFIN:
         txns.append(
             FakeTxn(9, "projected", "expense", "850.00")
         )
-        # Done income (actual would be 520.00) — excluded.
+        # Done income (actual would be 520.00) -- excluded.
         txns.append(
             FakeTxn(9, "done", "income", "500.00")
         )
@@ -642,7 +642,7 @@ class TestBalanceCalculatorFIN:
         txns.append(
             FakeTxn(10, "projected", "expense", "850.00")
         )
-        # Cancelled expense — excluded.
+        # Cancelled expense -- excluded.
         txns.append(
             FakeTxn(10, "cancelled", "expense", "200.00")
         )
@@ -656,7 +656,7 @@ class TestBalanceCalculatorFIN:
         txns.append(
             FakeTxn(11, "projected", "expense", "850.00")
         )
-        # Credit expense — excluded.
+        # Credit expense -- excluded.
         txns.append(
             FakeTxn(11, "credit", "expense", "175.00")
         )
@@ -785,7 +785,7 @@ class TestBalanceCalculatorFIN:
         )
 
         # Period 0: -500 + 2500 - 850 - 850 = 300.00
-        # (positive — overdraft covered by income)
+        # (positive -- overdraft covered by income)
         assert result[0] == Decimal("300.00"), (
             f"Period 0: expected 300.00, got {result[0]}, "
             f"diff={result[0] - Decimal('300.00')}"
@@ -957,7 +957,7 @@ class TestBalanceCalculatorFIN:
             f"diff={result[0] - Decimal('2650.00')}"
         )
         # Period 1: 2650 + 2500 - 850 - 0.00 = 4300.00
-        # Net is +1650 — same as without the zero expense.
+        # Net is +1650 -- same as without the zero expense.
         assert result[1] == Decimal("4300.00"), (
             f"Period 1: expected 4300.00, got {result[1]}, "
             f"diff={result[1] - Decimal('4300.00')}"
@@ -981,11 +981,11 @@ class TestBalanceCalculatorFIN:
         anchor_balance = Decimal("1000.00")
 
         txns = [
-            # Period 0: received income — excluded from anchor.
+            # Period 0: received income -- excluded from anchor.
             FakeTxn(0, "received", "income", "5000.00"),
-            # Period 1: received expense — excluded post-anchor.
+            # Period 1: received expense -- excluded post-anchor.
             FakeTxn(1, "received", "expense", "500.00"),
-            # Period 2: received income — excluded post-anchor.
+            # Period 2: received income -- excluded post-anchor.
             FakeTxn(2, "received", "income", "3000.00"),
         ]
 
@@ -996,7 +996,7 @@ class TestBalanceCalculatorFIN:
             transactions=txns,
         )
 
-        # All transactions received — every period equals anchor.
+        # All transactions received -- every period equals anchor.
         # Period 0: 1000 + 0 - 0 = 1000.00
         assert result[0] == Decimal("1000.00"), (
             f"Period 0: expected 1000.00, got {result[0]}, "
@@ -1039,10 +1039,10 @@ class TestNegativePaths:
         txns = [
             # Period 1 (anchor): income 2000, zero expense
             FakeTxn(1, "projected", "income", "2000.00"),
-            FakeTxn(1, "projected", "expense", "0.00"),  # zero — must not affect balance
+            FakeTxn(1, "projected", "expense", "0.00"),  # zero -- must not affect balance
             # Period 2: expense 500, zero expense
             FakeTxn(2, "projected", "expense", "500.00"),
-            FakeTxn(2, "projected", "expense", "0.00"),  # zero — must not affect balance
+            FakeTxn(2, "projected", "expense", "0.00"),  # zero -- must not affect balance
             # Period 3: expense 300 only
             FakeTxn(3, "projected", "expense", "300.00"),
         ]
@@ -1073,11 +1073,11 @@ class TestNegativePaths:
         """
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            # Anchor: received income — already settled, must be excluded.
+            # Anchor: received income -- already settled, must be excluded.
             # actual_amount would be on the real ORM object but the balance
             # calculator never reads it; it skips the entire txn via SETTLED_STATUSES.
             FakeTxn(1, "received", "income", "2500.00"),
-            # Anchor: projected expense — included in remaining calculation.
+            # Anchor: projected expense -- included in remaining calculation.
             FakeTxn(1, "projected", "expense", "800.00"),
             # Period 2: projected expense.
             FakeTxn(2, "projected", "expense", "600.00"),
@@ -1107,7 +1107,7 @@ class TestNegativePaths:
         txns = [
             # Period 1 (anchor): projected income
             FakeTxn(1, "projected", "income", "2000.00"),
-            # Period 2: two cancelled expenses — must be excluded
+            # Period 2: two cancelled expenses -- must be excluded
             FakeTxn(2, "cancelled", "expense", "500.00"),
             FakeTxn(2, "cancelled", "expense", "300.00"),
             # Period 3: projected expense
@@ -1141,7 +1141,7 @@ class TestNegativePaths:
         """
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            # Anchor: done income — already settled. The balance calculator skips
+            # Anchor: done income -- already settled. The balance calculator skips
             # it entirely (SETTLED_STATUSES), so estimated_amount is never read.
             FakeTxn(1, "done", "income", "2500.00"),
             # Period 2: projected expense
@@ -1171,17 +1171,17 @@ class TestNegativePaths:
         """
         periods = [FakePeriod(1)]
         txns = [
-            # projected income — INCLUDED (only projected items count in _sum_remaining)
+            # projected income -- INCLUDED (only projected items count in _sum_remaining)
             FakeTxn(1, "projected", "income", "1500.00"),
-            # done expense — EXCLUDED (in SETTLED_STATUSES: already in anchor)
+            # done expense -- EXCLUDED (in SETTLED_STATUSES: already in anchor)
             FakeTxn(1, "done", "expense", "999.00"),
-            # received income — EXCLUDED (in SETTLED_STATUSES: already in anchor)
+            # received income -- EXCLUDED (in SETTLED_STATUSES: already in anchor)
             FakeTxn(1, "received", "income", "888.00"),
-            # credit expense — EXCLUDED (credit card, not checking balance)
+            # credit expense -- EXCLUDED (credit card, not checking balance)
             FakeTxn(1, "credit", "expense", "777.00"),
-            # cancelled expense — EXCLUDED (user cancelled it)
+            # cancelled expense -- EXCLUDED (user cancelled it)
             FakeTxn(1, "cancelled", "expense", "666.00"),
-            # projected expense — INCLUDED
+            # projected expense -- INCLUDED
             FakeTxn(1, "projected", "expense", "750.00"),
         ]
 

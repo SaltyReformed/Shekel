@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Flask Extension Instances
+Shekel Budget App -- Flask Extension Instances
 
 Extensions are instantiated here (without an app) and bound to the
 Flask app inside the create_app() factory.  This avoids circular

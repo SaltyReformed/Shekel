@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Account Route Tests
+Shekel Budget App -- Account Route Tests
 
 Tests for account CRUD, anchor balance true-up, and account type
 management endpoints (§2.1 of the test plan).
@@ -660,7 +660,7 @@ class TestAccountNegativePaths:
             assert resp1.status_code == 200
             assert b"deactivated" in resp1.data
 
-            # Second deactivation — account is already inactive.
+            # Second deactivation -- account is already inactive.
             resp2 = auth_client.post(
                 f"/accounts/{account_id}/delete",
                 follow_redirects=True,

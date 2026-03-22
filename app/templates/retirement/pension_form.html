@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if pension else 'New' }} Pension — Shekel{% endblock %}
+{% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -46,7 +46,7 @@
           <td>{{ "%.3f"|format(p.benefit_multiplier|float * 100) }}%</td>
           <td>{{ p.consecutive_high_years }}</td>
           <td>{{ p.hire_date.strftime('%Y-%m-%d') }}</td>
-          <td>{{ p.planned_retirement_date.strftime('%Y-%m-%d') if p.planned_retirement_date else '—' }}</td>
+          <td>{{ p.planned_retirement_date.strftime('%Y-%m-%d') if p.planned_retirement_date else '--' }}</td>
           <td class="text-end">
             <a href="{{ url_for('retirement.edit_pension', pension_id=p.id) }}"
                class="btn btn-sm btn-outline-secondary">
@@ -87,7 +87,7 @@
         <div class="col-md-4">
           <label class="form-label">Linked Salary Profile</label>
           <select name="salary_profile_id" class="form-select form-select-sm">
-            <option value="">— None —</option>
+            <option value="">-- None --</option>
             {% for sp in salary_profiles %}
             <option value="{{ sp.id }}"
                     {{ 'selected' if pension and pension.salary_profile_id == sp.id }}>

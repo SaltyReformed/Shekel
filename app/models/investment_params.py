@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Investment Parameters Model (budget schema)
+Shekel Budget App -- Investment Parameters Model (budget schema)
 
 Stores type-specific parameters for investment and retirement accounts
 (401k, Roth 401k, Traditional IRA, Roth IRA, brokerage).

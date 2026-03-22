@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Retirement Income Gap Chart
+ * Shekel Budget App -- Retirement Income Gap Chart
  *
  * Renders a Chart.js horizontal stacked bar chart showing pension income,
  * investment income, and the remaining gap relative to pre-retirement income.

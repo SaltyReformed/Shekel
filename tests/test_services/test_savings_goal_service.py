@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Unit Tests for Savings Goal Service
+Shekel Budget App -- Unit Tests for Savings Goal Service
 
 Tests the pure calculation functions in savings_goal_service.py:
 calculate_required_contribution, calculate_savings_metrics, and
@@ -36,7 +36,7 @@ class TestCalculateRequiredContribution:
         assert result == Decimal("200.00")
 
     def test_already_met_returns_zero(self):
-        """Balance already exceeds target — no contribution needed."""
+        """Balance already exceeds target -- no contribution needed."""
         result = calculate_required_contribution(
             current_balance=Decimal("5000"),
             target_amount=Decimal("3000"),
@@ -45,7 +45,7 @@ class TestCalculateRequiredContribution:
         assert result == Decimal("0.00")
 
     def test_remaining_periods_zero_returns_none(self):
-        """Zero remaining periods — past due, return None."""
+        """Zero remaining periods -- past due, return None."""
         result = calculate_required_contribution(
             current_balance=Decimal("1000"),
             target_amount=Decimal("2000"),
@@ -54,7 +54,7 @@ class TestCalculateRequiredContribution:
         assert result is None
 
     def test_remaining_periods_negative_returns_none(self):
-        """Negative remaining periods — past due, return None."""
+        """Negative remaining periods -- past due, return None."""
         result = calculate_required_contribution(
             current_balance=Decimal("1000"),
             target_amount=Decimal("2000"),
@@ -110,7 +110,7 @@ class TestCalculateSavingsMetrics:
         assert result["years_covered"] == Decimal("3.0")
 
     def test_expenses_zero_returns_all_zeros(self):
-        """Zero expenses — can't divide, return zeros."""
+        """Zero expenses -- can't divide, return zeros."""
         result = calculate_savings_metrics(
             savings_balance=Decimal("10000"),
             average_monthly_expenses=Decimal("0"),
@@ -120,7 +120,7 @@ class TestCalculateSavingsMetrics:
         assert result["years_covered"] == Decimal("0")
 
     def test_expenses_none_returns_all_zeros(self):
-        """None expenses — return zeros."""
+        """None expenses -- return zeros."""
         result = calculate_savings_metrics(
             savings_balance=Decimal("10000"),
             average_monthly_expenses=None,
@@ -130,7 +130,7 @@ class TestCalculateSavingsMetrics:
         assert result["years_covered"] == Decimal("0")
 
     def test_balance_zero_returns_all_zeros(self):
-        """Zero balance — nothing to cover expenses with."""
+        """Zero balance -- nothing to cover expenses with."""
         result = calculate_savings_metrics(
             savings_balance=Decimal("0"),
             average_monthly_expenses=Decimal("2000"),
@@ -163,13 +163,13 @@ class TestCountPeriodsUntil:
         assert result == 3
 
     def test_target_date_none_returns_none(self):
-        """None target date — return None."""
+        """None target date -- return None."""
         result = count_periods_until(None, [])
         assert result is None
 
     @patch("app.services.savings_goal_service.date")
     def test_target_date_in_past_returns_zero(self, mock_date):
-        """Target date before today — no periods can qualify."""
+        """Target date before today -- no periods can qualify."""
         mock_date.today.return_value = date(2026, 2, 1)
         mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
 

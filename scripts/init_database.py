@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Database Initialization
+Shekel Budget App -- Database Initialization
 
 Detects fresh vs. existing databases and initializes accordingly:
 - Fresh DB: Creates all tables via SQLAlchemy metadata, then stamps

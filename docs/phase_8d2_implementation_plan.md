@@ -200,7 +200,7 @@ WU-2 depends on WU-1 because the CI workflow needs to know which environment var
 Complete replacement contents:
 
 ```bash
-# Shekel Budget App — Environment Configuration
+# Shekel Budget App -- Environment Configuration
 #
 # Copy this file to .env and fill in your values.
 # Variables marked REQUIRED must be set before running in production.
@@ -334,7 +334,7 @@ RETENTION_MONTHLY_MONTHS=6
 **`docs/runbook_secrets.md`** -- Secret management section for the operations runbook.
 
 ```markdown
-# Secret Management — Operations Runbook
+# Secret Management -- Operations Runbook
 
 ## Secret Inventory
 
@@ -451,7 +451,7 @@ manager into a fresh `.env` file.
 **`.github/workflows/ci.yml`** -- Complete CI workflow:
 
 ```yaml
-# Shekel Budget App — Continuous Integration
+# Shekel Budget App -- Continuous Integration
 #
 # Runs linting (pylint) and the full test suite (pytest) on every push
 # to main and on pull requests.  Uses a PostgreSQL 16 service container
@@ -1076,11 +1076,11 @@ After the deploy script is working, verify each failure mode:
 
 These are the master plan test gate items that 8D-2 is responsible for:
 
-- [ ] **GitHub Actions CI runs tests on push to main** — Verified by manual verification runbook items 1 and 4. The CI workflow triggers on push to `main` and on pull requests, runs pylint and all 919 pytest tests against a PostgreSQL 16 service container.
+- [ ] **GitHub Actions CI runs tests on push to main** -- Verified by manual verification runbook items 1 and 4. The CI workflow triggers on push to `main` and on pull requests, runs pylint and all 919 pytest tests against a PostgreSQL 16 service container.
 
-- [ ] **`deploy.sh` successfully deploys a new version with zero manual steps after invocation** — Verified by manual verification runbook item 5. The script pulls code, backs up the database, tags the previous image, builds the new image, restarts the container (migrations run automatically via `entrypoint.sh`), and verifies health -- all without manual intervention.
+- [ ] **`deploy.sh` successfully deploys a new version with zero manual steps after invocation** -- Verified by manual verification runbook item 5. The script pulls code, backs up the database, tags the previous image, builds the new image, restarts the container (migrations run automatically via `entrypoint.sh`), and verifies health -- all without manual intervention.
 
-- [ ] **`deploy.sh` rolls back on health check failure** — Verified by manual verification runbook item 6. When the health endpoint returns unhealthy or times out, the script restores the previous image tag, restarts the container, and verifies the rollback succeeded.
+- [ ] **`deploy.sh` rolls back on health check failure** -- Verified by manual verification runbook item 6. When the health endpoint returns unhealthy or times out, the script restores the previous image tag, restarts the container, and verifies the rollback succeeded.
 
 ---
 

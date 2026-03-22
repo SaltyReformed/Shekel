@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Savings Goal Model (budget schema)
+Shekel Budget App -- Savings Goal Model (budget schema)
 
 Tracks savings targets with auto-calculated contribution amounts.
 """

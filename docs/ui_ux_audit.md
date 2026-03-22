@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The Shekel budget app has grown from a focused biweekly paycheck tool to a comprehensive personal finance application across six development phases, but its navigation and information architecture have not been restructured to accommodate this growth. The most critical issues are: (1) the navbar has 11 items with confusing overlap ("Accounts" vs "Accounts & Savings"), duplicate icons, and no grouping — adding Phase 7 Scenarios will make it unworkable; (2) recurring transactions are called "Templates" throughout the UI, which is developer jargon invisible to users; (3) configuration is scattered across seven different pages with no consistent pattern; and (4) the two parallel account views (Accounts at `/accounts` and Accounts & Savings at `/savings`) create confusion about which page serves what purpose. The core budget grid and payday workflow are well-designed, but the surrounding navigation and feature discoverability degrade significantly as users move beyond the grid.
+The Shekel budget app has grown from a focused biweekly paycheck tool to a comprehensive personal finance application across six development phases, but its navigation and information architecture have not been restructured to accommodate this growth. The most critical issues are: (1) the navbar has 11 items with confusing overlap ("Accounts" vs "Accounts & Savings"), duplicate icons, and no grouping -- adding Phase 7 Scenarios will make it unworkable; (2) recurring transactions are called "Templates" throughout the UI, which is developer jargon invisible to users; (3) configuration is scattered across seven different pages with no consistent pattern; and (4) the two parallel account views (Accounts at `/accounts` and Accounts & Savings at `/savings`) create confusion about which page serves what purpose. The core budget grid and payday workflow are well-designed, but the surrounding navigation and feature discoverability degrade significantly as users move beyond the grid.
 
 ---
 
@@ -22,7 +22,7 @@ The v3 addendum section 8.1 specifies a unified accounts dashboard organized by 
 Affected files: `app/templates/base.html:46-75`, `app/templates/accounts/list.html`, `app/templates/savings/dashboard.html`
 
 ```html
-<!-- base.html lines 62-75 — both items exist side by side -->
+<!-- base.html lines 62-75 -- both items exist side by side -->
 <li class="nav-item">
   <a class="nav-link" href="{{ url_for('accounts.list_accounts') }}">
     <i class="bi bi-bank"></i> Accounts
@@ -85,7 +85,7 @@ Affected file: `app/templates/base.html:46-100`
 
 **1.7 [Minor] No navbar collapse ordering strategy**
 
-On screens narrower than the `md` breakpoint, all 11 items collapse into the hamburger menu in the same flat order. There is no prioritization — the rarely-used "Pay Periods" item is as prominent as the daily-use "Budget" item.
+On screens narrower than the `md` breakpoint, all 11 items collapse into the hamburger menu in the same flat order. There is no prioritization -- the rarely-used "Pay Periods" item is as prominent as the daily-use "Budget" item.
 
 Affected file: `app/templates/base.html:40-101`
 
@@ -152,7 +152,7 @@ Affected file: `app/templates/settings/settings.html:28-31`
 
 **2.5 [Minor] Settings page is very sparse**
 
-The settings page contains only four fields (grid periods, inflation rate, low balance threshold, default grid account) in a narrow `col-lg-4` column. Given how much configuration exists across the app, this page feels incomplete — a user would expect more here.
+The settings page contains only four fields (grid periods, inflation rate, low balance threshold, default grid account) in a narrow `col-lg-4` column. Given how much configuration exists across the app, this page feels incomplete -- a user would expect more here.
 
 Affected file: `app/templates/settings/settings.html`
 
@@ -189,7 +189,7 @@ The following configuration items exist across the app:
 
 **3.1 [Critical] "Templates" is developer jargon for recurring transactions**
 
-Throughout the entire app, recurring transactions are called "Templates." The navbar says "Templates," the page titles say "Transaction Templates," the form says "New Template" / "Edit Template," the flash messages say "Template created," and URLs use `/templates`. A typical user thinks in terms of "recurring bills," "recurring income," or "scheduled transactions" — not "templates."
+Throughout the entire app, recurring transactions are called "Templates." The navbar says "Templates," the page titles say "Transaction Templates," the form says "New Template" / "Edit Template," the flash messages say "Template created," and URLs use `/templates`. A typical user thinks in terms of "recurring bills," "recurring income," or "scheduled transactions" -- not "templates."
 
 Affected files (non-exhaustive):
 
@@ -242,9 +242,9 @@ Affected files: `app/templates/accounts/list.html:22`, `app/templates/grid/_anch
 - Transfers use "Amount" consistently
 - The grid add-transaction modal uses "Amount" (`grid/grid.html:305`)
 - Salary uses "Annual Salary"
-- The form label says "Default Amount" but the column header on the grid says nothing — amounts are just numbers
+- The form label says "Default Amount" but the column header on the grid says nothing -- amounts are just numbers
 
-A user editing a recurring bill would not understand why the amount is called "default" (it is the amount used when generating future instances, which can be overridden per-period — but this is never explained).
+A user editing a recurring bill would not understand why the amount is called "default" (it is the amount used when generating future instances, which can be overridden per-period -- but this is never explained).
 
 **3.5 [Major] "Accounts & Savings" label is misleading**
 
@@ -293,7 +293,7 @@ Affected file: `app/templates/mortgage/dashboard.html:51`
 
 **3.10 [Minor] Account type names shown raw from database**
 
-Account type names are displayed using `name|capitalize` or `name|replace('_', ' ')|title`, which means database values like `auto_loan`, `roth_401k`, `traditional_ira` are shown as "Auto*loan", "Roth_401k", "Traditional_ira" — with underscores visible. The `|replace('*', ' ')` filter is used inconsistently.
+Account type names are displayed using `name|capitalize` or `name|replace('_', ' ')|title`, which means database values like `auto_loan`, `roth_401k`, `traditional_ira` are shown as "Auto*loan", "Roth_401k", "Traditional_ira" -- with underscores visible. The `|replace('*', ' ')` filter is used inconsistently.
 
 Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/dashboard.html:58`, `app/templates/investment/dashboard.html:9`
 
@@ -306,7 +306,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 **Steps:**
 
 1. User clicks "Templates" in navbar (must know that "Templates" means recurring transactions).
-2. Lands on `/templates` — list of all templates.
+2. Lands on `/templates` -- list of all templates.
 3. Clicks "New Template" button (top right).
 4. Fills out form: Name, Default Amount, Type (defaults to Expense), Account, Category, Recurrence Pattern, and pattern-specific fields.
 5. Clicks "Create."
@@ -316,7 +316,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 **Friction points:**
 
 - **[Critical]** Step 1 requires knowing "Templates" means "recurring transactions." No tooltip, no helper text, no alias. The onboarding checklist also says "Create transaction templates."
-- **[Major]** The form heading says "New Transaction Template" — still jargon.
+- **[Major]** The form heading says "New Transaction Template" -- still jargon.
 - **[Minor]** After creation, the user is redirected to the templates list, not the budget grid where they could immediately see the generated transactions. A "View on Grid" link would help.
 - **[Minor]** The "Category" dropdown shows all categories including income categories when creating an expense. No filtering by type.
 - **Total clicks:** 4 (navbar > New Template > fill form > Create). Acceptable count, but discoverability is poor.
@@ -326,7 +326,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 **Steps:**
 
 1. User clicks "Transfers" in navbar.
-2. Lands on `/transfers` — list of transfer templates.
+2. Lands on `/transfers` -- list of transfer templates.
 3. Clicks "New Transfer" button.
 4. Fills out form: Name, Amount, From Account, To Account, Recurrence Pattern.
 5. Clicks "Create."
@@ -334,8 +334,8 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 
 **Friction points:**
 
-- **[Major]** There is no way to initiate a transfer from the savings dashboard account cards. Users seeing their checking and savings accounts side by side cannot click "Transfer to this account" — they must navigate away to `/transfers`.
-- **[Major]** The form heading says "New Transfer Template" — the user just wants to set up a transfer, not create a "template."
+- **[Major]** There is no way to initiate a transfer from the savings dashboard account cards. Users seeing their checking and savings accounts side by side cannot click "Transfer to this account" -- they must navigate away to `/transfers`.
+- **[Major]** The form heading says "New Transfer Template" -- the user just wants to set up a transfer, not create a "template."
 - **[Minor]** The form does not prevent setting From and To to the same account. There is no client-side validation for this.
 - **[Minor]** On the savings dashboard, savings goal cards have a small transfer icon button that links to the general "New Transfer" page, but it does not pre-fill the target account.
 
@@ -354,7 +354,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 **Friction points:**
 
 - **[Major]** The "Target Account" field is at the very bottom of a dense, multi-row form with 8+ fields. A user adding a 401(k) deduction could easily miss it, especially on first setup.
-- **[Major]** The help text says "Credits deduction to a retirement/investment account" — technically accurate but does not explain the practical effect (that the deduction amount will be reflected as a contribution in the target account's growth projection).
+- **[Major]** The help text says "Credits deduction to a retirement/investment account" -- technically accurate but does not explain the practical effect (that the deduction amount will be reflected as a contribution in the target account's growth projection).
 - **[Minor]** There is no visual feedback when a paycheck is received confirming that the deduction was credited to the target account. The user must navigate to the investment dashboard separately to verify.
 - **[Minor]** Only retirement/investment accounts appear in the dropdown. If a user wants to link a deduction to a savings account (e.g., HSA contribution to a savings-type account), they cannot.
 
@@ -362,7 +362,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 <!-- salary/_deductions_section.html lines 148-158 -->
 <label class="form-label">Target Account</label>
 <select name="target_account_id" class="form-select form-select-sm">
-  <option value="">— None —</option>
+  <option value="">-- None --</option>
   {% for acct in investment_accounts %}
   <option value="{{ acct.id }}">{{ acct.name }}</option>
   {% endfor %}
@@ -377,7 +377,7 @@ Affected files: `app/templates/accounts/list.html:30`, `app/templates/savings/da
 **Steps:**
 
 1. User is on the budget grid (`/`).
-2. Clicks on an empty cell (the `—` dash) in the expense row for the desired category and period.
+2. Clicks on an empty cell (the `--` dash) in the expense row for the desired category and period.
 3. An inline quick-create input appears (HTMX-loaded).
 4. Types the amount and presses Enter.
 5. A new transaction is created with status "projected," named after the category.
@@ -390,9 +390,9 @@ Alternative path via modal:
 
 **Friction points:**
 
-- **[Minor]** The click-to-create on empty cells is powerful but not discoverable. The `—` dash does not look clickable. There is no tooltip or hover indicator beyond a subtle background change.
-- **[Minor]** The full edit popover (tier 2) requires clicking a small `>` expand button on the quick edit form. The button is 20px wide and uses muted text color — easy to miss.
-- **[Minor]** An ad-hoc transaction created via the grid has no category selection in the quick-create mode — it uses the row's category automatically. This is good UX. The modal path does require category selection, which is appropriate for less constrained creation.
+- **[Minor]** The click-to-create on empty cells is powerful but not discoverable. The `--` dash does not look clickable. There is no tooltip or hover indicator beyond a subtle background change.
+- **[Minor]** The full edit popover (tier 2) requires clicking a small `>` expand button on the quick edit form. The button is 20px wide and uses muted text color -- easy to miss.
+- **[Minor]** An ad-hoc transaction created via the grid has no category selection in the quick-create mode -- it uses the row's category automatically. This is good UX. The modal path does require category selection, which is appropriate for less constrained creation.
 - Overall, this workflow is well-designed for the power user. The grid is the strongest part of the UI.
 
 ### 4E. Payday Workflow
@@ -425,7 +425,7 @@ Alternative path via modal:
 **Friction points:**
 
 - **[Critical]** The two-page split means a user must guess which "Accounts" link to click. The wrong choice lands them on a CRUD page when they wanted a dashboard (or vice versa).
-- **[Major]** The savings dashboard is the unified view described in v3 addendum 8.1, but it is not called "Accounts" — it is called "Accounts & Savings" and linked from a separate navbar item.
+- **[Major]** The savings dashboard is the unified view described in v3 addendum 8.1, but it is not called "Accounts" -- it is called "Accounts & Savings" and linked from a separate navbar item.
 - **[Minor]** The savings dashboard "Back to Accounts" link on mortgage, auto loan, and investment dashboards all link to `/savings` (the dashboard), not `/accounts` (the CRUD page). This is correct behavior but the label "Back to Accounts" is confusing when the page is called "Accounts & Savings."
 
 ```html
@@ -454,7 +454,7 @@ Alternative path via modal:
 **Friction points:**
 
 - **[Minor]** The payoff calculator is buried below 3-4 other sections on a long page. A user specifically looking for payoff scenarios must scroll significantly.
-- **[Minor]** The payoff chart at the bottom of the page shows the standard balance-over-time curve, but the comparison chart (standard vs. accelerated) only appears in the HTMX results after calculating — not in the main chart area. These are separate charts.
+- **[Minor]** The payoff chart at the bottom of the page shows the standard balance-over-time curve, but the comparison chart (standard vs. accelerated) only appears in the HTMX results after calculating -- not in the main chart area. These are separate charts.
 - **[Minor]** The navigation path (navbar > Accounts & Savings > mortgage card > scroll to payoff) is 3 clicks + scrolling. Discoverable but could be more direct.
 - The payoff calculator itself is well-designed with tabs for two modes and a slider for the extra payment amount.
 
@@ -482,7 +482,7 @@ Alternative path via modal:
 
 ### Budget Grid (`/`, `grid/grid.html`)
 
-- **Clear title/purpose:** Yes — shows the account name and balance prominently at the top.
+- **Clear title/purpose:** Yes -- shows the account name and balance prominently at the top.
 - **Primary action:** The grid itself is the primary interaction surface. "Add Transaction" button is visible. "Add Transfer" button is also present.
 - **Empty state:** Two handled: `no_setup.html` (no scenario) and `no_periods.html` (no pay periods). Both provide guidance.
 - **Navigation:** Period navigation arrows and quick-select buttons (3P, 6P, 6M, 1Y, 2Y) are clear and functional. No breadcrumbs (this is the home page).
@@ -493,7 +493,7 @@ Alternative path via modal:
 
 ### Templates List (`/templates`, `templates/list.html`)
 
-- **Page title:** "Transaction Templates" — jargon issue (see 3.1).
+- **Page title:** "Transaction Templates" -- jargon issue (see 3.1).
 - **Primary action:** "New Template" button, top right.
 - **Empty state:** Alert box saying "No templates yet. Create one to start auto-generating transactions." Uses the word "templates" again.
 - **Navigation:** No breadcrumbs on the list page.
@@ -504,7 +504,7 @@ Alternative path via modal:
 - **Breadcrumbs:** Present, linking back to "Templates" (jargon).
 - **Form layout:** Well-organized with basic fields, then recurrence rule section separated by `<hr>`.
 - **Issue [Minor]:** The "Effective from" field on edit appears below the recurrence rule section with help text "Leave blank to use today's date." This is a technical concept (when to start regenerating future transactions) that could be confusing.
-- **Recurrence preview:** Dynamically shows next 5 occurrences — good UX.
+- **Recurrence preview:** Dynamically shows next 5 occurrences -- good UX.
 
 ### Salary List (`/salary`, `salary/list.html`)
 
@@ -529,7 +529,7 @@ Alternative path via modal:
 
 ### Savings Dashboard (`/savings`, `savings/dashboard.html`)
 
-- **Clear title/purpose:** "Accounts & Savings" — slightly misleading (see 3.5).
+- **Clear title/purpose:** "Accounts & Savings" -- slightly misleading (see 3.5).
 - **Layout:** Category-grouped account cards, emergency fund card, savings goals. Well-structured.
 - **Primary action:** "New Goal" button in the header.
 - **Issue [Minor]:** No way to add a new account from this dashboard. The "New Account" action is only on the separate Accounts page.
@@ -610,7 +610,7 @@ Adding "Scenarios" as a 12th navbar item would make the navigation bar unusable,
 
 Phase 7 requires scenario-scoped views. Currently, the grid and all pages implicitly use the baseline scenario (hardcoded query: `filter_by(is_baseline=True)`). When scenarios exist, the user needs to know which scenario they are viewing/editing at all times. There is no UI element for this.
 
-The navbar or a global status bar would need a scenario selector/indicator. This is not a minor addition — it affects every page that queries scenario-scoped data (grid, salary, transfers, accounts, retirement, charts).
+The navbar or a global status bar would need a scenario selector/indicator. This is not a minor addition -- it affects every page that queries scenario-scoped data (grid, salary, transfers, accounts, retirement, charts).
 
 Affected files: Every route file that queries by `scenario_id` (grid.py, templates.py, transfers.py, salary.py, savings.py, retirement.py, charts.py).
 
@@ -619,7 +619,7 @@ Affected files: Every route file that queries by `scenario_id` (grid.py, templat
 The grid header bar (`grid/grid.html:6-56`) currently contains: account name + balance, period navigation arrows, quick-select buttons, "Add Transaction" button, and "Add Transfer" link. Adding a scenario selector/dropdown would crowd this already busy header area.
 
 ```html
-<!-- grid/grid.html lines 6-56 — the header area is already dense -->
+<!-- grid/grid.html lines 6-56 -- the header area is already dense -->
 <div
   class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3"
 >
@@ -651,7 +651,7 @@ The charts dashboard already uses HTMX-loaded fragments with interactive control
 
 **6.7 [Minor] Retirement gap analysis is scenario-ready**
 
-The gap analysis already supports parameter overrides via the sensitivity sliders. Scenario-scoped what-ifs ("what if I increase my 401k contribution") would follow the same pattern — change input parameters and recalculate.
+The gap analysis already supports parameter overrides via the sensitivity sliders. Scenario-scoped what-ifs ("what if I increase my 401k contribution") would follow the same pattern -- change input parameters and recalculate.
 
 ---
 
@@ -703,9 +703,9 @@ Good consistency here.
 
 **7.5 [Minor] Status colors are consistent**
 
-- `--shekel-done: #2ECC71` (green) — used for "done" and "received" badges.
-- `--shekel-credit: #E67E22` (orange) — used for "credit" badges.
-- `--shekel-danger: #E74C3C` (red) — used for negative balances and cancellation.
+- `--shekel-done: #2ECC71` (green) -- used for "done" and "received" badges.
+- `--shekel-credit: #E67E22` (orange) -- used for "credit" badges.
+- `--shekel-danger: #E74C3C` (red) -- used for negative balances and cancellation.
 - These are defined in CSS custom properties and used consistently across the grid and transfer cells.
 
 **7.6 [Minor] Chart styling is consistent**
@@ -733,7 +733,7 @@ Custom `:focus-visible` styles are defined in app.css for buttons, form controls
 
 **7.10 [Minor] Loading state for HTMX**
 
-The CSS defines `td.htmx-loading` with a spinner animation, but this only applies to `<td>` elements. HTMX loading states in card bodies (like the gap analysis container or chart containers) use a different pattern — the card body starts with a spinner skeleton that is replaced on load. These two approaches are not unified but both work.
+The CSS defines `td.htmx-loading` with a spinner animation, but this only applies to `<td>` elements. HTMX loading states in card bodies (like the gap analysis container or chart containers) use a different pattern -- the card body starts with a spinner skeleton that is replaced on load. These two approaches are not unified but both work.
 
 ---
 

@@ -57,7 +57,7 @@ class TestDailyCompounding:
 
         The source hardcodes DAYS_IN_YEAR = Decimal("365") regardless of
         whether the period falls in a leap year. This test verifies that
-        behavior with a Feb 15–28 period in 2028 (a leap year).
+        behavior with a Feb 15-28 period in 2028 (a leap year).
         Expected:
           daily_rate = 0.045 / 365
           interest = 10000 * ((1 + daily_rate)^13 - 1) = $16.04
@@ -121,7 +121,7 @@ class TestMonthlyCompounding:
         """Period spanning a month boundary uses the START month's days_in_month.
 
         The source calls calendar.monthrange(period_start.year, period_start.month)
-        so a Jan 25 – Feb 7 period (13 days) uses January's 31-day month
+        so a Jan 25 - Feb 7 period (13 days) uses January's 31-day month
         as the divisor, not February's 28.
         Expected:
           monthly_rate = 0.045 / 12 = 0.00375
@@ -169,7 +169,7 @@ class TestEdgeCases:
         assert result == Decimal("0.00")
 
     def test_negative_balance(self):
-        """Negative balance returns zero — guard prevents nonsensical interest."""
+        """Negative balance returns zero -- guard prevents nonsensical interest."""
         result = calculate_interest(
             balance=Decimal("-5000.00"),
             apy=Decimal("0.04500"),
@@ -191,7 +191,7 @@ class TestEdgeCases:
         assert result == Decimal("0.00")
 
     def test_invalid_period_dates_equal(self):
-        """Equal start/end dates return zero — no time elapsed, no interest."""
+        """Equal start/end dates return zero -- no time elapsed, no interest."""
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
@@ -202,7 +202,7 @@ class TestEdgeCases:
         assert result == Decimal("0.00")
 
     def test_invalid_period_dates_reversed(self):
-        """Reversed dates (start > end) return zero — guard prevents negative periods."""
+        """Reversed dates (start > end) return zero -- guard prevents negative periods."""
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
@@ -226,7 +226,7 @@ class TestEdgeCases:
         assert result == Decimal("38.42")
 
     def test_large_balance(self):
-        """$1,000,000 balance — no overflow, correct result."""
+        """$1,000,000 balance -- no overflow, correct result."""
         result = calculate_interest(
             balance=Decimal("1000000.00"),
             apy=Decimal("0.04500"),
@@ -238,7 +238,7 @@ class TestEdgeCases:
         assert result == Decimal("1727.41")
 
     def test_negative_apy(self):
-        """Negative APY returns zero — the guard `apy <= 0` catches this.
+        """Negative APY returns zero -- the guard `apy <= 0` catches this.
 
         A negative APY is nonsensical for a savings account. The source
         short-circuits and returns ZERO.

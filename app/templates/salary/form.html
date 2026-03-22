@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if profile else 'New' }} Salary Profile — Shekel{% endblock %}
+{% block title %}{{ 'Edit' if profile else 'New' }} Salary Profile -- Shekel{% endblock %}
 
 {% set month_names = {
   1: 'January', 2: 'February', 3: 'March', 4: 'April',
@@ -92,25 +92,25 @@
             Leave at zero if you use the standard withholding.
           </p>
 
-          {# Step 3 — Dependents #}
+          {# Step 3 -- Dependents #}
           <div class="row mb-3">
             <div class="col-md-6">
               <label for="qualifying_children" class="form-label">Qualifying Children (under 17)</label>
               <input type="number" min="0" id="qualifying_children" name="qualifying_children"
                      class="form-control"
                      value="{{ profile.qualifying_children if profile else 0 }}">
-              <div class="form-text">W-4 Step 3 — $2,000 credit each</div>
+              <div class="form-text">W-4 Step 3 -- $2,000 credit each</div>
             </div>
             <div class="col-md-6">
               <label for="other_dependents" class="form-label">Other Dependents</label>
               <input type="number" min="0" id="other_dependents" name="other_dependents"
                      class="form-control"
                      value="{{ profile.other_dependents if profile else 0 }}">
-              <div class="form-text">W-4 Step 3 — $500 credit each</div>
+              <div class="form-text">W-4 Step 3 -- $500 credit each</div>
             </div>
           </div>
 
-          {# Step 4 — Other Adjustments #}
+          {# Step 4 -- Other Adjustments #}
           <div class="row mb-3">
             <div class="col-md-4">
               <label for="additional_income" class="form-label">Other Annual Income</label>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Salary Projection — {{ profile.name }} — Shekel{% endblock %}
+{% block title %}Salary Projection -- {{ profile.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -13,7 +13,7 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-graph-up"></i> Salary Projection — {{ profile.name }}</h4>
+  <h4><i class="bi bi-graph-up"></i> Salary Projection -- {{ profile.name }}</h4>
   <div>
     <a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}"
        class="btn btn-sm btn-outline-secondary">
@@ -55,11 +55,11 @@
         </td>
         <td class="text-end">${{ "%.2f"|format(bd.gross_biweekly|float) }}</td>
         <td class="text-end text-danger">
-          {% if bd.total_pre_tax > 0 %}-${{ "%.2f"|format(bd.total_pre_tax|float) }}{% else %}—{% endif %}
+          {% if bd.total_pre_tax > 0 %}-${{ "%.2f"|format(bd.total_pre_tax|float) }}{% else %}--{% endif %}
         </td>
         <td class="text-end text-danger">-${{ "%.2f"|format(bd.total_taxes|float) }}</td>
         <td class="text-end text-danger">
-          {% if bd.total_post_tax > 0 %}-${{ "%.2f"|format(bd.total_post_tax|float) }}{% else %}—{% endif %}
+          {% if bd.total_post_tax > 0 %}-${{ "%.2f"|format(bd.total_post_tax|float) }}{% else %}--{% endif %}
         </td>
         <td class="text-end fw-bold text-success">${{ "%.2f"|format(bd.net_pay|float) }}</td>
         <td>

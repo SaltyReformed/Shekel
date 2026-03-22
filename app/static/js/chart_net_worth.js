@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shekel Budget App — Net Worth Over Time Chart
+ * Shekel Budget App -- Net Worth Over Time Chart
  *
  * Renders a line chart with area fill showing total assets minus
  * total liabilities over time. Fill is green when positive,

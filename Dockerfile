@@ -1,4 +1,4 @@
-# Shekel Budget App — Multi-Stage Dockerfile
+# Shekel Budget App -- Multi-Stage Dockerfile
 # Stage 1: Build Python dependencies (includes gcc for psycopg2).
 # Stage 2: Slim runtime image (no build tools).
 
@@ -37,7 +37,7 @@ COPY --chown=shekel:shekel . .
 COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
 # Ensure writable directories exist for logs and shared static files.
-# /var/www/static is a shared volume mount point — Nginx reads from it.
+# /var/www/static is a shared volume mount point -- Nginx reads from it.
 RUN mkdir -p /home/shekel/app/logs /var/www/static \
     && chown -R shekel:shekel /home/shekel/app /var/www/static
 

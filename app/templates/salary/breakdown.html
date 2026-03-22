@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Paycheck Breakdown — {{ profile.name }} — Shekel{% endblock %}
+{% block title %}Paycheck Breakdown -- {{ profile.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -43,7 +43,7 @@
 
     {% if breakdown.is_third_paycheck %}
     <div class="alert alert-info py-2">
-      <i class="bi bi-info-circle"></i> <strong>3rd Paycheck Month</strong> —
+      <i class="bi bi-info-circle"></i> <strong>3rd Paycheck Month</strong> --
       Some deductions (24/yr) are skipped this period.
     </div>
     {% endif %}
@@ -154,7 +154,7 @@
             {% if breakdown.gross_biweekly > 0 %}
             <span class="text-success">{{ "%.1f"|format((breakdown.net_pay / breakdown.gross_biweekly * 100)|float) }}%</span>
             {% else %}
-            <span>—</span>
+            <span>--</span>
             {% endif %}
           </div>
         </div>

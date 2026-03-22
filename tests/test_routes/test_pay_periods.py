@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Pay Period Route Tests
+Shekel Budget App -- Pay Period Route Tests
 
 Tests for the pay period generation form and endpoint:
   - Form rendering
@@ -100,7 +100,7 @@ class TestPayPeriodGenerate:
             ).count()
             assert first_count == 5
 
-            # Second submit with same data — duplicates should be skipped.
+            # Second submit with same data -- duplicates should be skipped.
             resp = auth_client.post("/pay-periods/generate", data=data,
                                     follow_redirects=True)
             assert resp.status_code == 200

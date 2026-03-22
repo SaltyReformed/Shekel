@@ -84,7 +84,7 @@ This SQL file is used by the entrypoint to create PostgreSQL schemas before Alem
 **Step 1: Create the file**
 
 ```sql
--- Shekel Budget App — Database Schema Initialization
+-- Shekel Budget App -- Database Schema Initialization
 -- Creates the PostgreSQL schemas required by the application.
 -- Safe to run multiple times (IF NOT EXISTS).
 
@@ -111,7 +111,7 @@ git commit -m "chore: add init_db.sql for Docker schema initialization"
 
 ### Task 3: Update `scripts/seed_user.py` defaults for shareable product
 
-The current defaults contain personal credentials. Change them to generic defaults suitable for a shareable product. The script is already idempotent — no logic changes needed.
+The current defaults contain personal credentials. Change them to generic defaults suitable for a shareable product. The script is already idempotent -- no logic changes needed.
 
 **Files:**
 - Modify: `scripts/seed_user.py:61-63`
@@ -220,7 +220,7 @@ git commit -m "feat: add entrypoint.sh for automatic database init on container 
 **Step 1: Rewrite the Dockerfile**
 
 ```dockerfile
-# Shekel Budget App — Multi-Stage Dockerfile
+# Shekel Budget App -- Multi-Stage Dockerfile
 # Stage 1: Build Python dependencies (includes gcc for psycopg2).
 # Stage 2: Slim runtime image (no build tools).
 
@@ -289,13 +289,13 @@ git commit -m "feat: rewrite Dockerfile as multi-stage build for smaller image"
 Replace the current compose file with the production version that pulls from GHCR. Create a separate dev compose file.
 
 **Files:**
-- Modify: `docker-compose.yml` (full rewrite — production)
+- Modify: `docker-compose.yml` (full rewrite -- production)
 - Create: `docker-compose.dev.yml` (development)
 
 **Step 1: Rewrite `docker-compose.yml` for production**
 
 ```yaml
-# Shekel Budget App — Production Docker Compose
+# Shekel Budget App -- Production Docker Compose
 #
 # Quick start:
 #   1. Copy .env.example to .env and fill in values
@@ -354,7 +354,7 @@ volumes:
 **Step 2: Create `docker-compose.dev.yml` for development**
 
 ```yaml
-# Shekel Budget App — Development Docker Compose
+# Shekel Budget App -- Development Docker Compose
 #
 # Provides PostgreSQL for local development.
 # Usage:
@@ -449,7 +449,7 @@ Update the example environment file to document all Docker-relevant variables.
 **Step 1: Rewrite `.env.example`**
 
 ```
-# Shekel Budget App — Environment Configuration
+# Shekel Budget App -- Environment Configuration
 # Copy this file to .env and fill in your values.
 
 # ── Flask ────────────────────────────────────────────────────────
@@ -565,7 +565,7 @@ jobs:
 **Step 3: Verify YAML syntax**
 
 Run: `python -c "import yaml; yaml.safe_load(open('.github/workflows/docker-publish.yml'))"`
-Expected: No error (requires PyYAML — if not available, skip this check)
+Expected: No error (requires PyYAML -- if not available, skip this check)
 
 **Step 4: Commit**
 
@@ -582,7 +582,7 @@ Currently `seed_tax_brackets.py` requires users to exist first and exits early w
 
 Two options:
 - (A) Reorder: run seed_user.py before seed_tax_brackets.py in the entrypoint
-- (B) Make seed_tax_brackets.py gracefully skip when no users exist (it already does this — prints a message and returns)
+- (B) Make seed_tax_brackets.py gracefully skip when no users exist (it already does this -- prints a message and returns)
 
 **Resolution:** Reorder the entrypoint so seed_user runs BEFORE seed_tax_brackets. Update `entrypoint.sh` steps 4 and 5:
 

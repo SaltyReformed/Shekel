@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Chart Data Service Tests
+Shekel Budget App -- Chart Data Service Tests
 
 Tests for the chart data orchestration service:
   - Each method returns valid empty structure when no data exists
@@ -268,9 +268,9 @@ class TestSpendingByCategory:
                 ("Groceries", "Groceries Wk3", "200.00", None, projected),
                 # Auto group (Car Payment): one done txn
                 ("Car Payment", "Car Pmt", "300.00", "300.00", done),
-                # Cancelled — must NOT appear
+                # Cancelled -- must NOT appear
                 ("Rent", "Cancelled Rent", "1200.00", None, cancelled),
-                # Credit — must NOT appear (status filter excludes it)
+                # Credit -- must NOT appear (status filter excludes it)
                 ("Groceries", "Credit Groceries", "100.00", None, credit),
             ]
 
@@ -671,7 +671,7 @@ class TestSpendingChartRealisticData:
                     )
                     db.session.add(txn)
 
-            # 5 noise transactions — must NOT appear in results.
+            # 5 noise transactions -- must NOT appear in results.
             # 2 cancelled expenses (in Home and Auto groups).
             for cat in [categories_ordered[0], categories_ordered[1]]:
                 noise = Transaction(
@@ -741,7 +741,7 @@ class TestSpendingChartRealisticData:
                     f"expected {expected}"
                 )
             # Cancelled, income, and deleted transactions are verified
-            # excluded by the exact sum assertions — any leakage would
+            # excluded by the exact sum assertions -- any leakage would
             # inflate the sums beyond the expected values.
 
     def test_spending_chart_period_range_filtering(
@@ -792,7 +792,7 @@ class TestSpendingChartRealisticData:
                     db.session.add(txn)
             db.session.commit()
 
-            # 'current' — period 5 only.
+            # 'current' -- period 5 only.
             result_current = chart_data_service.get_spending_by_category(
                 user_id=seed_user["user"].id,
                 period_range="current",
@@ -810,7 +810,7 @@ class TestSpendingChartRealisticData:
                     f"expected {expected}"
                 )
 
-            # 'last_3' — periods 3, 4, 5.
+            # 'last_3' -- periods 3, 4, 5.
             result_last3 = chart_data_service.get_spending_by_category(
                 user_id=seed_user["user"].id,
                 period_range="last_3",
@@ -911,9 +911,9 @@ class TestBalanceChart52Periods:
             expense: -125.50  (projected)
             Net per period: +1524.50
 
-        Period 5: income is 'done' (actual_amount=2600.00) — excluded from
+        Period 5: income is 'done' (actual_amount=2600.00) -- excluded from
         balance calc because done transactions are treated as settled.
-        Period 10: extra cancelled expense of 500.00 — excluded, no effect.
+        Period 10: extra cancelled expense of 500.00 -- excluded, no effect.
 
         This loop constitutes 52 individual value assertions.  If even one
         diverges, the chart is showing the user incorrect balance projections.
@@ -1053,7 +1053,7 @@ class TestBalanceChart52Periods:
             assert checking_ds["axis"] == "y"
             assert checking_ds["account_id"] == account.id
 
-            # 52 individual value assertions — chart must match calculator.
+            # 52 individual value assertions -- chart must match calculator.
             for i, period in enumerate(seed_periods_52):
                 expected = float(calc_balances[period.id])
                 actual = checking_ds["data"][i]
@@ -1069,7 +1069,7 @@ class TestBalanceChart52Periods:
 
         Each label should be the period's start_date.strftime('%b %d').
         Verifies first, last, and every label against the period fixture.
-        Also verifies chronological order by period start_dates — not by
+        Also verifies chronological order by period start_dates -- not by
         alphabetical sort, since alphabetical != chronological for month
         names (e.g. 'Apr' < 'Aug' < 'Dec' < 'Jan').
         """
@@ -1322,7 +1322,7 @@ class TestNetWorthRealisticData:
                     f"expected={expected}"
                 )
 
-            # Verify net worth is NOT constant — checking grows each period.
+            # Verify net worth is NOT constant -- checking grows each period.
             assert nw_result["data"][0] != nw_result["data"][9]
 
             # First period: checking = 1000 + 1500 = 2500, mortgage = 200000.

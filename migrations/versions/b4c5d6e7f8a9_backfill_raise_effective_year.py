@@ -30,5 +30,5 @@ def upgrade():
 
 
 def downgrade():
-    """No safe automatic downgrade — NULL effective_year was a bug."""
+    """No safe automatic downgrade -- NULL effective_year was a bug."""
     pass

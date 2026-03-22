@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Model Registry
+Shekel Budget App -- Model Registry
 
 All models are imported here so that Alembic's autogenerate can
 discover them.  Import order matters: ref tables first, then auth,

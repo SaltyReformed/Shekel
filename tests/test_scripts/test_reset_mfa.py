@@ -57,7 +57,7 @@ class TestResetMfa:
     def test_reset_mfa_not_enabled(self, app, db, seed_user, capsys):
         """reset_mfa() prints message when MFA is not enabled."""
         with app.app_context():
-            # No MFA enabled for seed_user — just call reset_mfa.
+            # No MFA enabled for seed_user -- just call reset_mfa.
             reset_mfa(seed_user["user"].email)
 
             captured = capsys.readouterr()
@@ -144,7 +144,7 @@ class TestResetMfa:
             first_out = capsys.readouterr().out
             assert "MFA has been disabled" in first_out
 
-            # Second reset — MFA is already disabled.
+            # Second reset -- MFA is already disabled.
             reset_mfa(seed_user["user"].email)
             second_out = capsys.readouterr().out
             assert "MFA is not enabled" in second_out

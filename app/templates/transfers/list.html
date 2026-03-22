@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Recurring Transfers — Shekel{% endblock %}
+{% block title %}Recurring Transfers -- Shekel{% endblock %}
 
 
 {% set month_names = {
@@ -43,8 +43,8 @@
     {% for t in templates %}
     <tr class="{{ 'text-muted' if not t.is_active else '' }}">
       <td>{{ t.name }}</td>
-      <td>{{ t.from_account.name if t.from_account else '—' }}</td>
-      <td>{{ t.to_account.name if t.to_account else '—' }}</td>
+      <td>{{ t.from_account.name if t.from_account else '--' }}</td>
+      <td>{{ t.to_account.name if t.to_account else '--' }}</td>
       <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
       <td>
         {% if t.recurrence_rule %}

@@ -86,7 +86,7 @@ class TestCalculateMonthlyEscrow:
         The source does not guard against negative annual_amount values.
         This means calculate_monthly_escrow silently returns a negative result.
         Expected: Decimal("-100.00") for annual_amount=-1200.
-        # BUG: negative annual_amount is accepted without validation —
+        # BUG: negative annual_amount is accepted without validation --
         # consider adding a guard in the service.
         """
         components = [_comp("Refund", "-1200")]
@@ -97,7 +97,7 @@ class TestCalculateMonthlyEscrow:
     def test_multiple_components_sum_equals_individuals(self):
         """Total monthly escrow of N components equals the sum of each computed individually.
 
-        Verifies the aggregation logic is additive — no rounding drift across components.
+        Verifies the aggregation logic is additive -- no rounding drift across components.
         Expected: sum of individual monthly amounts == combined call result.
         """
         comp1 = _comp("Property Tax", "1200")

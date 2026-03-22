@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Tax Configuration Models (salary schema)
+Shekel Budget App -- Tax Configuration Models (salary schema)
 
 Models for federal tax brackets, state tax config, and FICA rates
 used by the paycheck calculator to compute tax withholdings.
@@ -83,7 +83,7 @@ class TaxBracket(db.Model):
     bracket_set = db.relationship("TaxBracketSet", back_populates="brackets")
 
     def __repr__(self):
-        return f"<TaxBracket {self.rate} ({self.min_income}–{self.max_income})>"
+        return f"<TaxBracket {self.rate} ({self.min_income}-{self.max_income})>"
 
 
 class StateTaxConfig(db.Model):

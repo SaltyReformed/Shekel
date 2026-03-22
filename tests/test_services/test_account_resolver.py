@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Account Resolver Tests
+Shekel Budget App -- Account Resolver Tests
 
 Tests the resolve_grid_account() fallback chain:
 1. override_account_id

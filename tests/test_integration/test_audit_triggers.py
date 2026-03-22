@@ -419,7 +419,7 @@ class TestAuditUserIdCapture:
         assert txn_row[-1]["user_id"] is None
 
     def test_set_local_is_transaction_scoped(self, app, db, seed_user):
-        """SET LOCAL resets after transaction commit — next txn has no user_id."""
+        """SET LOCAL resets after transaction commit -- next txn has no user_id."""
         # Manually set the session variable, commit, then check it's gone.
         db.session.execute(
             db.text("SET LOCAL app.current_user_id = :uid"),

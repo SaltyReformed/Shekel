@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transaction Model (budget schema)
+Shekel Budget App -- Transaction Model (budget schema)
 
 Each row in the budget grid is a Transaction: an income or expense
 assigned to a specific pay period and scenario, with estimated and

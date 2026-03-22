@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Investment & Retirement Account Routes
+Shekel Budget App -- Investment & Retirement Account Routes
 
 Dashboard for investment/retirement accounts with compound growth
 projection, contribution tracking, and employer contribution display.

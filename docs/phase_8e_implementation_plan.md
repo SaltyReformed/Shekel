@@ -220,22 +220,22 @@ This section documents every database query in the application, organized by blu
 - **Needs Fix** queries include current code, required fix, and risk level.
 - **Safe Despite No user_id** queries explain why they're safe (e.g., reference table lookup, pre-filtered parent).
 
-### 4.1 auth — Login, Registration, Settings, MFA
+### 4.1 auth -- Login, Registration, Settings, MFA
 
 **File: `app/routes/auth.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| ~34 | `User` via `auth_service.authenticate(email, password)` | Safe — authenticates by email/password |
-| ~48 | `MfaConfig.filter_by(user_id=user.id)` | Safe — filters by authenticated user |
-| ~90 | `current_user` object access | Safe — Flask-Login session |
-| ~162 | `User` via `db.session.get(User, pending_user_id)` | Safe — pending_user_id from server-side session |
-| ~168 | `MfaConfig.filter_by(user_id=user.id)` | Safe — user from session |
-| ~215 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe — direct filter |
-| ~244 | `MfaConfig` create/update for `current_user.id` | Safe — scoped to current user |
-| ~285 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe — direct filter |
-| ~310 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe — direct filter |
-| ~330 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe — direct filter |
+| ~34 | `User` via `auth_service.authenticate(email, password)` | Safe -- authenticates by email/password |
+| ~48 | `MfaConfig.filter_by(user_id=user.id)` | Safe -- filters by authenticated user |
+| ~90 | `current_user` object access | Safe -- Flask-Login session |
+| ~162 | `User` via `db.session.get(User, pending_user_id)` | Safe -- pending_user_id from server-side session |
+| ~168 | `MfaConfig.filter_by(user_id=user.id)` | Safe -- user from session |
+| ~215 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe -- direct filter |
+| ~244 | `MfaConfig` create/update for `current_user.id` | Safe -- scoped to current user |
+| ~285 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe -- direct filter |
+| ~310 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe -- direct filter |
+| ~330 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe -- direct filter |
 
 **Verdict: All queries safe. No fixes needed.**
 
@@ -243,26 +243,26 @@ This section documents every database query in the application, organized by blu
 
 | Line | Query | Status |
 |------|-------|--------|
-| 52 | `User.query.filter_by(email=email).first()` | Safe — email lookup for login |
+| 52 | `User.query.filter_by(email=email).first()` | Safe -- email lookup for login |
 
 **Verdict: All queries safe.**
 
 ---
 
-### 4.2 grid — Budget Grid, Transactions
+### 4.2 grid -- Budget Grid, Transactions
 
 **File: `app/routes/grid.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 44-48 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe — direct user_id filter |
-| 83-91 | `Transaction.filter(pay_period_id.in_(period_ids), scenario_id)` | Safe — period_ids and scenario from user-scoped queries |
-| 94-102 | `Transfer.filter(pay_period_id.in_(period_ids), scenario_id)` | Safe — same as above |
-| 130-135 | `Category.filter_by(user_id=user_id)` | Safe — direct filter |
-| 138 | `Status.query()` | Safe — ref table |
-| 139 | `TransactionType.query()` | Safe — ref table |
-| 183-187 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe — direct filter |
-| 205-223 | Transaction + Transfer queries (balance_row) | Safe — same pattern as index |
+| 44-48 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe -- direct user_id filter |
+| 83-91 | `Transaction.filter(pay_period_id.in_(period_ids), scenario_id)` | Safe -- period_ids and scenario from user-scoped queries |
+| 94-102 | `Transfer.filter(pay_period_id.in_(period_ids), scenario_id)` | Safe -- same as above |
+| 130-135 | `Category.filter_by(user_id=user_id)` | Safe -- direct filter |
+| 138 | `Status.query()` | Safe -- ref table |
+| 139 | `TransactionType.query()` | Safe -- ref table |
+| 183-187 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe -- direct filter |
+| 205-223 | Transaction + Transfer queries (balance_row) | Safe -- same pattern as index |
 
 All queries are user-scoped via `user_id = current_user.id` (set at line ~38) or derived from user-scoped objects.
 
@@ -272,11 +272,11 @@ All queries are user-scoped via `user_id = current_user.id` (set at line ~38) or
 
 | Line | Query | Status |
 |------|-------|--------|
-| 39-53 | `_get_owned_transaction()` helper | Safe — verifies `txn.pay_period.user_id == current_user.id` |
-| 220-231 | Category, PayPeriod, Scenario lookups for create forms | Safe — ownership validated |
-| 323-334 | Category, PayPeriod, Status for inline create | Safe — ownership validated (lines 324, 329) |
-| 366-372 | PayPeriod for full create | Safe — ownership validated (line 367) |
-| 409-410 | PayPeriod for carry-forward | Safe — ownership validated (line 410) |
+| 39-53 | `_get_owned_transaction()` helper | Safe -- verifies `txn.pay_period.user_id == current_user.id` |
+| 220-231 | Category, PayPeriod, Scenario lookups for create forms | Safe -- ownership validated |
+| 323-334 | Category, PayPeriod, Status for inline create | Safe -- ownership validated (lines 324, 329) |
+| 366-372 | PayPeriod for full create | Safe -- ownership validated (line 367) |
+| 409-410 | PayPeriod for carry-forward | Safe -- ownership validated (line 410) |
 
 Every transaction route that takes an ID uses `_get_owned_transaction()` which returns None (→ 404) for unauthorized access. Create routes validate ownership of referenced categories and pay periods.
 
@@ -284,23 +284,23 @@ Every transaction route that takes an ID uses `_get_owned_transaction()` which r
 
 ---
 
-### 4.3 accounts — Accounts Dashboard, HYSA, Anchor
+### 4.3 accounts -- Accounts Dashboard, HYSA, Anchor
 
 **File: `app/routes/accounts.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 54-59 | `Account.filter_by(user_id=current_user.id)` | Safe — direct filter |
-| 60-64 | `AccountType.query()` | Safe — ref table |
-| 111-115 | `Account.filter_by(user_id=current_user.id, name=...)` | Safe — duplicate check with user_id |
-| 162-166 | `AccountType.query()` | Safe — ref table |
-| 192-199 | `Account.filter_by(user_id=current_user.id, name=...)` | Safe — duplicate check with user_id |
-| 240-251 | `TransferTemplate.filter(user_id == current_user.id)` | Safe — direct filter |
-| 554-558 | `HysaParams.filter_by(account_id=account.id)` | Safe — account ownership verified at line ~536 |
-| 569-573 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe — direct filter |
-| 577-595 | Transaction/Transfer queries by period_ids + scenario | Safe — derived from user-scoped objects |
-| 598-602 | `TransactionTemplate.query(user_id=user_id)` | Safe — direct filter |
-| 679-683 | `HysaParams.filter_by(account_id=account.id)` | Safe — account ownership verified first |
+| 54-59 | `Account.filter_by(user_id=current_user.id)` | Safe -- direct filter |
+| 60-64 | `AccountType.query()` | Safe -- ref table |
+| 111-115 | `Account.filter_by(user_id=current_user.id, name=...)` | Safe -- duplicate check with user_id |
+| 162-166 | `AccountType.query()` | Safe -- ref table |
+| 192-199 | `Account.filter_by(user_id=current_user.id, name=...)` | Safe -- duplicate check with user_id |
+| 240-251 | `TransferTemplate.filter(user_id == current_user.id)` | Safe -- direct filter |
+| 554-558 | `HysaParams.filter_by(account_id=account.id)` | Safe -- account ownership verified at line ~536 |
+| 569-573 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe -- direct filter |
+| 577-595 | Transaction/Transfer queries by period_ids + scenario | Safe -- derived from user-scoped objects |
+| 598-602 | `TransactionTemplate.query(user_id=user_id)` | Safe -- direct filter |
+| 679-683 | `HysaParams.filter_by(account_id=account.id)` | Safe -- account ownership verified first |
 
 Every route that takes `account_id` loads the account, then checks `account.user_id != current_user.id`. Child records (HysaParams, AccountAnchorHistory) are loaded by the verified account's ID.
 
@@ -314,21 +314,21 @@ This checks if **any** account (across all users) uses the type. This is **corre
 
 ---
 
-### 4.4 templates — Transaction Templates
+### 4.4 templates -- Transaction Templates
 
 **File: `app/routes/templates.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 40-45 | `TransactionTemplate.filter_by(user_id=current_user.id)` | Safe — direct filter |
+| 40-45 | `TransactionTemplate.filter_by(user_id=current_user.id)` | Safe -- direct filter |
 | 53-65 | Category, Account filter by user_id; RecurrencePattern, TransactionType (ref) | Safe |
-| 93-100 | Account, Category `.session.get()` + ownership check | Safe — validated |
-| 109-113 | `RecurrencePattern.filter_by(name=...)` | Safe — ref table |
-| 120-123 | `PayPeriod.session.get()` + ownership check | Safe — validated (line 124) |
-| 153-157 | `Scenario.filter_by(user_id=current_user.id, is_baseline=True)` | Safe — direct filter |
-| 173-176 | `TransactionTemplate.session.get()` + ownership check | Safe — validated |
-| 313-318 | Transaction soft-delete by template_id + status | Safe — template ownership verified first |
-| 342-360 | Transaction/Scenario queries for reactivation | Safe — template and scenario user-scoped |
+| 93-100 | Account, Category `.session.get()` + ownership check | Safe -- validated |
+| 109-113 | `RecurrencePattern.filter_by(name=...)` | Safe -- ref table |
+| 120-123 | `PayPeriod.session.get()` + ownership check | Safe -- validated (line 124) |
+| 153-157 | `Scenario.filter_by(user_id=current_user.id, is_baseline=True)` | Safe -- direct filter |
+| 173-176 | `TransactionTemplate.session.get()` + ownership check | Safe -- validated |
+| 313-318 | Transaction soft-delete by template_id + status | Safe -- template ownership verified first |
+| 342-360 | Transaction/Scenario queries for reactivation | Safe -- template and scenario user-scoped |
 
 Every route that takes `template_id` verifies `template.user_id != current_user.id`. All list queries filter by `user_id=current_user.id`.
 
@@ -336,21 +336,21 @@ Every route that takes `template_id` verifies `template.user_id != current_user.
 
 ---
 
-### 4.5 transfers — Transfer Templates and Instances
+### 4.5 transfers -- Transfer Templates and Instances
 
 **File: `app/routes/transfers.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 51-56 | `TransferTemplate.filter_by(user_id=current_user.id)` | Safe — direct filter |
+| 51-56 | `TransferTemplate.filter_by(user_id=current_user.id)` | Safe -- direct filter |
 | 64-69 | `Account.filter_by(user_id=current_user.id, is_active=True)` | Safe |
 | 102-109 | Account `.session.get()` + ownership check (from and to) | Safe |
 | 158-162 | `Scenario.filter_by(user_id=current_user.id, is_baseline=True)` | Safe |
 | 178-181 | `TransferTemplate.session.get()` + ownership check | Safe |
-| 301-306 | Transfer soft-delete by template_id + status | Safe — template verified first |
-| 329-341 | Transfer/Scenario for reactivation | Safe — template and scenario user-scoped |
-| 438-449 | PayPeriod, Account for ad-hoc creation | Safe — all validated (lines 439-447) |
-| 535-538 | `Transfer.session.get()` + `xfer.user_id != current_user.id` | Safe — direct user_id check |
+| 301-306 | Transfer soft-delete by template_id + status | Safe -- template verified first |
+| 329-341 | Transfer/Scenario for reactivation | Safe -- template and scenario user-scoped |
+| 438-449 | PayPeriod, Account for ad-hoc creation | Safe -- all validated (lines 439-447) |
+| 535-538 | `Transfer.session.get()` + `xfer.user_id != current_user.id` | Safe -- direct user_id check |
 
 Transfer instances have a direct `user_id` column. Every transfer route checks `transfer.user_id != current_user.id`.
 
@@ -358,28 +358,28 @@ Transfer instances have a direct `user_id` column. Every transfer route checks `
 
 ---
 
-### 4.6 salary — Salary Profiles, Raises, Deductions, Tax Config
+### 4.6 salary -- Salary Profiles, Raises, Deductions, Tax Config
 
 **File: `app/routes/salary.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 68-88 | `_load_tax_configs()` — TaxBracketSet, StateTaxConfig, FicaConfig | Safe — all filter by `user_id=user_id` |
+| 68-88 | `_load_tax_configs()` -- TaxBracketSet, StateTaxConfig, FicaConfig | Safe -- all filter by `user_id=user_id` |
 | 104-109 | `SalaryProfile.filter_by(user_id=current_user.id)` | Safe |
 | 155-159 | `Scenario.filter_by(user_id=current_user.id, is_baseline=True)` | Safe |
 | 165-169 | `Category.filter_by(user_id=current_user.id, ...)` | Safe |
-| 181 | `TransactionType.filter_by(name="income")` | Safe — ref table |
+| 181 | `TransactionType.filter_by(name="income")` | Safe -- ref table |
 | 184-188 | `Account.filter_by(user_id=current_user.id, is_active=True)` | Safe |
-| 195-199 | `RecurrencePattern.filter_by(name="every_period")` | Safe — ref table |
+| 195-199 | `RecurrencePattern.filter_by(name="every_period")` | Safe -- ref table |
 | 260-264 | `SalaryProfile.session.get()` + ownership check | Safe |
 | 356 | `SalaryProfile.session.get()` + ownership check | Safe |
-| 394-400 | `SalaryRaise.session.get()` → profile ownership check | Safe — checks `profile.user_id` |
-| 474-480 | `PaycheckDeduction.session.get()` → profile ownership check | Safe — checks `profile.user_id` |
+| 394-400 | `SalaryRaise.session.get()` → profile ownership check | Safe -- checks `profile.user_id` |
+| 474-480 | `PaycheckDeduction.session.get()` → profile ownership check | Safe -- checks `profile.user_id` |
 | 509-514 | SalaryProfile, PayPeriod `.session.get()` + ownership checks | Safe |
 | 553 | `SalaryProfile.session.get()` + ownership check | Safe |
-| 593-636 | StateTaxConfig, FicaConfig update queries | Safe — all filter by `user_id=current_user.id` |
+| 593-636 | StateTaxConfig, FicaConfig update queries | Safe -- all filter by `user_id=current_user.id` |
 | 660-664 | `Scenario.filter_by(user_id=current_user.id, is_baseline=True)` | Safe |
-| 721-738 | Account queries for deduction target | Safe — filter by `user_id` |
+| 721-738 | Account queries for deduction target | Safe -- filter by `user_id` |
 
 Raises and deductions are accessed through their parent salary profile. Routes load the raise/deduction by PK, then verify the parent profile's `user_id`. Tax config queries all include `user_id=current_user.id`.
 
@@ -387,7 +387,7 @@ Raises and deductions are accessed through their parent salary profile. Routes l
 
 ---
 
-### 4.7 retirement — Pension Profiles, Retirement Dashboard
+### 4.7 retirement -- Pension Profiles, Retirement Dashboard
 
 **File: `app/routes/retirement.py`**
 
@@ -395,11 +395,11 @@ Raises and deductions are accessed through their parent salary profile. Routes l
 |------|-------|--------|
 | 63-65 | `UserSettings.filter_by(user_id=user_id)` | Safe |
 | 67-76 | PensionProfile, SalaryProfile by `user_id` | Safe |
-| 118-122 | `AccountType.filter(category.in_(...))` | Safe — ref table |
+| 118-122 | `AccountType.filter(category.in_(...))` | Safe -- ref table |
 | 126-134 | `Account.filter(user_id == user_id, ...)` | Safe |
 | 145-155 | PaycheckDeduction join SalaryProfile filter by `user_id` | Safe |
-| 162-170 | Transfer filter by account_ids + period_ids | Safe — accounts pre-filtered |
-| 188-192 | `InvestmentParams.filter_by(account_id=acct.id)` | Safe — account verified |
+| 162-170 | Transfer filter by account_ids + period_ids | Safe -- accounts pre-filtered |
+| 188-192 | `InvestmentParams.filter_by(account_id=acct.id)` | Safe -- account verified |
 | 356-365 | PensionProfile, SalaryProfile by `user_id` | Safe |
 | 402-411 | PensionProfile `.session.get()` + ownership check | Safe |
 | 424 | PensionProfile `.session.get()` + ownership check | Safe |
@@ -412,7 +412,7 @@ All pension routes verify `pension.user_id != current_user.id`. Dashboard querie
 
 ---
 
-### 4.8 savings — Savings Goals Dashboard
+### 4.8 savings -- Savings Goals Dashboard
 
 **File: `app/routes/savings.py`**
 
@@ -422,7 +422,7 @@ All pension routes verify `pension.user_id != current_user.id`. Dashboard querie
 | 57-61 | `Scenario.filter_by(user_id=user_id, is_baseline=True)` | Safe |
 | 69-87 | Transaction, Transfer by period_ids + scenario | Safe |
 | 91-95 | `TransactionTemplate.query(user_id=user_id)` | Safe |
-| 104-182 | Various param queries (HysaParams, MortgageParams, etc.) | Safe — all via user-scoped accounts |
+| 104-182 | Various param queries (HysaParams, MortgageParams, etc.) | Safe -- all via user-scoped accounts |
 | 336-340 | `SavingsGoal.filter_by(user_id=user_id, is_active=True)` | Safe |
 | 471-476 | `Account.filter_by(user_id=current_user.id, is_active=True)` | Safe |
 | 510, 528, 562 | SavingsGoal `.session.get()` + ownership check | Safe |
@@ -432,16 +432,16 @@ All pension routes verify `pension.user_id != current_user.id`. Dashboard querie
 
 ---
 
-### 4.9 categories — Category Management
+### 4.9 categories -- Category Management
 
 **File: `app/routes/categories.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 44-52 | `Category.filter_by(user_id=current_user.id, ...)` | Safe — direct filter |
+| 44-52 | `Category.filter_by(user_id=current_user.id, ...)` | Safe -- direct filter |
 | 57 | `Category(user_id=current_user.id, ...)` create | Safe |
 | 74-75 | `Category.session.get()` + `category.user_id != current_user.id` | Safe |
-| 83-91 | TransactionTemplate, Transaction `.filter_by(category_id=...)` | Safe — see note |
+| 83-91 | TransactionTemplate, Transaction `.filter_by(category_id=...)` | Safe -- see note |
 
 **Note on lines 83-91:** The "in use" check queries templates and transactions by `category_id` without a user_id filter. This is safe because: (a) the category was already verified to belong to `current_user` at line 75, and (b) categories have a unique user_id FK, so no other user's templates/transactions can reference this user's category (FK integrity).
 
@@ -449,7 +449,7 @@ All pension routes verify `pension.user_id != current_user.id`. Dashboard querie
 
 ---
 
-### 4.10 pay_periods — Pay Period Generation
+### 4.10 pay_periods -- Pay Period Generation
 
 **File: `app/routes/pay_periods.py`**
 
@@ -459,7 +459,7 @@ No direct database queries. All logic delegated to `pay_period_service.generate_
 
 ---
 
-### 4.11 charts — Visualization Endpoints
+### 4.11 charts -- Visualization Endpoints
 
 **File: `app/routes/charts.py`**
 
@@ -469,18 +469,18 @@ No direct database queries. All logic delegated to `chart_data_service.*()` func
 
 ---
 
-### 4.12 mortgage — Mortgage Dashboard
+### 4.12 mortgage -- Mortgage Dashboard
 
 **File: `app/routes/mortgage.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 43-55 | `_load_mortgage_account()` — Account by PK + ownership check + MortgageParams by account_id | Safe |
-| 96-101 | `EscrowComponent.filter_by(account_id=account.id, is_active=True)` | Safe — account verified |
-| 110-115 | `MortgageRateHistory.filter_by(account_id=account.id)` | Safe — account verified |
+| 43-55 | `_load_mortgage_account()` -- Account by PK + ownership check + MortgageParams by account_id | Safe |
+| 96-101 | `EscrowComponent.filter_by(account_id=account.id, is_active=True)` | Safe -- account verified |
+| 110-115 | `MortgageRateHistory.filter_by(account_id=account.id)` | Safe -- account verified |
 | 144-153 | Account by PK + ownership check + MortgageParams duplicate check | Safe |
-| 241-246 | MortgageRateHistory by account_id | Safe — account verified |
-| 269-288 | EscrowComponent create/query by account_id | Safe — account verified |
+| 241-246 | MortgageRateHistory by account_id | Safe -- account verified |
+| 269-288 | EscrowComponent create/query by account_id | Safe -- account verified |
 | 307-320 | EscrowComponent by PK + `comp.account_id != account.id` check | Safe |
 
 All mortgage routes use `_load_mortgage_account()` which verifies `account.user_id != current_user.id`. Child records are accessed via the verified account's ID.
@@ -489,13 +489,13 @@ All mortgage routes use `_load_mortgage_account()` which verifies `account.user_
 
 ---
 
-### 4.13 auto_loan — Auto Loan Dashboard
+### 4.13 auto_loan -- Auto Loan Dashboard
 
 **File: `app/routes/auto_loan.py`**
 
 | Line | Query | Status |
 |------|-------|--------|
-| 33-45 | `_load_auto_loan_account()` — Account by PK + ownership check + AutoLoanParams by account_id | Safe |
+| 33-45 | `_load_auto_loan_account()` -- Account by PK + ownership check + AutoLoanParams by account_id | Safe |
 | 106-115 | Account by PK + ownership check + AutoLoanParams by account_id | Safe |
 
 All routes verify account ownership before accessing loan parameters.
@@ -504,7 +504,7 @@ All routes verify account ownership before accessing loan parameters.
 
 ---
 
-### 4.14 investment — Investment Dashboard
+### 4.14 investment -- Investment Dashboard
 
 **File: `app/routes/investment.py`**
 
@@ -513,16 +513,16 @@ All routes verify account ownership before accessing loan parameters.
 | 45-54 | Account by PK + `account.user_id != current_user.id` + InvestmentParams | Safe |
 | 64-68 | `SalaryProfile.filter_by(user_id=current_user.id, is_active=True)` | Safe |
 | 76-86 | PaycheckDeduction join SalaryProfile filter by `user_id` | Safe |
-| 101-109 | Transfer filter by account_id + period_ids | Safe — account pre-verified |
+| 101-109 | Transfer filter by account_id + period_ids | Safe -- account pre-verified |
 | 179-183 | `UserSettings.filter_by(user_id=current_user.id)` | Safe |
-| 216-292 | Growth chart queries — same patterns as dashboard | Safe |
-| 342-351 | Update params — account verified first | Safe |
+| 216-292 | Growth chart queries -- same patterns as dashboard | Safe |
+| 342-351 | Update params -- account verified first | Safe |
 
 **Verdict: All queries safe. No fixes needed.**
 
 ---
 
-### 4.15 settings — User Settings Dashboard
+### 4.15 settings -- User Settings Dashboard
 
 **File: `app/routes/settings.py`**
 
@@ -530,9 +530,9 @@ All routes verify account ownership before accessing loan parameters.
 |------|-------|--------|
 | 56-61 | `Account.filter_by(user_id=current_user.id, is_active=True)` | Safe |
 | 63-68 | `Category.filter_by(user_id=current_user.id)` | Safe |
-| 74-75 | FilingStatus, TaxType `.query()` | Safe — ref tables |
+| 74-75 | FilingStatus, TaxType `.query()` | Safe -- ref tables |
 | 76-92 | TaxBracketSet, FicaConfig, StateTaxConfig by `user_id=current_user.id` | Safe |
-| 94-98 | `AccountType.query()` | Safe — ref table |
+| 94-98 | `AccountType.query()` | Safe -- ref table |
 | 99-105 | `Account.query(user_id=current_user.id)` | Safe |
 | 109-113 | `MfaConfig.filter_by(user_id=current_user.id)` | Safe |
 | 177-178 | Account `.session.get()` + ownership check | Safe |
@@ -570,7 +570,7 @@ All 10+ public functions take `user_id` and filter accordingly. Internal helper 
 #### `app/services/recurrence_engine.py`
 
 - `generate_for_template()`, `regenerate_for_template()`: Take a template object (pre-verified by caller) and scenario_id. Internal queries filter by template_id and scenario_id, both user-scoped. **Safe.**
-- `resolve_conflicts()` (line 244): Takes transaction IDs and modifies them without user verification. **Not directly exposed to routes** — only called internally by generate/regenerate functions with IDs from pre-filtered queries. **Safe in practice.** For defense-in-depth, adding a user_id check would be ideal but is low priority.
+- `resolve_conflicts()` (line 244): Takes transaction IDs and modifies them without user verification. **Not directly exposed to routes** -- only called internally by generate/regenerate functions with IDs from pre-filtered queries. **Safe in practice.** For defense-in-depth, adding a user_id check would be ideal but is low priority.
 - `_get_salary_profile(template_id)` (line 449): Filters by template_id, not user_id. **Safe** because templates are user-scoped.
 - Tax config queries in `_get_transaction_amount()` (lines 471-491): Filter by `user_id` (derived from `salary_profile.user_id`). **Safe.**
 
@@ -626,8 +626,8 @@ Every route that takes an ID parameter is listed below with its authorization st
 | `anchor_display` | `/accounts/<account_id>/anchor-display` | account_id | Yes | Same |
 | `hysa_detail` | `/accounts/<account_id>/hysa` | account_id | Yes | Same |
 | `update_hysa_params` | `/accounts/<account_id>/hysa/params` | account_id | Yes | Same |
-| `update_account_type` | `/accounts/types/<type_id>` | type_id | N/A | Ref table — shared data |
-| `delete_account_type` | `/accounts/types/<type_id>/delete` | type_id | N/A | Ref table — shared data |
+| `update_account_type` | `/accounts/types/<type_id>` | type_id | N/A | Ref table -- shared data |
+| `delete_account_type` | `/accounts/types/<type_id>/delete` | type_id | N/A | Ref table -- shared data |
 
 ### 5.2 templates Blueprint
 
@@ -841,7 +841,7 @@ Extends `base.html`. Structure follows `login.html` (centered card, Shekel logo)
 
 ```
 {% extends "base.html" %}
-{% block title %}Register — Shekel{% endblock %}
+{% block title %}Register -- Shekel{% endblock %}
 {% block content %}
 <div class="row justify-content-center mt-5">
   <div class="col-md-4 col-lg-3">
@@ -1053,7 +1053,7 @@ None. The registration routes are new and do not modify any existing routes or m
 
 ```python
 """
-Shekel Budget App — Authorization Helpers
+Shekel Budget App -- Authorization Helpers
 
 Reusable functions for verifying resource ownership. Used by route
 handlers to ensure the current user can only access their own data.
@@ -1540,7 +1540,7 @@ None. New fixtures are added alongside existing ones. No existing fixture is mod
 
 ```python
 """
-Shekel Budget App — Data Isolation Tests
+Shekel Budget App -- Data Isolation Tests
 
 Verifies that each user sees only their own data across all pages
 and endpoints.  Creates two users with separate datasets and checks
@@ -1715,7 +1715,7 @@ None. This is a new test file.
 
 ```python
 """
-Shekel Budget App — Access Control Tests
+Shekel Budget App -- Access Control Tests
 
 Verifies that users cannot access other users' resources by guessing IDs.
 Every route that accepts an ID parameter is tested.

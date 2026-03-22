@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Credit Card Workflow Service
+Shekel Budget App -- Credit Card Workflow Service
 
 Handles the credit card status + auto-payback mechanism described
 in §4.5 of the requirements.  When an expense is marked 'credit',

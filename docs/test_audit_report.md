@@ -9,15 +9,15 @@
 ## Table of Contents
 
 - [Executive Summary](#executive-summary)
-- [P0 — Critical (Financial Correctness, Data Corruption)](#p0--critical)
+- [P0 -- Critical (Financial Correctness, Data Corruption)](#p0--critical)
   - [1. Balance Calculator](#1-balance-calculator)
-  - [2. Balance Calculator — Debt](#2-balance-calculator--debt)
-  - [3. Balance Calculator — HYSA](#3-balance-calculator--hysa)
+  - [2. Balance Calculator -- Debt](#2-balance-calculator--debt)
+  - [3. Balance Calculator -- HYSA](#3-balance-calculator--hysa)
   - [4. Paycheck Calculator](#4-paycheck-calculator)
   - [5. Recurrence Engine](#5-recurrence-engine)
   - [6. Tax Calculator](#6-tax-calculator)
   - [7. Transfer Recurrence](#7-transfer-recurrence)
-- [P1 — High (Security Gaps, IDOR, Core Routes)](#p1--high)
+- [P1 -- High (Security Gaps, IDOR, Core Routes)](#p1--high)
   - [8. Account Routes](#8-account-routes)
   - [9. Accounts Dashboard](#9-accounts-dashboard)
   - [10. Salary Routes](#10-salary-routes)
@@ -27,7 +27,7 @@
   - [14. Savings Goal Service](#14-savings-goal-service)
   - [15. Schema Validation](#15-schema-validation)
   - [16. Integration Workflows](#16-integration-workflows)
-- [P2 — Medium (Functional Gaps)](#p2--medium)
+- [P2 -- Medium (Functional Gaps)](#p2--medium)
   - [17. Template Routes](#17-template-routes)
   - [18. Category Routes](#18-category-routes)
   - [19. Pay Period Routes](#19-pay-period-routes)
@@ -54,7 +54,7 @@
   - [40. Investment Routes](#40-investment-routes)
   - [41. Retirement Routes](#41-retirement-routes)
   - [42. Onboarding Routes](#42-onboarding-routes)
-- [P3 — Low (Edge Polish, Infrastructure)](#p3--low)
+- [P3 -- Low (Edge Polish, Infrastructure)](#p3--low)
   - [43. Auth Routes](#43-auth-routes)
   - [44. Error Routes](#44-error-routes)
   - [45. Health Routes](#45-health-routes)
@@ -73,11 +73,11 @@
 
 The test suite is substantial (~470 tests) with good coverage of happy paths and IDOR protection across most route files. However, five systemic issues undermine confidence in financial correctness and security:
 
-1. **No FIN tests verifying penny-level Decimal accuracy across 52+ periods** in any balance calculator file — the single most important gap for a financial app.
+1. **No FIN tests verifying penny-level Decimal accuracy across 52+ periods** in any balance calculator file -- the single most important gap for a financial app.
 2. **Pervasive directional/range assertions on financial values** (`> Decimal("0")`, `< Decimal("100000")`) instead of exact Decimal comparisons, especially in debt, HYSA, tax, and growth engine tests.
 3. **Shallow status-code-only assertions** in ~30 tests across route files, particularly in newer financial account routes (mortgage, HYSA, auto loan, investment, retirement).
-4. **Missing unauthenticated-access tests** in 8+ route files — only `test_auth.py` and `test_savings.py` consistently verify login requirements.
-5. **Realistic data gaps** — most test modules seed 1-3 records and 10 periods, while production involves 52+ periods with 15-20 transactions each.
+4. **Missing unauthenticated-access tests** in 8+ route files -- only `test_auth.py` and `test_savings.py` consistently verify login requirements.
+5. **Realistic data gaps** -- most test modules seed 1-3 records and 10 periods, while production involves 52+ periods with 15-20 transactions each.
 
 ### Finding Counts by Type
 
@@ -91,7 +91,7 @@ The test suite is substantial (~470 tests) with good coverage of happy paths and
 
 ---
 
-## P0 — Critical
+## P0 -- Critical
 
 ### 1. Balance Calculator
 
@@ -127,14 +127,14 @@ All tests assert exact `Decimal` values. **PASS.**
 
 ---
 
-### 2. Balance Calculator — Debt
+### 2. Balance Calculator -- Debt
 
 **File:** `tests/test_services/test_balance_calculator_debt.py`
 
 #### ASSERTION DEPTH
 
-- **`test_debt_balance_with_payments`** (line 48): Asserts `balances[2] < Decimal("100000.00")` and `principal_by_period[2] > Decimal("0.00")` — **directional only, no exact values.**
-- **`test_debt_principal_tracking`** (line 100): Same pattern — `> Decimal("0.00")` and `balances[3] < balances[2]`.
+- **`test_debt_balance_with_payments`** (line 48): Asserts `balances[2] < Decimal("100000.00")` and `principal_by_period[2] > Decimal("0.00")` -- **directional only, no exact values.**
+- **`test_debt_principal_tracking`** (line 100): Same pattern -- `> Decimal("0.00")` and `balances[3] < balances[2]`.
 - **Recommendation:** For $100k at 6%/30yr, month 1 interest = $500.00, principal = $99.55. Assert `principal_by_period[2] == Decimal("99.55")` and `balances[2] == Decimal("99900.45")` exactly.
 
 #### ASSERTION SMELL CHECK
@@ -146,10 +146,10 @@ All tests assert exact `Decimal` values. **PASS.**
 | Category | Status                                                              |
 | -------- | ------------------------------------------------------------------- |
 | HP       | Present                                                             |
-| SP       | **MISSING** — no invalid loan params, zero rate, zero term          |
-| BE       | **MISSING** — no zero principal, zero rate, overpayment, max values |
-| SM       | **MISSING** — no status-related tests on debt transfers             |
-| FIN      | **MISSING** — every financial assertion is directional              |
+| SP       | **MISSING** -- no invalid loan params, zero rate, zero term          |
+| BE       | **MISSING** -- no zero principal, zero rate, overpayment, max values |
+| SM       | **MISSING** -- no status-related tests on debt transfers             |
+| FIN      | **MISSING** -- every financial assertion is directional              |
 
 #### REALISTIC DATA GAPS
 
@@ -164,15 +164,15 @@ All tests assert exact `Decimal` values. **PASS.**
 
 ---
 
-### 3. Balance Calculator — HYSA
+### 3. Balance Calculator -- HYSA
 
 **File:** `tests/test_services/test_balance_calculator_hysa.py`
 
 #### ASSERTION DEPTH
 
-- **`test_hysa_balance_includes_interest`** (line 36): `assert balances[1] > Decimal("10000.00")` — **directional only.**
-- **`test_hysa_interest_compounds_across_periods`** (line 54): `assert interest[2] > interest[1]` — **directional only.**
-- **`test_hysa_with_transfers`** (line 72): `assert balances[2] > Decimal("10500.00")` — **directional only.**
+- **`test_hysa_balance_includes_interest`** (line 36): `assert balances[1] > Decimal("10000.00")` -- **directional only.**
+- **`test_hysa_interest_compounds_across_periods`** (line 54): `assert interest[2] > interest[1]` -- **directional only.**
+- **`test_hysa_with_transfers`** (line 72): `assert balances[2] > Decimal("10500.00")` -- **directional only.**
 - **Recommendation:** For $10k at 4.5% APY daily compounding over 14 days, compute and assert the exact rounded value.
 
 #### ASSERTION SMELL CHECK
@@ -184,9 +184,9 @@ All tests assert exact `Decimal` values. **PASS.**
 
 | Category | Status                                                                                       |
 | -------- | -------------------------------------------------------------------------------------------- |
-| FIN      | **MISSING** — no exact interest values verified; all positive-APY assertions are directional |
-| BE       | Partial — zero APY covered; **missing: negative APY, extreme APY**                           |
-| SP       | Partial — **missing: invalid `compounding_frequency` values**                                |
+| FIN      | **MISSING** -- no exact interest values verified; all positive-APY assertions are directional |
+| BE       | Partial -- zero APY covered; **missing: negative APY, extreme APY**                           |
+| SP       | Partial -- **missing: invalid `compounding_frequency` values**                                |
 
 #### REALISTIC DATA GAPS
 
@@ -201,18 +201,18 @@ All tests assert exact `Decimal` values. **PASS.**
 #### ASSERTION DEPTH
 
 - **`test_basic_paycheck_no_deductions`** (line 392): Six assertions all using `> ZERO` or `< result.gross_biweekly`. Exercises the full pipeline but **verifies no specific output values.**
-- **`test_w4_fields_passed_to_federal`** (line 518): `assert w4_result.federal_tax > base_result.federal_tax` — directional only.
-- `test_net_pay_formula` (line 410): Verifies algebraic identity — **excellent.**
-- `test_gross_biweekly_calculation` (line 429): Exact gross — **good.**
-- Raise tests use exact Decimal — **good.**
+- **`test_w4_fields_passed_to_federal`** (line 518): `assert w4_result.federal_tax > base_result.federal_tax` -- directional only.
+- `test_net_pay_formula` (line 410): Verifies algebraic identity -- **excellent.**
+- `test_gross_biweekly_calculation` (line 429): Exact gross -- **good.**
+- Raise tests use exact Decimal -- **good.**
 
 #### MISSING CATEGORY COVERAGE
 
 | Category | Status                                                                                                         |
 | -------- | -------------------------------------------------------------------------------------------------------------- |
-| FIN      | **PARTIAL** — raise compounding exact, but basic paycheck has zero exact values; no full-year net pay sum test |
-| BE       | Partial — taxable floor at zero tested; **missing: zero salary, FICA SS wage cap boundary**                    |
-| SP       | Partial — None configs tested; **missing: negative salary, `pay_periods_per_year=0`**                          |
+| FIN      | **PARTIAL** -- raise compounding exact, but basic paycheck has zero exact values; no full-year net pay sum test |
+| BE       | Partial -- taxable floor at zero tested; **missing: zero salary, FICA SS wage cap boundary**                    |
+| SP       | Partial -- None configs tested; **missing: negative salary, `pay_periods_per_year=0`**                          |
 
 #### REALISTIC DATA GAPS
 
@@ -235,7 +235,7 @@ All tests assert exact `Decimal` values. **PASS.**
 
 #### ASSERTION DEPTH
 
-Good — generation tests verify `len(created)` and specific field values. Pattern matching tests verify counts and dates.
+Good -- generation tests verify `len(created)` and specific field values. Pattern matching tests verify counts and dates.
 
 #### ASSERTION SMELL CHECK
 
@@ -246,15 +246,15 @@ Good — generation tests verify `len(created)` and specific field values. Patte
 
 | Category | Status                                                                                           |
 | -------- | ------------------------------------------------------------------------------------------------ |
-| HP       | Present — all 8 patterns tested                                                                  |
-| SP       | Partial — unknown pattern tested; **missing: invalid numeric params**                            |
-| BE       | Partial — Feb clamping covered; **missing: `day_of_month=0`, `day_of_month=32`, `interval_n=0`** |
-| SM       | Present — override, deletion, done status transitions                                            |
-| IDOR     | **MISSING** — no test verifying template from user A cannot generate into user B's scenario      |
+| HP       | Present -- all 8 patterns tested                                                                  |
+| SP       | Partial -- unknown pattern tested; **missing: invalid numeric params**                            |
+| BE       | Partial -- Feb clamping covered; **missing: `day_of_month=0`, `day_of_month=32`, `interval_n=0`** |
+| SM       | Present -- override, deletion, done status transitions                                            |
+| IDOR     | **MISSING** -- no test verifying template from user A cannot generate into user B's scenario      |
 
 #### MISSING NEGATIVE PATHS
 
-- **`interval_n=0`** — potential infinite loop or division by zero in `every_n_periods`. High risk.
+- **`interval_n=0`** -- potential infinite loop or division by zero in `every_n_periods`. High risk.
 - No test for `month_of_year=0` or `month_of_year=13` in quarterly/semi-annual/annual patterns.
 - No test for `None` `day_of_month` when pattern requires it.
 
@@ -270,19 +270,19 @@ Good — generation tests verify `len(created)` and specific field values. Patte
 
 #### ASSERTION DEPTH
 
-Some tests use exact values (`== Decimal("219.23")`, `== Decimal("475.00")`) — **excellent**. However, 7 tests use range or directional assertions:
+Some tests use exact values (`== Decimal("219.23")`, `== Decimal("475.00")`) -- **excellent**. However, 7 tests use range or directional assertions:
 
 #### ASSERTION SMELL CHECK
 
 | Test                                       | Line | Issue                                                               |
 | ------------------------------------------ | ---- | ------------------------------------------------------------------- |
-| `test_weekly_pay_frequency`                | 141  | `Decimal("108") < result < Decimal("111")` — range instead of exact |
-| `test_income_spans_all_brackets`           | 231  | `Decimal("6940") < result < Decimal("6960")` — range                |
-| `test_very_high_income_top_bracket_only`   | 252  | `result > Decimal("12900")` — directional only                      |
-| `test_income_exactly_at_first_bracket_top` | 280  | `Decimal("38") < result < Decimal("39")` — range                    |
-| `test_income_one_dollar_into_next_bracket` | 293  | `result >= Decimal("38.46")` — directional                          |
-| `test_child_credits_reduce_tax`            | 398  | `Decimal("153") < diff < Decimal("155")` — range                    |
-| `test_other_dependent_credits`             | 415  | `Decimal("38") < diff < Decimal("39")` — range                      |
+| `test_weekly_pay_frequency`                | 141  | `Decimal("108") < result < Decimal("111")` -- range instead of exact |
+| `test_income_spans_all_brackets`           | 231  | `Decimal("6940") < result < Decimal("6960")` -- range                |
+| `test_very_high_income_top_bracket_only`   | 252  | `result > Decimal("12900")` -- directional only                      |
+| `test_income_exactly_at_first_bracket_top` | 280  | `Decimal("38") < result < Decimal("39")` -- range                    |
+| `test_income_one_dollar_into_next_bracket` | 293  | `result >= Decimal("38.46")` -- directional                          |
+| `test_child_credits_reduce_tax`            | 398  | `Decimal("153") < diff < Decimal("155")` -- range                    |
+| `test_other_dependent_credits`             | 415  | `Decimal("38") < diff < Decimal("39")` -- range                      |
 
 - **Recommendation:** Every test should compute the exact expected result from the given inputs since the function is deterministic and uses only Decimal arithmetic.
 
@@ -290,8 +290,8 @@ Some tests use exact values (`== Decimal("219.23")`, `== Decimal("475.00")`) —
 
 | Category | Status                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
-| FIN      | **PARTIAL** — some exact values, but 7 tests use range/directional assertions |
-| BE       | Partial — bracket boundaries tested with ranges instead of exact values       |
+| FIN      | **PARTIAL** -- some exact values, but 7 tests use range/directional assertions |
+| BE       | Partial -- bracket boundaries tested with ranges instead of exact values       |
 
 #### REALISTIC DATA GAPS
 
@@ -305,7 +305,7 @@ Some tests use exact values (`== Decimal("219.23")`, `== Decimal("475.00")`) —
 
 #### ASSERTION DEPTH
 
-Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict resolution verifies field values.
+Good -- generation tests verify `len(created)`, `amount`, and `name`. Conflict resolution verifies field values.
 
 #### ASSERTION SMELL CHECK
 
@@ -315,9 +315,9 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 | Category | Status                                                        |
 | -------- | ------------------------------------------------------------- |
-| SP       | Partial — None rule covered; **missing: invalid amounts**     |
-| BE       | **MISSING** — no zero-amount, no self-transfer, no max amount |
-| IDOR     | **MISSING** — no cross-user isolation test                    |
+| SP       | Partial -- None rule covered; **missing: invalid amounts**     |
+| BE       | **MISSING** -- no zero-amount, no self-transfer, no max amount |
+| IDOR     | **MISSING** -- no cross-user isolation test                    |
 
 #### MISSING NEGATIVE PATHS
 
@@ -328,7 +328,7 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 ---
 
-## P1 — High
+## P1 -- High
 
 ### 8. Account Routes
 
@@ -336,7 +336,7 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 #### ASSERTION DEPTH
 
-- **`test_new_account_form_renders`** (line 63): Asserts `b"form" in response.data` — extremely weak (any HTML page contains `<form>`). **Recommendation:** Assert `b"Create Account"` or `b"anchor_balance"`.
+- **`test_new_account_form_renders`** (line 63): Asserts `b"form" in response.data` -- extremely weak (any HTML page contains `<form>`). **Recommendation:** Assert `b"Create Account"` or `b"anchor_balance"`.
 - **`test_inline_anchor_form_returns_partial`** (line 346): Only `status_code == 200`.
 - **`test_inline_anchor_display_returns_partial`** (line 359): Only `status_code == 200`.
 
@@ -375,11 +375,11 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 #### ASSERTION DEPTH
 
-- **`test_new_profile_form`** (line 174): `b"form" in response.data` — weak.
+- **`test_new_profile_form`** (line 174): `b"form" in response.data` -- weak.
 - **`test_add_raise_htmx_returns_partial`** (line 426): Only `status_code == 200`.
 - **`test_add_deduction_htmx_returns_partial`** (line 621): Only `status_code == 200`.
 - **`test_projection_renders`** (line 701): Only `status_code == 200`.
-- **`test_breakdown_renders`** (line 679): `b"breakdown" in response.data.lower()` — very weak.
+- **`test_breakdown_renders`** (line 679): `b"breakdown" in response.data.lower()` -- very weak.
 
 #### MISSING NEGATIVE PATHS
 
@@ -397,7 +397,7 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 #### ASSERTION DEPTH
 
-- **`test_new_template_form`** (line 176): `b"form"` — weak.
+- **`test_new_template_form`** (line 176): `b"form"` -- weak.
 - **`test_get_cell`** (line 398), **`test_get_quick_edit`** (line 408), **`test_get_full_edit`** (line 418): All status-code-only.
 - **`test_create_ad_hoc_validation_error`** (line 587): Only `status_code == 400`.
 
@@ -411,7 +411,7 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 #### APPLICATION BUG INDICATOR
 
-- **`test_create_template_double_submit`** (line 257): Uses `pytest.raises(IntegrityError)` — the route does NOT gracefully handle duplicates and would 500 in production. Route should catch `IntegrityError` and flash a user-friendly message.
+- **`test_create_template_double_submit`** (line 257): Uses `pytest.raises(IntegrityError)` -- the route does NOT gracefully handle duplicates and would 500 in production. Route should catch `IntegrityError` and flash a user-friendly message.
 
 ---
 
@@ -426,13 +426,13 @@ Good — generation tests verify `len(created)`, `amount`, and `name`. Conflict 
 
 #### ASSERTION SMELL CHECK
 
-- **`test_dashboard_investment_account_shows_growth_projections`** (line 275): `assert len(amounts_int) > 0` — "len > 0" smell without specific expected value.
+- **`test_dashboard_investment_account_shows_growth_projections`** (line 275): `assert len(amounts_int) > 0` -- "len > 0" smell without specific expected value.
 - **`test_dashboard_investment_account_includes_contributions`** (line 315): Same pattern.
 - **`test_dashboard_employer_contribution_without_employee_deduction`** (line 386): Same pattern.
 
 #### APPLICATION BUG INDICATOR
 
-- **`test_duplicate_goal_name_same_account`** (line 613): `pytest.raises(IntegrityError)` — route doesn't handle duplicates gracefully; would 500 in production.
+- **`test_duplicate_goal_name_same_account`** (line 613): `pytest.raises(IntegrityError)` -- route doesn't handle duplicates gracefully; would 500 in production.
 
 #### MISSING NEGATIVE PATHS
 
@@ -499,7 +499,7 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_monthly_recurrence_hits_correct_periods`** (line 108): `assert len(txns) >= 1` — should be exact count (5 months in 10 biweekly periods).
+- **`test_monthly_recurrence_hits_correct_periods`** (line 108): `assert len(txns) >= 1` -- should be exact count (5 months in 10 biweekly periods).
 - **`test_carry_forward_moves_projected_items`** (line 311): Does not verify transactions retained their `estimated_amount` after move.
 
 #### MISSING NEGATIVE PATHS
@@ -511,7 +511,7 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 ---
 
-## P2 — Medium
+## P2 -- Medium
 
 ### 17. Template Routes
 
@@ -524,8 +524,8 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_create_template_with_recurrence`** (line 219): `assert len(txns) > 0` — should be exact count.
-- **`test_reactivate_restores_transactions`** (line 475): `assert active_txns > 0` — same.
+- **`test_create_template_with_recurrence`** (line 219): `assert len(txns) > 0` -- should be exact count.
+- **`test_reactivate_restores_transactions`** (line 475): `assert active_txns > 0` -- same.
 
 #### MISSING NEGATIVE PATHS
 
@@ -595,11 +595,11 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 - **`test_balance_row_returns_partial`** (line 53): Only `status_code == 200`.
 - **`test_balance_row_custom_offset`** (line 67): Only `status_code == 200`.
 - **`test_grid_periods_large_value`** (line 74): Only `status_code == 200`.
-- **`test_create_transaction`** (line 99): Only `status_code == 201` — does not verify DB persistence.
+- **`test_create_transaction`** (line 99): Only `status_code == 201` -- does not verify DB persistence.
 
 #### ASSERTION SMELL CHECK
 
-- **`test_mark_credit_creates_payback`** (line 246): `assert payback is not None` — does not verify amount, status, or category.
+- **`test_mark_credit_creates_payback`** (line 246): `assert payback is not None` -- does not verify amount, status, or category.
 
 #### MISSING NEGATIVE PATHS
 
@@ -640,8 +640,8 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 | Category | Status                                                           |
 | -------- | ---------------------------------------------------------------- |
-| BE       | **MISSING** — no tests for large date ranges, single-period data |
-| FIN      | **MISSING** — no verification of chart numeric values            |
+| BE       | **MISSING** -- no tests for large date ranges, single-period data |
+| FIN      | **MISSING** -- no verification of chart numeric values            |
 
 #### REALISTIC DATA GAPS
 
@@ -657,18 +657,18 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION DEPTH
 
-- **`test_single_checking_account`** (line 94): `assert len(result["labels"]) > 0` and `len(result["datasets"]) >= 1` — **shallow.**
-- **`test_groups_correctly`** (line 167): `assert len(result["labels"]) >= 2` — **shallow.**
-- **`test_date_range_filter`** (line 147): `assert len(result["labels"]) <= 4` — **shallow.** Only checks upper bound.
-- **`test_matches_engine_output`** (line 285): `assert len(result["labels"]) > 0` — **shallow.**
-- **`test_assets_minus_liabilities`** (line 333): `assert result["data"][0] > 0` — **shallow.**
+- **`test_single_checking_account`** (line 94): `assert len(result["labels"]) > 0` and `len(result["datasets"]) >= 1` -- **shallow.**
+- **`test_groups_correctly`** (line 167): `assert len(result["labels"]) >= 2` -- **shallow.**
+- **`test_date_range_filter`** (line 147): `assert len(result["labels"]) <= 4` -- **shallow.** Only checks upper bound.
+- **`test_matches_engine_output`** (line 285): `assert len(result["labels"]) > 0` -- **shallow.**
+- **`test_assets_minus_liabilities`** (line 333): `assert result["data"][0] > 0` -- **shallow.**
 
 #### MISSING CATEGORY COVERAGE
 
 | Category | Status                                                                             |
 | -------- | ---------------------------------------------------------------------------------- |
-| SP       | **MISSING** — no invalid user, invalid account, invalid period range               |
-| FIN      | **SEVERELY LACKING** — no test verifies actual computed balance or spending values |
+| SP       | **MISSING** -- no invalid user, invalid account, invalid period range               |
+| FIN      | **SEVERELY LACKING** -- no test verifies actual computed balance or spending values |
 
 #### REALISTIC DATA GAPS
 
@@ -682,7 +682,7 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- Line 137: `assert new_cat is not None` — weak; `.one()` query would already raise if missing.
+- Line 137: `assert new_cat is not None` -- weak; `.one()` query would already raise if missing.
 
 #### MISSING NEGATIVE PATHS
 
@@ -712,7 +712,7 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- Line 17: `assert len(secret) > 0` — should assert `len(secret) == 32` (pyotp base32 default).
+- Line 17: `assert len(secret) > 0` -- should assert `len(secret) == 32` (pyotp base32 default).
 
 #### MISSING NEGATIVE PATHS
 
@@ -728,12 +728,12 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION DEPTH
 
-- **`test_double_login_succeeds`** (line 85): Only `status_code == 302` for both requests — does not verify session state.
+- **`test_double_login_succeeds`** (line 85): Only `status_code == 302` for both requests -- does not verify session state.
 - **`test_duplicate_template_creates_second`** (line 116): Status-code-only for responses (DB count check saves it).
 
 #### MISSING NEGATIVE PATHS
 
-- **No test for double-submit of transaction creation** — the most financially dangerous double-submit scenario.
+- **No test for double-submit of transaction creation** -- the most financially dangerous double-submit scenario.
 - No test for double-submit with one valid + one invalid attempt.
 - No test for double-submit of pay period generation.
 
@@ -745,7 +745,7 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### MISSING NEGATIVE PATHS
 
-- Missing `credit` status (should return `Decimal("0")`) — tested in `test_audit_fixes.py` but not here.
+- Missing `credit` status (should return `Decimal("0")`) -- tested in `test_audit_fixes.py` but not here.
 - Missing `cancelled` status for both Transaction and Transfer.
 - Missing `received` status.
 - Missing `estimated_amount=None` edge case.
@@ -761,8 +761,8 @@ All assertions verify loaded data values or ValidationError messages. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_achievable_target`** (line 266): `assert result > Decimal("0.00")` — should verify exact extra payment amount.
-- **`test_summary_with_extra`** (line 233): `assert summary.months_saved > 0` and `interest_saved > 0` — directional only.
+- **`test_achievable_target`** (line 266): `assert result > Decimal("0.00")` -- should verify exact extra payment amount.
+- **`test_summary_with_extra`** (line 233): `assert summary.months_saved > 0` and `interest_saved > 0` -- directional only.
 
 #### MISSING COVERAGE
 
@@ -791,9 +791,9 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_basic_growth_no_contributions`** (line 120): `assert result[0].end_balance > Decimal("10000")` — **directional.**
-- **`test_negative_return_rate`** (line 264): `assert result[0].growth < ZERO` — **directional.**
-- **`test_with_periodic_contributions`** (line 145): `assert result[-1].end_balance > Decimal("10000") + Decimal("1500")` — **directional.**
+- **`test_basic_growth_no_contributions`** (line 120): `assert result[0].end_balance > Decimal("10000")` -- **directional.**
+- **`test_negative_return_rate`** (line 264): `assert result[0].growth < ZERO` -- **directional.**
+- **`test_with_periodic_contributions`** (line 145): `assert result[-1].end_balance > Decimal("10000") + Decimal("1500")` -- **directional.**
 - **Recommendation:** Compute exact expected growth and assert equality.
 
 #### REALISTIC DATA GAPS
@@ -822,7 +822,7 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_employer_flat_percentage`** (line 116): `assert result.employer_params is not None` — followed by specific checks, acceptable.
+- **`test_employer_flat_percentage`** (line 116): `assert result.employer_params is not None` -- followed by specific checks, acceptable.
 
 #### MISSING NEGATIVE PATHS
 
@@ -836,8 +836,8 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_very_short_service`** (line 126): `assert result.years_of_service < Decimal("1.00")` and `result.annual_benefit > ZERO` — **directional.**
-- **`test_with_recurring_raise`** (line 187): `assert result[0][1] > Decimal("80000")` — **directional.** Should verify exact: `80000 * 1.03 = 82400.00`.
+- **`test_very_short_service`** (line 126): `assert result.years_of_service < Decimal("1.00")` and `result.annual_benefit > ZERO` -- **directional.**
+- **`test_with_recurring_raise`** (line 187): `assert result[0][1] > Decimal("80000")` -- **directional.** Should verify exact: `80000 * 1.03 = 82400.00`.
 
 #### MISSING NEGATIVE PATHS
 
@@ -854,8 +854,8 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_surplus`** (line 21): Test name says "surplus" but asserts a shortfall (`< ZERO`). **Naming bug** — should be `test_shortfall_when_savings_insufficient`.
-- **`test_after_tax_view_traditional`** (line 83): `assert result.after_tax_surplus_or_shortfall is not None` — **shallow**.
+- **`test_surplus`** (line 21): Test name says "surplus" but asserts a shortfall (`< ZERO`). **Naming bug** -- should be `test_shortfall_when_savings_insufficient`.
+- **`test_after_tax_view_traditional`** (line 83): `assert result.after_tax_surplus_or_shortfall is not None` -- **shallow**.
 
 #### MISSING NEGATIVE PATHS
 
@@ -887,9 +887,9 @@ All tests verify exact Decimal values. **PASS.**
 
 | Category | Status                                                                                   |
 | -------- | ---------------------------------------------------------------------------------------- |
-| BE       | **MISSING** — no 0% rate, 0 principal, term=1, payment_day edge cases                    |
-| SM       | **MISSING** — no ARM rate change workflow, no refinance scenarios                        |
-| FIN      | Partial — `test_percentage_input_stored_as_decimal` good; no amortization precision test |
+| BE       | **MISSING** -- no 0% rate, 0 principal, term=1, payment_day edge cases                    |
+| SM       | **MISSING** -- no ARM rate change workflow, no refinance scenarios                        |
+| FIN      | Partial -- `test_percentage_input_stored_as_decimal` good; no amortization precision test |
 
 ---
 
@@ -904,7 +904,7 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_create_hysa_account_auto_params`** (line 157): `assert params is not None` — minor smell.
+- **`test_create_hysa_account_auto_params`** (line 157): `assert params is not None` -- minor smell.
 
 #### MISSING NEGATIVE PATHS
 
@@ -937,7 +937,7 @@ All tests verify exact Decimal values. **PASS.**
 | -------- | ------------------------------------------------------------------ |
 | BE       | **MISSING**                                                        |
 | SM       | **MISSING**                                                        |
-| FIN      | **MISSING** — no interest rate or principal amount precision tests |
+| FIN      | **MISSING** -- no interest rate or principal amount precision tests |
 
 ---
 
@@ -974,11 +974,11 @@ All tests verify exact Decimal values. **PASS.**
 - **`test_dashboard_empty`** (line 138), **`test_dashboard_with_pension`** (line 143), **`test_pension_list`** (line 160), **`test_edit_pension_form`** (line 184): All status-code-only.
 - **`test_update_settings_partial`** (line 266): Does not verify SWR was saved.
 - **`test_dashboard_projects_multiple_accounts`** (line 358): Does not verify both accounts appear.
-- **`test_gap_with_swr_param`** (line 425): Asserts `b"3" in resp.data` — matches any digit "3" anywhere. **Effectively meaningless.**
+- **`test_gap_with_swr_param`** (line 425): Asserts `b"3" in resp.data` -- matches any digit "3" anywhere. **Effectively meaningless.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_gap_returns_fragment`** (line 416): Uses `or` assertion — `b"Configure your salary" in resp.data or b"Gap" in resp.data` — either branch passing masks the other.
+- **`test_gap_returns_fragment`** (line 416): Uses `or` assertion -- `b"Configure your salary" in resp.data or b"Gap" in resp.data` -- either branch passing masks the other.
 
 #### MISSING NEGATIVE PATHS
 
@@ -995,7 +995,7 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION DEPTH
 
-- **`test_banner_not_shown_to_anonymous_user`** (line 77): Only `status_code in (302, 303)` — no redirect target verified.
+- **`test_banner_not_shown_to_anonymous_user`** (line 77): Only `status_code in (302, 303)` -- no redirect target verified.
 
 #### ASSERTION SMELL CHECK
 
@@ -1007,7 +1007,7 @@ All tests verify exact Decimal values. **PASS.**
 
 ---
 
-## P3 — Low
+## P3 -- Low
 
 ### 43. Auth Routes
 
@@ -1015,7 +1015,7 @@ All tests verify exact Decimal values. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_invalidate_sessions`** (line 202): `session_invalidated_at is not None` — should verify timestamp is recent.
+- **`test_invalidate_sessions`** (line 202): `session_invalidated_at is not None` -- should verify timestamp is recent.
 - **`test_password_change_invalidates_sessions`** (line 247): Same.
 
 #### MISSING NEGATIVE PATHS
@@ -1061,8 +1061,8 @@ Well-structured with specific JSON assertions. **PASS.**
 #### ASSERTION SMELL CHECK
 
 - 5 tests use `assert len(rows) >= 1` when exactly 1 record was created. **Should use `== 1`.**
-- **`test_executed_at_is_populated`** (line 283): `rows[-1]["executed_at"] is not None` — classic "not None" smell. Should verify timestamp is recent.
-- **`test_db_user_is_populated`** (line 292): `rows[-1]["db_user"] is not None` and `len > 0` — should match expected PostgreSQL role.
+- **`test_executed_at_is_populated`** (line 283): `rows[-1]["executed_at"] is not None` -- classic "not None" smell. Should verify timestamp is recent.
+- **`test_db_user_is_populated`** (line 292): `rows[-1]["db_user"] is not None` and `len > 0` -- should match expected PostgreSQL role.
 
 #### MISSING NEGATIVE PATHS
 
@@ -1097,8 +1097,8 @@ Well-structured with specific JSON assertions. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_duplicate_transfer_template_name_fails`** (line 452): `pytest.raises(Exception)` — too broad. Should be `pytest.raises(IntegrityError)`.
-- **`test_duplicate_savings_goal_name_fails`** (line 476): Same — `pytest.raises(Exception)`.
+- **`test_duplicate_transfer_template_name_fails`** (line 452): `pytest.raises(Exception)` -- too broad. Should be `pytest.raises(IntegrityError)`.
+- **`test_duplicate_savings_goal_name_fails`** (line 476): Same -- `pytest.raises(Exception)`.
 
 #### MISSING NEGATIVE PATHS
 
@@ -1137,7 +1137,7 @@ Well-structured with specific JSON assertions. **PASS.**
 
 #### ASSERTION SMELL CHECK
 
-- **`test_log_includes_remote_addr`** (line 106): `hasattr(summaries[-1], "remote_addr")` — checks existence, not value. Should assert `== "127.0.0.1"`.
+- **`test_log_includes_remote_addr`** (line 106): `hasattr(summaries[-1], "remote_addr")` -- checks existence, not value. Should assert `== "127.0.0.1"`.
 
 #### CODE QUALITY
 
@@ -1177,15 +1177,15 @@ No test in the entire suite verifies penny-level balance accuracy across 52+ per
 
 **Recommendation:** Add at minimum:
 
-- `test_balance_52_period_penny_accuracy` — 52 periods, 10+ txns each, verify every period balance to the penny
-- `test_annual_paycheck_sum_matches_expected` — 26 periods, verify sum of net_pay matches independently computed annual net
-- `test_annual_tax_withholding_matches_annual_liability` — 26 periods, verify total withholding ≈ annual tax
+- `test_balance_52_period_penny_accuracy` -- 52 periods, 10+ txns each, verify every period balance to the penny
+- `test_annual_paycheck_sum_matches_expected` -- 26 periods, verify sum of net_pay matches independently computed annual net
+- `test_annual_tax_withholding_matches_annual_liability` -- 26 periods, verify total withholding ≈ annual tax
 
 ### Issue 2: Pervasive Directional Assertions on Financial Values
 
 ~25 tests use `> Decimal(...)`, `< Decimal(...)`, or range assertions instead of exact Decimal comparisons on financial outputs. Files: `test_balance_calculator_debt.py` (all assertions), `test_balance_calculator_hysa.py` (3/6 tests), `test_tax_calculator.py` (7 tests), `test_paycheck_calculator.py` (1 test), `test_growth_engine.py` (3 tests), `test_pension_calculator.py` (2 tests).
 
-**Recommendation:** Replace every directional assertion on a Decimal financial value with an exact computed expectation. These functions are deterministic — there is no reason for approximate assertions.
+**Recommendation:** Replace every directional assertion on a Decimal financial value with an exact computed expectation. These functions are deterministic -- there is no reason for approximate assertions.
 
 ### Issue 3: Unauthenticated Access Tests Missing From Most Route Files
 

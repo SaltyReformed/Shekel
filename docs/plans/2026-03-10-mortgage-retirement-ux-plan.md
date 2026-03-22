@@ -4,8 +4,8 @@
 
 This plan addresses two deferred UI/UX audit findings:
 
-- **4G: Mortgage Payoff Scenarios** — The payoff calculator is buried below 3-4 sections on a long page, requiring significant scrolling to reach. The comparison chart is disconnected from the main chart.
-- **4H: Retirement Readiness Review** — The gap analysis ties together data from multiple sources (salary, pensions, accounts, settings) but none of the relationships are explained. Users see numbers with no indication of where they come from.
+- **4G: Mortgage Payoff Scenarios** -- The payoff calculator is buried below 3-4 sections on a long page, requiring significant scrolling to reach. The comparison chart is disconnected from the main chart.
+- **4H: Retirement Readiness Review** -- The gap analysis ties together data from multiple sources (salary, pensions, accounts, settings) but none of the relationships are explained. Users see numbers with no indication of where they come from.
 
 **Scope:** 3 template files modified. Zero route, service, model, JS, or CSS changes. No new files created. All existing tests pass unchanged.
 
@@ -36,7 +36,7 @@ The mortgage dashboard (`/accounts/<id>/mortgage`) stacks 5 sections vertically:
 4. Payoff Calculator card (with extra payment / target date sub-tabs)
 5. Balance Over Time chart
 
-The payoff calculator — the most interactive feature — is buried below all other sections. A user specifically looking for payoff scenarios must scroll past the entire page to reach it.
+The payoff calculator -- the most interactive feature -- is buried below all other sections. A user specifically looking for payoff scenarios must scroll past the entire page to reach it.
 
 ### Solution
 
@@ -97,17 +97,17 @@ HTMX targets are element IDs, not DOM paths. Moving them into tab panes does not
 
 ### File
 
-- `app/templates/mortgage/dashboard.html` — Restructure body into tab nav + tab panes. Content moves into panes without modification. The Escrow tab pane wraps the existing `_escrow_list.html` include. The Rate History tab pane wraps the existing `_rate_history.html` include (with the same `{% if params.is_arm %}` conditional on both the tab link and pane).
+- `app/templates/mortgage/dashboard.html` -- Restructure body into tab nav + tab panes. Content moves into panes without modification. The Escrow tab pane wraps the existing `_escrow_list.html` include. The Rate History tab pane wraps the existing `_rate_history.html` include (with the same `{% if params.is_arm %}` conditional on both the tab link and pane).
 
 ### What Does NOT Change
 
-- `app/routes/mortgage.py` — All route handlers stay the same
-- `app/services/amortization_engine.py` — No logic changes
-- `app/services/escrow_calculator.py` — No logic changes
-- `app/static/js/payoff_chart.js` — No JS changes
-- `app/templates/mortgage/_payoff_results.html` — No partial changes
-- `app/templates/mortgage/_escrow_list.html` — No partial changes
-- `app/templates/mortgage/_rate_history.html` — No partial changes
+- `app/routes/mortgage.py` -- All route handlers stay the same
+- `app/services/amortization_engine.py` -- No logic changes
+- `app/services/escrow_calculator.py` -- No logic changes
+- `app/static/js/payoff_chart.js` -- No JS changes
+- `app/templates/mortgage/_payoff_results.html` -- No partial changes
+- `app/templates/mortgage/_escrow_list.html` -- No partial changes
+- `app/templates/mortgage/_rate_history.html` -- No partial changes
 
 ---
 
@@ -175,17 +175,17 @@ Native browser `title` attributes are used (not Bootstrap tooltip JS) to match t
 
 ### Files
 
-- `app/templates/retirement/_gap_analysis.html` — Add info icons with title attributes to 9 table row labels
-- `app/templates/retirement/dashboard.html` — Add info icons to 4 pension detail rows and 2 accounts table column headers
+- `app/templates/retirement/_gap_analysis.html` -- Add info icons with title attributes to 9 table row labels
+- `app/templates/retirement/dashboard.html` -- Add info icons to 4 pension detail rows and 2 accounts table column headers
 
 ### What Does NOT Change
 
-- `app/routes/retirement.py` — All route handlers stay the same
-- `app/services/retirement_gap_calculator.py` — No logic changes
-- `app/services/pension_calculator.py` — No logic changes
-- `app/services/growth_engine.py` — No logic changes
-- `app/static/js/retirement_gap_chart.js` — No JS changes
-- `app/static/js/chart_slider.js` — No JS changes
+- `app/routes/retirement.py` -- All route handlers stay the same
+- `app/services/retirement_gap_calculator.py` -- No logic changes
+- `app/services/pension_calculator.py` -- No logic changes
+- `app/services/growth_engine.py` -- No logic changes
+- `app/static/js/retirement_gap_chart.js` -- No JS changes
+- `app/static/js/chart_slider.js` -- No JS changes
 
 ---
 
@@ -193,8 +193,8 @@ Native browser `title` attributes are used (not Bootstrap tooltip JS) to match t
 
 | Step | Change | Files | Risk |
 |------|--------|-------|------|
-| 1 | Mortgage tabbed layout | `mortgage/dashboard.html` | Low — template restructure only |
-| 2 | Retirement gap analysis tooltips | `retirement/_gap_analysis.html`, `retirement/dashboard.html` | Low — additive text only |
+| 1 | Mortgage tabbed layout | `mortgage/dashboard.html` | Low -- template restructure only |
+| 2 | Retirement gap analysis tooltips | `retirement/_gap_analysis.html`, `retirement/dashboard.html` | Low -- additive text only |
 | 3 | Test gate | Run `pytest` | All 784+ tests must pass |
 
 Steps 1 and 2 are independent and can be done in either order or in parallel.

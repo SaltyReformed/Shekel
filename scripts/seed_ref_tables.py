@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Seed Phase 2 Reference Tables
+Shekel Budget App -- Seed Phase 2 Reference Tables
 
 Populates ref-schema lookup tables needed by the salary/paycheck system:
 filing statuses, deduction timings, calc methods, tax types, raise types.

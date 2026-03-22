@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Auto Loan Parameters Model (budget schema)
+Shekel Budget App -- Auto Loan Parameters Model (budget schema)
 
 Stores auto loan configuration: principal, rate, term, and payment day.
 """

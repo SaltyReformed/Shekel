@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Marshmallow Validation Schemas
+Shekel Budget App -- Marshmallow Validation Schemas
 
 Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
@@ -87,7 +87,7 @@ class TemplateCreateSchema(BaseSchema):
     transaction_type_id = fields.Integer(required=True)
     account_id = fields.Integer(required=True)
 
-    # Recurrence rule fields (optional — omit for one-time / manual).
+    # Recurrence rule fields (optional -- omit for one-time / manual).
     recurrence_pattern = fields.String(
         validate=validate.OneOf([
             "every_period", "every_n_periods", "monthly",
@@ -110,7 +110,7 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     recurrence regeneration.
     """
 
-    # Override — all fields optional for update.
+    # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     category_id = fields.Integer()
@@ -323,7 +323,7 @@ class TransferTemplateCreateSchema(BaseSchema):
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
 
-    # Recurrence rule fields (optional — omit for one-time / manual).
+    # Recurrence rule fields (optional -- omit for one-time / manual).
     recurrence_pattern = fields.String(
         validate=validate.OneOf([
             "every_period", "every_n_periods", "monthly",
@@ -348,7 +348,7 @@ class TransferTemplateCreateSchema(BaseSchema):
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
     """Validates PUT data for updating a transfer template."""
 
-    # Override — all fields optional for update.
+    # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)

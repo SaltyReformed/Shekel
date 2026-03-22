@@ -1,4 +1,4 @@
--- Shekel Budget App — Database Schema Initialization
+-- Shekel Budget App -- Database Schema Initialization
 -- Creates the PostgreSQL schemas required by the application.
 -- Safe to run multiple times (IF NOT EXISTS).
 

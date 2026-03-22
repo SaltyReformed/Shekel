@@ -1,5 +1,5 @@
 /**
- * Account types — inline edit styling and save button visibility.
+ * Account types -- inline edit styling and save button visibility.
  */
 (function() {
   document.querySelectorAll('.account-type-form').forEach(function(form) {

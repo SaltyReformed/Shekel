@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Pay Period Service Tests
+Shekel Budget App -- Pay Period Service Tests
 
 Integration tests for the pay period service that generates and queries
 biweekly pay periods.  All functions use DB queries, so these tests
@@ -24,7 +24,7 @@ class TestGeneratePayPeriods:
     """Tests for generate_pay_periods()."""
 
     def test_generates_correct_count_with_14_day_cadence(self, app, db, seed_user):
-        """Generate 5 periods — assert count and 14-day spans."""
+        """Generate 5 periods -- assert count and 14-day spans."""
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -176,7 +176,7 @@ class TestGetCurrentPeriod:
     """Tests for get_current_period()."""
 
     def test_returns_period_containing_date(self, app, db, seed_user, seed_periods):
-        """A date within the first period (Jan 2–15) should return it."""
+        """A date within the first period (Jan 2-15) should return it."""
         with app.app_context():
             period = pay_period_service.get_current_period(
                 seed_user["user"].id,

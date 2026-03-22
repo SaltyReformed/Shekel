@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Credit Workflow & Carry Forward Tests
+Shekel Budget App -- Credit Workflow & Carry Forward Tests
 
 Tests the credit card workflow (§4.5) and carry forward (§4.6)
 services that are central to the payday workflow.
@@ -448,7 +448,7 @@ class TestCarryForward:
             projected = db.session.query(Status).filter_by(name="projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
-            # Soft-deleted projected expense — should NOT be moved.
+            # Soft-deleted projected expense -- should NOT be moved.
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
@@ -611,7 +611,7 @@ class TestNegativePaths:
             txn = self._create_expense(seed_user, seed_periods)
             original_status_id = txn.status_id
 
-            # unmark_credit on a projected transaction — no exception expected.
+            # unmark_credit on a projected transaction -- no exception expected.
             credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
             db.session.flush()
 
@@ -710,13 +710,13 @@ class TestNegativePaths:
             db.session.add_all([txn_with_template, txn_adhoc])
             db.session.flush()
 
-            # Carry forward with source == target — early return.
+            # Carry forward with source == target -- early return.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
             )
             db.session.flush()
 
-            # Guard returns 0 — no items processed.
+            # Guard returns 0 -- no items processed.
             assert count == 0
 
             # Template-linked item is untouched (is_override stays False).
@@ -743,7 +743,7 @@ class TestNegativePaths:
             with pytest.raises(ValidationError, match="Only projected transactions"):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
-            # Status unchanged — still 'done'.
+            # Status unchanged -- still 'done'.
             db.session.refresh(txn)
             assert txn.status.name == "done"
 
@@ -769,6 +769,6 @@ class TestNegativePaths:
             with pytest.raises(ValidationError, match="Only projected transactions"):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
-            # Status unchanged — still 'cancelled'.
+            # Status unchanged -- still 'cancelled'.
             db.session.refresh(txn)
             assert txn.status.name == "cancelled"

@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Idempotency / Double-Submit Tests
+Shekel Budget App -- Idempotency / Double-Submit Tests
 
 Tests that every POST endpoint handles double-submission safely:
   - Login double-submit refreshes session
@@ -100,11 +100,11 @@ class TestLoginDoubleSubmit:
             assert protected_resp1.status_code == 200
             assert b"Settings" in protected_resp1.data
 
-            # Second login while already authenticated — redirects to grid.
+            # Second login while already authenticated -- redirects to grid.
             resp2 = client.post("/login", data=data, follow_redirects=False)
             assert resp2.status_code == 302
 
-            # Verify session is still live after SECOND login —
+            # Verify session is still live after SECOND login --
             # double-login must not corrupt or destroy the session.
             protected_resp2 = client.get("/settings")
             assert protected_resp2.status_code == 200
@@ -112,7 +112,7 @@ class TestLoginDoubleSubmit:
 
 
 class TestTemplateDoubleSubmit:
-    """Templates have no unique constraint — duplicates are created."""
+    """Templates have no unique constraint -- duplicates are created."""
 
     def test_duplicate_template_creates_second(self, app, auth_client, seed_user):
         """POST /templates twice with same name creates two templates."""
@@ -131,7 +131,7 @@ class TestTemplateDoubleSubmit:
             resp1 = auth_client.post("/templates", data=data, follow_redirects=True)
             assert resp1.status_code == 200
 
-            # Second submit with same data — no unique constraint, so it succeeds.
+            # Second submit with same data -- no unique constraint, so it succeeds.
             resp2 = auth_client.post("/templates", data=data, follow_redirects=True)
             assert resp2.status_code == 200
 
@@ -144,7 +144,7 @@ class TestTemplateDoubleSubmit:
 
 
 class TestRaiseDoubleSubmit:
-    """Raises have no unique constraint — duplicates are created."""
+    """Raises have no unique constraint -- duplicates are created."""
 
     def test_duplicate_raise_creates_second(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/<id>/raises twice creates two raise entries."""
@@ -181,7 +181,7 @@ class TestRaiseDoubleSubmit:
 
 
 class TestDeductionDoubleSubmit:
-    """Deductions have no unique constraint — duplicates are created."""
+    """Deductions have no unique constraint -- duplicates are created."""
 
     def test_duplicate_deduction_creates_second(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/<id>/deductions twice creates two deduction entries."""
@@ -283,7 +283,7 @@ class TestTransactionDoubleSubmit:
     def test_transaction_create_first_valid_second_invalid(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """POST valid transaction, then invalid — only valid one persists.
+        """POST valid transaction, then invalid -- only valid one persists.
 
         The failed second request must not corrupt or modify the first
         transaction. Verifies the database contains exactly 1 transaction
@@ -301,11 +301,11 @@ class TestTransactionDoubleSubmit:
                 "transaction_type_id": str(expense_type.id),
             }
 
-            # First submit — valid.
+            # First submit -- valid.
             resp1 = auth_client.post("/transactions", data=valid_data)
             assert resp1.status_code == 201
 
-            # Second submit — invalid (missing required name field).
+            # Second submit -- invalid (missing required name field).
             invalid_data = {
                 "estimated_amount": "150.00",
                 "pay_period_id": str(seed_periods[0].id),
@@ -316,7 +316,7 @@ class TestTransactionDoubleSubmit:
             resp2 = auth_client.post("/transactions", data=invalid_data)
             assert resp2.status_code == 400
 
-            # Database has exactly 1 transaction — the valid one.
+            # Database has exactly 1 transaction -- the valid one.
             db.session.expire_all()
             txns = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id,
@@ -329,7 +329,7 @@ class TestTransactionDoubleSubmit:
     def test_transaction_create_first_invalid_second_valid(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """POST invalid data first, then valid — only valid one persists.
+        """POST invalid data first, then valid -- only valid one persists.
 
         A failed first submission must not prevent a subsequent valid
         submission from succeeding.
@@ -337,7 +337,7 @@ class TestTransactionDoubleSubmit:
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
-            # First submit — invalid (missing name).
+            # First submit -- invalid (missing name).
             invalid_data = {
                 "estimated_amount": "200.00",
                 "pay_period_id": str(seed_periods[0].id),
@@ -348,7 +348,7 @@ class TestTransactionDoubleSubmit:
             resp1 = auth_client.post("/transactions", data=invalid_data)
             assert resp1.status_code == 400
 
-            # Second submit — valid.
+            # Second submit -- valid.
             valid_data = {
                 "name": "Water Bill",
                 "estimated_amount": "75.00",
@@ -485,7 +485,7 @@ class TestMarkDoneDoubleSubmit:
     def test_mark_done_double_submit(self, app, auth_client, seed_user, seed_periods):
         """POST mark-done twice on same transaction is idempotent.
 
-        The second mark-done simply re-sets the status to 'done' — no error,
+        The second mark-done simply re-sets the status to 'done' -- no error,
         no state change, no corruption of actual_amount.
         """
         with app.app_context():
@@ -512,7 +512,7 @@ class TestMarkDoneDoubleSubmit:
             )
             assert resp1.status_code == 200
 
-            # Second mark-done — same operation again.
+            # Second mark-done -- same operation again.
             resp2 = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
                 data={"actual_amount": "115.50"},

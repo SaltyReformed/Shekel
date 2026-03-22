@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Template Management Routes
+Shekel Budget App -- Template Management Routes
 
 CRUD pages for transaction templates and their recurrence rules.
 Updating a template triggers recurrence regeneration.
@@ -433,7 +433,7 @@ def preview_recurrence():
         return "<small class='text-muted'>No matching periods found</small>"
 
     items = "".join(
-        f"<li>{p.start_date.strftime('%b %d, %Y')} – {p.end_date.strftime('%b %d, %Y')}</li>"
+        f"<li>{p.start_date.strftime('%b %d, %Y')} - {p.end_date.strftime('%b %d, %Y')}</li>"
         for p in preview_periods
     )
     html = (

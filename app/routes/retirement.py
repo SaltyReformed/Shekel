@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Retirement Planning Routes
+Shekel Budget App -- Retirement Planning Routes
 
 Retirement dashboard with pension management, income gap analysis,
 and retirement planning settings.

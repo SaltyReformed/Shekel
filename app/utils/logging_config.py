@@ -3,7 +3,7 @@ Centralized structured logging configuration.
 
 Configures JSON-formatted logging with per-request tracking via
 ``python-json-logger``.  Call ``setup_logging(app)`` once from the
-application factory — every module that uses
+application factory -- every module that uses
 ``logging.getLogger(__name__)`` automatically inherits the config.
 """
 
@@ -15,7 +15,7 @@ import uuid
 
 from flask import Flask, g, request
 
-from pythonjsonlogger.json import JsonFormatter  # noqa: F401 — used in dictConfig
+from pythonjsonlogger.json import JsonFormatter  # noqa: F401 -- used in dictConfig
 
 
 class RequestIdFilter(logging.Filter):

@@ -327,7 +327,7 @@ class TestCalculateInvestmentInputs:
 
         The source does not guard against negative amounts. A negative
         deduction effectively reduces the total periodic contribution.
-        # BUG: negative deduction amount is silently accepted — consider
+        # BUG: negative deduction amount is silently accepted -- consider
         # adding a guard in the service.
         """
         params = FakeInvestmentParams(

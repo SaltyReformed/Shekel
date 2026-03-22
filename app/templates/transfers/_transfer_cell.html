@@ -1,8 +1,8 @@
-{# Transfer cell — displays amount with direction arrow and status badge.
+{# Transfer cell -- displays amount with direction arrow and status badge.
    Clicking opens the inline edit form via HTMX.
 
-   Expected context: xfer — a Transfer object, account — the active Account.
-   Optional: wrap_div — if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
+   Expected context: xfer -- a Transfer object, account -- the active Account.
+   Optional: wrap_div -- if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
 #}
 {% if xfer %}
 {% if wrap_div is defined and wrap_div %}<div id="xfer-cell-{{ xfer.id }}">{% endif %}
@@ -14,7 +14,7 @@
      role="button"
      tabindex="0"
      aria-label="{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
-     title="{{ xfer.name or 'Transfer' }}{% if xfer.notes %} — {{ xfer.notes }}{% endif %}">
+     title="{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
 
   {# Direction icon #}
   {% if account %}

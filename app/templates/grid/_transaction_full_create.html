@@ -1,13 +1,13 @@
-{# Full create popover — renders inside #txn-popover container.
+{# Full create popover -- renders inside #txn-popover container.
    Contains all editable fields for creating a new transaction.
    Form submits via HTMX POST to the inline create endpoint.
 
    Expected context:
-     category            — Category object
-     period              — PayPeriod object
-     scenario_id         — baseline scenario ID
-     transaction_type_id — income or expense type ID
-     statuses            — list of Status objects
+     category            -- Category object
+     period              -- PayPeriod object
+     scenario_id         -- baseline scenario ID
+     transaction_type_id -- income or expense type ID
+     statuses            -- list of Status objects
 #}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
@@ -44,7 +44,7 @@
              placeholder="Actual amount">
     </div>
 
-    {# Status selector — defaults to projected #}
+    {# Status selector -- defaults to projected #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Status</label>
       <select name="status_id" class="form-select form-select-sm">

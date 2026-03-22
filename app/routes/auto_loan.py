@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Auto Loan Routes
+Shekel Budget App -- Auto Loan Routes
 
 Dashboard and parameter updates for auto loan accounts.
 """

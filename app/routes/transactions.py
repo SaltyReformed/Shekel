@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Transaction Routes
+Shekel Budget App -- Transaction Routes
 
 CRUD operations and status workflow for individual transactions.
 Returns HTMX fragments for inline editing in the grid.

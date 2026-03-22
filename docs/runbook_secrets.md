@@ -1,4 +1,4 @@
-# Secret Management — Operations Runbook
+# Secret Management -- Operations Runbook
 
 ## Secret Inventory
 

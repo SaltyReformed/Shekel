@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Alembic Environment Configuration
+Shekel Budget App -- Alembic Environment Configuration
 
 This file is used by Flask-Migrate (Alembic) for database migrations.
 It imports the app factory and model registry so autogenerate can
@@ -12,12 +12,12 @@ from logging.config import fileConfig
 from flask import current_app
 from alembic import context
 
-# Alembic Config object — access to .ini file values.
+# Alembic Config object -- access to .ini file values.
 config = context.config
 
 # Set up Python logging from alembic.ini if it exists.
 # Flask-Migrate may pass a path like "migrations/alembic.ini" that
-# doesn't exist — logging is already configured by Flask in that case.
+# doesn't exist -- logging is already configured by Flask in that case.
 if config.config_file_name is not None:
     import os
     if os.path.exists(config.config_file_name):
@@ -25,7 +25,7 @@ if config.config_file_name is not None:
 
 logger = logging.getLogger("alembic.env")
 
-# Target metadata for autogenerate — pulled from Flask-SQLAlchemy.
+# Target metadata for autogenerate -- pulled from Flask-SQLAlchemy.
 # Importing models/__init__.py ensures all models are registered.
 import app.models  # noqa: F401, E402  pylint: disable=unused-import
 
@@ -65,7 +65,7 @@ def run_migrations_online():
             script = directives[0]
             if script.upgrade_ops.is_empty():
                 directives[:] = []
-                logger.info("No changes detected — skipping autogenerate.")
+                logger.info("No changes detected -- skipping autogenerate.")
 
     connectable = current_app.extensions["migrate"].db.engine
 

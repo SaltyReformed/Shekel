@@ -1,11 +1,11 @@
 """
-Shekel Budget App — Compound Growth Engine Service
+Shekel Budget App -- Compound Growth Engine Service
 
 Pure function service that projects investment account balances forward
 over time, handling compound growth, periodic contributions, employer
 contributions, and annual contribution limits.
 
-All functions are pure (no DB access) — data is passed in as arguments.
+All functions are pure (no DB access) -- data is passed in as arguments.
 """
 
 import logging
@@ -181,12 +181,12 @@ def generate_projection_periods(start_date, end_date, cadence_days=14):
     """Generate synthetic biweekly periods for long-term projections.
 
     Creates lightweight period objects compatible with project_balance().
-    No database interaction — pure function.
+    No database interaction -- pure function.
 
     Args:
-        start_date:    date — first period start.
-        end_date:      date — generate periods until start_date would exceed this.
-        cadence_days:  int — days per period (default 14 for biweekly).
+        start_date:    date -- first period start.
+        end_date:      date -- generate periods until start_date would exceed this.
+        cadence_days:  int -- days per period (default 14 for biweekly).
 
     Returns:
         List of SyntheticPeriod namedtuples with .id, .start_date, .end_date.

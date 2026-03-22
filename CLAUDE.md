@@ -14,10 +14,10 @@ Shekel is a personal budget app that organizes finances around **pay periods** (
 # Run dev server
 flask run                    # or: python run.py (http://localhost:5000)
 
-# Tests — IMPORTANT: full suite takes ~9 minutes (526s+)
+# Tests -- IMPORTANT: full suite takes ~9 minutes (526s+)
 # Always use an explicit timeout so long runs are not mistakenly killed.
 
-# Full suite (use 660s timeout — 11 min with buffer)
+# Full suite (use 660s timeout -- 11 min with buffer)
 timeout 660 pytest -v --tb=short
 
 # Targeted runs for development iteration (fast feedback):
@@ -52,29 +52,29 @@ Routes (Blueprints)  →  Services (pure logic, no Flask imports)  →  Models (
                                                                   →  Schemas (Marshmallow validation)
 ```
 
-**Services are isolated from Flask** — they take plain data, return plain data, and never import Flask or touch `request`/`session`. This is intentional for testability.
+**Services are isolated from Flask** -- they take plain data, return plain data, and never import Flask or touch `request`/`session`. This is intentional for testability.
 
 ### PostgreSQL Schemas
 
 Five database schemas separate concerns:
 
-- **ref** — Lookup/reference tables (AccountType, Status, TransactionType, FilingStatus, etc.)
-- **auth** — Users, sessions, MFA, user settings
-- **budget** — Pay periods, transactions, categories, scenarios, accounts, templates
-- **salary** — Salary profiles, deductions, tax configs, raises, pensions
-- **system** — Reserved for audit/system metadata
+- **ref** -- Lookup/reference tables (AccountType, Status, TransactionType, FilingStatus, etc.)
+- **auth** -- Users, sessions, MFA, user settings
+- **budget** -- Pay periods, transactions, categories, scenarios, accounts, templates
+- **salary** -- Salary profiles, deductions, tax configs, raises, pensions
+- **system** -- Reserved for audit/system metadata
 
 ### Core Domain Concepts
 
-- **Anchor Balance** — A real checking account balance at a reference pay period. All projections flow forward from this point.
-- **Balance Calculator** (`app/services/balance_calculator.py`) — Computes end-of-period balances by anchoring to a real balance, then adding income and subtracting expenses period-by-period. Excludes "done/received" (already settled) and "credit" (on credit card) transactions.
-- **Recurrence Engine** (`app/services/recurrence_engine.py`) — Generates transactions from templates using 8 patterns: `every_period`, `every_n_periods`, `monthly`, `monthly_first`, `quarterly`, `semi_annual`, `annual`, `once`. Handles overrides and deletions.
-- **Paycheck Calculator** (`app/services/paycheck_calculator.py`) — Computes net pay: salary + raises − federal/state taxes − FICA − deductions. Supports multi-state tax brackets.
-- **Transaction Status Workflow** — `projected → done|credit|cancelled`, `done|received → settled`
+- **Anchor Balance** -- A real checking account balance at a reference pay period. All projections flow forward from this point.
+- **Balance Calculator** (`app/services/balance_calculator.py`) -- Computes end-of-period balances by anchoring to a real balance, then adding income and subtracting expenses period-by-period. Excludes "done/received" (already settled) and "credit" (on credit card) transactions.
+- **Recurrence Engine** (`app/services/recurrence_engine.py`) -- Generates transactions from templates using 8 patterns: `every_period`, `every_n_periods`, `monthly`, `monthly_first`, `quarterly`, `semi_annual`, `annual`, `once`. Handles overrides and deletions.
+- **Paycheck Calculator** (`app/services/paycheck_calculator.py`) -- Computes net pay: salary + raises − federal/state taxes − FICA − deductions. Supports multi-state tax brackets.
+- **Transaction Status Workflow** -- `projected → done|credit|cancelled`, `done|received → settled`
 
 ### Frontend Pattern
 
-HTMX with server-rendered partials — no SPA. The budget grid uses HTMX for inline editing, creating/deleting transactions, and carry-forward without full page reloads. Templates are in `app/templates/` organized by domain.
+HTMX with server-rendered partials -- no SPA. The budget grid uses HTMX for inline editing, creating/deleting transactions, and carry-forward without full page reloads. Templates are in `app/templates/` organized by domain.
 
 ### Application Factory
 
@@ -104,6 +104,10 @@ HTMX with server-rendered partials — no SPA. The budget grid uses HTMX for inl
 
 Copy `.env.example` to `.env` and configure. Key vars: `DATABASE_URL`, `SECRET_KEY`, `TOTP_ENCRYPTION_KEY`. Default login: `admin@shekel.local` / `ChangeMe!2026`. Alternatively, use `/register` to create an account.
 
+## Style
+
+- **No Unicode dashes.** Never use em dashes (U+2014) or en dashes (U+2013). Use `--` (double hyphen) for sentence breaks/separators and `-` (single hyphen) for ranges/short separators.
+
 ## Development Status
 
-Multi-phase project. Phases 1–7 complete (core budgeting, salary, accounts, transfers, savings, charts, UI/UX). Phase 8 (hardening/ops) in progress. See `docs/` for detailed plans.
+Multi-phase project. Phases 1-7 complete (core budgeting, salary, accounts, transfers, savings, charts, UI/UX). Phase 8 (hardening/ops) in progress. See `docs/` for detailed plans.
