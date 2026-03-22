@@ -74,7 +74,7 @@ def calculate_monthly_payment(
     monthly_rate = annual_rate / 12
     factor = (1 + monthly_rate) ** remaining_months
     payment = principal * (monthly_rate * factor) / (factor - 1)
-    return Decimal(str(payment)).quantize(TWO_PLACES, ROUND_HALF_UP)
+    return payment.quantize(TWO_PLACES, ROUND_HALF_UP)
 
 
 def _advance_month(year: int, month: int, day: int) -> date:
@@ -128,6 +128,7 @@ def generate_schedule(
         pay_year = today.year
         pay_month = today.month
 
+    # Defensive: ensure Decimal even if caller passes float from DB column.
     balance = Decimal(str(current_principal))
     rows = []
 
