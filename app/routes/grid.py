@@ -10,7 +10,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
@@ -172,6 +172,38 @@ def index():
         all_periods=all_periods,
         low_balance_threshold=low_balance_threshold,
     )
+
+
+@grid_bp.route("/create-baseline", methods=["POST"])
+@login_required
+def create_baseline():
+    """Create a missing baseline scenario for the current user.
+
+    Idempotent: if a baseline already exists, redirects without
+    creating a duplicate.
+    """
+    existing = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if existing:
+        return redirect(url_for("grid.index"))
+
+    scenario = Scenario(
+        user_id=current_user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.commit()
+
+    logger.info(
+        "action=create_baseline user_id=%s scenario_id=%s",
+        current_user.id, scenario.id,
+    )
+
+    return redirect(url_for("grid.index"))
 
 
 @grid_bp.route("/grid/balance-row")

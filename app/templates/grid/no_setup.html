@@ -8,12 +8,20 @@
       <div class="card-body text-center">
         <h3><i class="bi bi-exclamation-triangle text-warning"></i> Setup Incomplete</h3>
         <p class="mt-3">
-          Your account setup is incomplete -- no baseline budget scenario was found.
-          This can happen if your account was created outside the normal registration process.
+          Your account is missing a baseline budget scenario. This can happen
+          if your account was created outside the normal registration process.
         </p>
-        <a href="{{ url_for('auth.register') }}" class="btn btn-primary">
-          <i class="bi bi-person-plus"></i> Create a new account
-        </a>
+        <form method="post" action="{{ url_for('grid.create_baseline') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-plus-circle"></i> Create Baseline Scenario
+          </button>
+        </form>
+        <div class="mt-3">
+          <a href="{{ url_for('auth.register') }}" class="text-muted">
+            <i class="bi bi-person-plus"></i> Create a new account instead
+          </a>
+        </div>
       </div>
     </div>
   </div>

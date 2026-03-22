@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
@@ -729,3 +730,95 @@ class TestTransactionNegativePaths:
             assert cell_resp.status_code == 200
             assert b"<script>" not in cell_resp.data
             assert b"&lt;script&gt;" in cell_resp.data
+
+
+class TestCreateBaseline:
+    """Tests for POST /create-baseline route."""
+
+    def test_create_baseline_success(self, app, auth_client, seed_user):
+        """POST /create-baseline creates a baseline scenario when none exists.
+
+        Verifies: the route creates a Scenario with name='Baseline' and
+        is_baseline=True, then redirects to the grid index.
+        """
+        with app.app_context():
+            # Remove the existing baseline so the route has work to do.
+            Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).delete()
+            db.session.commit()
+
+            response = auth_client.post("/create-baseline")
+            assert response.status_code == 302
+
+            scenario = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).one()
+            assert scenario.name == "Baseline"
+            assert scenario.is_baseline is True
+
+    def test_create_baseline_idempotent(self, app, auth_client, seed_user):
+        """POST /create-baseline with existing baseline does not create a duplicate.
+
+        Verifies: when a baseline already exists (from seed_user fixture),
+        the route redirects without creating a second scenario.
+        """
+        with app.app_context():
+            response = auth_client.post("/create-baseline")
+            assert response.status_code == 302
+
+            count = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).count()
+            assert count == 1
+
+    def test_create_baseline_requires_login(self, app, client):
+        """POST /create-baseline without authentication redirects to login.
+
+        Verifies: unauthenticated requests are rejected and no scenario
+        is created.
+        """
+        with app.app_context():
+            response = client.post("/create-baseline")
+            assert response.status_code == 302
+            assert "/login" in response.headers["Location"]
+
+            count = Scenario.query.count()
+            assert count == 0
+
+    def test_create_baseline_rejects_get(self, app, auth_client, seed_user):
+        """GET /create-baseline returns 405 Method Not Allowed.
+
+        Verifies: the route only accepts POST requests.
+        """
+        with app.app_context():
+            response = auth_client.get("/create-baseline")
+            assert response.status_code == 405
+
+    def test_create_baseline_user_isolation(self, app, auth_client, seed_user, second_user):
+        """POST /create-baseline creates a scenario for the logged-in user only.
+
+        Verifies: the route uses current_user.id correctly and does not
+        affect other users' data.
+        """
+        with app.app_context():
+            # Remove seed_user's baseline.
+            Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).delete()
+            db.session.commit()
+
+            response = auth_client.post("/create-baseline")
+            assert response.status_code == 302
+
+            # The new scenario belongs to seed_user, not second_user.
+            new_scenario = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).one()
+            assert new_scenario.user_id == seed_user["user"].id
+
+            # second_user's baseline is untouched.
+            other_baseline = Scenario.query.filter_by(
+                user_id=second_user["user"].id, is_baseline=True
+            ).one()
+            assert other_baseline.user_id == second_user["user"].id
