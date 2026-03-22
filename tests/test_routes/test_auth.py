@@ -525,7 +525,7 @@ class TestSessionManagement:
         with app.app_context():
             auth_client.post("/invalidate-sessions")
 
-            # The current session should still work — not redirected to login.
+            # The current session should still work -- not redirected to login.
             response = auth_client.get(
                 "/settings?section=security", follow_redirects=False
             )
@@ -683,6 +683,28 @@ class TestMfaSetup:
             assert response.status_code == 200
             assert b"Two-factor authentication is not enabled" in response.data
 
+    def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/confirm redirects with flash when TOTP key is missing.
+
+        When TOTP_ENCRYPTION_KEY is not set, encrypt_secret() raises
+        RuntimeError.  The route must catch this and redirect to security
+        settings instead of returning a 500 error.
+        """
+        with app.app_context():
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Visit setup to store the secret in the session.
+            auth_client.get("/mfa/setup")
+
+            # Remove the key so encrypt_secret raises RuntimeError.
+            monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+
+            response = auth_client.post("/mfa/confirm", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "security" in response.headers.get("Location", "")
+
 
 class TestMfaLogin:
     """Tests for the two-step MFA login flow."""
@@ -724,7 +746,7 @@ class TestMfaLogin:
             assert response.status_code == 302
             assert "mfa/verify" in response.headers.get("Location", "")
 
-            # User should NOT be logged in — a protected page should redirect.
+            # User should NOT be logged in -- a protected page should redirect.
             grid_resp = client.get("/", follow_redirects=False)
             assert grid_resp.status_code == 302
             assert "login" in grid_resp.headers.get("Location", "")
@@ -774,7 +796,7 @@ class TestMfaLogin:
             assert "login" not in location
             assert "mfa" not in location
 
-            # User is now logged in — protected page should return 200.
+            # User is now logged in -- protected page should return 200.
             grid_resp = client.get("/", follow_redirects=False)
             assert grid_resp.status_code == 200
 
@@ -800,6 +822,34 @@ class TestMfaLogin:
             grid_resp = client.get("/", follow_redirects=False)
             assert grid_resp.status_code == 302
             assert "login" in grid_resp.headers.get("Location", "")
+
+    def test_mfa_verify_missing_totp_key(self, app, client, seed_user, monkeypatch):
+        """POST /mfa/verify redirects to login when TOTP key is missing.
+
+        When TOTP_ENCRYPTION_KEY is removed after MFA was enabled,
+        decrypt_secret() raises RuntimeError.  The route must catch
+        this, clear pending session state, and redirect to login
+        instead of returning a 500 error.
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            # Step 1: enter pending state via login.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            # Remove the key so decrypt_secret raises RuntimeError.
+            monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+
+            # Step 2: attempt MFA verification.
+            response = client.post("/mfa/verify", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+
+            assert response.status_code == 302
+            assert "login" in response.headers.get("Location", "")
 
     def test_mfa_verify_valid_backup_code(self, app, client, seed_user):
         """POST /mfa/verify with valid backup code completes login and consumes the code."""
@@ -1522,7 +1572,7 @@ class TestMfaVerifySecurity:
             # Client 2: A separate test client with its own session.
             client2 = app.test_client()
 
-            # Client 2 has no pending MFA state — should be redirected to login.
+            # Client 2 has no pending MFA state -- should be redirected to login.
             response = client2.get("/mfa/verify", follow_redirects=False)
             assert response.status_code == 302
             assert "login" in response.headers.get("Location", "")

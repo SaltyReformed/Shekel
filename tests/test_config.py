@@ -75,3 +75,17 @@ class TestProdConfig:
         monkeypatch.setenv("TOTP_ENCRYPTION_KEY", "test-key")
         with pytest.raises(ValueError, match="DATABASE_URL"):
             ProdConfig()
+
+    def test_totp_key_optional_at_startup(self, monkeypatch):
+        """ProdConfig does not crash when TOTP_ENCRYPTION_KEY is missing.
+
+        The key is only needed when a user enables MFA, not at app
+        startup.  Enforcement happens in mfa_service.get_encryption_key().
+        """
+        monkeypatch.setattr(BaseConfig, "SECRET_KEY", "secure-key-for-test")
+        monkeypatch.setattr(
+            ProdConfig, "SQLALCHEMY_DATABASE_URI", "postgresql:///shekel"
+        )
+        monkeypatch.setattr(BaseConfig, "TOTP_ENCRYPTION_KEY", None)
+        config = ProdConfig()
+        assert config.TOTP_ENCRYPTION_KEY is None

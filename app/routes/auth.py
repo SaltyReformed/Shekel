@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Auth Routes
+Shekel Budget App -- Auth Routes
 
 Handles login, registration, and logout with Flask-Login session management.
 """
@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, flash, redirect, render_template, request, session as flask_session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
+
+from cryptography.fernet import InvalidToken
 
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
@@ -70,7 +72,7 @@ def _is_safe_redirect(target):
 @limiter.limit("5 per 15 minutes", methods=["POST"])
 def login():
     """Display the login form and handle authentication."""
-    # Already logged in — go to the grid.
+    # Already logged in -- go to the grid.
     if current_user.is_authenticated:
         return redirect(url_for("grid.index"))
 
@@ -99,7 +101,7 @@ def login():
                 )
                 return redirect(url_for("auth.mfa_verify"))
 
-            # No MFA — complete login immediately.
+            # No MFA -- complete login immediately.
             login_user(user, remember=remember)
             flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
             log_event(logger, logging.INFO, "login_success", AUTH,
@@ -233,13 +235,13 @@ def mfa_verify():
     if request.method == "GET":
         return render_template("auth/mfa_verify.html")
 
-    # POST — verify the submitted code.
+    # POST -- verify the submitted code.
     totp_code = request.form.get("totp_code", "").strip()
     backup_code = request.form.get("backup_code", "").strip()
 
     user = db.session.get(User, pending_user_id)
     if not user:
-        # User was deleted between login steps — clear pending state.
+        # User was deleted between login steps -- clear pending state.
         flask_session.pop("_mfa_pending_user_id", None)
         flask_session.pop("_mfa_pending_remember", None)
         flask_session.pop("_mfa_pending_next", None)
@@ -251,13 +253,27 @@ def mfa_verify():
         .first()
     )
     if not mfa_config:
-        # MFA was disabled between login steps — clear pending state.
+        # MFA was disabled between login steps -- clear pending state.
         flask_session.pop("_mfa_pending_user_id", None)
         flask_session.pop("_mfa_pending_remember", None)
         flask_session.pop("_mfa_pending_next", None)
         return redirect(url_for("auth.login"))
 
-    secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    try:
+        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    except (RuntimeError, InvalidToken):
+        # Key is missing or has changed since MFA was enabled.
+        # Clear pending MFA state so the user is not stuck in a loop.
+        flask_session.pop("_mfa_pending_user_id", None)
+        flask_session.pop("_mfa_pending_remember", None)
+        flask_session.pop("_mfa_pending_next", None)
+        flash(
+            "MFA verification failed. The encryption key may have been "
+            "changed or removed. Contact your administrator.",
+            "danger",
+        )
+        return redirect(url_for("auth.login"))
+
     valid = False
 
     if totp_code:
@@ -346,7 +362,7 @@ def mfa_confirm():
         flash("Invalid code. Please try again.", "danger")
         return redirect(url_for("auth.mfa_setup"))
 
-    # Valid code — enable MFA.
+    # Valid code -- enable MFA.
     mfa_config = (
         db.session.query(MfaConfig)
         .filter_by(user_id=current_user.id)
@@ -356,7 +372,16 @@ def mfa_confirm():
         mfa_config = MfaConfig(user_id=current_user.id)
         db.session.add(mfa_config)
 
-    mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
+    try:
+        mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
+    except RuntimeError:
+        flash(
+            "MFA is not available. The server administrator must set "
+            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+
     mfa_config.is_enabled = True
     mfa_config.confirmed_at = datetime.now(timezone.utc)
 
@@ -436,7 +461,16 @@ def mfa_disable_confirm():
         flash("Two-factor authentication is not enabled.", "danger")
         return redirect(url_for("settings.show", section="security"))
 
-    secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    try:
+        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+    except (RuntimeError, InvalidToken):
+        flash(
+            "MFA could not be verified because the encryption key has "
+            "changed or been removed. Contact your administrator.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+
     if not mfa_service.verify_totp_code(secret, totp_code):
         flash("Invalid authentication code.", "danger")
         return redirect(url_for("auth.mfa_disable"))

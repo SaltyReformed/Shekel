@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Application Factory
+Shekel Budget App -- Application Factory
 
 Creates and configures the Flask application.  Call create_app()
 with an optional config_name ('development', 'testing', 'production')
@@ -38,6 +38,12 @@ def create_app(config_name=None):
 
     # --- Logging ---------------------------------------------------------
     setup_logging(app)
+
+    if not app.config.get("TOTP_ENCRYPTION_KEY"):
+        app.logger.warning(
+            "TOTP_ENCRYPTION_KEY is not set. MFA/TOTP will be unavailable "
+            "until this key is configured. See .env.example for details."
+        )
 
     # --- Extensions ------------------------------------------------------
     db.init_app(app)
@@ -333,7 +339,7 @@ def _seed_ref_tables():
     """Seed reference lookup tables if empty (dev/test only).
 
     In production, this is handled by the Docker entrypoint.
-    Idempotent — skips rows that already exist.  Silently skips if
+    Idempotent -- skips rows that already exist.  Silently skips if
     the tables haven't been created yet (e.g. first test-session run
     before create_all()).
     """

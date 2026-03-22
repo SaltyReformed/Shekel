@@ -1,5 +1,5 @@
 """
-Shekel Budget App — Configuration Classes
+Shekel Budget App -- Configuration Classes
 
 Provides Dev, Test, and Prod configuration classes loaded by the
 application factory based on the FLASK_ENV environment variable.
@@ -21,7 +21,7 @@ class BaseConfig:
     # Flask core
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me-in-production")
 
-    # MFA — Fernet key for encrypting TOTP secrets at rest.
+    # MFA -- Fernet key for encrypting TOTP secrets at rest.
     TOTP_ENCRYPTION_KEY = os.getenv("TOTP_ENCRYPTION_KEY")
 
     # SQLAlchemy
@@ -73,7 +73,7 @@ class TestConfig(BaseConfig):
     # 4 is the minimum and makes auth/MFA tests ~100x faster.
     BCRYPT_LOG_ROUNDS = 4
 
-    # NullPool closes connections immediately after use — no pooling.
+    # NullPool closes connections immediately after use -- no pooling.
     # Prevents stale/leaked connections from holding locks that block
     # TRUNCATE between tests.
     # connect_timeout: fail fast (5s) if test-db is unreachable instead
@@ -102,8 +102,6 @@ class ProdConfig(BaseConfig):
             )
         if not self.SQLALCHEMY_DATABASE_URI:
             raise ValueError("DATABASE_URL must be set in production.")
-        if not os.getenv("TOTP_ENCRYPTION_KEY"):
-            raise ValueError("TOTP_ENCRYPTION_KEY must be set in production.")
 
 
 # Map environment names to config classes for the factory.
