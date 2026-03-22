@@ -39,6 +39,7 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 NGINX_PORT="${NGINX_PORT:-80}"
 HEALTH_URL="http://localhost:${NGINX_PORT}/health"
+COMPOSE_FILES="-f docker-compose.yml -f docker-compose.build.yml"
 
 # Flags (overridden by command-line options).
 SKIP_PULL=false
@@ -185,7 +186,7 @@ build_image() {
     log "INFO" "Building new Docker image..."
     cd "${DEPLOY_DIR}"
 
-    if ! docker compose build app; then
+    if ! docker compose ${COMPOSE_FILES} build app; then
         log "ERROR" "Docker image build failed. The previous version is still running."
         exit 1
     fi
@@ -202,7 +203,7 @@ restart_app() {
     # Recreate the app container with the new image.
     # --no-deps: only restart the app, not db or nginx.
     # The db and nginx containers remain running.
-    if ! docker compose up -d --no-deps --force-recreate app; then
+    if ! docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app; then
         log "ERROR" "Failed to restart app container."
         rollback
         exit 1
@@ -267,12 +268,12 @@ rollback() {
 
     # Stop the failed container.
     log "INFO" "Stopping failed container..."
-    docker compose stop app 2>/dev/null || true
+    docker compose ${COMPOSE_FILES} stop app 2>/dev/null || true
 
     # Re-tag the previous image as the current compose image.
     # Get the compose image name (what docker compose build targets).
     local compose_image
-    compose_image=$(docker compose images app --format json 2>/dev/null \
+    compose_image=$(docker compose ${COMPOSE_FILES} images app --format json 2>/dev/null \
         | python3 -c "import sys,json; data=json.load(sys.stdin); print(data[0].get('Repository','') if isinstance(data,list) else data.get('Repository',''))" 2>/dev/null || true)
 
     if [ -n "$compose_image" ]; then
@@ -283,7 +284,7 @@ rollback() {
     fi
 
     # Restart with the previous image.
-    docker compose up -d --no-deps --force-recreate app
+    docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app
 
     # Verify the rollback succeeded.
     log "INFO" "Verifying rollback health..."

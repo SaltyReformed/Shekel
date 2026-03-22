@@ -1,0 +1,27 @@
+# Shekel Budget App -- Build Override
+#
+# For self-hosted deployments that build from source.
+# Use alongside docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
+#
+# End users pulling pre-built images from GHCR do not need this file.
+
+services:
+  app:
+    build: .
+    # Override networks: must include both backend (inherited base file
+    # uses this for DB/Nginx communication) and monitoring (for the
+    # Loki/Grafana/Promtail stack on self-hosted deployments).
+    # Docker Compose replaces list-type keys, so both must be listed.
+    networks:
+      - backend
+      - monitoring
+
+networks:
+  # Monitoring network: shared with the Loki/Grafana/Promtail stack.
+  # Uses an explicit name so both stacks reference the same network.
+  # Docker Compose creates it automatically if it does not exist.
+  monitoring:
+    name: monitoring
+    driver: bridge

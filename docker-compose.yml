@@ -1,4 +1,4 @@
-# Shekel Budget App — Production Docker Compose
+# Shekel Budget App -- Production Docker Compose
 #
 # Architecture:
 #   [Client] --> [Nginx :80] --> [Gunicorn :8000] --> [PostgreSQL :5432]
@@ -13,7 +13,7 @@
 #   3. Open http://localhost (via Nginx)
 #
 # Update:
-#   docker compose build && docker compose up -d
+#   docker compose pull && docker compose up -d
 
 services:
   # ── PostgreSQL Database ──────────────────────────────────────────
@@ -37,7 +37,7 @@ services:
 
   # ── Flask Application (Gunicorn) ─────────────────────────────────
   app:
-    build: .
+    image: ghcr.io/saltyreformed/shekel:latest
     container_name: shekel-app
     restart: unless-stopped
     depends_on:
@@ -58,7 +58,7 @@ services:
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-}
       SEED_USER_DISPLAY_NAME: ${SEED_USER_DISPLAY_NAME:-Budget Admin}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
-      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?Set TOTP_ENCRYPTION_KEY in .env}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-500}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
@@ -68,7 +68,6 @@ services:
       - static_files:/var/www/static
     networks:
       - backend
-      - monitoring
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -115,13 +114,7 @@ networks:
   # Frontend network: Nginx only.  Externally accessible via port mapping.
   frontend:
     driver: bridge
-  # Backend network: all services.  Internal only — not reachable from host.
+  # Backend network: all services.  Internal only -- not reachable from host.
   backend:
     driver: bridge
     internal: true
-  # Monitoring network: shared with the Loki/Grafana/Promtail stack.
-  # Uses an explicit name so both stacks reference the same network.
-  # Docker Compose creates it automatically if it does not exist.
-  monitoring:
-    name: monitoring
-    driver: bridge

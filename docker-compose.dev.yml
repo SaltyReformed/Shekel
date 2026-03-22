@@ -1,4 +1,7 @@
-# Shekel Budget App — Development Docker Compose
+# Shekel Budget App -- Development Docker Compose
+#
+# For developers with the full source tree.  End users should use
+# docker-compose.yml with the pre-built GHCR image instead.
 #
 # Provides PostgreSQL for local development.
 #
