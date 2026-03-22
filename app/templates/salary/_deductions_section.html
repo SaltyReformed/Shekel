@@ -56,6 +56,7 @@
                   hx-target="#deductions-section"
                   hx-swap="outerHTML"
                   hx-disabled-elt="find button[type=submit]">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
                 <i class="bi bi-trash"></i>
               </button>
@@ -78,6 +79,7 @@
             hx-target="#deductions-section"
             hx-swap="outerHTML"
             hx-disabled-elt="find button[type=submit]">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {# Row 1: Identity #}
         <div class="row g-2 mb-2">
           <div class="col-md-6">
