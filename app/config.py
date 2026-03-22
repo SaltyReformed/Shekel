@@ -46,17 +46,25 @@ class BaseConfig:
 
 
 class DevConfig(BaseConfig):
-    """Development configuration — debug mode, local PostgreSQL."""
+    """Development configuration -- debug mode, local PostgreSQL."""
 
     DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    # Falls back to peer-auth local connection if DATABASE_URL is not
+    # set in .env.  Matches the Quick Start instructions in README.md.
+    SQLALCHEMY_DATABASE_URI = os.getenv(
+        "DATABASE_URL", "postgresql:///shekel"
+    )
 
 
 class TestConfig(BaseConfig):
-    """Test configuration — separate database, no CSRF, WTF disabled."""
+    """Test configuration -- separate database, no CSRF, WTF disabled."""
 
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = os.getenv("TEST_DATABASE_URL")
+    # Falls back to peer-auth local test database if TEST_DATABASE_URL
+    # is not set in .env.
+    SQLALCHEMY_DATABASE_URI = os.getenv(
+        "TEST_DATABASE_URL", "postgresql:///shekel_test"
+    )
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = False
     RATELIMIT_ENABLED = False
@@ -77,7 +85,7 @@ class TestConfig(BaseConfig):
 
 
 class ProdConfig(BaseConfig):
-    """Production configuration — no debug, require real secret key."""
+    """Production configuration -- no debug, require real secret key."""
 
     DEBUG = False
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
