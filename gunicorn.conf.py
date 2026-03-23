@@ -69,11 +69,14 @@ limit_request_fields = 100
 limit_request_field_size = 8190
 
 # ── Forwarded Headers ────────────────────────────────────────────
-# Trust X-Forwarded-* headers from any source.  This is safe in the
-# current architecture because Gunicorn is only reachable on the
-# Docker internal backend network -- Nginx is the sole client.
+# Trust X-Forwarded-* headers only from RFC 1918 private subnets,
+# which covers all Docker bridge networks.  Override via the
+# FORWARDED_ALLOW_IPS environment variable if the architecture
+# changes (e.g., non-RFC1918 reverse proxy).
 #
-# If Gunicorn is ever exposed directly (without Nginx in front),
-# restrict this to the Nginx container IP or the Docker bridge
-# subnet to prevent X-Forwarded-For spoofing.
-forwarded_allow_ips = "*"
+# IMPORTANT: Do NOT set to "*" unless Gunicorn is behind a trusted
+# reverse proxy on a private network with no external access.
+forwarded_allow_ips = os.getenv(
+    "FORWARDED_ALLOW_IPS",
+    "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8",
+)
