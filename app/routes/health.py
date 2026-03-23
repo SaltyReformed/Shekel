@@ -28,7 +28,11 @@ def health_check():
 
     Returns:
         200 JSON: {"status": "healthy", "database": "connected"}
-        500 JSON: {"status": "unhealthy", "database": "error", "detail": "..."}
+        500 JSON: {"status": "unhealthy", "database": "error"}
+
+    The error response intentionally omits exception details to prevent
+    information disclosure (connection strings, hostnames, credentials).
+    Full details are logged server-side for operator diagnostics.
     """
     try:
         # Verify database connectivity with a lightweight query.
@@ -36,8 +40,9 @@ def health_check():
         return jsonify({"status": "healthy", "database": "connected"}), 200
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("Health check failed: %s", exc)
+        # Do NOT include str(exc) in the response -- it may contain
+        # database hostnames, ports, or credentials.  See audit M5.
         return jsonify({
             "status": "unhealthy",
             "database": "error",
-            "detail": str(exc),
         }), 500
