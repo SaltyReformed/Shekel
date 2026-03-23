@@ -305,10 +305,13 @@ class TestAuditTriggerMetadata:
         """audit_log row captures the PostgreSQL db_user matching the test config role."""
         _create_transaction(seed_user, seed_periods)
         rows = _get_audit_rows("transactions", "INSERT")
-        # The PG role depends on TEST_DATABASE_URL -- 'shekel_user' locally,
-        # 'shekel_test' in CI.  Just verify it's a non-empty string.
-        assert rows[-1]["db_user"]
-        assert isinstance(rows[-1]["db_user"], str)
+        # Query the actual PG role from the live connection so the test
+        # works regardless of which user TEST_DATABASE_URL specifies
+        # ('shekel_user' locally, 'shekel_test' in CI).
+        actual_db_user = db.session.execute(
+            db.text("SELECT current_user")
+        ).scalar()
+        assert rows[-1]["db_user"] == actual_db_user
 
     def test_user_id_is_null_without_middleware(
         self, app, db, seed_user, seed_periods
