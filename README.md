@@ -2,11 +2,11 @@
 
 A paycheck-centric budget application that replaces a biweekly-paycheck-based spreadsheet. Organizes finances around **pay periods** rather than calendar months, mapping every expense to a specific paycheck and projecting balances forward over a ~2-year horizon.
 
-**Stack:** Flask · Jinja2 · HTMX · Bootstrap 5 · PostgreSQL
+**Stack:** Flask - Jinja2 - HTMX - Bootstrap 5 - PostgreSQL
 
 **Two ways to run Shekel:**
-- **Docker (recommended):** Download two files, run `docker compose up`. No Python or PostgreSQL install needed. See [Quick Start (Docker)](#quick-start-docker).
-- **From source:** Clone the repo, set up Python and PostgreSQL locally. See [Developer Setup (from source)](#developer-setup-from-source).
+- **Docker (recommended):** Download two files, create a volume, run `docker compose up`. No Python or PostgreSQL install needed. See [Quick Start (Docker)](#quick-start-docker).
+- **From source:** Clone the repo, set up Python, use Docker for databases. See [Developer Setup (from source)](#developer-setup-from-source).
 
 ---
 
@@ -44,14 +44,15 @@ Edit `.env` and set these values:
 ### 4. Create the Database Volume and Start
 
 ```bash
-# One-time setup: create the external database volume.
-# This volume is protected from "docker compose down -v".
+# One-time setup: create the database volume.
+# This volume is external -- "docker compose down -v" will NOT delete it.
+# Your financial data is safe from accidental cleanup commands.
 docker volume create shekel-prod-pgdata
 
 docker compose up -d
 ```
 
-First startup takes 1--2 minutes while the database is initialized. Check progress with:
+First startup takes 1-2 minutes while the database is initialized. Check progress with:
 
 ```bash
 docker compose logs -f app
@@ -81,12 +82,27 @@ docker compose pull && docker compose up -d
 
 Database migrations run automatically on startup.
 
+### Stopping and Removing
+
+```bash
+# Stop containers (data is preserved in the external volume):
+docker compose down
+
+# Stop containers and remove logs/static volumes (database is safe):
+docker compose down -v
+
+# To permanently delete ALL data including the database:
+docker compose down -v
+docker volume rm shekel-prod-pgdata
+```
+
 ### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `POSTGRES_PASSWORD` error on startup | Set `POSTGRES_PASSWORD` in your `.env` file. |
 | `SECRET_KEY` error on startup | Set `SECRET_KEY` in your `.env` file. Run `openssl rand -hex 32` to generate one. |
+| `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See `.env.example` for generation instructions. |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
@@ -96,13 +112,13 @@ Database migrations run automatically on startup.
 
 ### Deploying Behind an Existing Reverse Proxy
 
-If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled `shekel-prod-nginx` service. Instead, put `shekel-prod-app` on your shared Docker network so the central proxy can reach it.
+If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled Nginx service. Instead, put the app container on your shared Docker network so the central proxy can reach it.
 
 **1. Create an override file** (`docker-compose.override.yml`) next to `docker-compose.yml`:
 
 ```yaml
 # docker-compose.override.yml -- use a central reverse proxy instead
-# of the bundled shekel-prod-nginx service.
+# of the bundled Nginx service.
 services:
   app:
     networks:
@@ -150,7 +166,7 @@ server {
 ```bash
 docker compose up -d
 
-# Confirm shekel-prod-app joined the shared network:
+# Confirm the app container joined the shared network:
 docker network inspect homelab --format '{{range .Containers}}{{.Name}} {{end}}'
 # Should include "shekel-prod-app"
 
@@ -167,33 +183,24 @@ After any deployment or update, verify:
 # 1. All containers are healthy
 docker compose ps
 
-# 2. App is on the expected network(s)
-docker network inspect homelab --format '{{range .Containers}}{{.Name}} {{end}}'
-
-# 3. Health endpoint responds
+# 2. Health endpoint responds
 docker compose exec app python -c \
   "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"
-
-# 4. Alembic head matches the running code
-docker compose exec app python -c \
-  "from app import create_app; app = create_app('production'); \
-   from flask_migrate import current as _c; \
-   print('OK') if app else print('FAIL')"
 ```
 
 ---
 
 ## Developer Setup (from source)
 
-For contributing to Shekel or running from source.
+For contributing to Shekel or running from source. Uses Docker for databases and the host for the Python application.
 
 ### 1. Prerequisites
 
-```bash
-# PostgreSQL (should already be installed and running)
-sudo systemctl status postgresql
+- **Docker Engine** -- provides the dev and test PostgreSQL databases
+- **Python 3.12+** and **pip**
 
-# Python 3.12+ and pip
+```bash
+docker compose version
 python --version
 ```
 
@@ -201,11 +208,12 @@ python --version
 
 ```bash
 cd ~/projects  # or wherever you keep code
-git init shekel && cd shekel  # or clone from your repo
+git clone https://github.com/SaltyReformed/Shekel.git
+cd Shekel
 
 # Create a virtual environment
-python -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 
 # Install dependencies (dev file includes production deps + test/lint tools)
 pip install -r requirements-dev.txt
@@ -214,35 +222,42 @@ pip install -r requirements-dev.txt
 ### 3. Configure Environment
 
 ```bash
-# Copy the example and fill in your values
 cp .env.example .env
-
-# Edit .env -- at minimum, update:
-#   DATABASE_URL -- your local PostgreSQL connection string
-#   SECRET_KEY   -- a random string (use: python -c "import secrets; print(secrets.token_hex(32))")
 ```
 
-If you created the databases without a password (peer auth), your DATABASE_URL would be:
+Edit `.env` and set at minimum:
+
 ```
-DATABASE_URL=postgresql:///shekel
-TEST_DATABASE_URL=postgresql:///shekel_test
+SECRET_KEY=<any random string for dev>
 ```
 
-### 4. Initialize the Database
+The default `DATABASE_URL` and `TEST_DATABASE_URL` in `.env.example` point to `localhost:5432` and `localhost:5433`, which match the dev Docker databases started in the next step.
+
+### 4. Start the Dev Databases
 
 ```bash
-# Create the PostgreSQL schemas (ref, auth, budget, salary, system)
-# and run the initial migration
-flask db init        # Only needed the first time (creates migrations/)
-flask db migrate -m "initial schema"
+docker compose -f docker-compose.dev.yml up -d db test-db
+```
+
+This starts two PostgreSQL containers:
+- `shekel-dev-db` on port 5432 (development database)
+- `shekel-dev-test-db` on port 5433 (test database)
+
+**Important:** These containers use project name `shekel-dev` and are fully isolated from production. Running `docker compose down -v` from the production directory cannot affect them, and vice versa.
+
+### 5. Initialize the Database
+
+```bash
+# Apply all migrations
 flask db upgrade
 
 # Seed reference data and the initial user
 python scripts/seed_ref_tables.py
 python scripts/seed_user.py
+python scripts/seed_tax_brackets.py
 ```
 
-### 5. Run the App
+### 6. Run the App
 
 ```bash
 flask run
@@ -250,12 +265,11 @@ flask run
 python run.py
 ```
 
-Open http://localhost:5000 (development server) and log in with the seed user credentials, or
-register a new account at http://localhost:5000/register.
+Open http://localhost:5000 (development server) and log in with the seed user credentials, or register a new account at http://localhost:5000/register.
 - **Default Email:** `admin@shekel.local`
 - **Default Password:** `ChangeMe!2026`
 
-### 6. First-Time Setup in the App
+### 7. First-Time Setup in the App
 
 See [Quick Start (Docker) > First-Time Setup in the App](#6-first-time-setup-in-the-app) for initial configuration steps.
 
@@ -315,7 +329,7 @@ The core interaction loop the app supports:
 
 ## Build Status
 
-Last evaluated: 2026-03-21
+Last evaluated: 2026-03-23
 
 | Phase | Name                           | Status      | Notes                                            |
 | ----- | ------------------------------ | ----------- | ------------------------------------------------ |
@@ -334,8 +348,6 @@ Last evaluated: 2026-03-21
 | UI/UX | Remediation                    | Complete    | Nav restructure, settings consolidation, polish  |
 
 **Status key:** Complete | In Progress | Not Started | Deferred
-
-**Test suite:** 1780 test functions across 63 test files (+ 3 performance benchmarks run separately)
 
 See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
 
@@ -363,10 +375,10 @@ shekel/
 ├── cloudflared/                 # Cloudflare Tunnel configuration
 ├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite (1780 test functions, 63 test files)
+├── tests/                       # pytest test suite
 ├── docs/                        # Plans, progress tracking, runbooks
 ├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
-├── docker-compose.dev.yml       # Development Docker Compose (with test DB)
+├── docker-compose.dev.yml       # Development Docker Compose (dev DB + test DB)
 ├── Dockerfile                   # Multi-stage production container
 ├── gunicorn.conf.py             # Gunicorn WSGI server configuration
 ├── entrypoint.sh                # Container startup (DB init, migrate, seed)
