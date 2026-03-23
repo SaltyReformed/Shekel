@@ -41,6 +41,11 @@ class BaseConfig:
         os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500")
     )
 
+    # Registration toggle -- set to 'false' to disable public /register.
+    REGISTRATION_ENABLED = os.getenv(
+        "REGISTRATION_ENABLED", "true"
+    ).lower() in ("true", "1", "yes")
+
     # Audit
     AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
 

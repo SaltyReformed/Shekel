@@ -17,11 +17,13 @@
             <i class="bi bi-plus-circle"></i> Create Baseline Scenario
           </button>
         </form>
+        {% if config.REGISTRATION_ENABLED %}
         <div class="mt-3">
           <a href="{{ url_for('auth.register') }}" class="text-muted">
             <i class="bi bi-person-plus"></i> Create a new account instead
           </a>
         </div>
+        {% endif %}
       </div>
     </div>
   </div>

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from flask import Blueprint, flash, redirect, render_template, request, session as flask_session, url_for
+from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session as flask_session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 from cryptography.fernet import InvalidToken
@@ -126,6 +126,10 @@ def login():
 @limiter.limit("10 per hour")
 def register_form():
     """Display the registration form."""
+    # Registration toggle: return 404 (not 403) to avoid confirming
+    # the endpoint exists when disabled.  See audit finding H6.
+    if not current_app.config["REGISTRATION_ENABLED"]:
+        abort(404)
     if current_user.is_authenticated:
         return redirect(url_for("grid.index"))
     return render_template("auth/register.html")
@@ -139,6 +143,8 @@ def register():
     Rate-limited to 3 per hour to prevent automated mass account
     creation.  See audit finding H5.
     """
+    if not current_app.config["REGISTRATION_ENABLED"]:
+        abort(404)
     if current_user.is_authenticated:
         return redirect(url_for("grid.index"))
 

@@ -1504,6 +1504,51 @@ class TestRegistration:
             assert len(accounts) == 1
             assert accounts[0].name == "Checking"
 
+    def test_register_disabled_get_returns_404(self, app, client):
+        """GET /register returns 404 when REGISTRATION_ENABLED is False."""
+        with app.app_context():
+            app.config["REGISTRATION_ENABLED"] = False
+            response = client.get("/register")
+            assert response.status_code == 404
+            # The form must not leak in a custom 404 page.
+            assert b"Create Account" not in response.data
+            app.config["REGISTRATION_ENABLED"] = True
+
+    def test_register_disabled_post_returns_404(self, app, client):
+        """POST /register returns 404 and creates no user when disabled."""
+        with app.app_context():
+            app.config["REGISTRATION_ENABLED"] = False
+            response = client.post("/register", data={
+                "email": "blocked@example.com",
+                "display_name": "Blocked",
+                "password": "securepass123",
+                "confirm_password": "securepass123",
+            })
+            assert response.status_code == 404
+
+            # Confirm no user was created.
+            user = db.session.query(User).filter_by(
+                email="blocked@example.com"
+            ).first()
+            assert user is None
+            app.config["REGISTRATION_ENABLED"] = True
+
+    def test_login_hides_register_link_when_disabled(self, app, client):
+        """GET /login omits the register link when registration is disabled."""
+        with app.app_context():
+            app.config["REGISTRATION_ENABLED"] = False
+            response = client.get("/login")
+            assert response.status_code == 200
+            assert b"Create an account" not in response.data
+            app.config["REGISTRATION_ENABLED"] = True
+
+    def test_login_shows_register_link_when_enabled(self, app, client):
+        """GET /login shows the register link when registration is enabled."""
+        with app.app_context():
+            response = client.get("/login")
+            assert response.status_code == 200
+            assert b"Create an account" in response.data
+
     def test_register_post_rate_limited(self, app):
         """POST /register is rate-limited to 3 per hour (H5).
 
