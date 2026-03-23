@@ -51,6 +51,7 @@ def show():
     state_configs = []
     account_types = []
     types_in_use = set()
+    mfa_enabled = False
 
     if section == "general":
         accounts = (
@@ -127,7 +128,7 @@ def show():
         state_configs=state_configs,
         account_types=account_types,
         types_in_use=types_in_use,
-        mfa_enabled=mfa_enabled if section == "security" else False,
+        mfa_enabled=mfa_enabled,
     )
 
 
