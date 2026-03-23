@@ -1,7 +1,25 @@
 """Tests for the seed user script's production safety checks."""
 
+import os
 import subprocess
 import sys
+
+
+def _run_seed_script(**env_overrides):
+    """Run seed_user.py with specific environment variable overrides.
+
+    Uses a copy of the current environment (so Python imports work)
+    with the specified overrides applied.
+    """
+    env = os.environ.copy()
+    env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, "scripts/seed_user.py"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 class TestSeedUserProductionGuard:
@@ -13,36 +31,20 @@ class TestSeedUserProductionGuard:
         Direct invocation of the script without overriding SEED_USER_PASSWORD
         would create an account with a publicly documented password.
         """
-        result = subprocess.run(
-            [sys.executable, "scripts/seed_user.py"],
-            env={
-                "FLASK_ENV": "production",
-                "SEED_USER_PASSWORD": "ChangeMe!2026",
-                "SEED_USER_EMAIL": "test@example.com",
-                # Minimal env so the script reaches the password check
-                # before failing on missing DB config.
-                "PATH": "",
-            },
-            capture_output=True,
-            text=True,
-            timeout=10,
+        result = _run_seed_script(
+            FLASK_ENV="production",
+            SEED_USER_PASSWORD="ChangeMe!2026",
+            SEED_USER_EMAIL="test@example.com",
         )
         assert result.returncode == 1
         assert "ChangeMe!2026" in result.stderr
 
     def test_empty_password_rejected_in_production(self):
         """An empty SEED_USER_PASSWORD must be rejected in production."""
-        result = subprocess.run(
-            [sys.executable, "scripts/seed_user.py"],
-            env={
-                "FLASK_ENV": "production",
-                "SEED_USER_PASSWORD": "",
-                "SEED_USER_EMAIL": "test@example.com",
-                "PATH": "",
-            },
-            capture_output=True,
-            text=True,
-            timeout=10,
+        result = _run_seed_script(
+            FLASK_ENV="production",
+            SEED_USER_PASSWORD="",
+            SEED_USER_EMAIL="test@example.com",
         )
         assert result.returncode == 1
         assert "empty" in result.stderr.lower()
@@ -54,17 +56,10 @@ class TestSeedUserProductionGuard:
         at the password check.  We verify the password-specific
         error message is absent from stderr.
         """
-        result = subprocess.run(
-            [sys.executable, "scripts/seed_user.py"],
-            env={
-                "FLASK_ENV": "development",
-                "SEED_USER_PASSWORD": "ChangeMe!2026",
-                "SEED_USER_EMAIL": "test@example.com",
-                "PATH": "",
-            },
-            capture_output=True,
-            text=True,
-            timeout=10,
+        result = _run_seed_script(
+            FLASK_ENV="development",
+            SEED_USER_PASSWORD="ChangeMe!2026",
+            SEED_USER_EMAIL="test@example.com",
         )
         # It will fail for other reasons (no DB), but not because
         # of the password check.
