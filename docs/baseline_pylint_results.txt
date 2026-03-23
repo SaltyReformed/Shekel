@@ -1,0 +1,1361 @@
+************* Module app
+app/__init__.py:306:0: C0301: Line too long (102/99) (line-too-long)
+app/__init__.py:18:0: W9016: "config_name" missing in parameter type documentation (missing-type-doc)
+app/__init__.py:74:16: W0611: Unused timezone imported from datetime (unused-import)
+app/__init__.py:202:0: R0914: Too many local variables (18/15) (too-many-locals)
+app/__init__.py:246:20: W0613: Unused argument 'e' (unused-argument)
+app/__init__.py:256:18: W0613: Unused argument 'e' (unused-argument)
+app/__init__.py:265:23: W0613: Unused argument 'e' (unused-argument)
+app/__init__.py:273:28: W0613: Unused argument 'e' (unused-argument)
+app/__init__.py:283:30: W0613: Unused argument 'e' (unused-argument)
+app/__init__.py:338:0: R0914: Too many local variables (18/15) (too-many-locals)
+************* Module app.models.investment_params
+app/models/investment_params.py:58:0: C0301: Line too long (101/99) (line-too-long)
+************* Module app.models.paycheck_deduction
+app/models/paycheck_deduction.py:17:0: C0301: Line too long (103/99) (line-too-long)
+************* Module app.models.salary_profile
+app/models/salary_profile.py:25:0: C0301: Line too long (106/99) (line-too-long)
+app/models/salary_profile.py:26:0: C0301: Line too long (105/99) (line-too-long)
+************* Module app.models.salary_raise
+app/models/salary_raise.py:25:0: C0301: Line too long (105/99) (line-too-long)
+app/models/salary_raise.py:26:0: C0301: Line too long (108/99) (line-too-long)
+************* Module app.models.tax_config
+app/models/tax_config.py:21:0: C0301: Line too long (103/99) (line-too-long)
+app/models/tax_config.py:22:0: C0301: Line too long (113/99) (line-too-long)
+app/models/tax_config.py:137:0: C0301: Line too long (116/99) (line-too-long)
+app/models/tax_config.py:142:0: C0301: Line too long (110/99) (line-too-long)
+************* Module app.models.user
+app/models/user.py:53:0: C0301: Line too long (101/99) (line-too-long)
+************* Module app.routes.accounts
+app/routes/accounts.py:217:4: C0103: Variable name "_ACCOUNT_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/accounts.py:238:4: C0415: Import outside toplevel (app.models.transfer_template.TransferTemplate) (import-outside-toplevel)
+app/routes/accounts.py:543:0: R0914: Too many local variables (23/15) (too-many-locals)
+app/routes/accounts.py:690:8: W0404: Reimport 'Decimal' (imported line 9) (reimported)
+app/routes/accounts.py:690:8: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/accounts.py:16:0: W0611: Unused AutoLoanParams imported from app.models.auto_loan_params (unused-import)
+app/routes/accounts.py:18:0: W0611: Unused MortgageParams imported from app.models.mortgage_params (unused-import)
+app/routes/accounts.py:19:0: W0611: Unused PayPeriod imported from app.models.pay_period (unused-import)
+************* Module app.routes.auth
+app/routes/auth.py:11:0: C0301: Line too long (105/99) (line-too-long)
+app/routes/auth.py:224:0: R0911: Too many return statements (7/6) (too-many-return-statements)
+************* Module app.routes.auto_loan
+app/routes/auto_loan.py:130:8: W0404: Reimport 'Decimal' (imported line 9) (reimported)
+app/routes/auto_loan.py:130:8: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/auto_loan.py:160:8: W0404: Reimport 'Decimal' (imported line 9) (reimported)
+app/routes/auto_loan.py:160:8: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/auto_loan.py:163:4: C0103: Variable name "_PARAM_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+************* Module app.routes.categories
+app/routes/categories.py:32:0: R0911: Too many return statements (7/6) (too-many-return-statements)
+app/routes/categories.py:89:4: C0415: Import outside toplevel (app.models.transaction_template.TransactionTemplate) (import-outside-toplevel)
+app/routes/categories.py:90:4: C0415: Import outside toplevel (app.models.transaction.Transaction) (import-outside-toplevel)
+************* Module app.routes.grid
+app/routes/grid.py:34:0: R0914: Too many local variables (24/15) (too-many-locals)
+app/routes/grid.py:211:0: R0914: Too many local variables (20/15) (too-many-locals)
+app/routes/grid.py:17:0: W0611: Unused Account imported from app.models.account (unused-import)
+app/routes/grid.py:18:0: W0611: Unused PayPeriod imported from app.models.pay_period (unused-import)
+************* Module app.routes.investment
+app/routes/investment.py:43:0: R0914: Too many local variables (34/15) (too-many-locals)
+app/routes/investment.py:43:0: R0915: Too many statements (53/50) (too-many-statements)
+app/routes/investment.py:211:0: R0914: Too many local variables (27/15) (too-many-locals)
+app/routes/investment.py:362:8: C0103: Variable name "_PARAM_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/investment.py:401:19: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/investment.py:21:0: W0611: Unused AccountType imported from app.models.ref (unused-import)
+app/routes/investment.py:27:0: W0611: Unused paycheck_calculator imported from app.services (unused-import)
+************* Module app.routes.mortgage
+app/routes/mortgage.py:197:4: C0103: Variable name "_PARAM_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/mortgage.py:271:8: W0404: Reimport 'Decimal' (imported line 10) (reimported)
+app/routes/mortgage.py:271:8: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/mortgage.py:259:13: W0612: Unused variable 'params' (unused-variable)
+app/routes/mortgage.py:336:0: R0914: Too many local variables (18/15) (too-many-locals)
+app/routes/mortgage.py:356:4: R1705: Unnecessary "elif" after "return", remove the leading "el" from "elif" (no-else-return)
+************* Module app.routes.retirement
+app/routes/retirement.py:50:0: R0914: Too many local variables (54/15) (too-many-locals)
+app/routes/retirement.py:110:12: C0415: Import outside toplevel (app.routes.salary._load_tax_configs) (import-outside-toplevel)
+app/routes/retirement.py:50:0: R0912: Too many branches (17/12) (too-many-branches)
+app/routes/retirement.py:50:0: R0915: Too many statements (78/50) (too-many-statements)
+app/routes/retirement.py:442:4: C0103: Variable name "_PENSION_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/retirement.py:520:19: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/retirement.py:539:4: C0103: Variable name "_SETTINGS_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+************* Module app.routes.salary
+app/routes/salary.py:332:0: C0301: Line too long (102/99) (line-too-long)
+app/routes/salary.py:394:0: C0301: Line too long (101/99) (line-too-long)
+app/routes/salary.py:426:0: C0301: Line too long (119/99) (line-too-long)
+app/routes/salary.py:430:0: C0301: Line too long (101/99) (line-too-long)
+app/routes/salary.py:474:0: C0301: Line too long (105/99) (line-too-long)
+app/routes/salary.py:506:0: C0301: Line too long (121/99) (line-too-long)
+app/routes/salary.py:510:0: C0301: Line too long (103/99) (line-too-long)
+app/routes/salary.py:120:12: W0621: Redefining name 'breakdown' from outer scope (line 523) (redefined-outer-name)
+app/routes/salary.py:255:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:330:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:310:8: C0103: Variable name "_PROFILE_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/salary.py:383:8: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/salary.py:392:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:424:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:459:4: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/salary.py:472:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:504:11: W0718: Catching too general exception Exception (broad-exception-caught)
+app/routes/salary.py:612:4: C0415: Import outside toplevel (decimal.Decimal, decimal.InvalidOperation) (import-outside-toplevel)
+app/routes/salary.py:673:4: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/salary.py:720:8: W0621: Redefining name 'breakdown' from outer scope (line 523) (redefined-outer-name)
+app/routes/salary.py:768:4: C0415: Import outside toplevel (app.models.ref.AccountType) (import-outside-toplevel)
+app/routes/salary.py:19:0: W0611: Unused TaxBracket imported from app.models.tax_config (unused-import)
+************* Module app.routes.savings
+app/routes/savings.py:32:0: C0301: Line too long (121/99) (line-too-long)
+app/routes/savings.py:305:0: C0301: Line too long (102/99) (line-too-long)
+app/routes/savings.py:558:0: C0301: Line too long (120/99) (line-too-long)
+app/routes/savings.py:46:0: R0914: Too many local variables (91/15) (too-many-locals)
+app/routes/savings.py:237:12: C0415: Import outside toplevel (datetime.date) (import-outside-toplevel)
+app/routes/savings.py:238:12: W0404: Reimport 'Decimal' (imported line 9) (reimported)
+app/routes/savings.py:238:12: C0415: Import outside toplevel (decimal.Decimal) (import-outside-toplevel)
+app/routes/savings.py:187:4: R1702: Too many nested blocks (6/5) (too-many-nested-blocks)
+app/routes/savings.py:46:0: R0912: Too many branches (51/12) (too-many-branches)
+app/routes/savings.py:46:0: R0915: Too many statements (146/50) (too-many-statements)
+app/routes/savings.py:204:8: W0612: Unused variable 'interest_by_period' (unused-variable)
+app/routes/savings.py:558:4: C0103: Variable name "_GOAL_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/savings.py:15:0: C0411: standard import "collections.OrderedDict" should be placed before third party imports "flask.Blueprint", "flask_login.current_user", "sqlalchemy.exc.IntegrityError" (wrong-import-order)
+************* Module app.routes.settings
+app/routes/settings.py:25:0: C0301: Line too long (108/99) (line-too-long)
+app/routes/settings.py:30:0: R0914: Too many local variables (17/15) (too-many-locals)
+app/routes/settings.py:130:20: E0601: Using variable 'mfa_enabled' before assignment (used-before-assignment)
+app/routes/settings.py:136:0: R0911: Too many return statements (9/6) (too-many-return-statements)
+app/routes/settings.py:136:0: R0912: Too many branches (15/12) (too-many-branches)
+************* Module app.routes.templates
+app/routes/templates.py:167:0: C0301: Line too long (101/99) (line-too-long)
+app/routes/templates.py:271:0: C0301: Line too long (135/99) (line-too-long)
+app/routes/templates.py:83:0: R0914: Too many local variables (16/15) (too-many-locals)
+app/routes/templates.py:208:0: R0914: Too many local variables (18/15) (too-many-locals)
+app/routes/templates.py:271:4: C0103: Variable name "_TEMPLATE_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/templates.py:208:0: R0912: Too many branches (15/12) (too-many-branches)
+app/routes/templates.py:379:0: R0914: Too many local variables (17/15) (too-many-locals)
+app/routes/templates.py:429:15: W0212: Access to a protected member _match_periods of a client class (protected-access)
+************* Module app.routes.transactions
+app/routes/transactions.py:343:0: C0301: Line too long (103/99) (line-too-long)
+app/routes/transactions.py:378:0: C0301: Line too long (103/99) (line-too-long)
+app/routes/transactions.py:418:0: C0301: Line too long (105/99) (line-too-long)
+app/routes/transactions.py:423:0: C0301: Line too long (104/99) (line-too-long)
+app/routes/transactions.py:166:8: W0612: Unused variable 'payback' (unused-variable)
+app/routes/transactions.py:18:0: W0611: Unused Account imported from app.models.account (unused-import)
+************* Module app.routes.transfers
+app/routes/transfers.py:269:0: C0301: Line too long (119/99) (line-too-long)
+app/routes/transfers.py:93:0: R0914: Too many local variables (16/15) (too-many-locals)
+app/routes/transfers.py:212:0: R0914: Too many local variables (18/15) (too-many-locals)
+app/routes/transfers.py:269:4: C0103: Variable name "_TEMPLATE_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/transfers.py:212:0: R0912: Too many branches (15/12) (too-many-branches)
+app/routes/transfers.py:422:4: C0103: Variable name "_TRANSFER_UPDATE_FIELDS" doesn't conform to snake_case naming style (invalid-name)
+app/routes/transfers.py:11:0: W0611: Unused Decimal imported from decimal (unused-import)
+************* Module app.schemas.validation
+app/schemas/validation.py:8:0: C0301: Line too long (102/99) (line-too-long)
+app/schemas/validation.py:28:0: C0301: Line too long (109/99) (line-too-long)
+app/schemas/validation.py:39:0: C0301: Line too long (110/99) (line-too-long)
+app/schemas/validation.py:40:0: C0301: Line too long (109/99) (line-too-long)
+app/schemas/validation.py:56:0: C0301: Line too long (110/99) (line-too-long)
+app/schemas/validation.py:57:0: C0301: Line too long (109/99) (line-too-long)
+app/schemas/validation.py:85:0: C0301: Line too long (108/99) (line-too-long)
+app/schemas/validation.py:321:0: C0301: Line too long (100/99) (line-too-long)
+app/schemas/validation.py:373:0: C0301: Line too long (100/99) (line-too-long)
+app/schemas/validation.py:415:0: C0301: Line too long (100/99) (line-too-long)
+app/schemas/validation.py:524:0: C0301: Line too long (112/99) (line-too-long)
+app/schemas/validation.py:525:0: C0301: Line too long (111/99) (line-too-long)
+app/schemas/validation.py:526:0: C0301: Line too long (116/99) (line-too-long)
+app/schemas/validation.py:543:0: C0301: Line too long (101/99) (line-too-long)
+app/schemas/validation.py:558:0: C0301: Line too long (116/99) (line-too-long)
+app/schemas/validation.py:570:0: C0301: Line too long (107/99) (line-too-long)
+app/schemas/validation.py:571:0: C0301: Line too long (117/99) (line-too-long)
+app/schemas/validation.py:584:0: C0301: Line too long (112/99) (line-too-long)
+app/schemas/validation.py:585:0: C0301: Line too long (111/99) (line-too-long)
+app/schemas/validation.py:586:0: C0301: Line too long (116/99) (line-too-long)
+app/schemas/validation.py:600:0: C0301: Line too long (101/99) (line-too-long)
+app/schemas/validation.py:14:4: C0115: Missing class docstring (missing-class-docstring)
+app/schemas/validation.py:22:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:66:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:75:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:157:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:157:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:192:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:192:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:215:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:215:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:229:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:229:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:242:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:242:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:265:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:265:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:283:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:283:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:316:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:316:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:342:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:342:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:367:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:367:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:381:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:381:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:391:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:391:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:409:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:409:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:425:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:425:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:445:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:445:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:457:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:457:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:485:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:485:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:502:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:502:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:521:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:521:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:539:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:539:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:554:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:554:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:566:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:566:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:581:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:581:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:596:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:596:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:608:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:608:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:623:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:623:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:657:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:657:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:693:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:693:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:716:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:716:0: W0613: Unused argument 'kwargs' (unused-argument)
+app/schemas/validation.py:740:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/schemas/validation.py:740:0: W0613: Unused argument 'kwargs' (unused-argument)
+************* Module app.services.account_resolver
+app/services/account_resolver.py:19:0: W9016: "override_account_id, user_id, user_settings" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.amortization_engine
+app/services/amortization_engine.py:90:0: R0913: Too many arguments (6/5) (too-many-arguments)
+app/services/amortization_engine.py:90:0: R0917: Too many positional arguments (6/5) (too-many-positional-arguments)
+app/services/amortization_engine.py:90:0: R0914: Too many local variables (21/15) (too-many-locals)
+app/services/amortization_engine.py:195:0: R0913: Too many arguments (7/5) (too-many-arguments)
+app/services/amortization_engine.py:195:0: R0917: Too many positional arguments (7/5) (too-many-positional-arguments)
+app/services/amortization_engine.py:195:0: R0914: Too many local variables (16/15) (too-many-locals)
+app/services/amortization_engine.py:201:4: W0613: Unused argument 'term_months' (unused-argument)
+app/services/amortization_engine.py:249:0: R0913: Too many arguments (6/5) (too-many-arguments)
+app/services/amortization_engine.py:249:0: R0917: Too many positional arguments (6/5) (too-many-positional-arguments)
+app/services/amortization_engine.py:249:0: R0914: Too many local variables (18/15) (too-many-locals)
+app/services/amortization_engine.py:249:0: R0911: Too many return statements (7/6) (too-many-return-statements)
+app/services/amortization_engine.py:249:0: R0912: Too many branches (13/12) (too-many-branches)
+app/services/amortization_engine.py:303:4: W0612: Unused variable 'monthly_payment' (unused-variable)
+************* Module app.services.auth_service
+app/services/auth_service.py:247:0: W9016: "plain_password, rounds" missing in parameter type documentation (missing-type-doc)
+app/services/auth_service.py:269:0: W9016: "password_hash, plain_password" missing in parameter type documentation (missing-type-doc)
+app/services/auth_service.py:287:0: W9016: "email, password" missing in parameter type documentation (missing-type-doc)
+app/services/auth_service.py:308:0: W9016: "current_password, new_password, user" missing in parameter type documentation (missing-type-doc)
+app/services/auth_service.py:308:0: W9008: Redundant returns documentation (redundant-returns-doc)
+app/services/auth_service.py:332:0: W9016: "display_name, email, password" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.balance_calculator
+app/services/balance_calculator.py:11:0: C0301: Line too long (103/99) (line-too-long)
+app/services/balance_calculator.py:30:0: R0913: Too many arguments (6/5) (too-many-arguments)
+app/services/balance_calculator.py:30:0: R0917: Too many positional arguments (6/5) (too-many-positional-arguments)
+app/services/balance_calculator.py:30:0: R0914: Too many local variables (19/15) (too-many-locals)
+app/services/balance_calculator.py:30:0: W9016: "account_id, anchor_balance, anchor_period_id, periods, transactions, transfers" missing in parameter type documentation (missing-type-doc)
+app/services/balance_calculator.py:101:0: R0913: Too many arguments (7/5) (too-many-arguments)
+app/services/balance_calculator.py:101:0: R0917: Too many positional arguments (7/5) (too-many-positional-arguments)
+app/services/balance_calculator.py:101:0: R0914: Too many local variables (17/15) (too-many-locals)
+app/services/balance_calculator.py:101:0: W9016: "account_id, anchor_balance, anchor_period_id, hysa_params, periods, transactions, transfers" missing in parameter type documentation (missing-type-doc)
+app/services/balance_calculator.py:167:0: R0913: Too many arguments (7/5) (too-many-arguments)
+app/services/balance_calculator.py:167:0: R0917: Too many positional arguments (7/5) (too-many-positional-arguments)
+app/services/balance_calculator.py:167:0: R0914: Too many local variables (24/15) (too-many-locals)
+app/services/balance_calculator.py:167:0: W9016: "account_id, anchor_balance, anchor_period_id, loan_params, periods, transactions, transfers" missing in parameter type documentation (missing-type-doc)
+app/services/balance_calculator.py:192:4: C0415: Import outside toplevel (app.services.amortization_engine.calculate_monthly_payment) (import-outside-toplevel)
+app/services/balance_calculator.py:207:4: W0612: Unused variable 'monthly_payment' (unused-variable)
+************* Module app.services.carry_forward_service
+app/services/carry_forward_service.py:20:0: W9016: "source_period_id, target_period_id, user_id" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.chart_data_service
+app/services/chart_data_service.py:275:0: R0914: Too many local variables (16/15) (too-many-locals)
+************* Module app.services.credit_workflow
+app/services/credit_workflow.py:25:0: W9016: "transaction_id, user_id" missing in parameter type documentation (missing-type-doc)
+app/services/credit_workflow.py:123:0: W9016: "transaction_id, user_id" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.escrow_calculator
+app/services/escrow_calculator.py:41:0: C0325: Unnecessary parens after '=' keyword (superfluous-parens)
+************* Module app.services.growth_engine
+app/services/growth_engine.py:36:0: W9016: "employee_contribution, employer_params" missing in parameter type documentation (missing-type-doc)
+app/services/growth_engine.py:75:0: R0913: Too many arguments (7/5) (too-many-arguments)
+app/services/growth_engine.py:75:0: R0917: Too many positional arguments (7/5) (too-many-positional-arguments)
+app/services/growth_engine.py:75:0: R0914: Too many local variables (19/15) (too-many-locals)
+app/services/growth_engine.py:75:0: W9016: "annual_contribution_limit, assumed_annual_return, current_balance, employer_params, periodic_contribution, periods, ytd_contributions_start" missing in parameter type documentation (missing-type-doc)
+app/services/growth_engine.py:180:0: W9016: "cadence_days, end_date, start_date" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.interest_projection
+app/services/interest_projection.py:17:0: W9016: "apy, balance, compounding_frequency, period_end, period_start" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.investment_projection
+app/services/investment_projection.py:91:0: C0301: Line too long (100/99) (line-too-long)
+app/services/investment_projection.py:92:0: C0301: Line too long (102/99) (line-too-long)
+app/services/investment_projection.py:93:0: C0301: Line too long (110/99) (line-too-long)
+app/services/investment_projection.py:30:0: R0913: Too many arguments (7/5) (too-many-arguments)
+app/services/investment_projection.py:30:0: R0917: Too many positional arguments (7/5) (too-many-positional-arguments)
+app/services/investment_projection.py:30:0: R0914: Too many local variables (24/15) (too-many-locals)
+app/services/investment_projection.py:30:0: W9015: "salary_gross_biweekly" missing in parameter documentation (missing-param-doc)
+app/services/investment_projection.py:30:0: W9016: "account_id, all_periods, all_transfers, current_period, deductions, investment_params, salary_gross_biweekly" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.mfa_service
+app/services/mfa_service.py:42:0: W9016: "plaintext_secret" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:54:0: W9016: "encrypted_secret" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:66:0: W9016: "email, issuer, secret" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:80:0: W9016: "uri" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:96:0: W9016: "code, secret" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:112:0: W9016: "count" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:126:0: W9016: "codes, rounds" missing in parameter type documentation (missing-type-doc)
+app/services/mfa_service.py:145:0: W9016: "code, hashed_codes" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.pay_period_service
+app/services/pay_period_service.py:19:0: W9016: "cadence_days, num_periods, start_date, user_id" missing in parameter type documentation (missing-type-doc)
+app/services/pay_period_service.py:87:0: W9016: "as_of, user_id" missing in parameter type documentation (missing-type-doc)
+app/services/pay_period_service.py:111:0: W9016: "count, start_index, user_id" missing in parameter type documentation (missing-type-doc)
+app/services/pay_period_service.py:134:0: W9016: "user_id" missing in parameter type documentation (missing-type-doc)
+app/services/pay_period_service.py:151:0: W9016: "period" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.paycheck_calculator
+app/services/paycheck_calculator.py:48:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/services/paycheck_calculator.py:52:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/services/paycheck_calculator.py:56:4: C0116: Missing function or method docstring (missing-function-docstring)
+app/services/paycheck_calculator.py:60:0: R0914: Too many local variables (29/15) (too-many-locals)
+app/services/paycheck_calculator.py:60:0: W9016: "all_periods, period, profile, tax_configs" missing in parameter type documentation (missing-type-doc)
+app/services/paycheck_calculator.py:101:4: R1731: Consider using 'taxable_biweekly = max(taxable_biweekly, ZERO)' instead of unnecessary if block (consider-using-max-builtin)
+app/services/paycheck_calculator.py:178:0: W9016: "periods, profile, tax_configs" missing in parameter type documentation (missing-type-doc)
+app/services/paycheck_calculator.py:317:0: R0913: Too many arguments (6/5) (too-many-arguments)
+app/services/paycheck_calculator.py:317:0: R0917: Too many positional arguments (6/5) (too-many-positional-arguments)
+************* Module app.services.pension_calculator
+app/services/pension_calculator.py:31:0: W9016: "benefit_multiplier, consecutive_high_years, hire_date, planned_retirement_date, salary_by_year" missing in parameter type documentation (missing-type-doc)
+app/services/pension_calculator.py:78:0: W9016: "annual_salary, end_year, raises, start_year" missing in parameter type documentation (missing-type-doc)
+app/services/pension_calculator.py:94:4: C0415: Import outside toplevel (app.services.paycheck_calculator._apply_raises) (import-outside-toplevel)
+************* Module app.services.recurrence_engine
+app/services/recurrence_engine.py:43:0: R0914: Too many local variables (19/15) (too-many-locals)
+app/services/recurrence_engine.py:43:0: W9016: "effective_from, periods, scenario_id, template" missing in parameter type documentation (missing-type-doc)
+app/services/recurrence_engine.py:160:0: W9016: "effective_from, periods, scenario_id, template" missing in parameter type documentation (missing-type-doc)
+app/services/recurrence_engine.py:248:0: W9016: "action, new_amount, transaction_ids" missing in parameter type documentation (missing-type-doc)
+app/services/recurrence_engine.py:278:0: R0911: Too many return statements (8/6) (too-many-return-statements)
+app/services/recurrence_engine.py:530:11: W0718: Catching too general exception Exception (broad-exception-caught)
+************* Module app.services.retirement_gap_calculator
+app/services/retirement_gap_calculator.py:85:0: C0301: Line too long (118/99) (line-too-long)
+app/services/retirement_gap_calculator.py:37:0: R0913: Too many arguments (6/5) (too-many-arguments)
+app/services/retirement_gap_calculator.py:37:0: R0917: Too many positional arguments (6/5) (too-many-positional-arguments)
+app/services/retirement_gap_calculator.py:37:0: R0914: Too many local variables (19/15) (too-many-locals)
+app/services/retirement_gap_calculator.py:37:0: W9016: "estimated_tax_rate, monthly_pension_income, net_biweekly_pay, planned_retirement_date, retirement_account_projections, safe_withdrawal_rate" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.savings_goal_service
+app/services/savings_goal_service.py:12:0: W9016: "current_balance, remaining_periods, target_amount" missing in parameter type documentation (missing-type-doc)
+app/services/savings_goal_service.py:42:0: W9016: "average_monthly_expenses, savings_balance" missing in parameter type documentation (missing-type-doc)
+app/services/savings_goal_service.py:81:0: W9016: "periods, target_date" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.tax_calculator
+app/services/tax_calculator.py:35:0: R0913: Too many arguments (9/5) (too-many-arguments)
+app/services/tax_calculator.py:35:0: R0914: Too many local variables (21/15) (too-many-locals)
+app/services/tax_calculator.py:35:0: W9016: "additional_deductions, additional_income, bracket_set, extra_withholding, gross_pay, other_dependents, pay_periods, pre_tax_deductions, qualifying_children" missing in parameter type documentation (missing-type-doc)
+app/services/tax_calculator.py:113:4: R1731: Consider using 'adjusted_income = max(adjusted_income, ZERO)' instead of unnecessary if block (consider-using-max-builtin)
+app/services/tax_calculator.py:119:4: R1731: Consider using 'taxable_income = max(taxable_income, ZERO)' instead of unnecessary if block (consider-using-max-builtin)
+app/services/tax_calculator.py:150:4: R1731: Consider using 'annual_tax_after_credits = max(annual_tax_after_credits, ZERO)' instead of unnecessary if block (consider-using-max-builtin)
+app/services/tax_calculator.py:215:0: W9016: "annual_gross, bracket_set" missing in parameter type documentation (missing-type-doc)
+app/services/tax_calculator.py:240:0: W9016: "annual_gross, state_config" missing in parameter type documentation (missing-type-doc)
+app/services/tax_calculator.py:261:8: R1731: Consider using 'taxable = max(taxable, ZERO)' instead of unnecessary if block (consider-using-max-builtin)
+app/services/tax_calculator.py:271:0: W9016: "annual_gross, cumulative_wages, fica_config" missing in parameter type documentation (missing-type-doc)
+************* Module app.services.transfer_recurrence
+app/services/transfer_recurrence.py:31:0: R0914: Too many local variables (16/15) (too-many-locals)
+app/services/transfer_recurrence.py:31:0: W9016: "effective_from, periods, scenario_id, template" missing in parameter type documentation (missing-type-doc)
+app/services/transfer_recurrence.py:120:0: W9016: "effective_from, periods, scenario_id, template" missing in parameter type documentation (missing-type-doc)
+app/services/transfer_recurrence.py:190:0: W9016: "action, new_amount, transfer_ids" missing in parameter type documentation (missing-type-doc)
+************* Module app.utils.auth_helpers
+app/utils/auth_helpers.py:20:0: W9016: "model, pk, user_id_field" missing in parameter type documentation (missing-type-doc)
+app/utils/auth_helpers.py:48:0: W9016: "model, parent_attr, parent_user_id_attr, pk" missing in parameter type documentation (missing-type-doc)
+************* Module app.utils.logging_config
+app/utils/logging_config.py:18:0: W0611: Unused JsonFormatter imported from pythonjsonlogger.json (unused-import)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[222:258]
+==app.routes.transfers:[223:257]
+    data = _update_schema.load(request.form)
+    effective_from = data.pop("effective_from", date.today())
+    data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
+
+    # Update recurrence rule if pattern changed.
+    pattern_name = data.pop("recurrence_pattern", None)
+    if pattern_name:
+        pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
+        if template.recurrence_rule:
+            template.recurrence_rule.pattern_id = pattern.id
+            template.recurrence_rule.interval_n = data.pop("interval_n", 1)
+            template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
+            template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
+            template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
+            template.recurrence_rule.end_date = end_date
+        else:
+            rule = RecurrenceRule(
+                user_id=current_user.id,
+                pattern_id=pattern.id,
+                interval_n=data.pop("interval_n", 1),
+                offset_periods=data.pop("offset_periods", 0),
+                day_of_month=data.pop("day_of_month", None),
+                month_of_year=data.pop("month_of_year", None),
+                end_date=end_date,
+            )
+            db.session.add(rule)
+            db.session.flush()
+            template.recurrence_rule_id = rule.id
+    else:
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
+            data.pop(key, None)
+
+    # Validate account ownership if accounts are being changed. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[574:603]
+==app.routes.savings:[67:100]
+    period_ids = [p.id for p in all_periods]
+
+    all_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    # Filter transactions for this account.
+    template_account_map = dict(
+        db.session.query(TransactionTemplate.id, TransactionTemplate.account_id)
+        .filter_by(user_id=user_id)
+        .all()
+    ) if scenario else {}
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[17:34]
+==app.models.mortgage_params:[18:35]
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    original_principal = db.Column(db.Numeric(12, 2), nullable=False)
+    current_principal = db.Column(db.Numeric(12, 2), nullable=False)
+    interest_rate = db.Column(db.Numeric(7, 5), nullable=False)
+    term_months = db.Column(db.Integer, nullable=False)
+    origination_date = db.Column(db.Date, nullable=False)
+    payment_day = db.Column(db.Integer, nullable=False) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[102:123]
+==app.routes.transfers:[111:131]
+    start_period_id = data.pop("start_period_id", None)
+    end_date = data.pop("end_date", None)
+
+    # Create the recurrence rule if a pattern was specified.
+    rule = None
+    pattern_name = data.pop("recurrence_pattern", None)
+    if pattern_name:
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+
+        interval_n = data.pop("interval_n", 1)
+        offset_periods = data.pop("offset_periods", 0)
+
+        # Auto-derive offset from start period for every_n_periods.
+        if pattern_name == "every_n_periods" and start_period_id and interval_n:
+            start_period = db.session.get(PayPeriod, start_period_id)
+            if not start_period or start_period.user_id != current_user.id:
+                flash("Invalid start period.", "danger") (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[124:144]
+==app.routes.transfers:[132:150]
+            offset_periods = start_period.period_index % interval_n
+
+        rule = RecurrenceRule(
+            user_id=current_user.id,
+            pattern_id=pattern.id,
+            interval_n=interval_n,
+            offset_periods=offset_periods,
+            day_of_month=data.pop("day_of_month", None),
+            month_of_year=data.pop("month_of_year", None),
+            start_period_id=start_period_id,
+            end_date=end_date,
+        )
+        db.session.add(rule)
+        db.session.flush()
+    else:
+        # Remove recurrence-related keys if no pattern.
+        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
+            data.pop(key, None)
+
+    # Create the template. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.services.recurrence_engine:[69:98]
+==app.services.transfer_recurrence:[52:72]
+        return []
+
+    rule = template.recurrence_rule
+    if rule is None:
+        # No recurrence rule -- nothing to generate (one-time / manual).
+        return []
+
+    pattern_name = rule.pattern.name
+    if pattern_name == "once":
+        # 'once' items are manually placed; no auto-generation.
+        return []
+
+    # If the rule has a start_period_id and no explicit effective_from was
+    # passed, use the start period's start_date as the boundary.
+    if effective_from is None and rule.start_period_id and rule.start_period:
+        effective_from = rule.start_period.start_date
+    if effective_from is None and periods:
+        effective_from = periods[0].start_date
+
+    # Get the projected status for new transactions.
+    projected_status = db.session.query(Status).filter_by(name="projected").one()
+
+    # Determine which periods match the recurrence pattern.
+    matching_periods = _match_periods(rule, pattern_name, periods, effective_from)
+
+    # Check for existing transactions to avoid duplicates and respect overrides.
+    existing = _get_existing_map(template.id, scenario_id, matching_periods)
+
+    # Check if this template has a linked salary profile for paycheck calculation. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transfer:[31:45]
+==app.models.transfer_template:[27:41]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    from_account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+    )
+    to_account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[59:74]
+==app.routes.settings:[93:106]
+    account_types = (
+        db.session.query(AccountType)
+        .order_by(AccountType.name)
+        .all()
+    )
+
+    # Build a set of account type IDs that are in use (for delete guard).
+    types_in_use = set(
+        row[0] for row in
+        db.session.query(Account.account_type_id)
+        .filter_by(user_id=current_user.id)
+        .distinct()
+        .all()
+    )
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[70:84]
+==app.routes.mortgage:[81:96]
+    remaining_months = amortization_engine.calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+    schedule_start = date.today().replace(day=1)
+    summary = amortization_engine.calculate_summary(
+        current_principal=Decimal(str(params.current_principal)),
+        annual_rate=Decimal(str(params.interest_rate)),
+        remaining_months=remaining_months,
+        origination_date=schedule_start,
+        payment_day=params.payment_day,
+        term_months=params.term_months,
+    )
+
+    # Chart data. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.salary:[81:104]
+==app.services.chart_data_service:[656:681]
+        .first()
+    )
+    fica_config = (
+        db.session.query(FicaConfig)
+        .filter_by(user_id=user_id, tax_year=tax_year)
+        .first()
+    )
+
+    return {
+        "bracket_set": bracket_set,
+        "state_config": state_config,
+        "fica_config": fica_config,
+    }
+
+
+def _load_salary_profile(user_id, profile_id=None):
+    """Load a salary profile by ID or default to the first active one.
+
+    Args:
+        user_id (int): The user's ID.
+        profile_id (int): Optional specific profile ID.
+
+    Returns:
+        SalaryProfile: The profile or None.
+    """ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transaction_template:[38:51]
+==app.models.transfer_template:[43:56]
+    )
+    name = db.Column(db.String(200), nullable=False)
+    default_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.salary:[68:80]
+==app.services.chart_data_service:[644:655]
+    bracket_set = (
+        db.session.query(TaxBracketSet)
+        .filter_by(
+            user_id=user_id,
+            filing_status_id=profile.filing_status_id,
+            tax_year=tax_year,
+        )
+        .first()
+    )
+
+    state_config = (
+        db.session.query(StateTaxConfig) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[17:28]
+==app.models.hysa_params:[18:29]
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[34:46]
+==app.models.hysa_params:[33:45]
+    created_at = db.Column(
+        db.DateTime(timezone=True), server_default=db.func.now()
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships
+    account = db.relationship(
+        "Account", (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.investment_params:[22:33]
+==app.models.mortgage_params:[18:29]
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[41:62]
+==app.routes.mortgage:[51:72]
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    return account, params
+
+
+def _build_chart_data(schedule):
+    """Build chart data from an amortization schedule."""
+    labels = []
+    balances = []
+    for row in schedule:
+        labels.append(row.payment_date.strftime("%b %Y"))
+        # Presentation boundary: float() for Chart.js JSON serialization.
+        balances.append(float(row.remaining_balance))
+    return labels, balances
+
+
+@mortgage_bp.route("/accounts/<int:account_id>/mortgage")
+@login_required
+def dashboard(account_id):
+    """Mortgage detail page with summary, escrow, and payoff calculator.""" (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.account:[31:42]
+==app.models.paycheck_deduction:[47:58]
+    )
+    sort_order = db.Column(db.Integer, default=0)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transaction:[45:54]
+==app.models.transfer:[47:56]
+    )
+    scenario_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status_id = db.Column(
+        db.Integer, db.ForeignKey("ref.statuses.id"), nullable=False
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[574:584]
+==app.routes.grid:[81:90]
+    period_ids = [p.id for p in all_periods]
+    all_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all() (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[81:93]
+==app.routes.mortgage:[115:127]
+        )
+
+    # Chart data -- schedule starts from now, not origination.
+    schedule = amortization_engine.generate_schedule(
+        Decimal(str(params.current_principal)),
+        Decimal(str(params.interest_rate)),
+        remaining_months,
+        payment_day=params.payment_day,
+    )
+    chart_labels, chart_standard = _build_chart_data(schedule)
+
+    return render_template( (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.grid:[235:244]
+==app.routes.savings:[67:77]
+    period_ids = [p.id for p in all_periods]
+
+    all_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all() (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[34:44]
+==app.models.investment_params:[44:54]
+    created_at = db.Column(
+        db.DateTime(timezone=True), server_default=db.func.now()
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[17:26]
+==app.models.mortgage_params:[99:108]
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False, (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.hysa_params:[33:43]
+==app.models.pension_profile:[44:54]
+    created_at = db.Column(
+        db.DateTime(timezone=True), server_default=db.func.now()
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.paycheck_deduction:[21:30]
+==app.models.salary_raise:[26:35]
+        {"schema": "salary"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    salary_profile_id = db.Column(
+        db.Integer,
+        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.salary_profile:[63:73]
+==app.models.transaction_template:[41:51]
+    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.savings_goal:[23:32]
+==app.models.transaction_template:[19:28]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    account_id = db.Column( (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.savings_goal:[22:31]
+==app.models.transfer:[30:39]
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[586:594]
+==app.routes.grid:[93:101]
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all() (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.grid:[246:254]
+==app.routes.savings:[79:87]
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.scenario_id == scenario.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all() (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[153:161]
+==app.routes.transfers:[165:173]
+    if rule:
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            periods = pay_period_service.get_all_periods(current_user.id) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[292:301]
+==app.routes.transfers:[288:297]
+                template.id, len(conflict.overridden), len(conflict.deleted),
+            )
+            flash(
+                f"Note: {len(conflict.overridden)} overridden and "
+                f"{len(conflict.deleted)} deleted entries were kept as-is.",
+                "warning",
+            )
+
+    db.session.commit() (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.services.recurrence_engine:[235:263]
+==app.services.transfer_recurrence:[179:202]
+    db.session.flush()
+
+    # Regenerate new entries.
+    created = generate_for_template(template, periods, scenario_id, effective_from)
+
+    # If there are conflicts, raise so the caller can prompt the user.
+    if overridden_ids or deleted_ids:
+        raise RecurrenceConflict(overridden=overridden_ids, deleted=deleted_ids)
+
+    return created
+
+
+def resolve_conflicts(transaction_ids, action, new_amount=None):
+    """Resolve override/delete conflicts after a regeneration.
+
+    Called by the route layer after the user responds to the conflict prompt.
+
+    Args:
+        transaction_ids: List of Transaction IDs to resolve.
+        action:          'update' -- clear override/delete, apply new amount.
+                         'keep' -- leave the transaction unchanged.
+        new_amount:      The new default amount (required if action='update').
+    """
+    if action == "keep":
+        # Nothing to do -- the user wants to keep their overrides.
+        return
+
+    if action == "update": (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.account:[16:24]
+==app.models.category:[20:28]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.account:[33:42]
+==app.models.savings_goal:[40:49]
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.pay_period:[19:27]
+==app.models.recurrence_rule:[17:25]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.paycheck_deduction:[49:58]
+==app.models.user:[22:31]
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+    # Timestamp of most recent "log out all sessions" or password change event.
+    # The user loader compares this against the session creation time to reject stale sessions. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.salary_profile:[26:34]
+==app.models.tax_config:[22:30]
+        {"schema": "salary"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.savings_goal:[23:31]
+==app.models.scenario:[16:24]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.savings_goal:[41:52]
+==app.models.transaction_template:[43:52]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships
+    account = db.relationship("Account", lazy="joined") (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.scenario:[28:37]
+==app.models.user:[71:80]
+    )
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    def __repr__(self): (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transaction:[69:78]
+==app.models.transfer:[64:73]
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transaction_template:[19:27]
+==app.models.transfer:[31:39]
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[640:648]
+==app.routes.savings:[309:317]
+    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
+        if current_period:
+            target_idx = current_period.period_index + offset_count
+            for p in all_periods:
+                if p.period_index == target_idx and p.id in balances:
+                    projected[offset_label] = balances[p.id]
+                    break
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[97:110]
+==app.routes.mortgage:[135:148]
+        chart_labels=chart_labels,
+        chart_standard=chart_standard,
+    )
+
+
+@mortgage_bp.route("/accounts/<int:account_id>/mortgage/setup", methods=["POST"])
+@login_required
+def create_params(account_id):
+    """Create initial mortgage parameters."""
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("savings.dashboard")) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.investment:[66:75]
+==app.routes.savings:[160:168]
+        .first()
+    )
+    if active_profile:
+        salary_gross_biweekly = (
+            Decimal(str(active_profile.annual_salary))
+            / (active_profile.pay_periods_per_year or 26)
+        ).quantize(Decimal("0.01"))
+
+    # Find paycheck deductions targeting this account. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.investment:[90:99]
+==app.routes.savings:[266:274]
+                profile = ded.salary_profile
+                adapted_deductions.append(type("D", (), {
+                    "amount": ded.amount,
+                    "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+                    "annual_salary": profile.annual_salary,
+                    "pay_periods_per_year": profile.pay_periods_per_year or 26,
+                })())
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.salary:[81:90]
+==app.services.recurrence_engine:[509:518]
+        .first()
+    )
+
+    fica_config = (
+        db.session.query(FicaConfig)
+        .filter_by(user_id=user_id, tax_year=tax_year)
+        .first()
+    )
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[154:161]
+==app.routes.transfers:[348:355]
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            periods = pay_period_service.get_all_periods(current_user.id) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[355:362]
+==app.routes.transfers:[166:173]
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            periods = pay_period_service.get_all_periods(current_user.id) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[271:284]
+==app.routes.transfers:[269:282]
+    for field, value in data.items():
+        if field in _TEMPLATE_UPDATE_FIELDS:
+            setattr(template, field, value)
+
+    # Regenerate future transactions.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if scenario and template.recurrence_rule:
+        periods = pay_period_service.get_all_periods(current_user.id)
+        try: (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.services.recurrence_engine:[203:212]
+==app.services.transfer_recurrence:[152:161]
+            PayPeriod.end_date >= effective_from,
+        )
+        .all()
+    )
+
+    overridden_ids = []
+    deleted_ids = []
+    to_delete = []
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.account:[34:42]
+==app.models.salary_profile:[65:73]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.investment_params:[47:57]
+==app.models.savings_goal:[42:52]
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships
+    account = db.relationship("Account", lazy="joined")
+
+    def __repr__(self): (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.mortgage_params:[104:110]
+==app.models.savings_goal:[31:37]
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name = db.Column(db.String(100), nullable=False) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.paycheck_deduction:[50:58]
+==app.models.scenario:[29:37]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.savings_goal:[41:49]
+==app.models.transaction:[70:78]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transaction_template:[43:51]
+==app.models.transfer:[65:73]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.transfer_template:[48:56]
+==app.models.user:[23:31]
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        server_default=db.func.now(),
+        onupdate=db.func.now(),
+    )
+
+    # Relationships (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[616:622]
+==app.routes.savings:[208:214]
+        balances, interest_by_period = balance_calculator.calculate_balances_with_interest(
+            anchor_balance=anchor_balance,
+            anchor_period_id=anchor_period_id,
+            periods=all_periods,
+            transactions=acct_transactions,
+            transfers=all_transfers, (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[75:81]
+==app.routes.mortgage:[358:364]
+            current_principal=Decimal(str(params.current_principal)),
+            annual_rate=Decimal(str(params.interest_rate)),
+            remaining_months=remaining_months,
+            origination_date=schedule_start,
+            payment_day=params.payment_day,
+            term_months=params.term_months, (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.auto_loan:[84:90]
+==app.services.chart_data_service:[546:553]
+    schedule = amortization_engine.generate_schedule(
+        Decimal(str(params.current_principal)),
+        Decimal(str(params.interest_rate)),
+        remaining_months,
+        payment_day=params.payment_day,
+    )
+ (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.retirement:[144:150]
+==app.routes.savings:[141:147]
+        inv_deductions = (
+            db.session.query(PaycheckDeduction)
+            .join(SalaryProfile)
+            .filter(
+                SalaryProfile.user_id == user_id,
+                SalaryProfile.is_active.is_(True), (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.salary:[156:162]
+==app.routes.transactions:[226:232]
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if not scenario: (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.salary:[705:711]
+==app.routes.transactions:[261:267]
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if not scenario: (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.savings:[471:477]
+==app.routes.settings:[55:61]
+    accounts = (
+        db.session.query(Account)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.savings:[525:531]
+==app.routes.transfers:[64:70]
+    accounts = (
+        db.session.query(Account)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    ) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.templates:[351:362]
+==app.routes.transfers:[345:355]
+    ).update({"is_deleted": False}, synchronize_session="fetch")
+
+    if template.recurrence_rule:
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            periods = pay_period_service.get_all_periods(current_user.id) (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.services.recurrence_engine:[121:132]
+==app.services.transfer_recurrence:[86:95]
+                should_skip = True
+                break
+
+            # Auto-generated and unmodified -- it already exists, skip.
+            should_skip = True
+            break
+
+        if should_skip:
+            continue
+
+        # Determine the amount -- use paycheck calculator if salary-linked. (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.models.auto_loan_params:[21:26]
+==app.models.mortgage_params:[66:71]
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False, (duplicate-code)
+app/utils/logging_config.py:1:0: R0801: Similar lines in 2 files
+==app.routes.accounts:[617:622]
+==app.routes.savings:[219:224]
+            anchor_balance=anchor_balance,
+            anchor_period_id=anchor_period_id,
+            periods=all_periods,
+            transactions=acct_transactions,
+            transfers=all_transfers, (duplicate-code)
+
+------------------------------------------------------------------
+Your code has been rated at 9.32/10 (previous run: 9.32/10, -0.00)
+
