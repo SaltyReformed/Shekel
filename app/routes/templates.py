@@ -417,7 +417,10 @@ def preview_recurrence():
     effective_from = None
     if start_period_id:
         start_period = db.session.get(PayPeriod, start_period_id)
-        if start_period:
+        # Ownership check: reject other users' periods to prevent
+        # pay period structure disclosure -- see audit finding H3.
+        # Falls through to the current user's own periods below.
+        if start_period and start_period.user_id == current_user.id:
             effective_from = start_period.start_date
             # Auto-derive offset for every_n_periods.
             if pattern_name == "every_n_periods" and interval_n:

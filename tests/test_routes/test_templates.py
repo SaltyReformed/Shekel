@@ -549,6 +549,54 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
+    def test_preview_rejects_other_users_start_period(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_second_user, seed_second_periods,
+    ):
+        """Passing another user's start_period_id falls through to own data.
+
+        The endpoint returns 200 (graceful fallback), not an error.
+        The response must match what the user would see with no
+        start_period_id (i.e. the ownership check caused the foreign
+        period to be ignored).  This prevents pay period structure
+        disclosure (H3).
+        """
+        with app.app_context():
+            # Baseline: request with no start_period_id.
+            baseline_resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={"recurrence_pattern": "every_period"},
+            )
+
+            # Request with User B's period ID -- should fall through
+            # to the same result as no start_period_id.
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={
+                    "recurrence_pattern": "every_period",
+                    "start_period_id": seed_second_periods[0].id,
+                },
+            )
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
+            # The foreign period was ignored -- same output as baseline.
+            assert resp.data == baseline_resp.data
+
+    def test_preview_with_own_start_period(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Passing own start_period_id works normally (positive regression)."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={
+                    "recurrence_pattern": "every_period",
+                    "start_period_id": seed_periods[0].id,
+                },
+            )
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
+
 
 # ── Negative Path Tests ─────────────────────────────────────────────
 
