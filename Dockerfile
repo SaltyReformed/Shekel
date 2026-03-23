@@ -3,7 +3,10 @@
 # Stage 2: Slim runtime image (no build tools).
 
 # ── Stage 1: Builder ────────────────────────────────────────────
-FROM python:3.14-slim AS builder
+# Pin to a specific patch version for reproducible builds.
+# Update this version deliberately, not by accident via
+# floating tags.  Last updated: 2026-03-22.
+FROM python:3.14.3-slim AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq-dev gcc \
@@ -17,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir gunicorn
 
 # ── Stage 2: Runtime ────────────────────────────────────────────
-FROM python:3.14-slim
+FROM python:3.14.3-slim
 
 # Runtime-only PostgreSQL client library + CLI tools for entrypoint.
 RUN apt-get update \
