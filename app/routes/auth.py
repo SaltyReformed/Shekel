@@ -123,6 +123,7 @@ def login():
 
 
 @auth_bp.route("/register", methods=["GET"])
+@limiter.limit("10 per hour")
 def register_form():
     """Display the registration form."""
     if current_user.is_authenticated:
@@ -131,8 +132,13 @@ def register_form():
 
 
 @auth_bp.route("/register", methods=["POST"])
+@limiter.limit("3 per hour")
 def register():
-    """Process a new user registration."""
+    """Process a new user registration.
+
+    Rate-limited to 3 per hour to prevent automated mass account
+    creation.  See audit finding H5.
+    """
     if current_user.is_authenticated:
         return redirect(url_for("grid.index"))
 

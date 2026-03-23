@@ -1504,6 +1504,48 @@ class TestRegistration:
             assert len(accounts) == 1
             assert accounts[0].name == "Checking"
 
+    def test_register_post_rate_limited(self, app):
+        """POST /register is rate-limited to 3 per hour (H5).
+
+        Uses the same pattern as test_rate_limiting_after_5_attempts:
+        create a fresh app with RATELIMIT_ENABLED=True, then verify
+        the 4th POST triggers a 429.
+        """
+        with app.app_context():
+            rate_app = create_app("testing")
+            rate_app.config["RATELIMIT_ENABLED"] = True
+
+            from app.extensions import limiter
+            limiter.enabled = True
+            limiter.init_app(rate_app)
+
+            rate_client = rate_app.test_client()
+
+            with rate_app.app_context():
+                # Make 3 registration attempts (within the limit).
+                for i in range(3):
+                    rate_client.post("/register", data={
+                        "email": f"bot{i}@example.com",
+                        "display_name": f"Bot {i}",
+                        "password": "securepass123",
+                        "confirm_password": "securepass123",
+                    })
+
+                # 4th attempt should be rate-limited.
+                response = rate_client.post("/register", data={
+                    "email": "bot3@example.com",
+                    "display_name": "Bot 3",
+                    "password": "securepass123",
+                    "confirm_password": "securepass123",
+                })
+                assert response.status_code == 429
+
+            # Clean up.
+            with rate_app.app_context():
+                from app.extensions import db as _db
+                _db.engine.dispose()
+            limiter.enabled = False
+
 
 class TestMfaVerifySecurity:
     """Security tests for the /mfa/verify endpoint.
