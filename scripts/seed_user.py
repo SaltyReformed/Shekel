@@ -46,6 +46,34 @@ def seed_user():
     password = os.getenv("SEED_USER_PASSWORD", "ChangeMe!2026")
     display_name = os.getenv("SEED_USER_DISPLAY_NAME", "Budget Admin")
 
+    # Production safety: reject the publicly documented default password
+    # and empty/whitespace-only passwords.  Direct invocation of this
+    # script (bypassing docker-compose) would otherwise create an account
+    # with a known password.
+    flask_env = os.getenv("FLASK_ENV", "development")
+    if flask_env == "production":
+        if not password or not password.strip():
+            print(
+                "Error: SEED_USER_PASSWORD is empty or whitespace-only. "
+                "Set a strong password in .env or environment.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if password == "ChangeMe!2026":
+            print(
+                "Error: SEED_USER_PASSWORD is still the default "
+                "'ChangeMe!2026'. Set a unique password for production "
+                "in .env or environment.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(password) < 12:
+            print(
+                f"Warning: SEED_USER_PASSWORD is only {len(password)} "
+                f"characters. The application requires at least 12.",
+                file=sys.stderr,
+            )
+
     # Enforce the same 12-character minimum as the app's change_password()
     # and register_user() functions.  Prevents deploying with a weak
     # default that cannot be changed through the UI.
