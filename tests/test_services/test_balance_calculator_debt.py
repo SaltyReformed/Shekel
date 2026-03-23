@@ -177,7 +177,7 @@ class TestDebtBalanceCalculator:
             _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
         ]
 
-        base_balances = calculate_balances(
+        base_balances, _ = calculate_balances(
             anchor_balance=Decimal("5000.00"),
             anchor_period_id=1,
             periods=periods,

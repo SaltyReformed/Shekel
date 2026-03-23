@@ -241,7 +241,8 @@ def _calculate_account_balances(account, scenario, periods):
             )
             return balances
 
-    return balance_calculator.calculate_balances(**base_args)
+    balances, _ = balance_calculator.calculate_balances(**base_args)
+    return balances
 
 
 def _get_loan_params(account):

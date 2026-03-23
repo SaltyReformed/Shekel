@@ -56,7 +56,7 @@ class TestCalculateBalances:
             txns.append(exp)
             db.session.flush()
 
-            balances = balance_calculator.calculate_balances(
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=periods[0].id,
                 periods=periods,
@@ -105,7 +105,7 @@ class TestCalculateBalances:
             txns.append(proj_exp)
             db.session.flush()
 
-            balances = balance_calculator.calculate_balances(
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=periods[0].id,
                 periods=periods,
@@ -138,7 +138,7 @@ class TestCalculateBalances:
             txns.append(credit_exp)
             db.session.flush()
 
-            balances = balance_calculator.calculate_balances(
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=periods[0].id,
                 periods=periods,
@@ -180,7 +180,7 @@ class TestCalculateBalances:
                 txns.append(t)
             db.session.flush()
 
-            balances = balance_calculator.calculate_balances(
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("500.00"),
                 anchor_period_id=periods[0].id,
                 periods=periods,
@@ -246,7 +246,7 @@ class TestBalanceCalculatorEdgeCases:
         periods = [FakePeriod(1)]
         txns = [FakeTxn(1, "projected", "income", "500.00")]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=None,
             anchor_period_id=1,
             periods=periods,
@@ -265,7 +265,7 @@ class TestBalanceCalculatorEdgeCases:
             FakeTxn(4, "projected", "expense", "50.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=3,
             periods=periods,
@@ -289,7 +289,7 @@ class TestBalanceCalculatorEdgeCases:
             FakeTxn(2, "projected", "expense", "750.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("500.00"),
             anchor_period_id=1,
             periods=periods,
@@ -307,7 +307,7 @@ class TestBalanceCalculatorEdgeCases:
         txns = [FakeTxn(1, "projected", "expense", "300.00")]
         xfers = [FakeTransfer(1, from_account_id=10, to_account_id=20, amount="200.00")]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -327,7 +327,7 @@ class TestBalanceCalculatorEdgeCases:
             FakeTransfer(1, from_account_id=10, to_account_id=30, amount="150.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -348,7 +348,7 @@ class TestBalanceCalculatorEdgeCases:
             FakeTxn(2, "projected", "expense", "100.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -370,7 +370,7 @@ class TestBalanceCalculatorEdgeCases:
                          status_name="projected"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -386,7 +386,7 @@ class TestBalanceCalculatorEdgeCases:
         """Empty lists for both → balance equals anchor balance."""
         periods = [FakePeriod(1)]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("2500.00"),
             anchor_period_id=1,
             periods=periods,
@@ -401,7 +401,7 @@ class TestBalanceCalculatorEdgeCases:
         """anchor_period_id doesn't match any period → empty OrderedDict."""
         periods = [FakePeriod(1), FakePeriod(2)]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=99,
             periods=periods,
@@ -440,7 +440,7 @@ class TestBalanceCalculatorEdgeCases:
             FakeTransfer(5, from_account_id=10, to_account_id=30, amount="1000.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -709,7 +709,7 @@ class TestBalanceCalculatorFIN:
             oracle_expected[i] = running
 
         # --- Call the service under test ---
-        result = balance_calculator.calculate_balances(
+        result, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -777,7 +777,7 @@ class TestBalanceCalculatorFIN:
                 FakeTxn(p, "projected", "expense", "850.00")
             )
 
-        result = balance_calculator.calculate_balances(
+        result, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -823,7 +823,7 @@ class TestBalanceCalculatorFIN:
                 FakeTxn(p, "projected", "expense", "49999.99")
             )
 
-        result = balance_calculator.calculate_balances(
+        result, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -884,7 +884,7 @@ class TestBalanceCalculatorFIN:
         }
 
         # First call.
-        result_1 = balance_calculator.calculate_balances(
+        result_1, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -900,7 +900,7 @@ class TestBalanceCalculatorFIN:
             )
 
         # Second call with identical inputs.
-        result_2 = balance_calculator.calculate_balances(
+        result_2, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -944,7 +944,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(2, "projected", "expense", "850.00"),
         ]
 
-        result = balance_calculator.calculate_balances(
+        result, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -989,7 +989,7 @@ class TestBalanceCalculatorFIN:
             FakeTxn(2, "received", "income", "3000.00"),
         ]
 
-        result = balance_calculator.calculate_balances(
+        result, _ = balance_calculator.calculate_balances(
             anchor_balance=anchor_balance,
             anchor_period_id=0,
             periods=periods,
@@ -1047,7 +1047,7 @@ class TestNegativePaths:
             FakeTxn(3, "projected", "expense", "300.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1500.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1083,7 +1083,7 @@ class TestNegativePaths:
             FakeTxn(2, "projected", "expense", "600.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("2000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1114,7 +1114,7 @@ class TestNegativePaths:
             FakeTxn(3, "projected", "expense", "400.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1148,7 +1148,7 @@ class TestNegativePaths:
             FakeTxn(2, "projected", "expense", "1000.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("3000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1185,7 +1185,7 @@ class TestNegativePaths:
             FakeTxn(1, "projected", "expense", "750.00"),
         ]
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("5000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1195,3 +1195,129 @@ class TestNegativePaths:
         # Only projected items: +1500 income, -750 expense
         # 5000 + 1500 - 750 = 5750.00
         assert balances[1] == Decimal("5750.00")
+
+
+class TestStaleAnchorWarning:
+    """Tests for the stale_anchor_warning flag returned by calculate_balances()."""
+
+    def test_warning_when_done_in_post_anchor(self):
+        """Warning is True when a done transaction exists after the anchor."""
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns = [
+            FakeTxn(1, "projected", "income", "1000.00"),
+            FakeTxn(2, "done", "expense", "500.00"),
+        ]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+        assert warning is True
+
+    def test_no_warning_when_all_projected(self):
+        """Warning is False when all post-anchor transactions are projected."""
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns = [
+            FakeTxn(1, "projected", "income", "1000.00"),
+            FakeTxn(2, "projected", "expense", "500.00"),
+            FakeTxn(3, "projected", "expense", "200.00"),
+        ]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+        assert warning is False
+
+    def test_no_warning_when_done_only_in_anchor(self):
+        """Done transactions in the anchor period do not trigger the warning."""
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns = [
+            FakeTxn(1, "done", "income", "1000.00"),
+            FakeTxn(2, "projected", "expense", "200.00"),
+        ]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+        assert warning is False
+
+    def test_warning_triggered_by_received_status(self):
+        """Warning is True for received (income) status in post-anchor."""
+        periods = [FakePeriod(1), FakePeriod(2)]
+        txns = [
+            FakeTxn(2, "received", "income", "3000.00"),
+        ]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+        assert warning is True
+
+    def test_no_warning_for_credit_or_cancelled(self):
+        """Credit and cancelled statuses do not trigger the warning."""
+        periods = [FakePeriod(1), FakePeriod(2)]
+        txns = [
+            FakeTxn(2, "credit", "expense", "100.00"),
+            FakeTxn(2, "cancelled", "expense", "200.00"),
+        ]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+        assert warning is False
+
+    def test_no_warning_with_no_transactions(self):
+        """Warning is False when there are no transactions at all."""
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        _, warning = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[],
+        )
+        assert warning is False
+
+    def test_warning_does_not_change_balances(self):
+        """The warning flag is informational only -- balances are unchanged."""
+        periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
+        txns_projected = [
+            FakeTxn(2, "projected", "expense", "500.00"),
+            FakeTxn(3, "projected", "expense", "200.00"),
+        ]
+        txns_with_done = [
+            FakeTxn(2, "done", "expense", "500.00"),
+            FakeTxn(3, "projected", "expense", "200.00"),
+        ]
+
+        balances_projected, warn_projected = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns_projected,
+        )
+        balances_done, warn_done = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns_with_done,
+        )
+
+        assert warn_projected is False
+        assert warn_done is True
+        # Period 2: projected gives 5000-500=4500; done gives 5000 (excluded).
+        # They differ because done is excluded -- that IS the correct behavior.
+        # Period 3: both subtract 200 from their respective period 2 balance.
+        # The warning does not change the calculation logic.
+        assert balances_projected[2] == Decimal("4500.00")
+        assert balances_done[2] == Decimal("5000.00")  # done excluded
+        assert balances_projected[3] == Decimal("4300.00")
+        assert balances_done[3] == Decimal("4800.00")  # done excluded

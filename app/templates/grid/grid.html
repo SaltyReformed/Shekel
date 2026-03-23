@@ -58,6 +58,16 @@
   </div>
 </div>
 
+{% if stale_anchor_warning %}
+<div class="alert alert-warning alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-exclamation-triangle-fill"></i>
+  Some transactions are marked as done in periods after your anchor.
+  Your projected balances may be inaccurate. Update your anchor balance
+  to reflect recent activity.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
 {# --- Budget Grid Table --- #}
 <div class="table-responsive grid-wrapper grid-scroll-wrapper" style="position: relative;">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">

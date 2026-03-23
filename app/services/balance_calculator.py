@@ -44,7 +44,12 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
                            transfers are provided.
 
     Returns:
-        OrderedDict mapping period_id → Decimal end balance, in period order.
+        (balances, stale_anchor_warning) where:
+            balances: OrderedDict mapping period_id -> Decimal end balance
+            stale_anchor_warning: bool -- True if done/received transactions
+                exist in post-anchor periods, indicating the anchor balance
+                may not reflect recent activity.  Informational only -- does
+                not change the calculated balances.
     """
     if anchor_balance is None:
         anchor_balance = Decimal("0.00")
@@ -95,7 +100,27 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
 
         balances[period.id] = running_balance
 
-    return balances
+    # Detect stale anchor: check for done/received transactions in
+    # post-anchor periods.  These are excluded from balance calculations
+    # (correctly -- the anchor already reflects them IF it was updated),
+    # but if the anchor was NOT updated, projections will be wrong.
+    stale_anchor_warning = False
+    past_anchor = False
+    for period in periods:
+        if period.id == anchor_period_id:
+            past_anchor = True
+            continue  # Skip the anchor period itself.
+        if not past_anchor:
+            continue
+        for txn in txn_by_period.get(period.id, []):
+            status_name = txn.status.name if txn.status else "projected"
+            if status_name in SETTLED_STATUSES:
+                stale_anchor_warning = True
+                break
+        if stale_anchor_warning:
+            break
+
+    return balances, stale_anchor_warning
 
 
 def calculate_balances_with_interest(
@@ -122,7 +147,7 @@ def calculate_balances_with_interest(
             interest_by_period: dict mapping period_id → Decimal interest earned
     """
     # First compute base balances without interest.
-    base_balances = calculate_balances(
+    base_balances, _ = calculate_balances(
         anchor_balance, anchor_period_id, periods, transactions,
         transfers=transfers, account_id=account_id,
     )
@@ -192,7 +217,7 @@ def calculate_balances_with_amortization(
     from app.services.amortization_engine import calculate_monthly_payment
 
     # First compute base balances (transfer effects applied normally).
-    base_balances = calculate_balances(
+    base_balances, _ = calculate_balances(
         anchor_balance, anchor_period_id, periods, transactions,
         transfers=transfers, account_id=account_id,
     )

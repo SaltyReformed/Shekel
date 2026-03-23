@@ -789,7 +789,7 @@ class TestBalanceCalculatorBoundary:
         No error raised -- caller gets silent wrong results.
         """
         with app.app_context():
-            result = balance_calculator.calculate_balances(
+            result, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=999999,  # Doesn't match any period
                 periods=seed_periods,
@@ -804,7 +804,7 @@ class TestBalanceCalculatorBoundary:
         Documents behavior: not a bug, but worth testing.
         """
         with app.app_context():
-            result = balance_calculator.calculate_balances(
+            result, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=[],
@@ -818,7 +818,7 @@ class TestBalanceCalculatorBoundary:
         The service handles None by defaulting to 0.00.
         """
         with app.app_context():
-            result = balance_calculator.calculate_balances(
+            result, _ = balance_calculator.calculate_balances(
                 anchor_balance=None,
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods,
@@ -841,7 +841,7 @@ class TestBalanceCalculatorBoundary:
             )
             db.session.commit()
 
-            result = balance_calculator.calculate_balances(
+            result, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("-500.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods[:2],

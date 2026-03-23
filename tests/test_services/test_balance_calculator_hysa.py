@@ -231,7 +231,7 @@ class TestHysaBalanceWithInterest:
             compounding_frequency="daily",
         )
 
-        base_balances = calculate_balances(
+        base_balances, _ = calculate_balances(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -254,7 +254,7 @@ class TestHysaBalanceWithInterest:
         """Without hysa_params, behavior is identical to existing."""
         periods = _make_periods(3)
 
-        base_balances = calculate_balances(
+        base_balances, _ = calculate_balances(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,

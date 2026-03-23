@@ -216,7 +216,7 @@ def dashboard():
                     hysa_params=acct_hysa_params,
                 )
             else:
-                balances = balance_calculator.calculate_balances(
+                balances, _ = balance_calculator.calculate_balances(
                     anchor_balance=anchor_balance,
                     anchor_period_id=anchor_period_id,
                     periods=all_periods,

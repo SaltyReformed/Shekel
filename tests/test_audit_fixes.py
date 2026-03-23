@@ -471,7 +471,7 @@ class TestBalanceWithTransfers:
         db.session.add(xfer)
         db.session.commit()
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,
@@ -503,7 +503,7 @@ class TestBalanceWithTransfers:
         db.session.add(xfer)
         db.session.commit()
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,
@@ -533,7 +533,7 @@ class TestBalanceWithTransfers:
         db.session.add(xfer)
         db.session.commit()
 
-        balances = balance_calculator.calculate_balances(
+        balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,

@@ -107,7 +107,7 @@ def index():
         current_period.id
     )
 
-    balances = balance_calculator.calculate_balances(
+    balances, stale_anchor_warning = balance_calculator.calculate_balances(
         anchor_balance=anchor_balance,
         anchor_period_id=anchor_period_id,
         periods=all_periods,
@@ -171,6 +171,7 @@ def index():
         today=date.today(),
         all_periods=all_periods,
         low_balance_threshold=low_balance_threshold,
+        stale_anchor_warning=stale_anchor_warning,
     )
 
 
@@ -257,7 +258,7 @@ def balance_row():
     anchor_balance = account.current_anchor_balance if account else Decimal("0.00")
     anchor_period_id = account.current_anchor_period_id if account else current_period.id
 
-    balances = balance_calculator.calculate_balances(
+    balances, _ = balance_calculator.calculate_balances(
         anchor_balance=anchor_balance,
         anchor_period_id=anchor_period_id,
         periods=all_periods,

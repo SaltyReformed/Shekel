@@ -513,7 +513,7 @@ class TestBalanceConsistency:
 
             # Get balance calculator results directly.
             periods = seed_periods
-            calc_balances = balance_calculator.calculate_balances(
+            calc_balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=account.current_anchor_balance,
                 anchor_period_id=account.current_anchor_period_id,
                 periods=periods,
@@ -1029,7 +1029,7 @@ class TestBalanceChart52Periods:
                 .all()
             )
 
-            calc_balances = balance_calculator.calculate_balances(
+            calc_balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=account.current_anchor_balance,
                 anchor_period_id=seed_periods_52[0].id,
                 periods=seed_periods_52,

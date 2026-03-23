@@ -152,7 +152,7 @@ class TestTransferToBalance:
             db.session.commit()
 
             # Calculate balances without transfers.
-            balances_no_xfer = balance_calculator.calculate_balances(
+            balances_no_xfer, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods,
@@ -160,7 +160,7 @@ class TestTransferToBalance:
             )
 
             # Calculate balances with transfers (for checking account).
-            balances_with_xfer = balance_calculator.calculate_balances(
+            balances_with_xfer, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods,
@@ -215,7 +215,7 @@ class TestCreditPaybackBalance:
                 Transaction.is_deleted.is_(False),
             ).all()
 
-            balances = balance_calculator.calculate_balances(
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods[:3],
@@ -250,7 +250,7 @@ class TestAnchorTrueUpBalance:
             db.session.commit()
 
             # Calculate with anchor = $2000.
-            balances_2k = balance_calculator.calculate_balances(
+            balances_2k, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("2000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods[:3],
@@ -258,7 +258,7 @@ class TestAnchorTrueUpBalance:
             )
 
             # Calculate with anchor = $3000 (+$1000 difference).
-            balances_3k = balance_calculator.calculate_balances(
+            balances_3k, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("3000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods[:3],
