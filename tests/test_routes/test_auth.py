@@ -416,6 +416,39 @@ class TestLogin:
             # Default redirect is the grid index (/).
             assert location.endswith("/")
 
+    def test_deactivated_user_cannot_access_protected_routes(
+        self, app, auth_client, seed_user
+    ):
+        """An active session becomes invalid when the user is deactivated.
+
+        Flask-Login's UserMixin.is_authenticated always returns True, so
+        the user_loader must explicitly check is_active. Without this
+        check, a deactivated user's existing session remains valid for
+        the entire cookie lifetime (up to 30 days).
+        """
+        with app.app_context():
+            # Verify the session is currently valid.
+            response = auth_client.get("/", follow_redirects=False)
+            assert response.status_code == 200
+
+            # Deactivate the user mid-session.
+            user = db.session.get(User, seed_user["user"].id)
+            user.is_active = False
+            db.session.commit()
+
+            # Next request should be rejected -- user_loader returns None.
+            response = auth_client.get("/", follow_redirects=False)
+            assert response.status_code == 302
+            assert "login" in response.headers.get("Location", "")
+
+            # Attempting to log in again should also fail.
+            response = auth_client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+
 
 class TestLogout:
     """Tests for the /logout endpoint."""

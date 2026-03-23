@@ -65,6 +65,11 @@ def create_app(config_name=None):
         user = db.session.get(User, int(user_id))
         if user is None:
             return None
+        # Flask-Login's UserMixin.is_authenticated always returns True.
+        # We must explicitly reject inactive users here so that deactivating
+        # a user immediately invalidates all of their existing sessions.
+        if not user.is_active:
+            return None
         # Check whether this session was created before the most recent
         # "log out all sessions" or password change event.
         if user.session_invalidated_at is not None:
