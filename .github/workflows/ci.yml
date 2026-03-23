@@ -76,11 +76,15 @@ jobs:
           pip install -r requirements-dev.txt
 
       # ── 5. Run pylint ────────────────────────────────────────────
-      # Fail if the score drops below 9.0 (baseline is ~9.33).
-      # Pre-existing warnings (duplicate-code, too-many-locals, etc.)
-      # are acceptable; new errors or major regressions are not.
+      # Two-layer pylint gate:
+      #   --fail-on=E,F: always fail on errors (E) or fatal (F), even
+      #     if the score stays above the threshold.
+      #   --fail-under=9.0: also fail if pre-existing warnings
+      #     accumulate enough to drop the score below 9.0.
+      # Together, --fail-under suppresses the bitmask exit code for
+      # C/W/R messages while --fail-on ensures real errors are caught.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=9.0 --output-format=colorized
+        run: pylint app/ --fail-under=9.0 --fail-on=E,F --output-format=colorized
 
       # ── 6. Run pytest ────────────────────────────────────────────
       # The test suite creates schemas, tables, and seed data via
