@@ -239,6 +239,7 @@ class TestCarryForward:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -291,6 +292,7 @@ class TestCarryForward:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -343,6 +345,7 @@ class TestCarryForward:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -381,6 +384,7 @@ class TestCarryForward:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -428,6 +432,7 @@ class TestCarryForward:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -464,6 +469,7 @@ class TestCarryForward:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -478,6 +484,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     999999, seed_periods[1].id, seed_user["user"].id,
+                    seed_user["scenario"].id,
                 )
 
     def test_carry_forward_target_not_found(self, app, db, seed_user, seed_periods):
@@ -486,6 +493,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, 999999, seed_user["user"].id,
+                    seed_user["scenario"].id,
                 )
 
     def test_carry_forward_empty_source_returns_zero(self, app, db, seed_user, seed_periods):
@@ -493,6 +501,7 @@ class TestCarryForward:
         with app.app_context():
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
 
             assert count == 0
@@ -505,6 +514,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, user_id=999999,
+                    scenario_id=seed_user["scenario"].id,
                 )
 
     def test_carry_forward_wrong_user_target_raises_not_found(
@@ -545,6 +555,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, periods2[0].id, seed_user["user"].id,
+                    seed_user["scenario"].id,
                 )
 
     def test_carry_forward_nonexistent_source_raises_not_found(
@@ -555,6 +566,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     999999, seed_periods[0].id, seed_user["user"].id,
+                    seed_user["scenario"].id,
                 )
 
     def test_carry_forward_nonexistent_target_raises_not_found(
@@ -565,6 +577,7 @@ class TestCarryForward:
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, 999999, seed_user["user"].id,
+                    seed_user["scenario"].id,
                 )
 
 
@@ -713,6 +726,7 @@ class TestNegativePaths:
             # Carry forward with source == target -- early return.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 

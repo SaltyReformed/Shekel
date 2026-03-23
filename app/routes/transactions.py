@@ -414,8 +414,20 @@ def carry_forward(period_id):
     if current_period is None:
         return "No current period found", 400
 
+    # Resolve the baseline scenario so carry-forward only moves
+    # transactions within that scenario.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if not scenario:
+        return "No baseline scenario", 400
+
     try:
-        count = carry_forward_service.carry_forward_unpaid(period_id, current_period.id, current_user.id)
+        count = carry_forward_service.carry_forward_unpaid(
+            period_id, current_period.id, current_user.id, scenario.id
+        )
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404

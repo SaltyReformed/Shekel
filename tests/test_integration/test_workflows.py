@@ -302,6 +302,7 @@ class TestCarryForwardWorkflow:
             # Carry forward from period 0 → period 1.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -376,6 +377,7 @@ class TestCarryForwardEdgeCases:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 3
@@ -452,6 +454,7 @@ class TestCarryForwardEdgeCases:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 3
@@ -516,6 +519,7 @@ class TestCarryForwardEdgeCases:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 2
@@ -562,6 +566,7 @@ class TestCarryForwardEdgeCases:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 0
@@ -606,6 +611,7 @@ class TestCarryForwardEdgeCases:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 0
@@ -936,6 +942,7 @@ class TestFullBudgetWorkflow:
             # Step 5: Carry forward from period 0 → period 1.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count == 1  # Only Gas Station (projected) moves.

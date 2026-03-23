@@ -648,7 +648,10 @@ class TestCarryForwardEdgeCases:
 
             # Carry forward from period 0 to period 0.
             period_id = seed_periods[0].id
-            count = carry_forward_service.carry_forward_unpaid(period_id, period_id, seed_user["user"].id)
+            count = carry_forward_service.carry_forward_unpaid(
+                period_id, period_id, seed_user["user"].id,
+                seed_user["scenario"].id,
+            )
             db.session.commit()
 
             # Guard returns 0 -- no items processed, no side effects.
@@ -681,6 +684,7 @@ class TestCarryForwardEdgeCases:
             # Carry forward from period 0 to period 2.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[2].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
 

@@ -17,12 +17,14 @@ from app.utils.log_events import log_event, BUSINESS
 logger = logging.getLogger(__name__)
 
 
-def carry_forward_unpaid(source_period_id, target_period_id, user_id):
+def carry_forward_unpaid(source_period_id, target_period_id, user_id,
+                         scenario_id):
     """Move all projected transactions from source to target period.
 
     Steps:
       1. Verify both periods belong to *user_id*.
-      2. Find all transactions in source period with status 'projected'.
+      2. Find all transactions in source period with status 'projected'
+         that belong to the specified scenario.
       3. Update their pay_period_id to the target period.
       4. Flag template-linked items as is_override=True (they've been moved
          away from their rule-assigned period).
@@ -34,6 +36,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id):
         user_id: The ID of the user who owns both periods.
             Defense-in-depth: ownership is verified even if the
             caller already checked at the route level.
+        scenario_id: The scenario to carry forward within.  Prevents
+            cross-scenario data corruption when multiple scenarios
+            exist for the same user.
 
     Returns:
         int - number of transactions moved.
@@ -58,11 +63,15 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id):
     # Get the 'projected' status ID.
     projected_status = db.session.query(Status).filter_by(name="projected").one()
 
-    # Find all non-deleted projected transactions in the source period.
+    # Find all non-deleted projected transactions in the source period
+    # for the specified scenario only.  Without the scenario_id filter,
+    # carry-forward would move transactions from ALL scenarios, corrupting
+    # non-baseline scenario data.
     projected_txns = (
         db.session.query(Transaction)
         .filter(
             Transaction.pay_period_id == source_period_id,
+            Transaction.scenario_id == scenario_id,
             Transaction.status_id == projected_status.id,
             Transaction.is_deleted.is_(False),
         )

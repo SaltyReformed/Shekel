@@ -16,6 +16,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.ref import Status, TransactionType
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import carry_forward_service
 
@@ -79,6 +80,7 @@ class TestCarryForwardUnpaid:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -102,6 +104,7 @@ class TestCarryForwardUnpaid:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -128,6 +131,7 @@ class TestCarryForwardUnpaid:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -150,6 +154,7 @@ class TestCarryForwardUnpaid:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -186,6 +191,7 @@ class TestCarryForwardUnpaid:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -219,3 +225,71 @@ class TestCarryForwardUnpaid:
             # Deleted projected also stays in source.
             db.session.refresh(deleted_txn)
             assert deleted_txn.pay_period_id == seed_periods[0].id
+
+    def test_carry_forward_only_moves_transactions_for_specified_scenario(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Carry forward with scenario_id only moves that scenario's transactions.
+
+        Creates projected transactions in both the baseline and an alternative
+        scenario, then carries forward only the baseline.  The alternative
+        scenario's transactions must remain untouched.
+        """
+        with app.app_context():
+            baseline_scenario = seed_user["scenario"]
+
+            # Create an alternative scenario for the same user.
+            alt_scenario = Scenario(
+                user_id=seed_user["user"].id,
+                name="What-If",
+                is_baseline=False,
+            )
+            db.session.add(alt_scenario)
+            db.session.flush()
+
+            status = db.session.query(Status).filter_by(name="projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+
+            # Baseline projected transaction.
+            baseline_txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=baseline_scenario.id,
+                status_id=status.id,
+                name="Baseline Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+            )
+            db.session.add(baseline_txn)
+
+            # Alternative scenario projected transaction.
+            alt_txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=alt_scenario.id,
+                status_id=status.id,
+                name="Alt Expense",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("75.00"),
+            )
+            db.session.add(alt_txn)
+            db.session.flush()
+
+            # Carry forward only the baseline scenario.
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, baseline_scenario.id,
+            )
+            db.session.flush()
+
+            # Only the baseline transaction should have moved.
+            assert count == 1
+
+            db.session.refresh(baseline_txn)
+            assert baseline_txn.pay_period_id == seed_periods[1].id
+
+            # Alternative scenario transaction must remain in source.
+            db.session.refresh(alt_txn)
+            assert alt_txn.pay_period_id == seed_periods[0].id

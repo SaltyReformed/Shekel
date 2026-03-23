@@ -564,6 +564,7 @@ class TestCarryForwardDoubleSubmit:
             # First carry-forward: moves 3 items.
             count1 = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count1 == 3
@@ -571,6 +572,7 @@ class TestCarryForwardDoubleSubmit:
             # Second carry-forward: source is empty, moves 0 items.
             count2 = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
+                seed_user["scenario"].id,
             )
             db.session.commit()
             assert count2 == 0
