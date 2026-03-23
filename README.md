@@ -47,7 +47,7 @@ Edit `.env` and set these values:
 docker compose up -d
 ```
 
-First startup takes ~30 seconds while the database is initialized. Check progress with:
+First startup takes 1--2 minutes while the database is initialized. Check progress with:
 
 ```bash
 docker compose logs -f app
@@ -86,6 +86,96 @@ Database migrations run automatically on startup.
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See `.env.example` for generation instructions. |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
+| Container marked unhealthy during first startup | First-time initialization (schema creation, migrations, seeding) can take over 60 seconds. The healthcheck `start_period` allows 120 seconds before failures count. Wait and check `docker compose logs -f app`. |
+| `curl` not found inside the container | The slim image does not include curl. Use Python instead: `docker compose exec app python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"` |
+| `Can't locate revision identified by ...` | The GHCR image may be older than your database. Rebuild from source (`docker compose build`) or pull the latest image (`docker compose pull`). |
+
+### Deploying Behind an Existing Reverse Proxy
+
+If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled `shekel-nginx` service. Instead, put `shekel-app` on your shared Docker network so the central proxy can reach it.
+
+**1. Create an override file** (`docker-compose.override.yml`) next to `docker-compose.yml`:
+
+```yaml
+# docker-compose.override.yml -- use a central reverse proxy instead
+# of the bundled shekel-nginx service.
+services:
+  app:
+    networks:
+      - backend
+      - homelab        # your shared proxy network
+
+  nginx:
+    # Disable the bundled Nginx.
+    profiles: ["disabled"]
+
+networks:
+  homelab:
+    external: true
+```
+
+Replace `homelab` with whatever your shared Docker network is named.
+
+**2. Add a server block to your central Nginx** (e.g., `/etc/nginx/conf.d/shekel.conf`):
+
+```nginx
+server {
+    listen 80;
+    server_name shekel.example.com;   # your domain or LAN hostname
+
+    location / {
+        proxy_pass         http://shekel-app:8000;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120;
+    }
+
+    location /static/ {
+        # Optional: serve static files directly if you mount the
+        # static_files volume into your Nginx container.
+        # Otherwise, Gunicorn serves them (slightly slower but simpler).
+        proxy_pass http://shekel-app:8000;
+    }
+}
+```
+
+**3. Start and verify:**
+
+```bash
+docker compose up -d
+
+# Confirm shekel-app joined the shared network:
+docker network inspect homelab --format '{{range .Containers}}{{.Name}} {{end}}'
+# Should include "shekel-app"
+
+# Test the health endpoint from inside the container:
+docker compose exec app python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"
+```
+
+### Post-Deploy Verification Checklist
+
+After any deployment or update, verify:
+
+```bash
+# 1. All containers are healthy
+docker compose ps
+
+# 2. App is on the expected network(s)
+docker network inspect homelab --format '{{range .Containers}}{{.Name}} {{end}}'
+
+# 3. Health endpoint responds
+docker compose exec app python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"
+
+# 4. Alembic head matches the running code
+docker compose exec app python -c \
+  "from app import create_app; app = create_app('production'); \
+   from flask_migrate import current as _c; \
+   print('OK') if app else print('FAIL')"
+```
 
 ---
 

@@ -49,8 +49,10 @@ EXPOSE 8000
 
 # Health check: verify the app is responding and database is reachable.
 # Uses Python's built-in urllib (curl/wget are not in the slim image).
-# --start-period gives entrypoint.sh time to run migrations and seeding.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+# --start-period gives entrypoint.sh time to run migrations and seeding
+# (schema creation + Alembic + ref data + user + tax brackets can take
+# well over 30 seconds on a fresh database).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 ENTRYPOINT ["/home/shekel/app/entrypoint.sh"]
