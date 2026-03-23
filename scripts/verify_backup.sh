@@ -27,8 +27,8 @@ set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────
 
-DB_CONTAINER="${DB_CONTAINER:-shekel-db}"
-APP_CONTAINER="${APP_CONTAINER:-shekel-app}"
+DB_CONTAINER="${DB_CONTAINER:-shekel-prod-db}"
+APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
 VERIFY_DB="${VERIFY_DB:-shekel_verify}"

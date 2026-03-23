@@ -41,9 +41,13 @@ Edit `.env` and set these values:
 | `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local` |
 | `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026` |
 
-### 4. Start the Application
+### 4. Create the Database Volume and Start
 
 ```bash
+# One-time setup: create the external database volume.
+# This volume is protected from "docker compose down -v".
+docker volume create shekel-prod-pgdata
+
 docker compose up -d
 ```
 
@@ -92,13 +96,13 @@ Database migrations run automatically on startup.
 
 ### Deploying Behind an Existing Reverse Proxy
 
-If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled `shekel-nginx` service. Instead, put `shekel-app` on your shared Docker network so the central proxy can reach it.
+If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled `shekel-prod-nginx` service. Instead, put `shekel-prod-app` on your shared Docker network so the central proxy can reach it.
 
 **1. Create an override file** (`docker-compose.override.yml`) next to `docker-compose.yml`:
 
 ```yaml
 # docker-compose.override.yml -- use a central reverse proxy instead
-# of the bundled shekel-nginx service.
+# of the bundled shekel-prod-nginx service.
 services:
   app:
     networks:
@@ -124,7 +128,7 @@ server {
     server_name shekel.example.com;   # your domain or LAN hostname
 
     location / {
-        proxy_pass         http://shekel-app:8000;
+        proxy_pass         http://shekel-prod-app:8000;
         proxy_set_header   Host $host;
         proxy_set_header   X-Real-IP $remote_addr;
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -136,7 +140,7 @@ server {
         # Optional: serve static files directly if you mount the
         # static_files volume into your Nginx container.
         # Otherwise, Gunicorn serves them (slightly slower but simpler).
-        proxy_pass http://shekel-app:8000;
+        proxy_pass http://shekel-prod-app:8000;
     }
 }
 ```
@@ -146,9 +150,9 @@ server {
 ```bash
 docker compose up -d
 
-# Confirm shekel-app joined the shared network:
+# Confirm shekel-prod-app joined the shared network:
 docker network inspect homelab --format '{{range .Containers}}{{.Name}} {{end}}'
-# Should include "shekel-app"
+# Should include "shekel-prod-app"
 
 # Test the health endpoint from inside the container:
 docker compose exec app python -c \

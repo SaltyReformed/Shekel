@@ -32,7 +32,7 @@ BACKUP_NAS_DIR="${BACKUP_NAS_DIR:-/mnt/nas/backups/shekel}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 
 # Docker container names.
-DB_CONTAINER="${DB_CONTAINER:-shekel-db}"
+DB_CONTAINER="${DB_CONTAINER:-shekel-prod-db}"
 
 # Database connection (used inside the db container).
 PGUSER="${PGUSER:-shekel_user}"

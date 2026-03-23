@@ -34,7 +34,7 @@ set -euo pipefail
 # All values can be overridden via environment variables.
 
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-APP_CONTAINER="${APP_CONTAINER:-shekel-app}"
+APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 NGINX_PORT="${NGINX_PORT:-80}"
@@ -78,7 +78,7 @@ Options:
 
 Environment Variables:
     DEPLOY_DIR          Repository root directory (default: script parent dir)
-    APP_CONTAINER       App container name (default: shekel-app)
+    APP_CONTAINER       App container name (default: shekel-prod-app)
     HEALTH_TIMEOUT      Health check timeout in seconds (default: 60)
     HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
     NGINX_PORT          Nginx host port for health check URL (default: 80)

@@ -5,6 +5,12 @@
 #
 # Provides PostgreSQL for local development.
 #
+# IMPORTANT: This file uses the project name "shekel-dev" to isolate
+# dev volumes and containers from production.  Docker Compose derives
+# the project name from the directory, which could collide with a
+# production setup on the same machine.  The name: field below forces
+# a safe project name regardless of directory.
+#
 # Primary workflow (recommended):
 #   1. docker compose -f docker-compose.dev.yml up db
 #   2. flask run    (from host, connects to containerized Postgres)
@@ -15,10 +21,12 @@
 # Both workflows:
 #   docker compose -f docker-compose.dev.yml up db test-db
 
+name: shekel-dev
+
 services:
   db:
     image: postgres:16-alpine
-    container_name: shekel-db
+    container_name: shekel-dev-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: shekel_user
@@ -37,7 +45,7 @@ services:
 
   test-db:
     image: postgres:16-alpine
-    container_name: shekel-test-db
+    container_name: shekel-dev-test-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: shekel_user
@@ -72,7 +80,7 @@ services:
 
   app:
     build: .
-    container_name: shekel-app-dev
+    container_name: shekel-dev-app
     depends_on:
       db:
         condition: service_healthy

@@ -25,7 +25,7 @@ Exit codes:
     3   Script error (bad arguments, database connection failure)
 
 Cron example (weekly, after backup verification):
-    0 3 * * 0 docker exec shekel-app python scripts/integrity_check.py
+    0 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py
 """
 
 import argparse
