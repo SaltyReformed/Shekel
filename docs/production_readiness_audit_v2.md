@@ -291,6 +291,7 @@ The docstring describes the model accurately. But compare with the previous audi
 **File:** `app/services/balance_calculator.py`
 
 Verified correct:
+
 - Anchor balance used as starting point, walks forward chronologically (lines 68-98)
 - Income added, expenses subtracted (lines 78-79, 88-89)
 - Projected transactions use `estimated_amount` (line 288)
@@ -308,6 +309,7 @@ Verified correct:
 **File:** `app/services/paycheck_calculator.py`
 
 Verified correct:
+
 - Order: gross (line 86-88) -> pre-tax deductions (94-97) -> federal tax (115-125) -> state tax (129-134) -> FICA (137-142) -> post-tax deductions (145-148) -> net pay (151-159)
 - Pre-tax deductions reduce taxable income before tax calculation (line 100-106)
 - Federal withholding via annualized Pub 15-T method with de-annualization (line 105-106, 158-163)
@@ -323,6 +325,7 @@ Verified correct:
 **File:** `app/services/tax_calculator.py`
 
 Verified correct:
+
 - Federal withholding follows IRS Pub 15-T Percentage Method steps 1-6 (lines 102-170)
 - Marginal brackets: each bracket taxes only the portion within its range (lines 173-209)
 - Standard deduction subtracted before brackets (lines 117-120)
@@ -338,6 +341,7 @@ Verified correct:
 **File:** `app/services/recurrence_engine.py`
 
 Verified correct:
+
 - All 8 patterns implemented and routed correctly (lines 298-329)
 - `monthly`: maps calendar day to containing pay period, handles month-end clamping (lines 332-359)
 - `monthly_first`: first period with start_date in each calendar month (lines 362-373)
@@ -356,6 +360,7 @@ Verified correct:
 **File:** `app/services/credit_workflow.py`
 
 Verified correct:
+
 - Creates exactly one payback transaction (lines 102-113)
 - Idempotent: returns existing payback if already credited (lines 60-67)
 - Only projected transactions can be marked credit (lines 70-74)
@@ -370,6 +375,7 @@ Verified correct:
 **File:** `app/services/carry_forward_service.py`
 
 Verified correct:
+
 - Only projected, non-deleted transactions carried forward (lines 62-69)
 - Template items flagged `is_override = True` after move (lines 77-78)
 - Same-period check returns 0 (lines 55-56)
@@ -387,38 +393,39 @@ Most routes correctly verify ownership. The service layer consistently uses `use
 
 ### Queries With Proper Ownership Checks (Verified)
 
-| Blueprint | Ownership Pattern | Status |
-|-----------|-------------------|--------|
-| `accounts` | `account.user_id != current_user.id` | All 15 endpoints verified |
-| `templates` | `template.user_id != current_user.id` | All endpoints verified |
-| `transfers` | `template.user_id` / `xfer.user_id` | All endpoints verified |
-| `salary` | `profile.user_id != current_user.id` | All endpoints verified |
-| `savings` | `goal.user_id != current_user.id` | All endpoints verified |
-| `mortgage` | `_load_mortgage_account` checks `account.user_id` | All endpoints verified |
-| `auto_loan` | `account.user_id != current_user.id` | All endpoints verified |
-| `investment` | `account.user_id != current_user.id` | All endpoints verified |
-| `retirement` | `pension.user_id != current_user.id` | All endpoints verified |
-| `categories` | `category.user_id != current_user.id` | All endpoints verified |
-| `settings` | `acct.user_id == current_user.id` | Verified |
-| `charts` | `user_id=current_user.id` passed to all service calls | All 6 endpoints verified |
-| `grid` | User-scoped periods + user-scoped scenario | Transitively safe |
-| `transactions` | `_get_owned_transaction` checks `pay_period.user_id` | All mutation endpoints |
+| Blueprint      | Ownership Pattern                                     | Status                    |
+| -------------- | ----------------------------------------------------- | ------------------------- |
+| `accounts`     | `account.user_id != current_user.id`                  | All 15 endpoints verified |
+| `templates`    | `template.user_id != current_user.id`                 | All endpoints verified    |
+| `transfers`    | `template.user_id` / `xfer.user_id`                   | All endpoints verified    |
+| `salary`       | `profile.user_id != current_user.id`                  | All endpoints verified    |
+| `savings`      | `goal.user_id != current_user.id`                     | All endpoints verified    |
+| `mortgage`     | `_load_mortgage_account` checks `account.user_id`     | All endpoints verified    |
+| `auto_loan`    | `account.user_id != current_user.id`                  | All endpoints verified    |
+| `investment`   | `account.user_id != current_user.id`                  | All endpoints verified    |
+| `retirement`   | `pension.user_id != current_user.id`                  | All endpoints verified    |
+| `categories`   | `category.user_id != current_user.id`                 | All endpoints verified    |
+| `settings`     | `acct.user_id == current_user.id`                     | Verified                  |
+| `charts`       | `user_id=current_user.id` passed to all service calls | All 6 endpoints verified  |
+| `grid`         | User-scoped periods + user-scoped scenario            | Transitively safe         |
+| `transactions` | `_get_owned_transaction` checks `pay_period.user_id`  | All mutation endpoints    |
 
 ### Queries Missing `user_id` Filter
 
-| File:Line | Query | Risk | Severity |
-|-----------|-------|------|----------|
-| `transactions.py:220-222` | `get_quick_create` loads Category/PayPeriod without user check | Category name + period date disclosure | Medium |
-| `transactions.py:256-257` | `get_full_create` same pattern | Same | Medium |
-| `transactions.py:294-295` | `get_empty_cell` same pattern | Same | Medium |
-| `templates.py:419-420` | `preview_recurrence` loads PayPeriod without user check | Period structure disclosure | Medium |
-| `categories.py:93-99` | Delete in-use check queries without user filter | Functional bug (blocks deletion) | Low |
-| `carry_forward_service.py:62-69` | No `scenario_id` filter | Cross-scenario corruption | Medium |
-| `recurrence_engine.py:264-265` | `resolve_conflicts` loads by ID only | IDOR (but unreachable) | Low |
+| File:Line                        | Query                                                          | Risk                                   | Severity |
+| -------------------------------- | -------------------------------------------------------------- | -------------------------------------- | -------- |
+| `transactions.py:220-222`        | `get_quick_create` loads Category/PayPeriod without user check | Category name + period date disclosure | Medium   |
+| `transactions.py:256-257`        | `get_full_create` same pattern                                 | Same                                   | Medium   |
+| `transactions.py:294-295`        | `get_empty_cell` same pattern                                  | Same                                   | Medium   |
+| `templates.py:419-420`           | `preview_recurrence` loads PayPeriod without user check        | Period structure disclosure            | Medium   |
+| `categories.py:93-99`            | Delete in-use check queries without user filter                | Functional bug (blocks deletion)       | Low      |
+| `carry_forward_service.py:62-69` | No `scenario_id` filter                                        | Cross-scenario corruption              | Medium   |
+| `recurrence_engine.py:264-265`   | `resolve_conflicts` loads by ID only                           | IDOR (but unreachable)                 | Low      |
 
 ### Service Layer Isolation: VERIFIED
 
 All services that touch user data correctly use their `user_id` parameter:
+
 - `pay_period_service.py`: All 5 functions filter by `user_id`
 - `balance_calculator.py`: Pure function, receives pre-filtered data
 - `paycheck_calculator.py`: Pure function, no DB access
@@ -548,17 +555,17 @@ Custom handlers for 400, 403, 404, 429, 500 (`__init__.py:236-283`). Production 
 
 ### Operational Status
 
-| Item | Status | Blocker? |
-|------|--------|----------|
-| `/health` endpoint | EXISTS (DB connectivity check) | N/A |
-| Database backup | **NOT ON DEV BRANCH** | **Yes** (B2) |
-| Nginx reverse proxy | EXISTS | N/A |
-| CI (lint + test) | EXISTS | N/A |
-| Registration | EXISTS at `/register` | N/A |
-| Error pages | EXISTS (400, 403, 404, 429, 500) | N/A |
-| Structured logging | EXISTS (JSON, request_id) | N/A |
-| Security headers | EXISTS (CSP, HSTS-ready) | N/A |
-| Docker health checks | EXISTS (all 3 services) | N/A |
+| Item                 | Status                           | Blocker?     |
+| -------------------- | -------------------------------- | ------------ |
+| `/health` endpoint   | EXISTS (DB connectivity check)   | N/A          |
+| Database backup      | **NOT ON DEV BRANCH**            | **Yes** (B2) |
+| Nginx reverse proxy  | EXISTS                           | N/A          |
+| CI (lint + test)     | EXISTS                           | N/A          |
+| Registration         | EXISTS at `/register`            | N/A          |
+| Error pages          | EXISTS (400, 403, 404, 429, 500) | N/A          |
+| Structured logging   | EXISTS (JSON, request_id)        | N/A          |
+| Security headers     | EXISTS (CSP, HSTS-ready)         | N/A          |
+| Docker health checks | EXISTS (all 3 services)          | N/A          |
 
 ---
 
@@ -612,4 +619,4 @@ All 13 packages in `requirements.txt` pinned to exact versions (e.g., `Flask==3.
 
 ---
 
-*End of audit report.*
+_End of audit report._
