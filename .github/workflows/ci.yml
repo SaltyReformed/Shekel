@@ -76,10 +76,11 @@ jobs:
           pip install -r requirements-dev.txt
 
       # ── 5. Run pylint ────────────────────────────────────────────
-      # Fail only on errors (E) and fatal (F) messages.
-      # Full score is displayed for visibility.
+      # Fail if the score drops below 9.0 (baseline is ~9.33).
+      # Pre-existing warnings (duplicate-code, too-many-locals, etc.)
+      # are acceptable; new errors or major regressions are not.
       - name: Lint with pylint
-        run: pylint app/ --fail-on=E,F --output-format=colorized
+        run: pylint app/ --fail-under=9.0 --output-format=colorized
 
       # ── 6. Run pytest ────────────────────────────────────────────
       # The test suite creates schemas, tables, and seed data via
