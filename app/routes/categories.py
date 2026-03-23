@@ -85,19 +85,33 @@ def delete_category(category_id):
         flash("Category not found.", "danger")
         return redirect(url_for("settings.show", section="categories"))
 
-    # Check if the category is referenced by templates or transactions.
-    from app.models.transaction_template import TransactionTemplate
-    from app.models.transaction import Transaction
+    # Check if the category is referenced by this user's templates or
+    # active transactions.
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
 
+    # Scope by user_id to prevent other users' templates from
+    # blocking deletion.  See audit finding M6.
     in_use = (
         db.session.query(TransactionTemplate)
-        .filter_by(category_id=category_id)
-        .first()
-    ) or (
-        db.session.query(Transaction)
-        .filter_by(category_id=category_id)
+        .filter_by(category_id=category_id, user_id=current_user.id)
         .first()
     )
+    if not in_use:
+        # Transaction has no direct user_id -- join through PayPeriod
+        # for correct ownership scoping.  Soft-deleted transactions
+        # are included because the DB FK constraint would block
+        # deletion regardless.
+        in_use = (
+            db.session.query(Transaction)
+            .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+            .filter(
+                PayPeriod.user_id == current_user.id,
+                Transaction.category_id == category_id,
+            )
+            .first()
+        )
 
     if in_use:
         flash("Cannot delete a category that is in use by templates or transactions.", "warning")

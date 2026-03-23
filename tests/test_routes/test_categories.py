@@ -245,6 +245,132 @@ class TestCategoryDelete:
             assert resp.status_code == 200
             assert b"not found" in resp.data
 
+    def test_delete_allowed_when_only_other_user_has_template(
+        self, app, auth_client, seed_user, seed_second_user,
+    ):
+        """User A can delete a category even if User B has templates (M6).
+
+        The in-use check must be scoped by user_id so that User B's
+        templates do not block User A's category deletion.
+        """
+        with app.app_context():
+            # Create a fresh deletable category for User A.
+            cat_a = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="OnlyMine",
+            )
+            db.session.add(cat_a)
+            db.session.flush()
+
+            # User B creates a template referencing User B's OWN category.
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+            tpl_b = TransactionTemplate(
+                user_id=seed_second_user["user"].id,
+                account_id=seed_second_user["account"].id,
+                category_id=seed_second_user["categories"]["Rent"].id,
+                transaction_type_id=txn_type.id,
+                name="B Rent Template",
+                default_amount=Decimal("1000.00"),
+            )
+            db.session.add(tpl_b)
+            db.session.commit()
+
+            # User A deletes their own unused category -- should succeed.
+            resp = auth_client.post(
+                f"/categories/{cat_a.id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"deleted" in resp.data
+            assert db.session.get(Category, cat_a.id) is None
+
+    def test_delete_blocked_by_soft_deleted_transaction(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Category cannot be deleted when even soft-deleted transactions reference it.
+
+        The DB FK constraint blocks deletion regardless of is_deleted
+        status, so the in-use check correctly includes soft-deleted
+        transactions to give a friendly error instead of a DB crash.
+        """
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="SoftDeleteTest",
+            )
+            db.session.add(category)
+            db.session.flush()
+
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(
+                name="projected"
+            ).one()
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                category_id=category.id,
+                transaction_type_id=txn_type.id,
+                name="Soft Deleted Expense",
+                estimated_amount=Decimal("50.00"),
+                status_id=projected.id,
+                is_deleted=True,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{category.id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"in use" in resp.data
+            assert db.session.get(Category, category.id) is not None
+
+    def test_delete_blocked_by_active_transaction(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Category cannot be deleted when active transactions reference it."""
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="ActiveTxnTest",
+            )
+            db.session.add(category)
+            db.session.flush()
+
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(
+                name="projected"
+            ).one()
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                category_id=category.id,
+                transaction_type_id=txn_type.id,
+                name="Active Expense",
+                estimated_amount=Decimal("100.00"),
+                status_id=projected.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{category.id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"in use" in resp.data
+            assert db.session.get(Category, category.id) is not None
+
 
 # ── Negative Path Tests ─────────────────────────────────────────────
 
