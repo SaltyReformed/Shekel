@@ -28,7 +28,15 @@ echo "=== Shekel Entrypoint ==="
 
 # ── 1. Wait for PostgreSQL ──────────────────────────────────────
 echo "Waiting for PostgreSQL..."
+MAX_RETRIES=60
+retries=0
 until pg_isready -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" -U "${DB_USER:-shekel_user}" -q; do
+    retries=$((retries + 1))
+    if [ "${retries}" -ge "${MAX_RETRIES}" ]; then
+        echo "ERROR: PostgreSQL not ready after ${MAX_RETRIES} seconds." >&2
+        echo "Verify DB_HOST, DB_PORT, and DB_USER are correct and the database container is running." >&2
+        exit 1
+    fi
     sleep 1
 done
 echo "PostgreSQL is ready."
