@@ -219,7 +219,12 @@ def get_quick_create():
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
-    if not category or not period:
+    # Ownership check: prevent IDOR -- return identical 404 for
+    # "does not exist" and "belongs to another user" so attackers
+    # cannot distinguish the two cases.  See audit finding H1.
+    if not category or category.user_id != current_user.id:
+        return "Not found", 404
+    if not period or period.user_id != current_user.id:
         return "Not found", 404
 
     # Look up the transaction type and baseline scenario for hidden fields.
@@ -255,7 +260,10 @@ def get_full_create():
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
-    if not category or not period:
+    # Ownership check: same IDOR fix as get_quick_create (H1).
+    if not category or category.user_id != current_user.id:
+        return "Not found", 404
+    if not period or period.user_id != current_user.id:
         return "Not found", 404
 
     txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
@@ -293,7 +301,10 @@ def get_empty_cell():
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
-    if not category or not period:
+    # Ownership check: same IDOR fix as get_quick_create (H1).
+    if not category or category.user_id != current_user.id:
+        return "Not found", 404
+    if not period or period.user_id != current_user.id:
         return "Not found", 404
 
     return render_template(

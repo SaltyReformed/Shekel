@@ -415,6 +415,142 @@ class TestCreateOwnership:
             assert count == 0
 
 
+class TestFormRenderingOwnership:
+    """Verify form-rendering GET endpoints reject other users' resources.
+
+    These endpoints load Category and PayPeriod by ID from query params.
+    Without ownership checks, an attacker could enumerate IDs to discover
+    another user's category names and pay period dates.
+    """
+
+    def test_quick_create_rejects_other_users_category(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/quick returns 404 for another user's category."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/new/quick", query_string={
+                "category_id": other["category"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_quick_create_rejects_other_users_period(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/quick returns 404 for another user's period."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/new/quick", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": other["period"].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_quick_create_rejects_mixed_ownership(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/quick returns 404 when both resources are foreign."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/new/quick", query_string={
+                "category_id": other["category"].id,
+                "period_id": other["period"].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_full_create_rejects_other_users_category(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/full returns 404 for another user's category."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/new/full", query_string={
+                "category_id": other["category"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_full_create_rejects_other_users_period(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/full returns 404 for another user's period."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/new/full", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": other["period"].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_empty_cell_rejects_other_users_category(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/empty-cell returns 404 for another user's category."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/empty-cell", query_string={
+                "category_id": other["category"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_empty_cell_rejects_other_users_period(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/empty-cell returns 404 for another user's period."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods)
+            resp = auth_client.get("/transactions/empty-cell", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": other["period"].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 404
+
+    def test_quick_create_allows_own_resources(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/quick returns 200 for the user's own resources."""
+        with app.app_context():
+            resp = auth_client.get("/transactions/new/quick", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 200
+
+    def test_full_create_allows_own_resources(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/new/full returns 200 for the user's own resources."""
+        with app.app_context():
+            resp = auth_client.get("/transactions/new/full", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 200
+
+    def test_empty_cell_allows_own_resources(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /transactions/empty-cell returns 200 for the user's own resources."""
+        with app.app_context():
+            resp = auth_client.get("/transactions/empty-cell", query_string={
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": seed_periods[0].id,
+                "txn_type_name": "expense",
+            })
+            assert resp.status_code == 200
+
+
 class TestCarryForwardOwnership:
     """Verify carry-forward rejects another user's period."""
 
