@@ -9,7 +9,7 @@
 FROM python:3.14.3-slim AS builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq-dev gcc \
+    && apt-get install -y --no-install-recommends libpq-dev gcc libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
