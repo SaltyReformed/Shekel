@@ -76,6 +76,15 @@ class TestProdConfig:
         with pytest.raises(ValueError, match="DATABASE_URL"):
             ProdConfig()
 
+    def test_prod_config_has_pool_settings(self):
+        """ProdConfig explicitly sets connection pool options."""
+        opts = ProdConfig.SQLALCHEMY_ENGINE_OPTIONS
+        assert "pool_size" in opts
+        assert "pool_recycle" in opts
+        assert "pool_pre_ping" in opts
+        assert opts["pool_pre_ping"] is True
+        assert opts["connect_args"]["connect_timeout"] == 5
+
     def test_totp_key_optional_at_startup(self, monkeypatch):
         """ProdConfig does not crash when TOTP_ENCRYPTION_KEY is missing.
 

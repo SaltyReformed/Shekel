@@ -95,6 +95,34 @@ class ProdConfig(BaseConfig):
     DEBUG = False
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
 
+    # Connection pool settings for production.  Made explicit rather than
+    # relying on SQLAlchemy defaults to prevent surprises under load.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        # Pool size per Gunicorn worker.  With 2 workers and pool_size=5,
+        # the app uses up to 10 base connections + overflow.
+        "pool_size": 5,
+        # Allow 2 overflow connections per worker for burst traffic.
+        # Total max per worker: pool_size + max_overflow = 7.
+        # Total across 2 workers: 14 (well within PostgreSQL's default 100).
+        "max_overflow": 2,
+        # Seconds to wait for a connection from the pool before raising.
+        # 30s is generous -- if the pool is exhausted for 30s, something
+        # is very wrong and failing fast is better than queueing forever.
+        "pool_timeout": 30,
+        # Recycle connections after 30 minutes (1800s) to avoid using
+        # connections that PostgreSQL or a firewall may have closed.
+        # Prevents "connection reset by peer" errors after idle periods.
+        "pool_recycle": 1800,
+        # Pre-ping: test each connection before using it.  Catches stale
+        # connections that pool_recycle missed (e.g. database restart
+        # between recycle intervals).  Small overhead (~1ms per checkout)
+        # but eliminates "server closed the connection unexpectedly" errors.
+        "pool_pre_ping": True,
+        # TCP-level connect timeout.  If the database host is unreachable,
+        # fail in 5 seconds instead of waiting for the system TCP timeout.
+        "connect_args": {"connect_timeout": 5},
+    }
+
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
