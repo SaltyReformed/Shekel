@@ -218,6 +218,32 @@ See the runbook for retention policies, NAS configuration, and encryption setup.
 
 ---
 
+## Security
+
+### LAN-Only Deployment
+
+If Shekel is only accessible on your local network, the default configuration is sufficient. You should still:
+
+- Change the default seed password on first login (Settings > Security > Change Password).
+- Set up automated backups (see [Backups](#backups)).
+
+### External Access (Cloudflare Tunnel, Tailscale, etc.)
+
+If you expose Shekel outside your local network, take these additional steps:
+
+1. **Disable public registration.** Set `REGISTRATION_ENABLED=false` in your `.env` to prevent strangers from creating accounts.
+2. **Enable MFA for all users.** Go to Settings > Security > Enable TOTP. This requires `TOTP_ENCRYPTION_KEY` to be set (see [MFA Setup](#mfa-setup) below).
+3. **Verify HTTPS.** Cloudflare Tunnel and Tailscale handle TLS automatically. If using a different method, ensure your reverse proxy terminates HTTPS.
+4. **Change the default seed password immediately** if you used the default `ChangeMe!2026`.
+
+### General Recommendations
+
+- Back up your database before entering real financial data. See [Backups](#backups).
+- Keep your `.env` file secure. It contains your database password and encryption keys. Never commit it to version control.
+- The application sets security headers (CSP, HSTS-ready, X-Frame-Options) automatically in production mode.
+
+---
+
 ## Developer Setup (from source)
 
 For contributing to Shekel or running from source. Uses Docker for databases and the host for the Python application.
