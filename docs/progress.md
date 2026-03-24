@@ -1,6 +1,6 @@
 # Shekel Budget App -- Progress Report
 
-**Evaluated on:** 2026-03-21
+**Evaluated on:** 2026-03-23
 **Evaluated by:** Claude Code (`/update-docs` skill)
 
 ---
@@ -9,8 +9,8 @@
 
 | Metric           | Count |
 | ---------------- | ----- |
-| Phases evaluated | 13    |
-| Complete         | 12    |
+| Phases evaluated | 14    |
+| Complete         | 13    |
 | In progress      | 0     |
 | Not started      | 0     |
 | Deferred         | 1     |
@@ -20,52 +20,56 @@
 ## Recent Development Activity
 
 ```
-ed7c63d docs: document f-string SQL safety, Gunicorn forwarded_allow_ips, and DB_PASSWORD coupling
-276ca37 docs: update stale model docstrings to reflect implemented state
-97efa6e fix: add DevConfig and TestConfig DATABASE_URL fallbacks for local development
-752eef7 test: add dedicated carry_forward_service unit tests
-03acb69 refactor: isolate float() conversions at Chart.js presentation boundary
-de9e456 fix: add CSRF hidden inputs to all HTMX forms with POST fallback for graceful degradation
-d0a6c0e fix: remove unnecessary Decimal(str()) double conversion in amortization engine
-9c0185f fix: add settled status to test conftest ref data to match production
-89c83ed fix: add custom 400 and 403 error handlers
-848ee91 fix: remove external network requirement, wire up seed user, enforce password minimum
-a774b06 fix: split dev dependencies into requirements-dev.txt, update CI
-fa2e44c fix: prevent open redirect on login and MFA verify routes
-a23ed30 Updated docs
-693d4b5 Upgrade all dependencies for production readiness
-6084868 Add optional end date to recurring transactions and transfers
-ffa4614 Fixed balance over time chart
-244851c Expand account types from 2 to 18 with categories and proper display names
-1fcde46 Fix pension highest-paid years ignoring recurring raises
-e859f8f Convert all percentage inputs from decimal to human-readable format
-467a2f6 Convert raise percentage input from decimal to human-readable
+2228c93 docs: add TOTP_ENCRYPTION_KEY generation instructions directly in README (P6-4)
+d26b301 docs: add security hardening guidance for LAN and external deployments (P6-2)
+baf6ef9 docs: add Backups section with urgency note and quick setup instructions (P6-3)
+6c694bf docs: document REGISTRATION_ENABLED in README and .env.example (P6-1)
+11e1540 fix(migrations): add missing CREATE TABLE for 7 salary schema tables
+36f7464 test(health): add/verify error response sanitization regression tests (P5-6)
+7f61748 test(auth): add/verify user deactivation session invalidation regression test (P5-4)
+cc1f579 test(templates): add/verify IDOR regression test for preview_recurrence (P5-2)
+536545c refactor(config): add explicit SQLALCHEMY_ENGINE_OPTIONS to ProdConfig (L4)
+89a469d fix(transfers): add user_id ownership check to resolve_conflicts (H4-transfer)
+447aeec fix(recurrence): add user_id ownership check to resolve_conflicts (H4)
+2b03dfb refactor(tax): extract _load_tax_configs to app/services/tax_config_service.py (L1)
+e06225a fix(tests): proper fixes for 3 CI failures -- no shortcuts
+c2ac65b fix(tests): fix 3 CI test failures
+eac98dd fix(ci): add --fail-on=E,F alongside --fail-under for two-layer pylint gate
+f2c490e fix(ci): use --fail-under=9.0 instead of --fail-on=E,F for pylint
+918d980 fix(settings): initialize mfa_enabled before conditional branch (E0601)
+fa46476 fix(docker): add libc-dev to builder stage for psycopg2 compilation
+d24a11a docs: rewrite README for Docker-based dev workflow and external volume setup
+a40c05e Production readiness plans and prompts
 ```
 
-Recent work since the last evaluation (2026-03-20) includes:
+Recent work since the last evaluation (2026-03-21) includes a **six-phase
+production readiness audit** covering security fixes, architecture improvements,
+test coverage hardening, and documentation:
 
-- **Production readiness audit** (commits ed7c63d, 276ca37): Documented f-string
-  SQL safety rationale, updated stale model docstrings, documented Gunicorn
-  forwarded_allow_ips and DB_PASSWORD coupling.
-- **DevConfig/TestConfig fallbacks** (commit 97efa6e): Added DATABASE_URL fallback
-  defaults for local development without .env file.
-- **Carry-forward tests** (commit 752eef7): Added dedicated carry_forward_service
-  unit tests.
-- **Chart.js boundary refactor** (commit 03acb69): Isolated float() conversions
-  at the Chart.js presentation boundary rather than in service layer.
-- **CSRF HTMX fix** (commit de9e456): Added CSRF hidden inputs to all HTMX forms
-  with POST fallback for graceful degradation.
-- **Error handler expansion** (commit 89c83ed): Added custom 400 and 403 error
-  handlers (previously only 404, 429, 500 existed).
-- **Seed user hardening** (commit 848ee91): Removed external network requirement,
-  wired up seed user env vars in docker-compose, enforced 12-char password minimum.
-- **Open redirect prevention** (commit fa2e44c): Prevented open redirect on login
-  and MFA verify routes.
-- **Dev dependencies split** (commit a774b06): Split dev dependencies into
-  requirements-dev.txt, updated CI.
-- **New-user setup audit** (docs only): Comprehensive audit of the end-user Docker
-  setup experience with implementation plan. See `docs/new_user_setup_audit.md`
-  and `docs/new_user_setup_implementation_plan.md`.
+- **Phase 1 -- Critical bug fixes:** is_active check on user_loader (session
+  invalidation on deactivation), scenario_id filtering in carry-forward service,
+  seed script production safety guard, pg_isready healthcheck fix.
+- **Phase 2 -- High-severity security:** IDOR ownership checks on transaction
+  form-rendering endpoints (quick_create, full_create, empty_cell),
+  preview_recurrence start_period_id validation, rate limiting on /register,
+  REGISTRATION_ENABLED toggle for disabling public registration.
+- **Phase 3 -- Medium-severity fixes:** Health endpoint error sanitization
+  (removed exception details from response), category delete user-scoped
+  in-use check, forwarded_allow_ips restricted to RFC 1918, Python version
+  pinned in Dockerfile, stale anchor balance warning.
+- **Phase 4 -- Code quality and architecture:** Extracted _load_tax_configs to
+  shared service (eliminated route-to-route import), added user_id ownership
+  guards to resolve_conflicts in both recurrence_engine and transfer_recurrence,
+  explicit SQLALCHEMY_ENGINE_OPTIONS on ProdConfig (pool_pre_ping, pool_recycle,
+  connect_timeout).
+- **Phase 5 -- Test coverage audit:** Verified all Phase 1-4 fixes have
+  regression tests. Hardened 3 tests: nonexistent period fallback for
+  preview_recurrence, user re-activation positive test, health endpoint
+  logging preservation test. 1827 tests total, all passing.
+- **Phase 6 -- Documentation:** Added Backups section (urgency note, quick
+  setup, runbook link), Security section (LAN vs external deployment guidance),
+  REGISTRATION_ENABLED in env table and troubleshooting, MFA Setup subsection
+  with Fernet key generation instructions.
 
 ---
 
@@ -608,6 +612,40 @@ as part of the implementation.
 
 ---
 
+### Production Readiness Audit
+
+**Status:** Complete (6 sub-phases, 2026-03-21 through 2026-03-23)
+
+**Scope:** Cross-cutting hardening effort addressing 23 findings from a
+comprehensive security and code quality audit (`docs/production_readiness_audit_v2.md`).
+
+**Found (all implemented):**
+
+- P1 (critical bugs): `is_active` check in `user_loader`, `scenario_id` parameter
+  added to carry-forward service, seed script `FLASK_ENV != production` guard
+- P2 (high-severity security): Ownership checks on `get_quick_create`,
+  `get_full_create`, `get_empty_cell`, `preview_recurrence`; rate limit on
+  `/register`; `REGISTRATION_ENABLED` config toggle
+- P3 (medium-severity): Health endpoint `"detail"` key removed, category delete
+  `in_use` query scoped by `user_id` via PayPeriod join, `forwarded_allow_ips`
+  restricted to RFC 1918, Python pinned to 3.14.3, stale anchor warning added
+- P4 (architecture): `_load_tax_configs` extracted to `app/services/tax_config_service.py`
+  (eliminated route-to-route import and duplicate), `user_id` ownership guard on
+  `resolve_conflicts` in both `recurrence_engine.py` and `transfer_recurrence.py`,
+  explicit `SQLALCHEMY_ENGINE_OPTIONS` on `ProdConfig`
+- P5 (test coverage): All P1-P4 fixes verified to have regression tests; 3 tests
+  hardened (preview nonexistent period, user reactivation, health logging)
+- P6 (documentation): README Backups section, Security section (LAN/external),
+  MFA Setup subsection, REGISTRATION_ENABLED in env table and troubleshooting
+
+**Notes:**
+
+Test count increased from 1772 to 1827 (+55 tests). Pylint score maintained at
+9.35/10. New service module `tax_config_service.py` created. No new route modules
+or model files -- all changes were to existing code and tests.
+
+---
+
 ## Requirements Drift
 
 - **Schema consolidation:** The v3 addendum specifies separate Marshmallow schema
@@ -637,45 +675,62 @@ as part of the implementation.
   categories (asset, liability, retirement, investment). The seed script was updated
   accordingly.
 
-- **Docker end-user setup:** The end-user Docker setup path (download two files,
-  run compose) is not yet functional. docker-compose.yml uses `build: .` instead
-  of the published GHCR image, and the README lacks Docker Quick Start
-  documentation. See `docs/new_user_setup_audit.md` for full findings.
+- **Docker end-user setup:** Resolved. docker-compose.yml now uses the GHCR
+  image, README has full Docker Quick Start documentation, and entrypoint seed
+  ordering has been fixed. See the README Quick Start (Docker) section.
+
+- **Production readiness audit:** A six-phase hardening effort (separate from the
+  feature phases) was completed between 2026-03-21 and 2026-03-23. This addressed
+  23 findings from a comprehensive security and code quality audit. The fixes span
+  Phases 1, 2, 3, 8A, and 8E deliverables but are tracked as a single audit effort.
 
 ---
 
 ## Suggested Next Steps
 
-1. **New-user setup fixes:** Implement the plan in
-   `docs/new_user_setup_implementation_plan.md`. This unblocks the Docker
-   end-user setup path by switching docker-compose.yml to the GHCR image,
-   fixing the entrypoint seed ordering bug, making TOTP_ENCRYPTION_KEY optional
-   at startup, and adding Docker Quick Start documentation to the README.
-
-2. **Phase 7 -- Scenarios:** The only remaining deferred feature phase. The
+1. **Phase 7 -- Scenarios:** The only remaining deferred feature phase. The
    `scenario.py` model stub and UI spec (`docs/scenario_ui_requirements.md`)
    are in place. Depends on all current phases being stable, which they are.
    This adds clone, compare, and diff functionality for what-if budget analysis.
 
-3. **v3 Phase 9 -- Smart Features:** Rolling averages for expense tracking,
+2. **v3 Phase 9 -- Smart Features:** Rolling averages for expense tracking,
    inflation adjustment on long-term projections. The inflation field on paycheck
    deductions already exists but global projection adjustment is not implemented.
 
-4. **v3 Phase 10 -- Notifications:** In-app alerts and email notifications
+3. **v3 Phase 10 -- Notifications:** In-app alerts and email notifications
    including loan payoff milestones, retirement goal milestones, and contribution
    limit warnings. Requires the least architectural change.
 
 ---
 
+## Production Readiness Audit
+
+**Status:** Complete (6 sub-phases, 2026-03-21 through 2026-03-23)
+
+A dedicated hardening effort that cross-cut existing phases to address findings
+from a comprehensive security and code quality audit. All fixes include
+regression tests. Pylint score maintained at 9.35/10.
+
+| Sub-Phase | Focus | Key Fixes |
+| --------- | ----- | --------- |
+| P1 | Critical bugs | is_active session check, carry-forward scenario_id filter, seed production guard |
+| P2 | High-severity security | IDOR on 3 transaction form endpoints + preview_recurrence, rate limit /register, REGISTRATION_ENABLED toggle |
+| P3 | Medium-severity | Health endpoint info leak, category delete cross-user scope, forwarded_allow_ips, Python pin, stale anchor warning |
+| P4 | Architecture | Extract tax config service (route-to-route import), resolve_conflicts ownership guards, ProdConfig pool settings |
+| P5 | Test coverage | Audited all P1-P4 fixes for regression tests, hardened 3 weak tests (1827 total, all passing) |
+| P6 | Documentation | README Backups/Security/MFA sections, REGISTRATION_ENABLED docs, env table updates |
+
+---
+
 ## Test Suite Health
 
-**Total:** 1772 test functions across 63 test files
-**Runtime:** ~9 minutes (full suite)
+**Total:** 1827 test functions across 65 test files
+**Runtime:** ~7 minutes (full suite)
 
 | Category                | Files | Approx. Tests |
 | ----------------------- | ----- | ------------- |
-| Route tests             | 23    | ~830          |
-| Service tests           | 22    | ~530          |
+| Route tests             | 24    | ~880          |
+| Service tests           | 23    | ~560          |
 | Integration tests       | 6     | ~125          |
 | Schema/model tests      | 2     | ~80           |
 | Script tests            | 3     | ~40           |
@@ -692,3 +747,5 @@ Test remediation work units (WU0 through WU5.4) systematically added:
 - Nonexistent resource handling (404/302 with flash messages)
 - Financial account negative paths across all 5 account types
 - Dedicated carry_forward_service unit tests (commit 752eef7)
+- Production readiness regression tests: ownership guards, deactivation flow,
+  health sanitization, preview fallback, tax config service (Phase 5 audit)

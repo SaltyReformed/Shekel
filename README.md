@@ -425,6 +425,7 @@ Last evaluated: 2026-03-23
 | 8D    | Production Deployment          | Complete    | Docker, Nginx, Cloudflare Tunnel, CI, deploy.sh  |
 | 8E    | Multi-User Groundwork          | Complete    | Registration, user_id audit, data isolation tests |
 | UI/UX | Remediation                    | Complete    | Nav restructure, settings consolidation, polish  |
+| --    | Production Readiness Audit     | Complete    | IDOR fixes, ownership guards, pool config, docs  |
 
 **Status key:** Complete | In Progress | Not Started | Deferred
 
@@ -454,7 +455,7 @@ shekel/
 ├── cloudflared/                 # Cloudflare Tunnel configuration
 ├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts
-├── tests/                       # pytest test suite
+├── tests/                       # pytest test suite (65 files, 1827 tests)
 ├── docs/                        # Plans, progress tracking, runbooks
 ├── docker-compose.yml           # Production Docker Compose (app + PG + Nginx)
 ├── docker-compose.dev.yml       # Development Docker Compose (dev DB + test DB)
