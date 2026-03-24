@@ -998,7 +998,9 @@ class TestRegenerateForTemplate:
 class TestResolveConflicts:
     """DB integration tests for resolve_conflicts()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(
+        self, seed_user, pattern_name, category_key=None, **rule_kwargs
+    ):
         """Helper: create a template + recurrence rule."""
         pattern = (
             db.session.query(RecurrencePattern)
@@ -1023,10 +1025,16 @@ class TestResolveConflicts:
         db.session.add(rule)
         db.session.flush()
 
+        # Default to "Car Payment" but allow override for fixtures with
+        # different category sets (e.g. second_user).
+        if category_key is None:
+            category_key = "Car Payment"
+        category = seed_user["categories"][category_key]
+
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Car Payment"].id,
+            category_id=category.id,
             recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name="Test Recurring",
@@ -1057,7 +1065,9 @@ class TestResolveConflicts:
             db.session.flush()
 
             # Resolve as 'keep'.
-            recurrence_engine.resolve_conflicts([txn.id], action="keep")
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="keep", user_id=seed_user["user"].id,
+            )
             db.session.flush()
 
             db.session.refresh(txn)
@@ -1086,7 +1096,9 @@ class TestResolveConflicts:
 
             # Resolve as 'update' with new amount.
             recurrence_engine.resolve_conflicts(
-                [txn.id], action="update", new_amount=Decimal("200.00")
+                [txn.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
@@ -1117,7 +1129,9 @@ class TestResolveConflicts:
 
             # Resolve as 'update' with no new amount.
             recurrence_engine.resolve_conflicts(
-                [txn.id], action="update", new_amount=None
+                [txn.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=None,
             )
             db.session.flush()
 
@@ -1126,6 +1140,146 @@ class TestResolveConflicts:
             assert txn.is_deleted is False
             # Amount unchanged since new_amount was None.
             assert txn.estimated_amount == Decimal("999.99")
+
+    def test_cross_user_update_blocked(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """update with wrong user_id silently skips the transaction."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            txn = created[0]
+            txn.is_override = True
+            txn.estimated_amount = Decimal("999.99")
+            db.session.flush()
+
+            # Attempt resolve as second_user -- should be blocked.
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="update",
+                user_id=second_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(txn)
+            assert txn.is_override is True
+            assert txn.estimated_amount == Decimal("999.99")
+
+    def test_cross_user_keep_blocked(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """keep with wrong user_id leaves transaction unchanged."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            txn = created[0]
+            txn.is_override = True
+            txn.estimated_amount = Decimal("999.99")
+            db.session.flush()
+
+            # 'keep' with wrong user -- no-op by design (keep never modifies).
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="keep",
+                user_id=second_user["user"].id,
+            )
+            db.session.flush()
+
+            db.session.refresh(txn)
+            assert txn.is_override is True
+            assert txn.estimated_amount == Decimal("999.99")
+
+    def test_same_user_update_succeeds(
+        self, app, db, seed_user, seed_periods
+    ):
+        """update with correct user_id modifies the transaction."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            txn = created[0]
+            txn.is_override = True
+            txn.estimated_amount = Decimal("999.99")
+            db.session.flush()
+
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(txn)
+            assert txn.is_override is False
+            assert txn.estimated_amount == Decimal("50.00")
+
+    def test_mixed_ownership_list(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """Only owned transactions are modified in a mixed-ownership list."""
+        with app.app_context():
+            # Create template and transaction for user A.
+            template_a = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created_a = recurrence_engine.generate_for_template(
+                template_a, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            txn_a = created_a[0]
+            txn_a.is_override = True
+            txn_a.estimated_amount = Decimal("999.99")
+
+            # Create template and transaction for user B (second_user).
+            # second_user needs their own periods and template.
+            from app.services import pay_period_service
+            periods_b = pay_period_service.generate_pay_periods(
+                user_id=second_user["user"].id,
+                start_date=seed_periods[0].start_date,
+                num_periods=10,
+            )
+            template_b = self._make_template_with_rule(
+                second_user, "every_period", category_key="Rent",
+            )
+            created_b = recurrence_engine.generate_for_template(
+                template_b, periods_b, second_user["scenario"].id,
+            )
+            db.session.flush()
+            txn_b = created_b[0]
+            txn_b.is_override = True
+            txn_b.estimated_amount = Decimal("888.88")
+            db.session.flush()
+
+            # Resolve as user A -- only txn_a should be modified.
+            recurrence_engine.resolve_conflicts(
+                [txn_a.id, txn_b.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(txn_a)
+            db.session.refresh(txn_b)
+            assert txn_a.is_override is False
+            assert txn_a.estimated_amount == Decimal("50.00")
+            assert txn_b.is_override is True
+            assert txn_b.estimated_amount == Decimal("888.88")
 
 
 class TestCrossUserIsolation:

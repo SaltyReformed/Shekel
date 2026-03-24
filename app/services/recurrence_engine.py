@@ -245,15 +245,20 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     return created
 
 
-def resolve_conflicts(transaction_ids, action, new_amount=None):
+def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
     """Resolve override/delete conflicts after a regeneration.
 
     Called by the route layer after the user responds to the conflict prompt.
+    Each transaction is ownership-checked via its pay_period.user_id before
+    any modification -- transactions not owned by ``user_id`` are silently
+    skipped (defense-in-depth against IDOR).
 
     Args:
         transaction_ids: List of Transaction IDs to resolve.
         action:          'update' -- clear override/delete, apply new amount.
                          'keep' -- leave the transaction unchanged.
+        user_id:         The requesting user's ID.  Transactions not owned
+                         by this user are skipped.
         new_amount:      The new default amount (required if action='update').
     """
     if action == "keep":
@@ -265,6 +270,16 @@ def resolve_conflicts(transaction_ids, action, new_amount=None):
             txn = db.session.get(Transaction, txn_id)
             if txn is None:
                 continue
+
+            # Ownership check: Transaction -> PayPeriod -> user_id.
+            if txn.pay_period.user_id != user_id:
+                logger.warning(
+                    "resolve_conflicts blocked: transaction %d belongs to "
+                    "user %d, not requesting user %d",
+                    txn_id, txn.pay_period.user_id, user_id,
+                )
+                continue
+
             txn.is_override = False
             txn.is_deleted = False
             if new_amount is not None:
