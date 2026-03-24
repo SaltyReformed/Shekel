@@ -29,6 +29,7 @@ from app.services import (
     balance_calculator,
     paycheck_calculator,
 )
+from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
 
@@ -624,51 +625,6 @@ def get_salary_profiles(user_id):
     return [{"id": p.id, "name": p.name} for p in profiles]
 
 
-def _load_tax_configs(user_id, profile):
-    """Load tax configuration for paycheck calculation.
-
-    Args:
-        user_id (int): The user's ID.
-        profile (SalaryProfile): Profile with filing_status_id and state_code.
-
-    Returns:
-        dict: Keys: bracket_set, state_config, fica_config.
-    """
-    # pylint: disable=import-outside-toplevel
-    from app.models.tax_config import (
-        TaxBracketSet,
-        StateTaxConfig,
-        FicaConfig,
-    )
-
-    tax_year = date.today().year
-
-    bracket_set = (
-        db.session.query(TaxBracketSet)
-        .filter_by(
-            user_id=user_id,
-            filing_status_id=profile.filing_status_id,
-            tax_year=tax_year,
-        )
-        .first()
-    )
-    state_config = (
-        db.session.query(StateTaxConfig)
-        .filter_by(user_id=user_id, state_code=profile.state_code)
-        .first()
-    )
-    fica_config = (
-        db.session.query(FicaConfig)
-        .filter_by(user_id=user_id, tax_year=tax_year)
-        .first()
-    )
-
-    return {
-        "bracket_set": bracket_set,
-        "state_config": state_config,
-        "fica_config": fica_config,
-    }
-
 
 def _load_salary_profile(user_id, profile_id=None):
     """Load a salary profile by ID or default to the first active one.
@@ -759,7 +715,7 @@ def get_net_pay_trajectory(user_id, profile_id=None):
     if not periods:
         return empty
 
-    tax_configs = _load_tax_configs(user_id, profile)
+    tax_configs = load_tax_configs(user_id, profile)
 
     try:
         breakdowns = paycheck_calculator.project_salary(

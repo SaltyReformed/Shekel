@@ -107,8 +107,8 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     if salary_profiles:
         profile = salary_profiles[0]
         if current_period:
-            from app.routes.salary import _load_tax_configs
-            tax_configs = _load_tax_configs(user_id, profile)
+            from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
+            tax_configs = load_tax_configs(user_id, profile)
             breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, all_periods, tax_configs,
             )

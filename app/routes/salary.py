@@ -19,8 +19,6 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
-    TaxBracket,
-    TaxBracketSet,
 )
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
@@ -46,6 +44,7 @@ from app.schemas.validation import (
 )
 from app.exceptions import RecurrenceConflict
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
+from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
 
@@ -57,42 +56,6 @@ _raise_schema = RaiseCreateSchema()
 _deduction_schema = DeductionCreateSchema()
 _fica_schema = FicaConfigSchema()
 
-
-# ── Helper: load tax configs for a profile ─────────────────────────
-
-
-def _load_tax_configs(user_id, profile):
-    """Load tax configuration objects for paycheck calculation."""
-    today = date.today()
-    tax_year = today.year
-
-    bracket_set = (
-        db.session.query(TaxBracketSet)
-        .filter_by(
-            user_id=user_id,
-            filing_status_id=profile.filing_status_id,
-            tax_year=tax_year,
-        )
-        .first()
-    )
-
-    state_config = (
-        db.session.query(StateTaxConfig)
-        .filter_by(user_id=user_id, state_code=profile.state_code, tax_year=tax_year)
-        .first()
-    )
-
-    fica_config = (
-        db.session.query(FicaConfig)
-        .filter_by(user_id=user_id, tax_year=tax_year)
-        .first()
-    )
-
-    return {
-        "bracket_set": bracket_set,
-        "state_config": state_config,
-        "fica_config": fica_config,
-    }
 
 
 # ── Profile CRUD ───────────────────────────────────────────────────
@@ -116,7 +79,7 @@ def list_profiles():
     for profile in profiles:
         net_pay = None
         if current_period and profile.is_active:
-            tax_configs = _load_tax_configs(current_user.id, profile)
+            tax_configs = load_tax_configs(current_user.id, profile)
             breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, periods, tax_configs
             )
@@ -533,7 +496,7 @@ def breakdown(profile_id, period_id):
         return redirect(url_for("salary.list_profiles"))
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = _load_tax_configs(current_user.id, profile)
+    tax_configs = load_tax_configs(current_user.id, profile)
     result = paycheck_calculator.calculate_paycheck(
         profile, period, periods, tax_configs
     )
@@ -576,7 +539,7 @@ def projection(profile_id):
         return redirect(url_for("salary.list_profiles"))
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = _load_tax_configs(current_user.id, profile)
+    tax_configs = load_tax_configs(current_user.id, profile)
     breakdowns = paycheck_calculator.project_salary(profile, periods, tax_configs)
 
     # Pair periods with breakdowns
@@ -712,7 +675,7 @@ def _regenerate_salary_transactions(profile):
         return
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = _load_tax_configs(current_user.id, profile)
+    tax_configs = load_tax_configs(current_user.id, profile)
 
     # Update the template's default_amount to the current net pay
     current_period = pay_period_service.get_current_period(current_user.id)
