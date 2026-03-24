@@ -597,6 +597,35 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
+    def test_preview_nonexistent_start_period_falls_back(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Nonexistent start_period_id falls back to own periods (no 500).
+
+        The endpoint must handle a start_period_id that does not exist
+        in the database at all.  The ownership check naturally rejects it
+        (db.session.get returns None), and the endpoint falls through to
+        the user's own period list.
+        """
+        with app.app_context():
+            # Baseline: no start_period_id.
+            baseline_resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={"recurrence_pattern": "every_period"},
+            )
+
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={
+                    "recurrence_pattern": "every_period",
+                    "start_period_id": 999999,
+                },
+            )
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
+            # Nonexistent period ignored -- same output as baseline.
+            assert resp.data == baseline_resp.data
+
 
 # ── Negative Path Tests ─────────────────────────────────────────────
 
