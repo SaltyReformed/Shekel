@@ -386,7 +386,9 @@ class TestTransferResolveConflicts:
             xfer.amount = Decimal("999.99")
             db.session.flush()
 
-            transfer_recurrence.resolve_conflicts([xfer.id], action="keep")
+            transfer_recurrence.resolve_conflicts(
+                [xfer.id], action="keep", user_id=seed_user["user"].id,
+            )
             db.session.flush()
 
             db.session.refresh(xfer)
@@ -414,7 +416,9 @@ class TestTransferResolveConflicts:
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
-                [xfer.id], action="update", new_amount=Decimal("200.00")
+                [xfer.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
@@ -422,6 +426,145 @@ class TestTransferResolveConflicts:
             assert xfer.is_override is False
             assert xfer.is_deleted is False
             assert xfer.amount == Decimal("200.00")
+
+    def test_cross_user_update_blocked(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """update with wrong user_id silently skips the transfer."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            xfer = created[0]
+            xfer.is_override = True
+            xfer.amount = Decimal("999.99")
+            db.session.flush()
+
+            # Attempt resolve as second_user -- should be blocked.
+            transfer_recurrence.resolve_conflicts(
+                [xfer.id], action="update",
+                user_id=second_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(xfer)
+            assert xfer.is_override is True
+            assert xfer.amount == Decimal("999.99")
+
+    def test_cross_user_keep_blocked(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """keep with wrong user_id leaves transfer unchanged."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            xfer = created[0]
+            xfer.is_override = True
+            xfer.amount = Decimal("999.99")
+            db.session.flush()
+
+            # 'keep' with wrong user -- no-op by design (keep never modifies).
+            transfer_recurrence.resolve_conflicts(
+                [xfer.id], action="keep",
+                user_id=second_user["user"].id,
+            )
+            db.session.flush()
+
+            db.session.refresh(xfer)
+            assert xfer.is_override is True
+            assert xfer.amount == Decimal("999.99")
+
+    def test_same_user_update_succeeds(
+        self, app, db, seed_user, seed_periods
+    ):
+        """update with correct user_id modifies the transfer."""
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            xfer = created[0]
+            xfer.is_override = True
+            xfer.amount = Decimal("999.99")
+            db.session.flush()
+
+            transfer_recurrence.resolve_conflicts(
+                [xfer.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(xfer)
+            assert xfer.is_override is False
+            assert xfer.amount == Decimal("50.00")
+
+    def test_mixed_ownership_list(
+        self, app, db, seed_user, seed_periods, second_user
+    ):
+        """Only owned transfers are modified in a mixed-ownership list."""
+        with app.app_context():
+            # Create transfer for user A.
+            template_a = self._make_template_with_rule(
+                seed_user, "every_period"
+            )
+            created_a = transfer_recurrence.generate_for_template(
+                template_a, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            xfer_a = created_a[0]
+            xfer_a.is_override = True
+            xfer_a.amount = Decimal("999.99")
+
+            # Create transfer for user B (needs their own periods).
+            from app.services import pay_period_service
+            periods_b = pay_period_service.generate_pay_periods(
+                user_id=second_user["user"].id,
+                start_date=seed_periods[0].start_date,
+                num_periods=10,
+            )
+            template_b = self._make_template_with_rule(
+                second_user, "every_period"
+            )
+            created_b = transfer_recurrence.generate_for_template(
+                template_b, periods_b, second_user["scenario"].id,
+            )
+            db.session.flush()
+            xfer_b = created_b[0]
+            xfer_b.is_override = True
+            xfer_b.amount = Decimal("888.88")
+            db.session.flush()
+
+            # Resolve as user A -- only xfer_a should be modified.
+            transfer_recurrence.resolve_conflicts(
+                [xfer_a.id, xfer_b.id], action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(xfer_a)
+            db.session.refresh(xfer_b)
+            assert xfer_a.is_override is False
+            assert xfer_a.amount == Decimal("50.00")
+            assert xfer_b.is_override is True
+            assert xfer_b.amount == Decimal("888.88")
 
 
 # --- Negative-Path Tests ---------------------------------------------------

@@ -187,13 +187,19 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     return created
 
 
-def resolve_conflicts(transfer_ids, action, new_amount=None):
+def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
     """Resolve override/delete conflicts after a regeneration.
+
+    Each transfer is ownership-checked via its direct ``user_id`` column
+    before any modification -- transfers not owned by ``user_id`` are
+    silently skipped (defense-in-depth against IDOR).
 
     Args:
         transfer_ids: List of Transfer IDs to resolve.
         action:       'update' -- clear override/delete, apply new amount.
                       'keep' -- leave the transfer unchanged.
+        user_id:      The requesting user's ID.  Transfers not owned by
+                      this user are skipped.
         new_amount:   The new default amount (required if action='update').
     """
     if action == "keep":
@@ -204,6 +210,16 @@ def resolve_conflicts(transfer_ids, action, new_amount=None):
             xfer = db.session.get(Transfer, xfer_id)
             if xfer is None:
                 continue
+
+            # Ownership check: Transfer has a direct user_id column.
+            if xfer.user_id != user_id:
+                logger.warning(
+                    "resolve_conflicts blocked: transfer %d belongs to "
+                    "user %d, not requesting user %d",
+                    xfer_id, xfer.user_id, user_id,
+                )
+                continue
+
             xfer.is_override = False
             xfer.is_deleted = False
             if new_amount is not None:
