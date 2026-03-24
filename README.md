@@ -37,7 +37,7 @@ Edit `.env` and set these values:
 |---|---|---|
 | `POSTGRES_PASSWORD` | Yes | Choose a strong database password. |
 | `SECRET_KEY` | Yes | Run `openssl rand -hex 32` and paste the output. |
-| `TOTP_ENCRYPTION_KEY` | No | Only needed before enabling MFA/TOTP. See `.env.example` for generation instructions. |
+| `TOTP_ENCRYPTION_KEY` | No | Required before enabling MFA/TOTP. See [MFA Setup](#mfa-setup). |
 | `REGISTRATION_ENABLED` | No | Set to `false` to disable public registration. Default: `true`. See [Security](#security). |
 | `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local` |
 | `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026` |
@@ -104,7 +104,7 @@ docker volume rm shekel-prod-pgdata
 | `POSTGRES_PASSWORD` error on startup | Set `POSTGRES_PASSWORD` in your `.env` file. |
 | `SECRET_KEY` error on startup | Set `SECRET_KEY` in your `.env` file. Run `openssl rand -hex 32` to generate one. |
 | `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
-| MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See `.env.example` for generation instructions. |
+| MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See [MFA Setup](#mfa-setup) for generation instructions. |
 | `/register` returns 404 | `REGISTRATION_ENABLED` is set to `false` in `.env`. Set to `true` or remove the line to re-enable. |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
@@ -241,6 +241,31 @@ If you expose Shekel outside your local network, take these additional steps:
 - Back up your database before entering real financial data. See [Backups](#backups).
 - Keep your `.env` file secure. It contains your database password and encryption keys. Never commit it to version control.
 - The application sets security headers (CSP, HSTS-ready, X-Frame-Options) automatically in production mode.
+
+### MFA Setup
+
+Multi-factor authentication (TOTP) requires an encryption key for storing secrets at rest.
+
+Generate a key using one of these methods:
+
+```bash
+# Using the Shekel Docker container (recommended):
+docker exec shekel-prod-app python -c \
+  "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# Using a local Python environment with cryptography installed:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Paste the output into your `.env` file as `TOTP_ENCRYPTION_KEY=<key>`, then restart the app:
+
+```bash
+docker compose restart app
+```
+
+You can then enable MFA in Settings > Security > Enable TOTP.
+
+**Do not use `openssl rand` as a substitute.** It produces an incompatible key format. Only the Fernet method above generates a valid key.
 
 ---
 
