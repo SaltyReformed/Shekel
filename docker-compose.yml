@@ -46,6 +46,9 @@ services:
   # ── Flask Application (Gunicorn) ─────────────────────────────────
   app:
     image: ghcr.io/saltyreformed/shekel:latest
+    # Always pull the latest image -- prevents stale cached :latest tags
+    # from causing port mismatches or missing fixes.
+    pull_policy: always
     container_name: shekel-prod-app
     restart: unless-stopped
     depends_on:
