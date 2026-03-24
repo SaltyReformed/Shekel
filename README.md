@@ -192,6 +192,32 @@ docker compose exec app python -c \
 
 ---
 
+## Backups
+
+Shekel stores all financial data in a PostgreSQL Docker volume. **If this volume is lost, corrupted, or the host fails, your data is gone.** Set up automated backups before entering real financial data.
+
+See [docs/backup_runbook.md](docs/backup_runbook.md) for complete instructions covering:
+
+- Automated daily backups via `pg_dump` with configurable retention
+- Off-site backup to NAS or remote storage
+- Backup encryption with GPG
+- Restore procedures and verification
+
+### Quick Backup Setup
+
+```bash
+# Run a manual backup now
+./scripts/backup.sh
+
+# Add to crontab for daily automated backups (2:00 AM)
+crontab -e
+# Add: 0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
+```
+
+See the runbook for retention policies, NAS configuration, and encryption setup.
+
+---
+
 ## Developer Setup (from source)
 
 For contributing to Shekel or running from source. Uses Docker for databases and the host for the Python application.
