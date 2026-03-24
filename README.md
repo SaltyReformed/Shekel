@@ -38,6 +38,7 @@ Edit `.env` and set these values:
 | `POSTGRES_PASSWORD` | Yes | Choose a strong database password. |
 | `SECRET_KEY` | Yes | Run `openssl rand -hex 32` and paste the output. |
 | `TOTP_ENCRYPTION_KEY` | No | Only needed before enabling MFA/TOTP. See `.env.example` for generation instructions. |
+| `REGISTRATION_ENABLED` | No | Set to `false` to disable public registration. Default: `true`. See [Security](#security). |
 | `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local` |
 | `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026` |
 
@@ -104,6 +105,7 @@ docker volume rm shekel-prod-pgdata
 | `SECRET_KEY` error on startup | Set `SECRET_KEY` in your `.env` file. Run `openssl rand -hex 32` to generate one. |
 | `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See `.env.example` for generation instructions. |
+| `/register` returns 404 | `REGISTRATION_ENABLED` is set to `false` in `.env`. Set to `true` or remove the line to re-enable. |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
 | Container marked unhealthy during first startup | First-time initialization (schema creation, migrations, seeding) can take over 60 seconds. The healthcheck `start_period` allows 120 seconds before failures count. Wait and check `docker compose logs -f app`. |
