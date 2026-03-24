@@ -62,6 +62,32 @@ class TestHealthEndpoint:
             data = response.get_json()
             assert set(data.keys()) == {"status", "database"}
 
+    def test_health_error_detail_is_logged(self, app, client, db, caplog):
+        """Exception detail is logged server-side even though it is not in the response.
+
+        Removing sensitive data from the HTTP response (M5) must not also
+        remove it from the application log.  Operators need the full error
+        message for diagnostics.
+        """
+        with caplog.at_level(logging.ERROR, logger="app.routes.health"):
+            with patch.object(
+                db.session, "execute",
+                side_effect=Exception("connection refused at 10.0.0.1:5432"),
+            ):
+                response = client.get("/health")
+                assert response.status_code == 500
+
+        # The error detail must appear in the log output.
+        error_logs = [
+            r for r in caplog.records
+            if r.levelno >= logging.ERROR
+            and "connection refused" in r.getMessage()
+        ]
+        assert len(error_logs) >= 1, (
+            "Health check exception was not logged -- operators will not "
+            "see the root cause of database connectivity failures."
+        )
+
     def test_health_not_logged_in_request_summary(self, app, client, db, caplog):
         """GET /health does not produce a request_complete log entry."""
         with caplog.at_level(logging.DEBUG):
