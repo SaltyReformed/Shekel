@@ -449,6 +449,42 @@ class TestLogin:
             assert response.status_code == 200
             assert b"Invalid email or password" in response.data
 
+    def test_reactivated_user_can_login_again(
+        self, app, client, seed_user
+    ):
+        """Re-activating a deactivated user restores login access.
+
+        After setting is_active = False (blocking login), setting it
+        back to True should allow the user to log in with the same
+        credentials.  This positive regression test ensures the
+        is_active check is not a one-way door.
+        """
+        with app.app_context():
+            # Deactivate the user.
+            user = db.session.get(User, seed_user["user"].id)
+            user.is_active = False
+            db.session.commit()
+
+            # Login must fail while deactivated.
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=True)
+            assert b"Invalid email or password" in response.data
+
+            # Re-activate the user.
+            user = db.session.get(User, seed_user["user"].id)
+            user.is_active = True
+            db.session.commit()
+
+            # Login must succeed again.
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "login" not in response.headers.get("Location", "")
+
 
 class TestLogout:
     """Tests for the /logout endpoint."""
