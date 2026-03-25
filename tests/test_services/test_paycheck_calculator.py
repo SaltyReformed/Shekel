@@ -2627,3 +2627,244 @@ class TestCalibrationIntegration:
         assert result.federal_tax == Decimal("210.77")
         # SS uses gross.
         assert result.social_security == Decimal("143.08")
+
+    def test_calibration_with_post_tax_deductions(
+        self, simple_tax_configs
+    ):
+        """Post-tax deductions are still subtracted after calibrated taxes.
+
+        If the code accidentally skips post-tax deductions when calibration
+        is active, net pay would be too high.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            deductions=[
+                FakeDeduction(
+                    name="Roth", amount="150",
+                    deduction_timing="post_tax",
+                ),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        # Post-tax deduction of $150 must appear.
+        assert result.total_post_tax == Decimal("150.00"), (
+            f"Post-tax deduction missing: expected 150.00, "
+            f"got {result.total_post_tax}"
+        )
+        # Net = gross - pre_tax(0) - federal - state - ss - medicare - post_tax
+        gross = Decimal("2307.69")
+        expected = (
+            gross
+            - Decimal("230.77")   # federal: 2307.69 * 0.10
+            - Decimal("115.38")   # state: 2307.69 * 0.05
+            - Decimal("143.08")   # ss: 2307.69 * 0.062
+            - Decimal("33.46")    # medicare: 2307.69 * 0.0145
+            - Decimal("150.00")   # post-tax Roth
+        )
+        assert result.net_pay == expected, (
+            f"Net pay with post-tax: expected {expected}, got {result.net_pay}"
+        )
+
+    def test_calibration_with_mixed_deductions(
+        self, simple_tax_configs
+    ):
+        """Pre-tax deductions reduce taxable base; post-tax deductions reduce net.
+
+        Profile: $60k, $200 pre-tax 401k, $150 post-tax Roth.
+        Gross = 2307.69, taxable = 2107.69
+        federal = 2107.69 * 0.10 = 210.77 (uses taxable)
+        ss = 2307.69 * 0.062 = 143.08 (uses gross)
+        net = 2307.69 - 200 - 210.77 - 105.38 - 143.08 - 33.46 - 150 = 1465.00
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            deductions=[
+                FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
+                FakeDeduction(name="Roth", amount="150", deduction_timing="post_tax"),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        assert result.taxable_income == Decimal("2107.69")
+        assert result.federal_tax == Decimal("210.77")
+        assert result.state_tax == Decimal("105.38")   # 2107.69 * 0.05
+        assert result.social_security == Decimal("143.08")
+        assert result.medicare == Decimal("33.46")
+        assert result.total_pre_tax == Decimal("200.00")
+        assert result.total_post_tax == Decimal("150.00")
+
+        expected_net = (
+            Decimal("2307.69")
+            - Decimal("200.00")
+            - Decimal("210.77")
+            - Decimal("105.38")
+            - Decimal("143.08")
+            - Decimal("33.46")
+            - Decimal("150.00")
+        )
+        assert result.net_pay == expected_net
+
+    def test_calibration_on_third_paycheck(self, simple_tax_configs):
+        """On a 3rd paycheck, 24-per-year deductions are skipped.
+
+        This changes the taxable income and therefore the calibrated
+        federal/state amounts.  The calibrated rates must be applied
+        to the correct (higher) taxable base.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            deductions=[
+                FakeDeduction(
+                    name="401k", amount="200",
+                    deduction_timing="pre_tax",
+                    deductions_per_year=24,
+                ),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        # 3 periods in January to trigger 3rd paycheck detection.
+        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
+        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
+        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        all_periods = [p1, p2, p3]
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        # Non-3rd paycheck: deduction applies, taxable = 2307.69 - 200 = 2107.69
+        normal = calculate_paycheck(
+            profile, p1, all_periods, simple_tax_configs,
+            calibration=cal,
+        )
+        assert normal.total_pre_tax == Decimal("200.00")
+        assert normal.federal_tax == Decimal("210.77")  # 2107.69 * 0.10
+
+        # 3rd paycheck: 24-per-year deduction is SKIPPED, taxable = 2307.69
+        third = calculate_paycheck(
+            profile, p3, all_periods, simple_tax_configs,
+            calibration=cal,
+        )
+        assert third.is_third_paycheck is True
+        assert third.total_pre_tax == Decimal("0.00"), (
+            "24-per-year deduction should be skipped on 3rd paycheck"
+        )
+        assert third.federal_tax == Decimal("230.77"), (
+            "3rd paycheck federal should be 2307.69 * 0.10 (full gross as taxable)"
+        )
+        # Higher taxable -> higher federal/state than normal paycheck.
+        assert third.federal_tax > normal.federal_tax
+
+    def test_calibration_does_not_bypass_gross_computation(
+        self, simple_tax_configs
+    ):
+        """Calibration only overrides taxes, not gross or deductions.
+
+        gross_biweekly, pre-tax deductions, post-tax deductions, and
+        raise application must all work identically to the bracket path.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            raises=[
+                FakeRaise(percentage="0.03", effective_month=1,
+                          effective_year=2026),
+            ],
+            deductions=[
+                FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 2, 13), period_id=2)
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        cal_result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+        bracket_result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+        )
+
+        # Gross, raises, and deductions must be identical.
+        assert cal_result.gross_biweekly == bracket_result.gross_biweekly, (
+            "Calibration must not affect gross computation"
+        )
+        assert cal_result.annual_salary == bracket_result.annual_salary, (
+            "Calibration must not affect raise application"
+        )
+        assert cal_result.total_pre_tax == bracket_result.total_pre_tax, (
+            "Calibration must not affect pre-tax deductions"
+        )
+        assert cal_result.taxable_income == bracket_result.taxable_income, (
+            "Calibration must not affect taxable income"
+        )
+
+    def test_project_salary_uses_calibration(self, simple_tax_configs):
+        """project_salary passes calibration to every period's calculation."""
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 16), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=2),
+            FakePeriod(start_date=date(2026, 2, 13), period_id=3),
+        ]
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        # With calibration.
+        cal_breakdowns = project_salary(
+            profile, periods, simple_tax_configs, calibration=cal,
+        )
+        # Without calibration.
+        bracket_breakdowns = project_salary(
+            profile, periods, simple_tax_configs,
+        )
+
+        assert len(cal_breakdowns) == 3
+        for i, (cb, bb) in enumerate(zip(cal_breakdowns, bracket_breakdowns)):
+            assert cb.federal_tax != bb.federal_tax, (
+                f"Period {i}: calibrated federal should differ from brackets"
+            )
+            assert cb.federal_tax == Decimal("230.77"), (
+                f"Period {i}: expected 230.77 (2307.69 * 0.10)"
+            )

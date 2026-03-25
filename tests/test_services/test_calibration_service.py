@@ -289,3 +289,138 @@ class TestApplyCalibration:
 
         assert result["federal"] == Decimal("180.00")
         assert result["ss"] == Decimal("124.00")
+
+
+class TestRoundTrip:
+    """Derive-then-apply must reproduce the original pay stub amounts exactly.
+
+    This is the most important property of the calibration system. If
+    deriving rates from actual amounts and then applying those rates to
+    the same gross/taxable does not reproduce the original amounts to
+    the penny, the calibration is broken and every future paycheck will
+    be wrong.
+    """
+
+    def _assert_round_trip(self, gross, federal, state, ss, medicare, taxable):
+        """Helper: derive rates from actuals, apply back, verify penny match."""
+        rates = derive_effective_rates(
+            actual_gross_pay=gross,
+            actual_federal_tax=federal,
+            actual_state_tax=state,
+            actual_social_security=ss,
+            actual_medicare=medicare,
+            taxable_income=taxable,
+        )
+        cal = FakeCalibration(
+            federal_rate=str(rates.effective_federal_rate),
+            state_rate=str(rates.effective_state_rate),
+            ss_rate=str(rates.effective_ss_rate),
+            medicare_rate=str(rates.effective_medicare_rate),
+        )
+        result = apply_calibration(
+            gross_biweekly=gross,
+            taxable_biweekly=taxable,
+            calibration=cal,
+        )
+
+        assert result["federal"] == Decimal(str(federal)).quantize(Decimal("0.01")), (
+            f"Federal round-trip failed: expected {federal}, got {result['federal']} "
+            f"(rate={rates.effective_federal_rate})"
+        )
+        assert result["state"] == Decimal(str(state)).quantize(Decimal("0.01")), (
+            f"State round-trip failed: expected {state}, got {result['state']} "
+            f"(rate={rates.effective_state_rate})"
+        )
+        assert result["ss"] == Decimal(str(ss)).quantize(Decimal("0.01")), (
+            f"SS round-trip failed: expected {ss}, got {result['ss']} "
+            f"(rate={rates.effective_ss_rate})"
+        )
+        assert result["medicare"] == Decimal(str(medicare)).quantize(Decimal("0.01")), (
+            f"Medicare round-trip failed: expected {medicare}, got {result['medicare']} "
+            f"(rate={rates.effective_medicare_rate})"
+        )
+
+    def test_round_trip_typical_paycheck(self):
+        """$60k salary, $200 pre-tax 401k -- typical mid-range paycheck."""
+        self._assert_round_trip(
+            gross=Decimal("2307.69"),
+            federal=Decimal("153.08"),
+            state=Decimal("94.85"),
+            ss=Decimal("143.08"),
+            medicare=Decimal("33.46"),
+            taxable=Decimal("2107.69"),
+        )
+
+    def test_round_trip_high_income(self):
+        """$200k salary -- higher brackets, larger amounts."""
+        self._assert_round_trip(
+            gross=Decimal("7692.31"),
+            federal=Decimal("1800.00"),
+            state=Decimal("300.00"),
+            ss=Decimal("476.92"),
+            medicare=Decimal("111.54"),
+            taxable=Decimal("6942.31"),
+        )
+
+    def test_round_trip_low_income(self):
+        """$30k salary, no deductions -- small amounts where pennies matter most."""
+        self._assert_round_trip(
+            gross=Decimal("1153.85"),
+            federal=Decimal("42.31"),
+            state=Decimal("28.97"),
+            ss=Decimal("71.54"),
+            medicare=Decimal("16.73"),
+            taxable=Decimal("1153.85"),
+        )
+
+    def test_round_trip_zero_state_tax(self):
+        """No-income-tax state -- state rate is zero, others must still match."""
+        self._assert_round_trip(
+            gross=Decimal("3461.54"),
+            federal=Decimal("412.18"),
+            state=Decimal("0.00"),
+            ss=Decimal("214.62"),
+            medicare=Decimal("50.19"),
+            taxable=Decimal("3061.54"),
+        )
+
+    def test_round_trip_odd_penny_amounts(self):
+        """Amounts that previously caused penny errors with 5-decimal precision.
+
+        86.23 / 2684.62 = 0.03212... -- this specific case was the
+        original bug report.
+        """
+        self._assert_round_trip(
+            gross=Decimal("2884.62"),
+            federal=Decimal("178.34"),
+            state=Decimal("86.23"),
+            ss=Decimal("178.85"),
+            medicare=Decimal("41.83"),
+            taxable=Decimal("2684.62"),
+        )
+
+    def test_round_trip_large_pre_tax_deduction(self):
+        """$750/period 401k on $100k salary -- large deduction gap.
+
+        gross = 3846.15, taxable = 3096.15 (750 pre-tax).
+        The wide gap between gross and taxable stresses the rate derivation.
+        """
+        self._assert_round_trip(
+            gross=Decimal("3846.15"),
+            federal=Decimal("298.12"),
+            state=Decimal("139.33"),
+            ss=Decimal("238.46"),
+            medicare=Decimal("55.77"),
+            taxable=Decimal("3096.15"),
+        )
+
+    def test_round_trip_one_cent_taxes(self):
+        """Very small tax amounts -- tests precision at the lowest end."""
+        self._assert_round_trip(
+            gross=Decimal("500.00"),
+            federal=Decimal("0.01"),
+            state=Decimal("0.01"),
+            ss=Decimal("31.00"),
+            medicare=Decimal("7.25"),
+            taxable=Decimal("500.00"),
+        )

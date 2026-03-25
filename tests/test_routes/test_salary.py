@@ -1882,6 +1882,290 @@ class TestCalibration:
             ).first()
             assert remaining is None
 
+    def test_calibrate_regenerates_grid_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """After calibration, grid income transactions use calibrated net pay."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Get a transaction amount before calibration.
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Calibrate with rates that produce different taxes.
+            cal = CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("500.00"),
+                actual_state_tax=Decimal("200.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.1862000000"),
+                effective_state_rate=Decimal("0.0745000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.flush()
+            db.session.refresh(profile)
+
+            from app.services import recurrence_engine, pay_period_service
+            periods = pay_period_service.get_all_periods(user.id)
+            try:
+                recurrence_engine.regenerate_for_template(
+                    profile.template, periods, seed_user["scenario"].id,
+                )
+            except Exception:
+                pass
+            db.session.commit()
+
+            db.session.expire_all()
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+
+            assert txn_after is not None
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change after calibration"
+                )
+
+    def test_recalibrate_replaces_existing(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Re-calibrating replaces the old calibration, not creates a second."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # First calibration.
+            resp1 = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp1.status_code == 200
+            html1 = resp1.data.decode()
+            import re
+            fields = {}
+            for name in ("effective_federal_rate", "effective_state_rate",
+                         "effective_ss_rate", "effective_medicare_rate"):
+                fields[name] = re.search(
+                    rf'name="{name}" value="([^"]+)"', html1
+                ).group(1)
+
+            auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                    **fields,
+                },
+                follow_redirects=True,
+            )
+
+            # Second calibration with different amounts.
+            resp2 = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "250.00",
+                    "actual_state_tax": "120.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-28",
+                },
+            )
+            html2 = resp2.data.decode()
+            fields2 = {}
+            for name in ("effective_federal_rate", "effective_state_rate",
+                         "effective_ss_rate", "effective_medicare_rate"):
+                fields2[name] = re.search(
+                    rf'name="{name}" value="([^"]+)"', html2
+                ).group(1)
+
+            auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "250.00",
+                    "actual_state_tax": "120.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-28",
+                    **fields2,
+                },
+                follow_redirects=True,
+            )
+
+            # Must be exactly one calibration, not two.
+            count = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).count()
+            assert count == 1, (
+                f"Expected exactly 1 calibration after re-calibrate, got {count}"
+            )
+
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+            assert cal.actual_federal_tax == Decimal("250.00"), (
+                "Calibration should reflect the second submission's data"
+            )
+            assert cal.pay_stub_date == date(2026, 3, 28)
+
+    def test_calibrate_preview_validation_rejects_zero_gross(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Preview with zero gross pay is rejected by the schema."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "0",
+                    "actual_federal_tax": "0",
+                    "actual_state_tax": "0",
+                    "actual_social_security": "0",
+                    "actual_medicare": "0",
+                    "pay_stub_date": "2026-03-14",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Please correct" in resp.data
+
+    def test_calibrate_preview_validation_rejects_missing_fields(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Preview with missing required fields is rejected."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    # Missing all other fields.
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Please correct" in resp.data
+
+    def test_calibrate_delete_when_none_exists(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deleting calibration when none exists shows info message."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"No calibration to remove" in resp.data
+
+    def test_calibrate_confirm_idor_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST confirm on another user's profile is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.post(
+                f"/salary/{other['profile'].id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "effective_federal_rate": "0.07000",
+                    "effective_state_rate": "0.03500",
+                    "effective_ss_rate": "0.06200",
+                    "effective_medicare_rate": "0.01450",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp.status_code == 302
+
+            # No calibration should exist for the victim's profile.
+            count = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=other["profile"].id,
+            ).count()
+            assert count == 0, (
+                "IDOR attack created calibration on victim's profile!"
+            )
+
+    def test_calibrate_delete_idor_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST delete on another user's calibration is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            # Create calibration on other user's profile.
+            cal = CalibrationOverride(
+                salary_profile_id=other["profile"].id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.0700000000"),
+                effective_state_rate=Decimal("0.0350000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/salary/{other['profile'].id}/calibrate/delete",
+            )
+            assert resp.status_code == 302
+
+            # Victim's calibration must still exist.
+            db.session.expire_all()
+            remaining = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=other["profile"].id,
+            ).first()
+            assert remaining is not None, (
+                "IDOR attack deleted victim's calibration!"
+            )
+
     def test_calibrate_form_other_user_blocked(
         self, app, auth_client, seed_user, seed_periods
     ):
