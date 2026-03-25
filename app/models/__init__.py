@@ -45,6 +45,10 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
+from app.models.calibration_override import (
+    CalibrationOverride,
+    CalibrationDeductionOverride,
+)
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
