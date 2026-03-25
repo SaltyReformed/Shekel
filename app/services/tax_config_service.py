@@ -13,25 +13,28 @@ from app.extensions import db
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
 
 
-def load_tax_configs(user_id, profile):
+def load_tax_configs(user_id, profile, tax_year=None):
     """Load tax configuration objects for paycheck calculation.
 
-    Queries TaxBracketSet, StateTaxConfig, and FicaConfig for the
-    current calendar year, matching the given salary profile's filing
-    status and state code.
+    Queries TaxBracketSet, StateTaxConfig, and FicaConfig for a given
+    tax year, matching the given salary profile's filing status and
+    state code.
 
     Args:
         user_id (int): The owning user's ID -- all tax configs are
             per-user so the query is ownership-scoped.
         profile (SalaryProfile): Must have ``filing_status_id`` and
             ``state_code`` attributes.
+        tax_year (int, optional): The tax year to load configs for.
+            Defaults to the current calendar year when ``None``.
 
     Returns:
         dict: Keys ``bracket_set``, ``state_config``, ``fica_config``.
             Each value is the matching model instance or ``None`` if no
-            configuration exists for the current year.
+            configuration exists for the requested year.
     """
-    tax_year = date.today().year
+    if tax_year is None:
+        tax_year = date.today().year
 
     bracket_set = (
         db.session.query(TaxBracketSet)

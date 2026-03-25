@@ -214,6 +214,20 @@ def create_profile():
         periods = pay_period_service.get_all_periods(current_user.id)
         recurrence_engine.generate_for_template(template, periods, scenario.id)
 
+        # Update the template's default_amount from gross to net so that
+        # any future fallback (e.g. missing tax configs for a period)
+        # uses the net amount rather than the gross.
+        ref_period = (
+            pay_period_service.get_current_period(current_user.id)
+            or (periods[0] if periods else None)
+        )
+        if ref_period:
+            tax_configs = load_tax_configs(current_user.id, profile)
+            init_breakdown = paycheck_calculator.calculate_paycheck(
+                profile, ref_period, periods, tax_configs
+            )
+            template.default_amount = init_breakdown.net_pay
+
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -616,6 +630,11 @@ def update_tax_config():
             flash(f"State tax config for {state_code} {tax_year} created.", "success")
 
     db.session.commit()
+
+    # Regenerate salary transactions so the grid reflects the new rates.
+    _regenerate_all_salary_transactions()
+    db.session.commit()
+
     logger.info("user_id=%d updated state tax config for %s", current_user.id, state_code)
     return redirect(url_for("settings.show", section="tax"))
 
@@ -654,6 +673,11 @@ def update_fica_config():
         flash(f"FICA config for {tax_year} created.", "success")
 
     db.session.commit()
+
+    # Regenerate salary transactions so the grid reflects the new rates.
+    _regenerate_all_salary_transactions()
+    db.session.commit()
+
     logger.info("user_id=%d updated FICA config for %d", current_user.id, tax_year)
     return redirect(url_for("settings.show", section="tax"))
 
@@ -696,6 +720,23 @@ def _regenerate_salary_transactions(profile):
     except Exception:
         logger.exception("Failed to regenerate salary transactions for profile %d", profile.id)
         raise
+
+
+def _regenerate_all_salary_transactions():
+    """Regenerate salary transactions for every active profile.
+
+    Called after tax or FICA configuration changes so that projected
+    paycheck amounts in the grid stay in sync with the salary profile
+    page.  Without this, updating a tax rate would change the salary
+    page's displayed net pay but leave stale amounts in the grid.
+    """
+    profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
+    for profile in profiles:
+        _regenerate_salary_transactions(profile)
 
 
 def _render_raises_partial(profile):

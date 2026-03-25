@@ -11,7 +11,8 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.tax_config import FicaConfig, StateTaxConfig
+from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
@@ -1135,3 +1136,273 @@ class TestSalaryNegativePaths:
 
             assert resp.status_code == 200
             assert b"Salary profile not found." in resp.data
+
+
+# ── Net Biweekly Mismatch Fixes (section 3.3) ────────────────────────
+
+
+def _seed_state_tax(user_id, rate, tax_year=2026, state_code="NC"):
+    """Create a flat state tax config for testing.
+
+    Args:
+        user_id: The owning user's ID.
+        rate: Decimal flat rate in decimal form (e.g. 0.0399).
+        tax_year: Tax year for the config.
+        state_code: Two-letter state code.
+
+    Returns:
+        StateTaxConfig: The created config.
+    """
+    flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+    config = StateTaxConfig(
+        user_id=user_id,
+        state_code=state_code,
+        tax_year=tax_year,
+        tax_type_id=flat_type.id,
+        flat_rate=rate,
+        standard_deduction=Decimal("25500.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+def _seed_fica(user_id, tax_year=2026):
+    """Create a standard FICA config for testing.
+
+    Returns:
+        FicaConfig: The created config.
+    """
+    config = FicaConfig(
+        user_id=user_id,
+        tax_year=tax_year,
+        ss_rate=Decimal("0.0620"),
+        ss_wage_base=Decimal("176100.00"),
+        medicare_rate=Decimal("0.0145"),
+        medicare_surtax_rate=Decimal("0.0090"),
+        medicare_surtax_threshold=Decimal("200000.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+class TestNetBiweeklyMismatchFixes:
+    """Tests for the three root causes of net biweekly mismatch (section 3.3).
+
+    Verifies that:
+    1. Updating state tax config regenerates salary transactions.
+    2. Updating FICA config regenerates salary transactions.
+    3. Creating a salary profile sets template default_amount to NET,
+       not GROSS.
+    """
+
+    def test_state_tax_update_regenerates_salary_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Changing the state tax rate updates salary transaction amounts.
+
+        Without the fix, updating the state tax config would leave stale
+        transaction amounts in the grid while the salary page showed the
+        new net pay.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Grab a projected salary transaction's amount before the change.
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Update the state tax rate to a higher value.
+            auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
+                "state_code": "NC",
+                "flat_rate": "5.50",
+                "standard_deduction": "25500.00",
+            }, follow_redirects=True)
+
+            # Refresh the session to see the regenerated transactions.
+            db.session.expire_all()
+
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            assert txn_after is not None
+
+            # With a higher tax rate, net pay decreases so the amount
+            # should be lower (or at least different if the rate changed).
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change when state tax rate changes"
+                )
+
+    def test_fica_update_regenerates_salary_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Changing the FICA SS rate updates salary transaction amounts.
+
+        Without the fix, updating FICA would leave stale transaction
+        amounts in the grid.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Update SS rate to a significantly different value.
+            auth_client.post("/salary/fica-config", data={
+                "tax_year": "2026",
+                "ss_rate": "9.00",
+                "ss_wage_base": "176100.00",
+                "medicare_rate": "1.45",
+                "medicare_surtax_rate": "0.90",
+                "medicare_surtax_threshold": "200000.00",
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            assert txn_after is not None
+
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change when SS rate changes"
+                )
+
+    def test_tax_update_with_no_profiles_is_safe(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Updating tax config with no salary profiles does not error.
+
+        The regeneration loop should gracefully handle zero profiles.
+        """
+        with app.app_context():
+            response = auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
+                "state_code": "NC",
+                "flat_rate": "4.50",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"State tax config for NC" in response.data
+
+    def test_create_profile_sets_template_default_to_net(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Creating a salary profile sets template.default_amount to NET pay.
+
+        Before the fix, default_amount was set to GROSS (annual / 26).
+        After the fix, it should be NET (after taxes and deductions).
+        Without tax configs, NET equals GROSS (no taxes to deduct), so
+        we seed tax configs to produce a meaningful difference.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single"
+            ).one()
+
+            auth_client.post("/salary", data={
+                "name": "Net Test Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+                "pay_periods_per_year": "26",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=user.id, name="Net Test Job")
+                .one()
+            )
+            template = profile.template
+
+            gross_biweekly = Decimal("75000.00") / 26
+
+            # With taxes configured, net pay is less than gross.
+            # The template default_amount should reflect NET, not GROSS.
+            assert template.default_amount < gross_biweekly, (
+                f"template.default_amount ({template.default_amount}) should "
+                f"be less than gross biweekly ({gross_biweekly}) when taxes "
+                f"are configured"
+            )
+
+    def test_create_profile_without_tax_configs_uses_gross_as_fallback(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Without tax configs, default_amount equals GROSS (no taxes to subtract).
+
+        This is correct behavior -- with no bracket set, federal tax is $0;
+        with no state config, state tax is $0; with no FICA config, FICA
+        is $0.  NET == GROSS when there are no taxes.
+        """
+        with app.app_context():
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single"
+            ).one()
+
+            auth_client.post("/salary", data={
+                "name": "No Tax Job",
+                "annual_salary": "60000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+                "pay_periods_per_year": "26",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    name="No Tax Job",
+                )
+                .one()
+            )
+            template = profile.template
+
+            gross_biweekly = Decimal("60000.00") / 26
+            expected = gross_biweekly.quantize(Decimal("0.01"))
+
+            # No taxes configured, so NET == GROSS.
+            assert template.default_amount == expected, (
+                f"Without tax configs, default_amount ({template.default_amount}) "
+                f"should equal gross biweekly ({expected})"
+            )
