@@ -456,6 +456,66 @@ class TestEscrow:
         assert count == 0
 
 
+class TestEscrowOobUpdates:
+    """Tests that escrow add/delete responses include OOB payment summary updates."""
+
+    def test_escrow_add_response_includes_oob_payment_summary(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Adding an escrow component returns OOB fragments for payment summary and badge."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Property Tax",
+                "annual_amount": "4800.00",
+            },
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # OOB total payment display must be present with hx-swap-oob.
+        assert 'id="total-payment-display"' in html
+        assert 'hx-swap-oob="true"' in html
+
+        # OOB escrow badge must be present.
+        assert 'id="escrow-badge"' in html
+
+        # Monthly escrow for $4800/yr = $400/mo should appear in the badge.
+        assert "$400.00/mo" in html
+
+    def test_escrow_delete_response_includes_oob_payment_summary(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Deleting an escrow component returns OOB fragments with updated totals."""
+        acct = _create_mortgage_account(seed_user, db.session)
+
+        # Add two components directly.
+        comp1 = EscrowComponent(
+            account_id=acct.id, name="Tax", annual_amount=Decimal("4800.00"),
+        )
+        comp2 = EscrowComponent(
+            account_id=acct.id, name="Insurance", annual_amount=Decimal("2400.00"),
+        )
+        db.session.add_all([comp1, comp2])
+        db.session.commit()
+
+        # Delete one.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow/{comp1.id}/delete",
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # OOB fragments must be present.
+        assert 'id="total-payment-display"' in html
+        assert 'hx-swap-oob="true"' in html
+        assert 'id="escrow-badge"' in html
+
+        # Only Insurance ($2400/yr = $200/mo) should remain.
+        assert "$200.00/mo" in html
+
+
 class TestPayoffCalculator:
     """Tests for the payoff calculator."""
 
