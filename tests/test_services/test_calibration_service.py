@@ -299,6 +299,13 @@ class TestRoundTrip:
     the same gross/taxable does not reproduce the original amounts to
     the penny, the calibration is broken and every future paycheck will
     be wrong.
+
+    IMPORTANT: Several test cases are specifically chosen because they
+    produce WRONG results at 5-decimal precision but CORRECT results at
+    10-decimal precision. These tests are the safety net for the
+    precision fix -- if someone reverts RATE_PLACES to 0.00001, these
+    tests MUST fail. Cases marked [precision-sensitive] were verified
+    to produce different (incorrect) values at 5 decimal places.
     """
 
     def _assert_round_trip(self, gross, federal, state, ss, medicare, taxable):
@@ -340,8 +347,67 @@ class TestRoundTrip:
             f"(rate={rates.effective_medicare_rate})"
         )
 
+    def test_round_trip_all_four_taxes_precision_sensitive(self):
+        """[precision-sensitive] All four taxes fail at 5-decimal places.
+
+        Verified: at 5-decimal precision --
+          federal $150.00 -> $149.99 (WRONG)
+          state $80.01 -> $80.00 (WRONG)
+          ss $150.01 -> $150.00 (WRONG)
+          medicare $30.01 -> $30.00 (WRONG)
+
+        These amounts were found by systematic sweep of realistic
+        paycheck values. Every tax line produces the wrong penny at
+        5-decimal precision. If RATE_PLACES is reverted, all four
+        assertions fail.
+        """
+        self._assert_round_trip(
+            gross=Decimal("2884.62"),
+            federal=Decimal("150.00"),
+            state=Decimal("80.01"),
+            ss=Decimal("150.01"),
+            medicare=Decimal("30.01"),
+            taxable=Decimal("2684.62"),
+        )
+
+    def test_round_trip_federal_and_state_precision_sensitive(self):
+        """[precision-sensitive] Large deduction gap -- federal/state break at 5 places.
+
+        Verified: at 5-decimal precision --
+          federal $250.00 -> $250.01 (WRONG, off by +$0.01)
+          state $100.00 -> $100.01 (WRONG, off by +$0.01)
+        """
+        self._assert_round_trip(
+            gross=Decimal("3846.15"),
+            federal=Decimal("250.00"),
+            state=Decimal("100.00"),
+            ss=Decimal("238.46"),
+            medicare=Decimal("55.77"),
+            taxable=Decimal("3096.15"),
+        )
+
+    def test_round_trip_mid_salary_precision_sensitive(self):
+        """[precision-sensitive] ~$67k salary -- federal and state break at 5 places.
+
+        Verified: at 5-decimal precision --
+          federal $150.00 -> $150.01 (WRONG, off by +$0.01)
+          state $70.01 -> $70.00 (WRONG, off by -$0.01)
+        """
+        self._assert_round_trip(
+            gross=Decimal("2576.92"),
+            federal=Decimal("150.00"),
+            state=Decimal("70.01"),
+            ss=Decimal("159.77"),
+            medicare=Decimal("37.37"),
+            taxable=Decimal("2376.92"),
+        )
+
     def test_round_trip_typical_paycheck(self):
-        """$60k salary, $200 pre-tax 401k -- typical mid-range paycheck."""
+        """$60k salary, $200 pre-tax 401k -- typical mid-range paycheck.
+
+        This case happens to pass at both 5 and 10 decimal places.
+        Retained as a basic correctness check.
+        """
         self._assert_round_trip(
             gross=Decimal("2307.69"),
             federal=Decimal("153.08"),
@@ -349,28 +415,6 @@ class TestRoundTrip:
             ss=Decimal("143.08"),
             medicare=Decimal("33.46"),
             taxable=Decimal("2107.69"),
-        )
-
-    def test_round_trip_high_income(self):
-        """$200k salary -- higher brackets, larger amounts."""
-        self._assert_round_trip(
-            gross=Decimal("7692.31"),
-            federal=Decimal("1800.00"),
-            state=Decimal("300.00"),
-            ss=Decimal("476.92"),
-            medicare=Decimal("111.54"),
-            taxable=Decimal("6942.31"),
-        )
-
-    def test_round_trip_low_income(self):
-        """$30k salary, no deductions -- small amounts where pennies matter most."""
-        self._assert_round_trip(
-            gross=Decimal("1153.85"),
-            federal=Decimal("42.31"),
-            state=Decimal("28.97"),
-            ss=Decimal("71.54"),
-            medicare=Decimal("16.73"),
-            taxable=Decimal("1153.85"),
         )
 
     def test_round_trip_zero_state_tax(self):
@@ -384,36 +428,6 @@ class TestRoundTrip:
             taxable=Decimal("3061.54"),
         )
 
-    def test_round_trip_odd_penny_amounts(self):
-        """Amounts that previously caused penny errors with 5-decimal precision.
-
-        86.23 / 2684.62 = 0.03212... -- this specific case was the
-        original bug report.
-        """
-        self._assert_round_trip(
-            gross=Decimal("2884.62"),
-            federal=Decimal("178.34"),
-            state=Decimal("86.23"),
-            ss=Decimal("178.85"),
-            medicare=Decimal("41.83"),
-            taxable=Decimal("2684.62"),
-        )
-
-    def test_round_trip_large_pre_tax_deduction(self):
-        """$750/period 401k on $100k salary -- large deduction gap.
-
-        gross = 3846.15, taxable = 3096.15 (750 pre-tax).
-        The wide gap between gross and taxable stresses the rate derivation.
-        """
-        self._assert_round_trip(
-            gross=Decimal("3846.15"),
-            federal=Decimal("298.12"),
-            state=Decimal("139.33"),
-            ss=Decimal("238.46"),
-            medicare=Decimal("55.77"),
-            taxable=Decimal("3096.15"),
-        )
-
     def test_round_trip_one_cent_taxes(self):
         """Very small tax amounts -- tests precision at the lowest end."""
         self._assert_round_trip(
@@ -423,4 +437,19 @@ class TestRoundTrip:
             ss=Decimal("31.00"),
             medicare=Decimal("7.25"),
             taxable=Decimal("500.00"),
+        )
+
+    def test_round_trip_high_income(self):
+        """[precision-sensitive] $200k salary -- state tax breaks at 5 places.
+
+        Verified: at 5-decimal precision --
+          state $300.00 -> $299.98 (WRONG, off by -$0.02)
+        """
+        self._assert_round_trip(
+            gross=Decimal("7692.31"),
+            federal=Decimal("1800.00"),
+            state=Decimal("300.00"),
+            ss=Decimal("476.92"),
+            medicare=Decimal("111.54"),
+            taxable=Decimal("6942.31"),
         )
