@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.services import tax_calculator
+from app.services.calibration_service import apply_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,8 @@ class PaycheckBreakdown:
         return self.federal_tax + self.state_tax + self.social_security + self.medicare
 
 
-def calculate_paycheck(profile, period, all_periods, tax_configs):
+def calculate_paycheck(profile, period, all_periods, tax_configs,
+                       *, calibration=None):
     """Calculate a single paycheck for a given period.
 
     Args:
@@ -69,6 +71,9 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
                       - bracket_set: TaxBracketSet
                       - state_config: StateTaxConfig
                       - fica_config: FicaConfig
+        calibration:  Optional CalibrationOverride with effective rates.
+                      When provided and is_active is True, overrides
+                      bracket-based tax calculations with calibrated rates.
 
     Returns:
         PaycheckBreakdown dataclass.
@@ -101,45 +106,62 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
     if taxable_biweekly < ZERO:
         taxable_biweekly = ZERO
 
-    # Step 6: Federal withholding (IRS Pub 15-T Percentage Method)
-    # Annualized pre-tax deductions for the withholding calculation
-    annual_pre_tax = total_pre_tax * pay_periods_per_year
+    # Step 6 & 7: Tax calculation -- calibrated or bracket-based
+    use_calibration = (
+        calibration is not None
+        and getattr(calibration, "is_active", False)
+    )
 
-    additional_income = Decimal(str(getattr(profile, "additional_income", 0) or 0))
-    additional_deductions = Decimal(str(getattr(profile, "additional_deductions", 0) or 0))
-    extra_withholding = Decimal(str(getattr(profile, "extra_withholding", 0) or 0))
-    qualifying_children = int(getattr(profile, "qualifying_children", 0) or 0)
-    other_dependents = int(getattr(profile, "other_dependents", 0) or 0)
-
-    if bracket_set:
-        federal_biweekly = tax_calculator.calculate_federal_withholding(
-            gross_pay=gross_biweekly,
-            pay_periods=pay_periods_per_year,
-            bracket_set=bracket_set,
-            additional_income=additional_income,
-            pre_tax_deductions=annual_pre_tax,
-            additional_deductions=additional_deductions,
-            qualifying_children=qualifying_children,
-            other_dependents=other_dependents,
-            extra_withholding=extra_withholding,
+    if use_calibration:
+        # Use effective rates from the pay stub calibration.
+        cal_taxes = apply_calibration(
+            gross_biweekly, taxable_biweekly, calibration
         )
+        federal_biweekly = cal_taxes["federal"]
+        state_biweekly = cal_taxes["state"]
+        ss_biweekly = cal_taxes["ss"]
+        medicare_biweekly = cal_taxes["medicare"]
     else:
-        federal_biweekly = ZERO
+        # Bracket-based federal withholding (IRS Pub 15-T).
+        annual_pre_tax = total_pre_tax * pay_periods_per_year
 
-    state_annual = tax_calculator.calculate_state_tax(
-        taxable_biweekly * pay_periods_per_year, state_config
-    )
-    state_biweekly = (state_annual / pay_periods_per_year).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+        additional_income = Decimal(str(getattr(profile, "additional_income", 0) or 0))
+        additional_deductions = Decimal(str(getattr(profile, "additional_deductions", 0) or 0))
+        extra_withholding = Decimal(str(getattr(profile, "extra_withholding", 0) or 0))
+        qualifying_children = int(getattr(profile, "qualifying_children", 0) or 0)
+        other_dependents = int(getattr(profile, "other_dependents", 0) or 0)
 
-    # Step 7: FICA -- use cumulative wages for SS cap tracking
-    cumulative_wages = _get_cumulative_wages(
-        profile, period, all_periods
-    )
-    fica = tax_calculator.calculate_fica(
-        gross_biweekly, fica_config, cumulative_wages
-    )
+        if bracket_set:
+            federal_biweekly = tax_calculator.calculate_federal_withholding(
+                gross_pay=gross_biweekly,
+                pay_periods=pay_periods_per_year,
+                bracket_set=bracket_set,
+                additional_income=additional_income,
+                pre_tax_deductions=annual_pre_tax,
+                additional_deductions=additional_deductions,
+                qualifying_children=qualifying_children,
+                other_dependents=other_dependents,
+                extra_withholding=extra_withholding,
+            )
+        else:
+            federal_biweekly = ZERO
+
+        state_annual = tax_calculator.calculate_state_tax(
+            taxable_biweekly * pay_periods_per_year, state_config
+        )
+        state_biweekly = (state_annual / pay_periods_per_year).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+
+        # FICA -- use cumulative wages for SS cap tracking.
+        cumulative_wages = _get_cumulative_wages(
+            profile, period, all_periods
+        )
+        fica = tax_calculator.calculate_fica(
+            gross_biweekly, fica_config, cumulative_wages
+        )
+        ss_biweekly = fica["ss"]
+        medicare_biweekly = fica["medicare"]
 
     # Step 8: Post-tax deductions
     post_tax_deductions = _calculate_deductions(
@@ -153,8 +175,8 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
         - total_pre_tax
         - federal_biweekly
         - state_biweekly
-        - fica["ss"]
-        - fica["medicare"]
+        - ss_biweekly
+        - medicare_biweekly
         - total_post_tax
     ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
@@ -166,8 +188,8 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
         taxable_income=taxable_biweekly,
         federal_tax=federal_biweekly,
         state_tax=state_biweekly,
-        social_security=fica["ss"],
-        medicare=fica["medicare"],
+        social_security=ss_biweekly,
+        medicare=medicare_biweekly,
         post_tax_deductions=post_tax_deductions,
         net_pay=net_pay,
         is_third_paycheck=is_third,
@@ -175,19 +197,23 @@ def calculate_paycheck(profile, period, all_periods, tax_configs):
     )
 
 
-def project_salary(profile, periods, tax_configs):
+def project_salary(profile, periods, tax_configs, *, calibration=None):
     """Generate paycheck breakdowns for all given periods.
 
     Args:
-        profile:     SalaryProfile with loaded raises and deductions.
-        periods:     List of PayPeriod objects.
-        tax_configs: dict with bracket_set, state_config, fica_config.
+        profile:      SalaryProfile with loaded raises and deductions.
+        periods:      List of PayPeriod objects.
+        tax_configs:  dict with bracket_set, state_config, fica_config.
+        calibration:  Optional CalibrationOverride for rate-based taxes.
 
     Returns:
         List of PaycheckBreakdown, one per period.
     """
     return [
-        calculate_paycheck(profile, period, periods, tax_configs)
+        calculate_paycheck(
+            profile, period, periods, tax_configs,
+            calibration=calibration,
+        )
         for period in periods
     ]
 

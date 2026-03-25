@@ -290,14 +290,19 @@ class TestEscrow:
     """Tests for escrow component management."""
 
     def test_escrow_add(self, auth_client, seed_user, db, seed_periods):
-        """POST escrow component → creates."""
+        """POST escrow component with percentage inflation input creates correctly.
+
+        The form sends inflation_rate as a percentage (e.g. '3' for 3%).
+        The schema validates it, and the route converts to decimal (0.03)
+        before storage.
+        """
         acct = _create_mortgage_account(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/escrow",
             data={
                 "name": "Property Tax",
                 "annual_amount": "4800.00",
-                "inflation_rate": "0.03",
+                "inflation_rate": "3",
             },
         )
         assert resp.status_code == 200
@@ -307,6 +312,9 @@ class TestEscrow:
         assert comp is not None
         assert comp.name == "Property Tax"
         assert comp.annual_amount == Decimal("4800.00")
+        assert comp.inflation_rate == Decimal("0.03"), (
+            f"Expected 0.03 (3% converted to decimal), got {comp.inflation_rate}"
+        )
 
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
         """Duplicate name → error message, and DB still has exactly 1 component."""
@@ -384,6 +392,128 @@ class TestEscrow:
         assert after.annual_amount == Decimal("3000.00"), (
             "IDOR attack modified victim's escrow amount!"
         )
+
+    def test_escrow_add_with_zero_inflation_rate(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Inflation rate of '0' is valid and stored as zero."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Insurance",
+                "annual_amount": "2400.00",
+                "inflation_rate": "0",
+            },
+        )
+        assert resp.status_code == 200
+
+        comp = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id, name="Insurance",
+        ).first()
+        assert comp is not None
+        assert comp.inflation_rate == Decimal("0")
+
+    def test_escrow_add_with_empty_inflation_rate(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Empty inflation rate is accepted as None (no inflation)."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "HOA",
+                "annual_amount": "3600.00",
+                "inflation_rate": "",
+            },
+        )
+        assert resp.status_code == 200
+
+        comp = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id, name="HOA",
+        ).first()
+        assert comp is not None
+        assert comp.inflation_rate is None
+
+    def test_escrow_add_with_negative_inflation_rate_rejected(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Negative inflation rate is rejected by schema validation."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Tax",
+                "annual_amount": "4800.00",
+                "inflation_rate": "-2",
+            },
+        )
+        assert resp.status_code == 400
+
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id,
+        ).count()
+        assert count == 0
+
+
+class TestEscrowOobUpdates:
+    """Tests that escrow add/delete responses include OOB payment summary updates."""
+
+    def test_escrow_add_response_includes_oob_payment_summary(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Adding an escrow component returns OOB fragments for payment summary and badge."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Property Tax",
+                "annual_amount": "4800.00",
+            },
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # OOB total payment display must be present with hx-swap-oob.
+        assert 'id="total-payment-display"' in html
+        assert 'hx-swap-oob="true"' in html
+
+        # OOB escrow badge must be present.
+        assert 'id="escrow-badge"' in html
+
+        # Monthly escrow for $4800/yr = $400/mo should appear in the badge.
+        assert "$400.00/mo" in html
+
+    def test_escrow_delete_response_includes_oob_payment_summary(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Deleting an escrow component returns OOB fragments with updated totals."""
+        acct = _create_mortgage_account(seed_user, db.session)
+
+        # Add two components directly.
+        comp1 = EscrowComponent(
+            account_id=acct.id, name="Tax", annual_amount=Decimal("4800.00"),
+        )
+        comp2 = EscrowComponent(
+            account_id=acct.id, name="Insurance", annual_amount=Decimal("2400.00"),
+        )
+        db.session.add_all([comp1, comp2])
+        db.session.commit()
+
+        # Delete one.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow/{comp1.id}/delete",
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # OOB fragments must be present.
+        assert 'id="total-payment-display"' in html
+        assert 'hx-swap-oob="true"' in html
+        assert 'id="escrow-badge"' in html
+
+        # Only Insurance ($2400/yr = $200/mo) should remain.
+        assert "$200.00/mo" in html
 
 
 class TestPayoffCalculator:

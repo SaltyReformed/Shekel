@@ -66,6 +66,29 @@ def _build_chart_data(schedule):
     return labels, balances
 
 
+def _compute_total_payment(params, escrow_components):
+    """Compute total monthly payment (P&I + escrow) for OOB updates.
+
+    Returns None if params are missing (no P&I to add to).
+    """
+    if params is None:
+        return None
+    remaining_months = amortization_engine.calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+    summary = amortization_engine.calculate_summary(
+        current_principal=Decimal(str(params.current_principal)),
+        annual_rate=Decimal(str(params.interest_rate)),
+        remaining_months=remaining_months,
+        origination_date=date.today().replace(day=1),
+        payment_day=params.payment_day,
+        term_months=params.term_months,
+    )
+    return escrow_calculator.calculate_total_payment(
+        summary.monthly_payment, escrow_components,
+    )
+
+
 @mortgage_bp.route("/accounts/<int:account_id>/mortgage")
 @login_required
 def dashboard(account_id):
@@ -292,10 +315,17 @@ def add_escrow(account_id):
         .order_by(EscrowComponent.name)
         .all()
     )
+
+    # Compute updated payment summary for OOB swap.
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
+    total_payment = _compute_total_payment(params, escrow_components)
+
     return render_template(
         "mortgage/_escrow_list.html",
         account=account,
         escrow_components=escrow_components,
+        monthly_escrow=monthly_escrow,
+        total_payment=total_payment,
     )
 
 
@@ -324,10 +354,22 @@ def delete_escrow(account_id, component_id):
         .order_by(EscrowComponent.name)
         .all()
     )
+
+    # Compute updated payment summary for OOB swap.
+    params = (
+        db.session.query(MortgageParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
+    total_payment = _compute_total_payment(params, escrow_components)
+
     return render_template(
         "mortgage/_escrow_list.html",
         account=account,
         escrow_components=escrow_components,
+        monthly_escrow=monthly_escrow,
+        total_payment=total_payment,
     )
 
 

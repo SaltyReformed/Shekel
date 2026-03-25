@@ -48,6 +48,9 @@
       <td class="text-end">
         {% if item.net_pay is not none %}
           <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay|float) }}</span>
+          {% if p.calibration and p.calibration.is_active %}
+          <span class="badge bg-success ms-1" title="Calibrated from pay stub">Cal</span>
+          {% endif %}
         {% else %}
           --
         {% endif %}

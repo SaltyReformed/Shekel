@@ -4,11 +4,12 @@
   9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec',
 } %}
 
-<div class="card mb-3">
+<div class="card mb-3" id="raises-section">
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-arrow-up-circle"></i> Raises</h6>
     <button class="btn btn-sm btn-outline-primary" type="button"
-            data-bs-toggle="collapse" data-bs-target="#add-raise-form">
+            data-toggle-target="add-raise-form"
+            data-raise-reset="true">
       <i class="bi bi-plus"></i> Add Raise
     </button>
   </div>
@@ -48,8 +49,19 @@
               <span class="visually-hidden">One-time</span>
             {% endif %}
           </td>
-          <td>
-            <form method="POST"
+          <td class="text-nowrap">
+            <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
+                    data-raise-edit="{{ r.id }}"
+                    data-raise-type-id="{{ r.raise_type_id }}"
+                    data-raise-month="{{ r.effective_month }}"
+                    data-raise-year="{{ r.effective_year }}"
+                    data-raise-percentage="{{ '%.2f'|format((r.percentage * 100)|float) if r.percentage else '' }}"
+                    data-raise-flat="{{ '%.2f'|format(r.flat_amount|float) if r.flat_amount else '' }}"
+                    data-raise-recurring="{{ 'true' if r.is_recurring else 'false' }}"
+                    data-raise-edit-url="{{ url_for('salary.update_raise', raise_id=r.id) }}">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form method="POST" class="d-inline"
                   action="{{ url_for('salary.delete_raise', raise_id=r.id) }}"
                   hx-post="{{ url_for('salary.delete_raise', raise_id=r.id) }}"
                   hx-target="#raises-section"
@@ -69,15 +81,16 @@
     <p class="text-muted mb-0">No raises configured.</p>
     {% endif %}
 
-    {# Add raise form (collapsed) #}
+    {# Add/edit raise form (collapsed) #}
     <div class="collapse mt-3" id="add-raise-form">
       <hr>
-      <form method="POST"
+      <form method="POST" id="raise-form"
             action="{{ url_for('salary.add_raise', profile_id=profile.id) }}"
             hx-post="{{ url_for('salary.add_raise', profile_id=profile.id) }}"
             hx-target="#raises-section"
             hx-swap="outerHTML"
-            hx-disabled-elt="find button[type=submit]">
+            hx-disabled-elt="find button[type=submit]"
+            data-add-action="{{ url_for('salary.add_raise', profile_id=profile.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="row g-2 align-items-end">
           <div class="col-md-2">
@@ -122,7 +135,7 @@
             </div>
           </div>
           <div class="col-md-1">
-            <button type="submit" class="btn btn-sm btn-primary">
+            <button type="submit" class="btn btn-sm btn-primary" id="raise-submit-btn">
               <i class="bi bi-plus"></i>
             </button>
           </div>

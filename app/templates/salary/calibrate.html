@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Calibrate Paycheck -- {{ profile.name }} -- Shekel{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}">{{ profile.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Calibrate</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6 col-md-8">
+    <h4><i class="bi bi-bullseye"></i> Calibrate from Pay Stub</h4>
+    <p class="text-muted">
+      Enter the actual withholding amounts from a recent pay stub. The app will
+      derive effective tax rates and use them for future projections instead of
+      bracket-based estimates.
+    </p>
+
+    {% if profile.calibration and profile.calibration.is_active %}
+    <div class="alert alert-info">
+      <i class="bi bi-info-circle"></i>
+      This profile already has a calibration from
+      {{ profile.calibration.pay_stub_date.strftime('%b %-d, %Y') }}.
+      Submitting a new one will replace it.
+    </div>
+    {% endif %}
+
+    <form method="POST"
+          action="{{ url_for('salary.calibrate_preview', profile_id=profile.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="card mb-3">
+        <div class="card-header">
+          <h6 class="mb-0">Pay Stub Amounts</h6>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label for="pay_stub_date" class="form-label">Pay Stub Date</label>
+            <input type="date" id="pay_stub_date" name="pay_stub_date"
+                   class="form-control" required
+                   value="{{ profile.calibration.pay_stub_date.isoformat() if profile.calibration else '' }}">
+          </div>
+          <div class="mb-3">
+            <label for="actual_gross_pay" class="form-label">Gross Pay</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" step="0.01" min="0.01" id="actual_gross_pay"
+                     name="actual_gross_pay" class="form-control" required
+                     placeholder="e.g. 2307.69">
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="actual_federal_tax" class="form-label">Federal Tax Withheld</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="actual_federal_tax"
+                       name="actual_federal_tax" class="form-control" required
+                       placeholder="e.g. 153.08">
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label for="actual_state_tax" class="form-label">State Tax Withheld</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="actual_state_tax"
+                       name="actual_state_tax" class="form-control" required
+                       placeholder="e.g. 94.85">
+              </div>
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="actual_social_security" class="form-label">Social Security</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="actual_social_security"
+                       name="actual_social_security" class="form-control" required
+                       placeholder="e.g. 143.08">
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label for="actual_medicare" class="form-label">Medicare</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" min="0" id="actual_medicare"
+                       name="actual_medicare" class="form-control" required
+                       placeholder="e.g. 33.46">
+              </div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="notes" class="form-label">Notes (optional)</label>
+            <input type="text" id="notes" name="notes" class="form-control"
+                   placeholder="e.g. Pay period ending 2026-03-14">
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex gap-2 mb-4">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-calculator"></i> Preview Rates
+        </button>
+        <a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}"
+           class="btn btn-outline-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

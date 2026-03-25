@@ -439,6 +439,35 @@ def update_pension(pension_id):
     if data.get("benefit_multiplier"):
         data["benefit_multiplier"] = Decimal(str(data["benefit_multiplier"])) / Decimal("100")
 
+    # Cross-field date validation: merge submitted values with existing
+    # pension data so partial updates are validated against the full state.
+    eff_hire = data.get("hire_date", pension.hire_date)
+    eff_earliest = data.get("earliest_retirement_date", pension.earliest_retirement_date)
+    eff_planned = data.get("planned_retirement_date", pension.planned_retirement_date)
+
+    date_errors = []
+    if eff_earliest and eff_hire and eff_earliest <= eff_hire:
+        date_errors.append(
+            "Earliest retirement date must be after hire date."
+        )
+    if eff_planned and eff_hire and eff_planned <= eff_hire:
+        date_errors.append(
+            "Planned retirement date must be after hire date."
+        )
+    if eff_planned and eff_planned <= date.today():
+        date_errors.append(
+            "Planned retirement date must be in the future."
+        )
+    if eff_planned and eff_earliest and eff_planned < eff_earliest:
+        date_errors.append(
+            "Planned retirement date must be on or after "
+            "earliest retirement date."
+        )
+    if date_errors:
+        for err in date_errors:
+            flash(err, "danger")
+        return redirect(url_for("retirement.edit_pension", pension_id=pension_id))
+
     _PENSION_FIELDS = {
         "salary_profile_id", "name", "benefit_multiplier",
         "consecutive_high_years", "hire_date",

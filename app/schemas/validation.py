@@ -568,7 +568,7 @@ class EscrowComponentSchema(BaseSchema):
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=1))
+    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=100))
 
 
 # ── Auto Loan Schemas ────────────────────────────────────────────
@@ -708,6 +708,37 @@ class PensionProfileCreateSchema(BaseSchema):
     earliest_retirement_date = fields.Date(allow_none=True)
     planned_retirement_date = fields.Date(allow_none=True)
 
+    @validates_schema
+    def validate_pension_dates(self, data, **kwargs):
+        """Cross-field date validation for pension profiles."""
+        from datetime import date as date_type  # pylint: disable=import-outside-toplevel
+
+        hire = data.get("hire_date")
+        earliest = data.get("earliest_retirement_date")
+        planned = data.get("planned_retirement_date")
+
+        if earliest and hire and earliest <= hire:
+            raise ValidationError(
+                "Earliest retirement date must be after hire date.",
+                field_name="earliest_retirement_date",
+            )
+        if planned and hire and planned <= hire:
+            raise ValidationError(
+                "Planned retirement date must be after hire date.",
+                field_name="planned_retirement_date",
+            )
+        if planned and planned <= date_type.today():
+            raise ValidationError(
+                "Planned retirement date must be in the future.",
+                field_name="planned_retirement_date",
+            )
+        if planned and earliest and planned < earliest:
+            raise ValidationError(
+                "Planned retirement date must be on or after "
+                "earliest retirement date.",
+                field_name="planned_retirement_date",
+            )
+
 
 class PensionProfileUpdateSchema(BaseSchema):
     """Validates POST data for updating a pension profile."""
@@ -749,3 +780,37 @@ class RetirementSettingsSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+
+
+# ── Calibration Schema (Phase 3.10) ──────────────────────────────
+
+
+class CalibrationSchema(BaseSchema):
+    """Validates POST data for paycheck calibration from a real pay stub."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    actual_gross_pay = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    actual_federal_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_state_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_social_security = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_medicare = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    pay_stub_date = fields.Date(required=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))

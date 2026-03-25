@@ -1,4 +1,21 @@
-{# HTMX fragment: escrow component list #}
+{# HTMX fragment: escrow component list + OOB payment summary updates #}
+
+{# OOB swap: update the total monthly payment on the Overview tab #}
+{% if total_payment is defined and total_payment is not none %}
+<div class="d-flex justify-content-between mb-2" id="total-payment-display" hx-swap-oob="true">
+  <span class="text-muted">Total Monthly (with escrow)</span>
+  <span class="fw-bold font-mono" style="color: var(--shekel-accent);">
+    ${{ "{:,.2f}".format(total_payment|float) }}
+  </span>
+</div>
+{% endif %}
+
+{# OOB swap: update the monthly escrow badge in the Escrow tab header #}
+{% if monthly_escrow is defined and monthly_escrow is not none %}
+<span class="badge bg-secondary font-mono" id="escrow-badge" hx-swap-oob="true">
+  ${{ "{:,.2f}".format(monthly_escrow|float) }}/mo
+</span>
+{% endif %}
 <div class="card-body p-0">
   {% if escrow_components %}
   <div class="table-responsive">

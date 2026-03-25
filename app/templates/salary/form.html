@@ -156,13 +156,49 @@
 
     {% if profile %}
     {# ── Raises Section ── #}
-    <div id="raises-section">
-      {% include "salary/_raises_section.html" %}
-    </div>
+    {% include "salary/_raises_section.html" %}
 
     {# ── Deductions Section ── #}
-    <div id="deductions-section">
-      {% include "salary/_deductions_section.html" %}
+    {% include "salary/_deductions_section.html" %}
+
+    {# ── Calibration ── #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-bullseye"></i> Pay Stub Calibration</h6>
+        {% if profile.calibration and profile.calibration.is_active %}
+        <span class="badge bg-success">Calibrated</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if profile.calibration and profile.calibration.is_active %}
+        <p class="mb-2">
+          Calibrated from pay stub dated
+          <strong>{{ profile.calibration.pay_stub_date.strftime('%b %-d, %Y') }}</strong>.
+          Projections use effective rates instead of bracket-based estimates.
+        </p>
+        <div class="d-flex gap-2">
+          <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
+             class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-arrow-repeat"></i> Re-calibrate
+          </a>
+          <form method="POST" class="d-inline"
+                action="{{ url_for('salary.calibrate_delete', profile_id=profile.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+              <i class="bi bi-x-circle"></i> Remove Calibration
+            </button>
+          </form>
+        </div>
+        {% else %}
+        <p class="text-muted mb-2">
+          Enter actual withholding from a pay stub to calibrate tax projections.
+        </p>
+        <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
+           class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-bullseye"></i> Calibrate from Pay Stub
+        </a>
+        {% endif %}
+      </div>
     </div>
 
     {# ── Quick Links ── #}

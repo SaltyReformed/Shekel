@@ -129,6 +129,8 @@ def db(app, setup_database):
         # Truncate budget and auth tables (order matters for FK constraints).
         _db.session.execute(_db.text(
             "TRUNCATE TABLE "
+            "salary.calibration_deduction_overrides, "
+            "salary.calibration_overrides, "
             "salary.pension_profiles, "
             "salary.paycheck_deductions, "
             "salary.salary_raises, "
@@ -870,6 +872,8 @@ def _create_audit_infrastructure():
         ("salary", "salary_raises"),
         ("salary", "paycheck_deductions"),
         ("salary", "pension_profiles"),
+        ("salary", "calibration_overrides"),
+        ("salary", "calibration_deduction_overrides"),
         ("auth", "users"),
         ("auth", "user_settings"),
         ("auth", "mfa_configs"),

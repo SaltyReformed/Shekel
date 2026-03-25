@@ -16,6 +16,10 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.calibration_override import (
+    CalibrationOverride,
+    CalibrationDeductionOverride,
+)
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
@@ -36,14 +40,16 @@ from app.models.ref import (
     TransactionType,
 )
 from app.schemas.validation import (
+    CalibrationSchema,
     DeductionCreateSchema,
     FicaConfigSchema,
     RaiseCreateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
 )
-from app.exceptions import RecurrenceConflict
+from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
+from app.services.calibration_service import derive_effective_rates
 from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
@@ -55,6 +61,7 @@ _update_schema = SalaryProfileUpdateSchema()
 _raise_schema = RaiseCreateSchema()
 _deduction_schema = DeductionCreateSchema()
 _fica_schema = FicaConfigSchema()
+_calibration_schema = CalibrationSchema()
 
 
 
@@ -81,7 +88,8 @@ def list_profiles():
         if current_period and profile.is_active:
             tax_configs = load_tax_configs(current_user.id, profile)
             breakdown = paycheck_calculator.calculate_paycheck(
-                profile, current_period, periods, tax_configs
+                profile, current_period, periods, tax_configs,
+                calibration=profile.calibration,
             )
             net_pay = breakdown.net_pay
         profile_data.append({"profile": profile, "net_pay": net_pay})
@@ -213,6 +221,20 @@ def create_profile():
         # Generate income transactions via recurrence engine
         periods = pay_period_service.get_all_periods(current_user.id)
         recurrence_engine.generate_for_template(template, periods, scenario.id)
+
+        # Update the template's default_amount from gross to net so that
+        # any future fallback (e.g. missing tax configs for a period)
+        # uses the net amount rather than the gross.
+        ref_period = (
+            pay_period_service.get_current_period(current_user.id)
+            or (periods[0] if periods else None)
+        )
+        if ref_period:
+            tax_configs = load_tax_configs(current_user.id, profile)
+            init_breakdown = paycheck_calculator.calculate_paycheck(
+                profile, ref_period, periods, tax_configs
+            )
+            template.default_amount = init_breakdown.net_pay
 
         db.session.commit()
     except Exception:
@@ -398,6 +420,61 @@ def delete_raise(raise_id):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
+@salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
+@login_required
+def update_raise(raise_id):
+    """Update an existing raise on a salary profile."""
+    salary_raise = db.session.get(SalaryRaise, raise_id)
+    if salary_raise is None:
+        flash("Raise not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    profile = salary_raise.salary_profile
+    if profile.user_id != current_user.id:
+        flash("Not authorized.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    errors = _raise_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    data = _raise_schema.load(request.form)
+    data["is_recurring"] = request.form.get("is_recurring") == "on"
+
+    # Convert percentage input (e.g. 3 → 0.03) for storage.
+    if data.get("percentage") is not None:
+        from decimal import Decimal as D
+        data["percentage"] = D(str(data["percentage"])) / D("100")
+
+    _RAISE_UPDATE_FIELDS = {
+        "raise_type_id", "effective_month", "effective_year",
+        "percentage", "flat_amount", "is_recurring", "notes",
+    }
+    for field_name, value in data.items():
+        if field_name in _RAISE_UPDATE_FIELDS:
+            setattr(salary_raise, field_name, value)
+
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "user_id=%d failed to update raise %d on profile %d",
+            current_user.id, raise_id, profile.id,
+        )
+        flash("Failed to update raise. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    logger.info("user_id=%d updated raise %d on profile %d", current_user.id, raise_id, profile.id)
+    flash("Raise updated.", "success")
+
+    if request.headers.get("HX-Request"):
+        return _render_raises_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+
 # ── Deductions ─────────────────────────────────────────────────────
 
 
@@ -478,6 +555,65 @@ def delete_deduction(ded_id):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
+@salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
+@login_required
+def update_deduction(ded_id):
+    """Update an existing deduction on a salary profile."""
+    deduction = db.session.get(PaycheckDeduction, ded_id)
+    if deduction is None:
+        flash("Deduction not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    profile = deduction.salary_profile
+    if profile.user_id != current_user.id:
+        flash("Not authorized.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    errors = _deduction_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    data = _deduction_schema.load(request.form)
+    data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
+
+    # Convert percentage inputs (e.g. 6 → 0.06) for storage.
+    from decimal import Decimal as D
+    calc_method = db.session.get(CalcMethod, data["calc_method_id"])
+    if calc_method and calc_method.name == "percentage":
+        data["amount"] = D(str(data["amount"])) / D("100")
+    if data.get("inflation_rate"):
+        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+
+    _DEDUCTION_UPDATE_FIELDS = {
+        "name", "deduction_timing_id", "calc_method_id", "amount",
+        "deductions_per_year", "annual_cap", "inflation_enabled",
+        "inflation_rate", "inflation_effective_month", "target_account_id",
+    }
+    for field_name, value in data.items():
+        if field_name in _DEDUCTION_UPDATE_FIELDS:
+            setattr(deduction, field_name, value)
+
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "user_id=%d failed to update deduction %d on profile %d",
+            current_user.id, ded_id, profile.id,
+        )
+        flash("Failed to update deduction. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    logger.info("user_id=%d updated deduction %d on profile %d", current_user.id, ded_id, profile.id)
+    flash(f"Deduction '{deduction.name}' updated.", "success")
+
+    if request.headers.get("HX-Request"):
+        return _render_deductions_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+
 # ── Views: Breakdown & Projection ──────────────────────────────────
 
 
@@ -498,7 +634,8 @@ def breakdown(profile_id, period_id):
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
     result = paycheck_calculator.calculate_paycheck(
-        profile, period, periods, tax_configs
+        profile, period, periods, tax_configs,
+        calibration=profile.calibration,
     )
 
     return render_template(
@@ -540,7 +677,10 @@ def projection(profile_id):
 
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
-    breakdowns = paycheck_calculator.project_salary(profile, periods, tax_configs)
+    breakdowns = paycheck_calculator.project_salary(
+        profile, periods, tax_configs,
+        calibration=profile.calibration,
+    )
 
     # Pair periods with breakdowns
     projection_data = list(zip(periods, breakdowns))
@@ -550,6 +690,187 @@ def projection(profile_id):
         profile=profile,
         projection_data=projection_data,
     )
+
+
+# ── Calibration ───────────────────────────────────────────────────
+
+
+@salary_bp.route("/salary/<int:profile_id>/calibrate")
+@login_required
+def calibrate_form(profile_id):
+    """Display the pay stub calibration form."""
+    profile = db.session.get(SalaryProfile, profile_id)
+    if profile is None or profile.user_id != current_user.id:
+        flash("Salary profile not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    return render_template(
+        "salary/calibrate.html",
+        profile=profile,
+    )
+
+
+@salary_bp.route("/salary/<int:profile_id>/calibrate", methods=["POST"])
+@login_required
+def calibrate_preview(profile_id):
+    """Validate pay stub data and show derived rates for confirmation."""
+    profile = db.session.get(SalaryProfile, profile_id)
+    if profile is None or profile.user_id != current_user.id:
+        flash("Salary profile not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    errors = _calibration_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    data = _calibration_schema.load(request.form)
+
+    # Calculate taxable income from the profile's current pre-tax deductions.
+    from decimal import Decimal as D
+    gross = D(str(data["actual_gross_pay"]))
+    periods = pay_period_service.get_all_periods(current_user.id)
+    current_period = pay_period_service.get_current_period(current_user.id)
+
+    if current_period:
+        tax_configs = load_tax_configs(current_user.id, profile)
+        bk = paycheck_calculator.calculate_paycheck(
+            profile, current_period, periods, tax_configs,
+        )
+        total_pre_tax = bk.total_pre_tax
+    else:
+        total_pre_tax = D("0")
+
+    taxable = gross - total_pre_tax
+    if taxable <= D("0"):
+        flash(
+            "Taxable income (gross minus pre-tax deductions) is zero or "
+            "negative. Cannot derive effective rates.",
+            "danger",
+        )
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    try:
+        rates = derive_effective_rates(
+            actual_gross_pay=data["actual_gross_pay"],
+            actual_federal_tax=data["actual_federal_tax"],
+            actual_state_tax=data["actual_state_tax"],
+            actual_social_security=data["actual_social_security"],
+            actual_medicare=data["actual_medicare"],
+            taxable_income=taxable,
+        )
+    except ValidationError as e:
+        flash(str(e), "danger")
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    return render_template(
+        "salary/calibrate_confirm.html",
+        profile=profile,
+        data=data,
+        rates=rates,
+        taxable_income=taxable,
+        total_pre_tax=total_pre_tax,
+    )
+
+
+@salary_bp.route("/salary/<int:profile_id>/calibrate/confirm", methods=["POST"])
+@login_required
+def calibrate_confirm(profile_id):
+    """Save the calibration override and regenerate transactions."""
+    profile = db.session.get(SalaryProfile, profile_id)
+    if profile is None or profile.user_id != current_user.id:
+        flash("Salary profile not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    from decimal import Decimal as D
+
+    try:
+        # Delete any existing calibration for this profile.
+        existing = (
+            db.session.query(CalibrationOverride)
+            .filter_by(salary_profile_id=profile.id)
+            .first()
+        )
+        if existing:
+            db.session.delete(existing)
+            db.session.flush()
+
+        cal = CalibrationOverride(
+            salary_profile_id=profile.id,
+            actual_gross_pay=D(request.form["actual_gross_pay"]),
+            actual_federal_tax=D(request.form["actual_federal_tax"]),
+            actual_state_tax=D(request.form["actual_state_tax"]),
+            actual_social_security=D(request.form["actual_social_security"]),
+            actual_medicare=D(request.form["actual_medicare"]),
+            effective_federal_rate=D(request.form["effective_federal_rate"]),
+            effective_state_rate=D(request.form["effective_state_rate"]),
+            effective_ss_rate=D(request.form["effective_ss_rate"]),
+            effective_medicare_rate=D(request.form["effective_medicare_rate"]),
+            pay_stub_date=date.fromisoformat(request.form["pay_stub_date"]),
+            notes=request.form.get("notes") or None,
+            is_active=True,
+        )
+        db.session.add(cal)
+        db.session.flush()
+
+        # Refresh the relationship so the calculator sees the new calibration.
+        db.session.refresh(profile)
+
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "user_id=%d failed to save calibration for profile %d",
+            current_user.id, profile_id,
+        )
+        flash("Failed to save calibration. Please try again.", "danger")
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    logger.info("user_id=%d calibrated profile %d", current_user.id, profile_id)
+    flash("Paycheck calibration saved. Projections updated.", "success")
+    return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+
+
+@salary_bp.route("/salary/<int:profile_id>/calibrate/delete", methods=["POST"])
+@login_required
+def calibrate_delete(profile_id):
+    """Remove calibration override and revert to bracket-based taxes."""
+    profile = db.session.get(SalaryProfile, profile_id)
+    if profile is None or profile.user_id != current_user.id:
+        flash("Salary profile not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    existing = (
+        db.session.query(CalibrationOverride)
+        .filter_by(salary_profile_id=profile.id)
+        .first()
+    )
+    if existing:
+        db.session.delete(existing)
+        db.session.flush()
+
+        # Refresh so the calculator no longer sees the calibration.
+        db.session.refresh(profile)
+
+        try:
+            _regenerate_salary_transactions(profile)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.exception(
+                "user_id=%d failed to remove calibration for profile %d",
+                current_user.id, profile_id,
+            )
+            flash("Failed to remove calibration. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+
+        logger.info("user_id=%d removed calibration from profile %d", current_user.id, profile_id)
+        flash("Calibration removed. Reverted to bracket-based taxes.", "info")
+    else:
+        flash("No calibration to remove.", "info")
+
+    return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
 
 # ── Tax Config ─────────────────────────────────────────────────────
@@ -616,6 +937,11 @@ def update_tax_config():
             flash(f"State tax config for {state_code} {tax_year} created.", "success")
 
     db.session.commit()
+
+    # Regenerate salary transactions so the grid reflects the new rates.
+    _regenerate_all_salary_transactions()
+    db.session.commit()
+
     logger.info("user_id=%d updated state tax config for %s", current_user.id, state_code)
     return redirect(url_for("settings.show", section="tax"))
 
@@ -654,6 +980,11 @@ def update_fica_config():
         flash(f"FICA config for {tax_year} created.", "success")
 
     db.session.commit()
+
+    # Regenerate salary transactions so the grid reflects the new rates.
+    _regenerate_all_salary_transactions()
+    db.session.commit()
+
     logger.info("user_id=%d updated FICA config for %d", current_user.id, tax_year)
     return redirect(url_for("settings.show", section="tax"))
 
@@ -681,7 +1012,8 @@ def _regenerate_salary_transactions(profile):
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period:
         breakdown = paycheck_calculator.calculate_paycheck(
-            profile, current_period, periods, tax_configs
+            profile, current_period, periods, tax_configs,
+            calibration=profile.calibration,
         )
         profile.template.default_amount = breakdown.net_pay
 
@@ -696,6 +1028,23 @@ def _regenerate_salary_transactions(profile):
     except Exception:
         logger.exception("Failed to regenerate salary transactions for profile %d", profile.id)
         raise
+
+
+def _regenerate_all_salary_transactions():
+    """Regenerate salary transactions for every active profile.
+
+    Called after tax or FICA configuration changes so that projected
+    paycheck amounts in the grid stay in sync with the salary profile
+    page.  Without this, updating a tax rate would change the salary
+    page's displayed net pay but leave stale amounts in the grid.
+    """
+    profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
+    for profile in profiles:
+        _regenerate_salary_transactions(profile)
 
 
 def _render_raises_partial(profile):

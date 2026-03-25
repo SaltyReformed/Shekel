@@ -2,7 +2,8 @@
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-dash-circle"></i> Deductions</h6>
     <button class="btn btn-sm btn-outline-primary" type="button"
-            data-toggle-target="add-deduction-form">
+            data-toggle-target="add-deduction-form"
+            data-ded-reset="true">
       <i class="bi bi-plus"></i> Add Deduction
     </button>
   </div>
@@ -49,8 +50,23 @@
               --
             {% endif %}
           </td>
-          <td>
-            <form method="POST"
+          <td class="text-nowrap">
+            <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
+                    data-ded-edit="{{ d.id }}"
+                    data-ded-name="{{ d.name }}"
+                    data-ded-timing-id="{{ d.deduction_timing_id }}"
+                    data-ded-method-id="{{ d.calc_method_id }}"
+                    data-ded-amount="{{ '%.2f'|format((d.amount * 100)|float) if d.calc_method and d.calc_method.name == 'percentage' else '%.2f'|format(d.amount|float) }}"
+                    data-ded-per-year="{{ d.deductions_per_year }}"
+                    data-ded-cap="{{ '%.2f'|format(d.annual_cap|float) if d.annual_cap else '' }}"
+                    data-ded-target-account="{{ d.target_account_id or '' }}"
+                    data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
+                    data-ded-inflation-rate="{{ '%.2f'|format((d.inflation_rate * 100)|float) if d.inflation_rate else '' }}"
+                    data-ded-inflation-month="{{ d.inflation_effective_month or '' }}"
+                    data-ded-edit-url="{{ url_for('salary.update_deduction', ded_id=d.id) }}">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form method="POST" class="d-inline"
                   action="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
                   hx-post="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
                   hx-target="#deductions-section"
@@ -70,15 +86,16 @@
     <p class="text-muted mb-0">No deductions configured.</p>
     {% endif %}
 
-    {# Add deduction form (collapsed) #}
+    {# Add/edit deduction form (collapsed) #}
     <div class="collapse mt-3" id="add-deduction-form">
       <hr>
-      <form method="POST"
+      <form method="POST" id="deduction-form"
             action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
             hx-post="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
             hx-target="#deductions-section"
             hx-swap="outerHTML"
-            hx-disabled-elt="find button[type=submit]">
+            hx-disabled-elt="find button[type=submit]"
+            data-add-action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {# Row 1: Identity #}
         <div class="row g-2 mb-2">
@@ -166,7 +183,7 @@
                    class="form-control form-control-sm" placeholder="1-12">
           </div>
           <div class="col-md-3 d-flex align-items-end">
-            <button type="submit" class="btn btn-sm btn-primary">
+            <button type="submit" class="btn btn-sm btn-primary" id="ded-submit-btn">
               <i class="bi bi-plus"></i> Add
             </button>
           </div>

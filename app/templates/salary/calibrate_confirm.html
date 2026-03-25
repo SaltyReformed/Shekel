@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Confirm Calibration -- {{ profile.name }} -- Shekel{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}">{{ profile.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Confirm Calibration</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6 col-md-8">
+    <h4><i class="bi bi-bullseye"></i> Confirm Calibration</h4>
+    <p class="text-muted">
+      Review the derived effective rates below. If they look reasonable,
+      confirm to apply them to all future paycheck projections.
+    </p>
+
+    <div class="card mb-3">
+      <div class="card-header">
+        <h6 class="mb-0">Pay Stub Summary</h6>
+      </div>
+      <div class="card-body">
+        <table class="table table-sm mb-0">
+          <tr>
+            <td class="text-muted">Pay Stub Date</td>
+            <td class="text-end">{{ data.pay_stub_date.strftime('%b %-d, %Y') }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Gross Pay</td>
+            <td class="text-end font-mono">${{ "%.2f"|format(data.actual_gross_pay|float) }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Pre-Tax Deductions</td>
+            <td class="text-end font-mono">${{ "%.2f"|format(total_pre_tax|float) }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Taxable Income</td>
+            <td class="text-end font-mono fw-bold">${{ "%.2f"|format(taxable_income|float) }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header">
+        <h6 class="mb-0">Derived Effective Rates</h6>
+      </div>
+      <div class="card-body">
+        <table class="table table-sm mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Tax</th>
+              <th class="text-end">Actual Amount</th>
+              <th class="text-end">Effective Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Federal Income Tax</td>
+              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_federal_tax|float) }}</td>
+              <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_federal_rate * 100)|float) }}%</td>
+            </tr>
+            <tr>
+              <td>State Income Tax</td>
+              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_state_tax|float) }}</td>
+              <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_state_rate * 100)|float) }}%</td>
+            </tr>
+            <tr>
+              <td>Social Security</td>
+              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_social_security|float) }}</td>
+              <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_ss_rate * 100)|float) }}%</td>
+            </tr>
+            <tr>
+              <td>Medicare</td>
+              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_medicare|float) }}</td>
+              <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_medicare_rate * 100)|float) }}%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <form method="POST"
+          action="{{ url_for('salary.calibrate_confirm', profile_id=profile.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# Pass through all values as hidden fields #}
+      <input type="hidden" name="actual_gross_pay" value="{{ data.actual_gross_pay }}">
+      <input type="hidden" name="actual_federal_tax" value="{{ data.actual_federal_tax }}">
+      <input type="hidden" name="actual_state_tax" value="{{ data.actual_state_tax }}">
+      <input type="hidden" name="actual_social_security" value="{{ data.actual_social_security }}">
+      <input type="hidden" name="actual_medicare" value="{{ data.actual_medicare }}">
+      <input type="hidden" name="effective_federal_rate" value="{{ rates.effective_federal_rate }}">
+      <input type="hidden" name="effective_state_rate" value="{{ rates.effective_state_rate }}">
+      <input type="hidden" name="effective_ss_rate" value="{{ rates.effective_ss_rate }}">
+      <input type="hidden" name="effective_medicare_rate" value="{{ rates.effective_medicare_rate }}">
+      <input type="hidden" name="pay_stub_date" value="{{ data.pay_stub_date.isoformat() }}">
+      <input type="hidden" name="notes" value="{{ data.notes or '' }}">
+
+      <div class="d-flex gap-2 mb-4">
+        <button type="submit" class="btn btn-success">
+          <i class="bi bi-check-circle"></i> Confirm and Save
+        </button>
+        <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
+           class="btn btn-outline-secondary">Back</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

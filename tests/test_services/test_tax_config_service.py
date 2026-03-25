@@ -5,6 +5,7 @@ Verifies load_tax_configs returns the expected structure and queries
 by user_id, filing_status_id, state_code, and tax_year.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -111,3 +112,85 @@ class TestLoadTaxConfigs:
             assert isinstance(result["state_config"], StateTaxConfig)
             assert result["fica_config"] is not None
             assert isinstance(result["fica_config"], FicaConfig)
+
+    def test_explicit_tax_year_selects_correct_configs(self, app, db, seed_user):
+        """Passing an explicit tax_year returns configs for that year, not today's."""
+        with app.app_context():
+            user = seed_user["user"]
+            filing_status = (
+                db.session.query(FilingStatus).filter_by(name="single").one()
+            )
+            profile = SalaryProfile(
+                user_id=user.id,
+                scenario_id=seed_user["scenario"].id,
+                name="Test Profile",
+                annual_salary=Decimal("80000.00"),
+                pay_periods_per_year=26,
+                filing_status_id=filing_status.id,
+                state_code="NC",
+                is_active=True,
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            flat_type = (
+                db.session.query(TaxType).filter_by(name="flat").one()
+            )
+
+            # Seed state configs for two different years with different rates.
+            current_year = date.today().year
+            other_year = current_year + 1
+
+            state_current = StateTaxConfig(
+                user_id=user.id,
+                state_code="NC",
+                tax_year=current_year,
+                tax_type_id=flat_type.id,
+                flat_rate=Decimal("0.0399"),
+            )
+            state_other = StateTaxConfig(
+                user_id=user.id,
+                state_code="NC",
+                tax_year=other_year,
+                tax_type_id=flat_type.id,
+                flat_rate=Decimal("0.0500"),
+            )
+            db.session.add_all([state_current, state_other])
+            db.session.flush()
+
+            # Without explicit tax_year, should return current year's config.
+            result_default = load_tax_configs(user.id, profile)
+            assert result_default["state_config"] is not None
+            assert result_default["state_config"].flat_rate == Decimal("0.0399")
+
+            # With explicit tax_year, should return that year's config.
+            result_explicit = load_tax_configs(user.id, profile, tax_year=other_year)
+            assert result_explicit["state_config"] is not None
+            assert result_explicit["state_config"].flat_rate == Decimal("0.0500")
+
+    def test_explicit_tax_year_returns_none_for_missing_year(self, app, db, seed_user):
+        """Requesting a year with no configs returns None for each key."""
+        with app.app_context():
+            user = seed_user["user"]
+            filing_status = (
+                db.session.query(FilingStatus).filter_by(name="single").one()
+            )
+            profile = SalaryProfile(
+                user_id=user.id,
+                scenario_id=seed_user["scenario"].id,
+                name="Test Profile",
+                annual_salary=Decimal("80000.00"),
+                pay_periods_per_year=26,
+                filing_status_id=filing_status.id,
+                state_code="NC",
+                is_active=True,
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            # No configs seeded at all -- request a specific year.
+            result = load_tax_configs(user.id, profile, tax_year=2099)
+
+            assert result["bracket_set"] is None
+            assert result["state_config"] is None
+            assert result["fica_config"] is None

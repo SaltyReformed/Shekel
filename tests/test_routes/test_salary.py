@@ -5,13 +5,17 @@ Tests for salary profile CRUD, raises, deductions, breakdown,
 projection, and tax config endpoints (§2.2 of the test plan).
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.tax_config import FicaConfig, StateTaxConfig
+from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.calibration_override import CalibrationOverride
+from app.models.pay_period import PayPeriod
+from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
@@ -468,6 +472,168 @@ class TestRaises:
             assert b"Cola" in response.data
             assert b"2000.00" in response.data
 
+    def test_add_raise_htmx_response_contains_raises_section_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """HTMX partial must include id='raises-section' so subsequent swaps work.
+
+        Without this id on the partial's root element, the first HTMX swap
+        replaces the target and subsequent operations cannot find #raises-section.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/raises",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2027",
+                    "percentage": "3",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+
+    def test_delete_raise_htmx_response_contains_raises_section_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Delete-raise HTMX partial must also preserve the raises-section id."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0200"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/delete",
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+
+    def test_update_raise(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/raises/<id>/edit updates an existing raise."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+            cola_type = db.session.query(RaiseType).filter_by(name="cola").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0300"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/edit",
+                data={
+                    "raise_type_id": cola_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2027",
+                    "percentage": "4.50",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Raise updated." in response.data
+
+            db.session.refresh(salary_raise)
+            assert salary_raise.raise_type_id == cola_type.id
+            assert salary_raise.effective_month == 6
+            assert salary_raise.effective_year == 2027
+            assert salary_raise.percentage == Decimal("0.0450")
+
+    def test_update_raise_htmx_returns_partial(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/raises/<id>/edit with HX-Request returns the raises partial."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=1,
+                effective_year=2026,
+                flat_amount=Decimal("5000.00"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/edit",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "1",
+                    "effective_year": "2026",
+                    "flat_amount": "6000.00",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+            assert b"6000.00" in response.data
+
+    def test_update_raise_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/raises/<id>/edit on another user's raise is rejected."""
+        with app.app_context():
+            # Create a raise owned by a different user.
+            other = _create_other_user_profile()
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            other_raise = SalaryRaise(
+                salary_profile_id=other["profile"].id,
+                raise_type_id=raise_type.id,
+                effective_month=6,
+                effective_year=2026,
+                percentage=Decimal("0.0300"),
+            )
+            db.session.add(other_raise)
+            db.session.commit()
+            orig_pct = other_raise.percentage
+
+            response = auth_client.post(
+                f"/salary/raises/{other_raise.id}/edit",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2026",
+                    "percentage": "10.00",
+                },
+            )
+
+            # Should redirect, not 200.
+            assert response.status_code == 302
+
+            # Raise should be unchanged.
+            db.session.expire_all()
+            after = db.session.get(SalaryRaise, other_raise.id)
+            assert after.percentage == orig_pct, (
+                "IDOR attack modified another user's raise!"
+            )
+
     def test_delete_raise(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/raises/<id>/delete removes a raise."""
         with app.app_context():
@@ -688,6 +854,123 @@ class TestDeductions:
             assert response.status_code == 200
             assert b"Roth IRA" in response.data
             assert b"300" in response.data
+
+    def test_update_deduction(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/deductions/<id>/edit updates an existing deduction."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k Updated",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "350.00",
+                    "deductions_per_year": "24",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Deduction &#39;401k Updated&#39; updated." in response.data
+
+            db.session.refresh(deduction)
+            assert deduction.name == "401k Updated"
+            assert deduction.amount == Decimal("350.00")
+            assert deduction.deductions_per_year == 24
+
+    def test_update_deduction_percentage_conversion(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Editing a percentage deduction correctly converts input to decimal."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=pct_method.id,
+                name="401k Pct",
+                amount=Decimal("0.06"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k Pct",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": pct_method.id,
+                    "amount": "8",
+                    "deductions_per_year": "26",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+
+            db.session.refresh(deduction)
+            assert deduction.amount == Decimal("0.08"), (
+                f"Expected 0.08 (8% converted to decimal), got {deduction.amount}"
+            )
+
+    def test_update_deduction_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/deductions/<id>/edit on another user's deduction is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            other_ded = PaycheckDeduction(
+                salary_profile_id=other["profile"].id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Other 401k",
+                amount=Decimal("100.00"),
+            )
+            db.session.add(other_ded)
+            db.session.commit()
+            orig_amount = other_ded.amount
+
+            response = auth_client.post(
+                f"/salary/deductions/{other_ded.id}/edit",
+                data={
+                    "name": "Hacked",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "9999.00",
+                    "deductions_per_year": "26",
+                },
+            )
+
+            assert response.status_code == 302
+
+            db.session.expire_all()
+            after = db.session.get(PaycheckDeduction, other_ded.id)
+            assert after.amount == orig_amount, (
+                "IDOR attack modified another user's deduction!"
+            )
+            assert after.name == "Other 401k", (
+                "IDOR attack modified another user's deduction name!"
+            )
 
     def test_add_percentage_deduction_converts_input(
         self, app, auth_client, seed_user, seed_periods
@@ -1135,3 +1418,761 @@ class TestSalaryNegativePaths:
 
             assert resp.status_code == 200
             assert b"Salary profile not found." in resp.data
+
+
+# ── Net Biweekly Mismatch Fixes (section 3.3) ────────────────────────
+
+
+def _seed_state_tax(user_id, rate, tax_year=2026, state_code="NC"):
+    """Create a flat state tax config for testing.
+
+    Args:
+        user_id: The owning user's ID.
+        rate: Decimal flat rate in decimal form (e.g. 0.0399).
+        tax_year: Tax year for the config.
+        state_code: Two-letter state code.
+
+    Returns:
+        StateTaxConfig: The created config.
+    """
+    flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+    config = StateTaxConfig(
+        user_id=user_id,
+        state_code=state_code,
+        tax_year=tax_year,
+        tax_type_id=flat_type.id,
+        flat_rate=rate,
+        standard_deduction=Decimal("25500.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+def _seed_fica(user_id, tax_year=2026):
+    """Create a standard FICA config for testing.
+
+    Returns:
+        FicaConfig: The created config.
+    """
+    config = FicaConfig(
+        user_id=user_id,
+        tax_year=tax_year,
+        ss_rate=Decimal("0.0620"),
+        ss_wage_base=Decimal("176100.00"),
+        medicare_rate=Decimal("0.0145"),
+        medicare_surtax_rate=Decimal("0.0090"),
+        medicare_surtax_threshold=Decimal("200000.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+class TestNetBiweeklyMismatchFixes:
+    """Tests for the three root causes of net biweekly mismatch (section 3.3).
+
+    Verifies that:
+    1. Updating state tax config regenerates salary transactions.
+    2. Updating FICA config regenerates salary transactions.
+    3. Creating a salary profile sets template default_amount to NET,
+       not GROSS.
+    """
+
+    def test_state_tax_update_regenerates_salary_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Changing the state tax rate updates salary transaction amounts.
+
+        Without the fix, updating the state tax config would leave stale
+        transaction amounts in the grid while the salary page showed the
+        new net pay.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Grab a projected salary transaction's amount before the change.
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Update the state tax rate to a higher value.
+            auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
+                "state_code": "NC",
+                "flat_rate": "5.50",
+                "standard_deduction": "25500.00",
+            }, follow_redirects=True)
+
+            # Refresh the session to see the regenerated transactions.
+            db.session.expire_all()
+
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            assert txn_after is not None
+
+            # With a higher tax rate, net pay decreases so the amount
+            # should be lower (or at least different if the rate changed).
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change when state tax rate changes"
+                )
+
+    def test_fica_update_regenerates_salary_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Changing the FICA SS rate updates salary transaction amounts.
+
+        Without the fix, updating FICA would leave stale transaction
+        amounts in the grid.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Update SS rate to a significantly different value.
+            auth_client.post("/salary/fica-config", data={
+                "tax_year": "2026",
+                "ss_rate": "9.00",
+                "ss_wage_base": "176100.00",
+                "medicare_rate": "1.45",
+                "medicare_surtax_rate": "0.90",
+                "medicare_surtax_threshold": "200000.00",
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            assert txn_after is not None
+
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change when SS rate changes"
+                )
+
+    def test_tax_update_with_no_profiles_is_safe(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Updating tax config with no salary profiles does not error.
+
+        The regeneration loop should gracefully handle zero profiles.
+        """
+        with app.app_context():
+            response = auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
+                "state_code": "NC",
+                "flat_rate": "4.50",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"State tax config for NC" in response.data
+
+    def test_create_profile_sets_template_default_to_net(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Creating a salary profile sets template.default_amount to NET pay.
+
+        Before the fix, default_amount was set to GROSS (annual / 26).
+        After the fix, it should be NET (after taxes and deductions).
+        Without tax configs, NET equals GROSS (no taxes to deduct), so
+        we seed tax configs to produce a meaningful difference.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single"
+            ).one()
+
+            auth_client.post("/salary", data={
+                "name": "Net Test Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+                "pay_periods_per_year": "26",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=user.id, name="Net Test Job")
+                .one()
+            )
+            template = profile.template
+
+            gross_biweekly = Decimal("75000.00") / 26
+
+            # With taxes configured, net pay is less than gross.
+            # The template default_amount should reflect NET, not GROSS.
+            assert template.default_amount < gross_biweekly, (
+                f"template.default_amount ({template.default_amount}) should "
+                f"be less than gross biweekly ({gross_biweekly}) when taxes "
+                f"are configured"
+            )
+
+    def test_create_profile_without_tax_configs_uses_gross_as_fallback(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Without tax configs, default_amount equals GROSS (no taxes to subtract).
+
+        This is correct behavior -- with no bracket set, federal tax is $0;
+        with no state config, state tax is $0; with no FICA config, FICA
+        is $0.  NET == GROSS when there are no taxes.
+        """
+        with app.app_context():
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single"
+            ).one()
+
+            auth_client.post("/salary", data={
+                "name": "No Tax Job",
+                "annual_salary": "60000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+                "pay_periods_per_year": "26",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    name="No Tax Job",
+                )
+                .one()
+            )
+            template = profile.template
+
+            gross_biweekly = Decimal("60000.00") / 26
+            expected = gross_biweekly.quantize(Decimal("0.01"))
+
+            # No taxes configured, so NET == GROSS.
+            assert template.default_amount == expected, (
+                f"Without tax configs, default_amount ({template.default_amount}) "
+                f"should equal gross biweekly ({expected})"
+            )
+
+    def test_future_year_transactions_use_current_year_tax_configs(
+        self, app, auth_client, seed_user, seed_periods_52
+    ):
+        """Future-year salary transactions fall back to current-year tax configs.
+
+        When tax configs exist only for 2026, periods in 2027 should use the
+        2026 configs instead of producing zero-tax paychecks.  This prevents
+        the net biweekly mismatch where the salary page (which always uses
+        current-year configs) shows a different amount than the grid.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"), tax_year=2026)
+            _seed_fica(user.id, tax_year=2026)
+            db.session.commit()
+
+            # Regenerate transactions via the recurrence engine so that
+            # future-year periods get amounts from the calculator.
+            from app.services import recurrence_engine, pay_period_service
+            periods = pay_period_service.get_all_periods(user.id)
+            recurrence_engine.regenerate_for_template(
+                profile.template, periods, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            # Find a 2026 transaction and a 2027 transaction.
+            txn_2026 = (
+                db.session.query(Transaction)
+                .join(PayPeriod)
+                .filter(
+                    Transaction.template_id == profile.template_id,
+                    Transaction.scenario_id == seed_user["scenario"].id,
+                    db.extract("year", PayPeriod.start_date) == 2026,
+                )
+                .first()
+            )
+            txn_2027 = (
+                db.session.query(Transaction)
+                .join(PayPeriod)
+                .filter(
+                    Transaction.template_id == profile.template_id,
+                    Transaction.scenario_id == seed_user["scenario"].id,
+                    db.extract("year", PayPeriod.start_date) == 2027,
+                )
+                .first()
+            )
+
+            assert txn_2026 is not None, "Expected a 2026 salary transaction"
+            assert txn_2027 is not None, "Expected a 2027 salary transaction"
+
+            gross_biweekly = (Decimal("75000.00") / 26).quantize(Decimal("0.01"))
+
+            # Both should be less than gross (taxes applied).
+            assert txn_2026.estimated_amount < gross_biweekly, (
+                f"2026 txn ({txn_2026.estimated_amount}) should be less than "
+                f"gross ({gross_biweekly}) -- taxes should be applied"
+            )
+            assert txn_2027.estimated_amount < gross_biweekly, (
+                f"2027 txn ({txn_2027.estimated_amount}) should be less than "
+                f"gross ({gross_biweekly}) -- fallback taxes should be applied"
+            )
+
+            # Both years should produce the same net pay (same tax configs).
+            assert txn_2026.estimated_amount == txn_2027.estimated_amount, (
+                f"2026 txn ({txn_2026.estimated_amount}) and 2027 txn "
+                f"({txn_2027.estimated_amount}) should match because 2027 "
+                f"falls back to 2026 tax configs"
+            )
+
+
+class TestCalibration:
+    """Tests for paycheck calibration routes (section 3.10)."""
+
+    def test_calibrate_form_renders(self, app, auth_client, seed_user, seed_periods):
+        """GET /salary/<id>/calibrate returns the calibration form."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.get(f"/salary/{profile.id}/calibrate")
+            assert resp.status_code == 200
+            assert b"Calibrate from Pay Stub" in resp.data
+            assert b'name="actual_gross_pay"' in resp.data
+
+    def test_calibrate_saves_and_regenerates(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Full calibration workflow: preview then confirm saves overrides."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Step 1: Preview -- derive rates.
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp.status_code == 200
+            assert b"Confirm Calibration" in resp.data
+            assert b"effective_federal_rate" in resp.data
+
+            # Extract the hidden field values from the confirmation form.
+            html = resp.data.decode()
+            import re
+            fed_rate = re.search(
+                r'name="effective_federal_rate" value="([^"]+)"', html
+            ).group(1)
+            state_rate = re.search(
+                r'name="effective_state_rate" value="([^"]+)"', html
+            ).group(1)
+            ss_rate = re.search(
+                r'name="effective_ss_rate" value="([^"]+)"', html
+            ).group(1)
+            med_rate = re.search(
+                r'name="effective_medicare_rate" value="([^"]+)"', html
+            ).group(1)
+
+            # Step 2: Confirm -- save to DB.
+            resp2 = auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "effective_federal_rate": fed_rate,
+                    "effective_state_rate": state_rate,
+                    "effective_ss_rate": ss_rate,
+                    "effective_medicare_rate": med_rate,
+                    "pay_stub_date": "2026-03-14",
+                },
+                follow_redirects=True,
+            )
+            assert resp2.status_code == 200
+            assert b"Paycheck calibration saved" in resp2.data
+
+            # Verify DB record.
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).first()
+            assert cal is not None
+            assert cal.is_active is True
+            assert cal.actual_gross_pay == Decimal("2884.62")
+            assert cal.effective_federal_rate == Decimal(fed_rate)
+
+    def test_calibrate_delete_reverts_to_brackets(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/<id>/calibrate/delete removes calibration."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            # Manually create a calibration.
+            cal = CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.07000"),
+                effective_state_rate=Decimal("0.03500"),
+                effective_ss_rate=Decimal("0.06200"),
+                effective_medicare_rate=Decimal("0.01450"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Calibration removed" in resp.data
+
+            # Verify DB record is gone.
+            remaining = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).first()
+            assert remaining is None
+
+    def test_calibrate_regenerates_grid_transactions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """After calibration, grid income transactions use calibrated net pay."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Get a transaction amount before calibration.
+            txn_before = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+            amount_before = txn_before.estimated_amount if txn_before else None
+
+            # Calibrate with rates that produce different taxes.
+            cal = CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("500.00"),
+                actual_state_tax=Decimal("200.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.1862000000"),
+                effective_state_rate=Decimal("0.0745000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.flush()
+            db.session.refresh(profile)
+
+            from app.services import recurrence_engine, pay_period_service
+            periods = pay_period_service.get_all_periods(user.id)
+            try:
+                recurrence_engine.regenerate_for_template(
+                    profile.template, periods, seed_user["scenario"].id,
+                )
+            except Exception:
+                pass
+            db.session.commit()
+
+            db.session.expire_all()
+            txn_after = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=profile.template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .first()
+            )
+
+            assert txn_after is not None
+            if amount_before is not None:
+                assert txn_after.estimated_amount != amount_before, (
+                    "Transaction amount should change after calibration"
+                )
+
+    def test_recalibrate_replaces_existing(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Re-calibrating replaces the old calibration, not creates a second."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # First calibration.
+            resp1 = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp1.status_code == 200
+            html1 = resp1.data.decode()
+            import re
+            fields = {}
+            for name in ("effective_federal_rate", "effective_state_rate",
+                         "effective_ss_rate", "effective_medicare_rate"):
+                fields[name] = re.search(
+                    rf'name="{name}" value="([^"]+)"', html1
+                ).group(1)
+
+            auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                    **fields,
+                },
+                follow_redirects=True,
+            )
+
+            # Second calibration with different amounts.
+            resp2 = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "250.00",
+                    "actual_state_tax": "120.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-28",
+                },
+            )
+            html2 = resp2.data.decode()
+            fields2 = {}
+            for name in ("effective_federal_rate", "effective_state_rate",
+                         "effective_ss_rate", "effective_medicare_rate"):
+                fields2[name] = re.search(
+                    rf'name="{name}" value="([^"]+)"', html2
+                ).group(1)
+
+            auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "250.00",
+                    "actual_state_tax": "120.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-28",
+                    **fields2,
+                },
+                follow_redirects=True,
+            )
+
+            # Must be exactly one calibration, not two.
+            count = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).count()
+            assert count == 1, (
+                f"Expected exactly 1 calibration after re-calibrate, got {count}"
+            )
+
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+            assert cal.actual_federal_tax == Decimal("250.00"), (
+                "Calibration should reflect the second submission's data"
+            )
+            assert cal.pay_stub_date == date(2026, 3, 28)
+
+    def test_calibrate_preview_validation_rejects_zero_gross(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Preview with zero gross pay is rejected by the schema."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "0",
+                    "actual_federal_tax": "0",
+                    "actual_state_tax": "0",
+                    "actual_social_security": "0",
+                    "actual_medicare": "0",
+                    "pay_stub_date": "2026-03-14",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Please correct" in resp.data
+
+    def test_calibrate_preview_validation_rejects_missing_fields(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Preview with missing required fields is rejected."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    # Missing all other fields.
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Please correct" in resp.data
+
+    def test_calibrate_delete_when_none_exists(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deleting calibration when none exists shows info message."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"No calibration to remove" in resp.data
+
+    def test_calibrate_confirm_idor_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST confirm on another user's profile is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.post(
+                f"/salary/{other['profile'].id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "effective_federal_rate": "0.07000",
+                    "effective_state_rate": "0.03500",
+                    "effective_ss_rate": "0.06200",
+                    "effective_medicare_rate": "0.01450",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp.status_code == 302
+
+            # No calibration should exist for the victim's profile.
+            count = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=other["profile"].id,
+            ).count()
+            assert count == 0, (
+                "IDOR attack created calibration on victim's profile!"
+            )
+
+    def test_calibrate_delete_idor_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST delete on another user's calibration is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            # Create calibration on other user's profile.
+            cal = CalibrationOverride(
+                salary_profile_id=other["profile"].id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.0700000000"),
+                effective_state_rate=Decimal("0.0350000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/salary/{other['profile'].id}/calibrate/delete",
+            )
+            assert resp.status_code == 302
+
+            # Victim's calibration must still exist.
+            db.session.expire_all()
+            remaining = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=other["profile"].id,
+            ).first()
+            assert remaining is not None, (
+                "IDOR attack deleted victim's calibration!"
+            )
+
+    def test_calibrate_form_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /salary/<id>/calibrate for another user's profile is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.get(
+                f"/salary/{other['profile'].id}/calibrate",
+            )
+            assert resp.status_code == 302

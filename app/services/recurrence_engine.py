@@ -494,51 +494,49 @@ def _get_salary_profile(template_id):
 
 
 def _get_transaction_amount(template, salary_profile, period, all_periods):
-    """Determine the transaction amount, using paycheck calculator if salary-linked."""
+    """Determine the transaction amount, using paycheck calculator if salary-linked.
+
+    Uses load_tax_configs from the shared tax config service to avoid
+    duplicating query logic.  The tax year is derived from the period's
+    start date so that future-year periods pick up the correct configs.
+
+    When no tax configs exist for a future year, falls back to the
+    current calendar year's configs.  This matches the salary profile
+    page's behavior (which always uses the current year) and prevents
+    a mismatch between the grid's stored income amounts and the salary
+    page's live-calculated net pay.
+    """
     if salary_profile is None:
         return template.default_amount
 
     try:
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
-        from app.models.tax_config import (  # pylint: disable=import-outside-toplevel
-            FicaConfig,
-            StateTaxConfig,
-            TaxBracketSet,
-        )
+        from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
-        user_id = salary_profile.user_id
         tax_year = period.start_date.year
+        tax_configs = load_tax_configs(
+            salary_profile.user_id, salary_profile, tax_year=tax_year
+        )
 
-        bracket_set = (
-            db.session.query(TaxBracketSet)
-            .filter_by(
-                user_id=user_id,
-                filing_status_id=salary_profile.filing_status_id,
-                tax_year=tax_year,
+        # Fall back to current-year configs when the period's year has
+        # no configs at all.  Without this, future-year periods produce
+        # zero federal tax (bracket_set=None) and the grid shows a
+        # different net pay than the salary profile page.
+        current_year = date.today().year
+        if (tax_year != current_year
+                and tax_configs["bracket_set"] is None
+                and tax_configs["state_config"] is None
+                and tax_configs["fica_config"] is None):
+            tax_configs = load_tax_configs(
+                salary_profile.user_id, salary_profile, tax_year=current_year
             )
-            .first()
-        )
 
-        state_config = (
-            db.session.query(StateTaxConfig)
-            .filter_by(user_id=user_id, state_code=salary_profile.state_code)
-            .first()
-        )
-
-        fica_config = (
-            db.session.query(FicaConfig)
-            .filter_by(user_id=user_id, tax_year=tax_year)
-            .first()
-        )
-
-        tax_configs = {
-            "bracket_set": bracket_set,
-            "state_config": state_config,
-            "fica_config": fica_config,
-        }
+        # Load calibration override if the profile has one.
+        calibration = getattr(salary_profile, "calibration", None)
 
         breakdown = paycheck_calculator.calculate_paycheck(
-            salary_profile, period, all_periods, tax_configs
+            salary_profile, period, all_periods, tax_configs,
+            calibration=calibration,
         )
         return breakdown.net_pay
 
