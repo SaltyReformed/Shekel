@@ -290,14 +290,19 @@ class TestEscrow:
     """Tests for escrow component management."""
 
     def test_escrow_add(self, auth_client, seed_user, db, seed_periods):
-        """POST escrow component → creates."""
+        """POST escrow component with percentage inflation input creates correctly.
+
+        The form sends inflation_rate as a percentage (e.g. '3' for 3%).
+        The schema validates it, and the route converts to decimal (0.03)
+        before storage.
+        """
         acct = _create_mortgage_account(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/mortgage/escrow",
             data={
                 "name": "Property Tax",
                 "annual_amount": "4800.00",
-                "inflation_rate": "0.03",
+                "inflation_rate": "3",
             },
         )
         assert resp.status_code == 200
@@ -307,6 +312,9 @@ class TestEscrow:
         assert comp is not None
         assert comp.name == "Property Tax"
         assert comp.annual_amount == Decimal("4800.00")
+        assert comp.inflation_rate == Decimal("0.03"), (
+            f"Expected 0.03 (3% converted to decimal), got {comp.inflation_rate}"
+        )
 
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
         """Duplicate name → error message, and DB still has exactly 1 component."""
@@ -384,6 +392,68 @@ class TestEscrow:
         assert after.annual_amount == Decimal("3000.00"), (
             "IDOR attack modified victim's escrow amount!"
         )
+
+    def test_escrow_add_with_zero_inflation_rate(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Inflation rate of '0' is valid and stored as zero."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Insurance",
+                "annual_amount": "2400.00",
+                "inflation_rate": "0",
+            },
+        )
+        assert resp.status_code == 200
+
+        comp = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id, name="Insurance",
+        ).first()
+        assert comp is not None
+        assert comp.inflation_rate == Decimal("0")
+
+    def test_escrow_add_with_empty_inflation_rate(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Empty inflation rate is accepted as None (no inflation)."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "HOA",
+                "annual_amount": "3600.00",
+                "inflation_rate": "",
+            },
+        )
+        assert resp.status_code == 200
+
+        comp = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id, name="HOA",
+        ).first()
+        assert comp is not None
+        assert comp.inflation_rate is None
+
+    def test_escrow_add_with_negative_inflation_rate_rejected(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Negative inflation rate is rejected by schema validation."""
+        acct = _create_mortgage_account(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/mortgage/escrow",
+            data={
+                "name": "Tax",
+                "annual_amount": "4800.00",
+                "inflation_rate": "-2",
+            },
+        )
+        assert resp.status_code == 400
+
+        count = db.session.query(EscrowComponent).filter_by(
+            account_id=acct.id,
+        ).count()
+        assert count == 0
 
 
 class TestPayoffCalculator:

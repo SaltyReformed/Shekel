@@ -568,7 +568,7 @@ class EscrowComponentSchema(BaseSchema):
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=1))
+    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=100))
 
 
 # ── Auto Loan Schemas ────────────────────────────────────────────
