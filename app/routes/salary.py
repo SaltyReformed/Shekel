@@ -547,6 +547,65 @@ def delete_deduction(ded_id):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
+@salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
+@login_required
+def update_deduction(ded_id):
+    """Update an existing deduction on a salary profile."""
+    deduction = db.session.get(PaycheckDeduction, ded_id)
+    if deduction is None:
+        flash("Deduction not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    profile = deduction.salary_profile
+    if profile.user_id != current_user.id:
+        flash("Not authorized.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    errors = _deduction_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    data = _deduction_schema.load(request.form)
+    data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
+
+    # Convert percentage inputs (e.g. 6 → 0.06) for storage.
+    from decimal import Decimal as D
+    calc_method = db.session.get(CalcMethod, data["calc_method_id"])
+    if calc_method and calc_method.name == "percentage":
+        data["amount"] = D(str(data["amount"])) / D("100")
+    if data.get("inflation_rate"):
+        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+
+    _DEDUCTION_UPDATE_FIELDS = {
+        "name", "deduction_timing_id", "calc_method_id", "amount",
+        "deductions_per_year", "annual_cap", "inflation_enabled",
+        "inflation_rate", "inflation_effective_month", "target_account_id",
+    }
+    for field_name, value in data.items():
+        if field_name in _DEDUCTION_UPDATE_FIELDS:
+            setattr(deduction, field_name, value)
+
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "user_id=%d failed to update deduction %d on profile %d",
+            current_user.id, ded_id, profile.id,
+        )
+        flash("Failed to update deduction. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    logger.info("user_id=%d updated deduction %d on profile %d", current_user.id, ded_id, profile.id)
+    flash(f"Deduction '{deduction.name}' updated.", "success")
+
+    if request.headers.get("HX-Request"):
+        return _render_deductions_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+
 # ── Views: Breakdown & Projection ──────────────────────────────────
 
 

@@ -853,6 +853,123 @@ class TestDeductions:
             assert b"Roth IRA" in response.data
             assert b"300" in response.data
 
+    def test_update_deduction(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/deductions/<id>/edit updates an existing deduction."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k Updated",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "350.00",
+                    "deductions_per_year": "24",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Deduction &#39;401k Updated&#39; updated." in response.data
+
+            db.session.refresh(deduction)
+            assert deduction.name == "401k Updated"
+            assert deduction.amount == Decimal("350.00")
+            assert deduction.deductions_per_year == 24
+
+    def test_update_deduction_percentage_conversion(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Editing a percentage deduction correctly converts input to decimal."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=pct_method.id,
+                name="401k Pct",
+                amount=Decimal("0.06"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k Pct",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": pct_method.id,
+                    "amount": "8",
+                    "deductions_per_year": "26",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+
+            db.session.refresh(deduction)
+            assert deduction.amount == Decimal("0.08"), (
+                f"Expected 0.08 (8% converted to decimal), got {deduction.amount}"
+            )
+
+    def test_update_deduction_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/deductions/<id>/edit on another user's deduction is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            other_ded = PaycheckDeduction(
+                salary_profile_id=other["profile"].id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Other 401k",
+                amount=Decimal("100.00"),
+            )
+            db.session.add(other_ded)
+            db.session.commit()
+            orig_amount = other_ded.amount
+
+            response = auth_client.post(
+                f"/salary/deductions/{other_ded.id}/edit",
+                data={
+                    "name": "Hacked",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "9999.00",
+                    "deductions_per_year": "26",
+                },
+            )
+
+            assert response.status_code == 302
+
+            db.session.expire_all()
+            after = db.session.get(PaycheckDeduction, other_ded.id)
+            assert after.amount == orig_amount, (
+                "IDOR attack modified another user's deduction!"
+            )
+            assert after.name == "Other 401k", (
+                "IDOR attack modified another user's deduction name!"
+            )
+
     def test_add_percentage_deduction_converts_input(
         self, app, auth_client, seed_user, seed_periods
     ):
