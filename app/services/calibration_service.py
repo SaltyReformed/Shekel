@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 TWO_PLACES = Decimal("0.01")
-RATE_PLACES = Decimal("0.00001")
+# 10 decimal places for effective rates to avoid penny rounding errors
+# when the rate is multiplied back against the taxable/gross base.
+RATE_PLACES = Decimal("0.0000000001")
 
 
 @dataclass

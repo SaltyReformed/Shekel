@@ -61,10 +61,12 @@ class CalibrationOverride(db.Model):
     actual_medicare = db.Column(db.Numeric(10, 2), nullable=False)
 
     # Derived effective rates (used by the paycheck calculator).
-    effective_federal_rate = db.Column(db.Numeric(7, 5), nullable=False)
-    effective_state_rate = db.Column(db.Numeric(7, 5), nullable=False)
-    effective_ss_rate = db.Column(db.Numeric(7, 5), nullable=False)
-    effective_medicare_rate = db.Column(db.Numeric(7, 5), nullable=False)
+    # 10 decimal places to avoid penny rounding errors when the rate is
+    # multiplied back against the taxable/gross base.
+    effective_federal_rate = db.Column(db.Numeric(12, 10), nullable=False)
+    effective_state_rate = db.Column(db.Numeric(12, 10), nullable=False)
+    effective_ss_rate = db.Column(db.Numeric(12, 10), nullable=False)
+    effective_medicare_rate = db.Column(db.Numeric(12, 10), nullable=False)
 
     # Metadata.
     pay_stub_date = db.Column(db.Date, nullable=False)

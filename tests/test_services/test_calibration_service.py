@@ -57,12 +57,11 @@ class TestDeriveEffectiveRates:
         )
 
         assert isinstance(result, DerivedRates)
-        # 153.08 / 2107.69 = 0.072627... -> 0.07263
-        assert result.effective_federal_rate == Decimal("0.07263")
-        # 94.85 / 2107.69 = 0.044998... -> 0.04500
-        assert result.effective_state_rate == Decimal("0.04500")
-        assert result.effective_ss_rate == Decimal("0.06200")
-        assert result.effective_medicare_rate == Decimal("0.01450")
+        # With 10-decimal precision, rates reproduce exact pennies.
+        assert result.effective_federal_rate == Decimal("0.0726292766")
+        assert result.effective_state_rate == Decimal("0.0450018741")
+        assert result.effective_ss_rate == Decimal("0.0620013953")
+        assert result.effective_medicare_rate == Decimal("0.0144993478")
 
     def test_zero_federal_tax_produces_zero_rate(self):
         """A pay stub with $0 federal tax produces a 0.00000 federal rate.
@@ -79,10 +78,10 @@ class TestDeriveEffectiveRates:
             taxable_income=Decimal("1800.00"),
         )
 
-        assert result.effective_federal_rate == Decimal("0.00000")
+        assert result.effective_federal_rate == Decimal("0.0000000000")
 
     def test_zero_state_tax_produces_zero_rate(self):
-        """A state with no income tax produces a 0.00000 state rate."""
+        """A state with no income tax produces a zero state rate."""
         result = derive_effective_rates(
             actual_gross_pay=Decimal("2000.00"),
             actual_federal_tax=Decimal("150.00"),
@@ -92,7 +91,7 @@ class TestDeriveEffectiveRates:
             taxable_income=Decimal("1800.00"),
         )
 
-        assert result.effective_state_rate == Decimal("0.00000")
+        assert result.effective_state_rate == Decimal("0.0000000000")
 
     def test_zero_gross_pay_raises_error(self):
         """Gross pay of zero is rejected -- cannot derive FICA rates."""
@@ -153,8 +152,8 @@ class TestDeriveEffectiveRates:
             taxable_income="1800.00",
         )
 
-        assert result.effective_federal_rate == Decimal("0.05556")
-        assert result.effective_state_rate == Decimal("0.02778")
+        assert result.effective_federal_rate == Decimal("0.0555555556")
+        assert result.effective_state_rate == Decimal("0.0277777778")
 
     def test_high_income_rates(self):
         """Higher income levels produce reasonable effective rates.
@@ -170,10 +169,10 @@ class TestDeriveEffectiveRates:
             taxable_income=Decimal("6942.31"),
         )
 
-        # Federal: 1800 / 6942.31 = 0.259276... -> 0.25928
-        assert result.effective_federal_rate == Decimal("0.25928")
-        # SS: 476.92 / 7692.31 = 0.06200
-        assert result.effective_ss_rate == Decimal("0.06200")
+        # Federal: 1800 / 6942.31 at 10 places
+        assert result.effective_federal_rate == Decimal("0.2592796922")
+        # SS: 476.92 / 7692.31 at 10 places
+        assert result.effective_ss_rate == Decimal("0.0619995814")
 
 
 # ── apply_calibration Tests ──────────────────────────────────────
@@ -186,16 +185,13 @@ class TestApplyCalibration:
         """Apply known rates to a gross/taxable amount.
 
         gross = $2,307.69, taxable = $2,107.69
-        federal rate = 0.07263 -> 2107.69 * 0.07263 = $153.08
-        state rate = 0.04500 -> 2107.69 * 0.04500 = $94.85
-        ss rate = 0.06200 -> 2307.69 * 0.06200 = $143.08
-        medicare rate = 0.01450 -> 2307.69 * 0.01450 = $33.46
+        With 10-decimal rates, the round-trip reproduces exact pennies.
         """
         cal = FakeCalibration(
-            federal_rate="0.07263",
-            state_rate="0.04500",
-            ss_rate="0.06200",
-            medicare_rate="0.01450",
+            federal_rate="0.0726292766",
+            state_rate="0.0450018741",
+            ss_rate="0.0620013953",
+            medicare_rate="0.0144993478",
         )
 
         result = apply_calibration(
