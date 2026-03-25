@@ -780,3 +780,37 @@ class RetirementSettingsSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+
+
+# ── Calibration Schema (Phase 3.10) ──────────────────────────────
+
+
+class CalibrationSchema(BaseSchema):
+    """Validates POST data for paycheck calibration from a real pay stub."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    actual_gross_pay = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    actual_federal_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_state_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_social_security = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_medicare = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    pay_stub_date = fields.Date(required=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))

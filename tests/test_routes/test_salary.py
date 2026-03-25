@@ -5,6 +5,7 @@ Tests for salary profile CRUD, raises, deductions, breakdown,
 projection, and tax config endpoints (§2.2 of the test plan).
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -12,6 +13,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.calibration_override import CalibrationOverride
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -1756,3 +1758,137 @@ class TestNetBiweeklyMismatchFixes:
                 f"({txn_2027.estimated_amount}) should match because 2027 "
                 f"falls back to 2026 tax configs"
             )
+
+
+class TestCalibration:
+    """Tests for paycheck calibration routes (section 3.10)."""
+
+    def test_calibrate_form_renders(self, app, auth_client, seed_user, seed_periods):
+        """GET /salary/<id>/calibrate returns the calibration form."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.get(f"/salary/{profile.id}/calibrate")
+            assert resp.status_code == 200
+            assert b"Calibrate from Pay Stub" in resp.data
+            assert b'name="actual_gross_pay"' in resp.data
+
+    def test_calibrate_saves_and_regenerates(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Full calibration workflow: preview then confirm saves overrides."""
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            # Step 1: Preview -- derive rates.
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "pay_stub_date": "2026-03-14",
+                },
+            )
+            assert resp.status_code == 200
+            assert b"Confirm Calibration" in resp.data
+            assert b"effective_federal_rate" in resp.data
+
+            # Extract the hidden field values from the confirmation form.
+            html = resp.data.decode()
+            import re
+            fed_rate = re.search(
+                r'name="effective_federal_rate" value="([^"]+)"', html
+            ).group(1)
+            state_rate = re.search(
+                r'name="effective_state_rate" value="([^"]+)"', html
+            ).group(1)
+            ss_rate = re.search(
+                r'name="effective_ss_rate" value="([^"]+)"', html
+            ).group(1)
+            med_rate = re.search(
+                r'name="effective_medicare_rate" value="([^"]+)"', html
+            ).group(1)
+
+            # Step 2: Confirm -- save to DB.
+            resp2 = auth_client.post(
+                f"/salary/{profile.id}/calibrate/confirm",
+                data={
+                    "actual_gross_pay": "2884.62",
+                    "actual_federal_tax": "200.00",
+                    "actual_state_tax": "100.00",
+                    "actual_social_security": "178.85",
+                    "actual_medicare": "41.83",
+                    "effective_federal_rate": fed_rate,
+                    "effective_state_rate": state_rate,
+                    "effective_ss_rate": ss_rate,
+                    "effective_medicare_rate": med_rate,
+                    "pay_stub_date": "2026-03-14",
+                },
+                follow_redirects=True,
+            )
+            assert resp2.status_code == 200
+            assert b"Paycheck calibration saved" in resp2.data
+
+            # Verify DB record.
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).first()
+            assert cal is not None
+            assert cal.is_active is True
+            assert cal.actual_gross_pay == Decimal("2884.62")
+            assert cal.effective_federal_rate == Decimal(fed_rate)
+
+    def test_calibrate_delete_reverts_to_brackets(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/<id>/calibrate/delete removes calibration."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            # Manually create a calibration.
+            cal = CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.07000"),
+                effective_state_rate=Decimal("0.03500"),
+                effective_ss_rate=Decimal("0.06200"),
+                effective_medicare_rate=Decimal("0.01450"),
+                pay_stub_date=date(2026, 3, 14),
+                is_active=True,
+            )
+            db.session.add(cal)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/salary/{profile.id}/calibrate/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Calibration removed" in resp.data
+
+            # Verify DB record is gone.
+            remaining = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).first()
+            assert remaining is None
+
+    def test_calibrate_form_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """GET /salary/<id>/calibrate for another user's profile is rejected."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.get(
+                f"/salary/{other['profile'].id}/calibrate",
+            )
+            assert resp.status_code == 302
