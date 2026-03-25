@@ -531,8 +531,12 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
                 salary_profile.user_id, salary_profile, tax_year=current_year
             )
 
+        # Load calibration override if the profile has one.
+        calibration = getattr(salary_profile, "calibration", None)
+
         breakdown = paycheck_calculator.calculate_paycheck(
-            salary_profile, period, all_periods, tax_configs
+            salary_profile, period, all_periods, tax_configs,
+            calibration=calibration,
         )
         return breakdown.net_pay
 

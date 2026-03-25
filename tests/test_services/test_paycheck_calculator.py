@@ -2442,3 +2442,188 @@ class TestPreTaxDeductionTaxImpact:
         # FICA unchanged at higher income.
         assert with_ded.social_security == no_ded.social_security
         assert with_ded.medicare == no_ded.medicare
+
+
+# ── Calibration Override Tests ───────────────────────────────────
+
+
+class FakeCalibration:
+    """Minimal stand-in for a CalibrationOverride."""
+
+    def __init__(self, federal_rate, state_rate, ss_rate, medicare_rate,
+                 is_active=True):
+        self.effective_federal_rate = Decimal(str(federal_rate))
+        self.effective_state_rate = Decimal(str(state_rate))
+        self.effective_ss_rate = Decimal(str(ss_rate))
+        self.effective_medicare_rate = Decimal(str(medicare_rate))
+        self.is_active = is_active
+
+
+class TestCalibrationIntegration:
+    """Tests for calibration override integration in calculate_paycheck."""
+
+    def test_calibrated_paycheck_uses_override_rates(
+        self, simple_tax_configs
+    ):
+        """When calibration is active, taxes use effective rates, not brackets.
+
+        Profile: $60,000 salary, no deductions.
+        Gross biweekly = 60000/26 = $2,307.69
+        Taxable = $2,307.69 (no pre-tax deductions)
+
+        Calibrated rates:
+          federal = 0.10000 -> 2307.69 * 0.10 = $230.77
+          state = 0.05000 -> 2307.69 * 0.05 = $115.38
+          ss = 0.06200 -> 2307.69 * 0.062 = $143.08
+          medicare = 0.01450 -> 2307.69 * 0.0145 = $33.46
+        """
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        assert result.federal_tax == Decimal("230.77")
+        assert result.state_tax == Decimal("115.38")
+        assert result.social_security == Decimal("143.08")
+        assert result.medicare == Decimal("33.46")
+
+        expected_net = (
+            Decimal("2307.69")
+            - Decimal("230.77")
+            - Decimal("115.38")
+            - Decimal("143.08")
+            - Decimal("33.46")
+        )
+        assert result.net_pay == expected_net
+
+    def test_calibrated_paycheck_differs_from_bracket_based(
+        self, simple_tax_configs
+    ):
+        """Calibrated taxes differ from bracket-based for the same profile.
+
+        This proves the calibration path is actually being used.
+        """
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        # Bracket-based calculation.
+        bracket_result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+        )
+
+        # Calibrated with intentionally different rates.
+        cal = FakeCalibration(
+            federal_rate="0.15000",
+            state_rate="0.03000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+        cal_result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        assert cal_result.federal_tax != bracket_result.federal_tax, (
+            "Calibrated federal tax should differ from bracket-based"
+        )
+        assert cal_result.state_tax != bracket_result.state_tax, (
+            "Calibrated state tax should differ from bracket-based"
+        )
+
+    def test_inactive_calibration_uses_brackets(
+        self, simple_tax_configs
+    ):
+        """When calibration.is_active is False, bracket-based taxes are used."""
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        # Bracket-based (no calibration).
+        bracket_result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+        )
+
+        # Inactive calibration should be ignored.
+        cal = FakeCalibration(
+            federal_rate="0.50000",
+            state_rate="0.50000",
+            ss_rate="0.50000",
+            medicare_rate="0.50000",
+            is_active=False,
+        )
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        assert result.federal_tax == bracket_result.federal_tax
+        assert result.state_tax == bracket_result.state_tax
+        assert result.social_security == bracket_result.social_security
+        assert result.medicare == bracket_result.medicare
+        assert result.net_pay == bracket_result.net_pay
+
+    def test_none_calibration_uses_brackets(
+        self, simple_tax_configs
+    ):
+        """calibration=None (default) produces the same result as omitting it."""
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result_omitted = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+        )
+        result_none = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=None,
+        )
+
+        assert result_omitted.net_pay == result_none.net_pay
+        assert result_omitted.federal_tax == result_none.federal_tax
+
+    def test_calibration_with_pretax_deductions(
+        self, simple_tax_configs
+    ):
+        """Calibrated federal/state use taxable (gross - pre-tax), not gross.
+
+        Profile: $60k, $200/paycheck 401k pre-tax.
+        Gross = $2,307.69, taxable = $2,107.69
+        federal rate 0.10 -> 2107.69 * 0.10 = $210.77
+        ss rate 0.062 -> 2307.69 * 0.062 = $143.08 (gross, not taxable)
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            deductions=[
+                FakeDeduction(
+                    name="401k", amount="200",
+                    deduction_timing="pre_tax",
+                ),
+            ],
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        cal = FakeCalibration(
+            federal_rate="0.10000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        # Federal uses taxable (2107.69), not gross (2307.69).
+        assert result.federal_tax == Decimal("210.77")
+        # SS uses gross.
+        assert result.social_security == Decimal("143.08")
