@@ -499,6 +499,12 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
     Uses load_tax_configs from the shared tax config service to avoid
     duplicating query logic.  The tax year is derived from the period's
     start date so that future-year periods pick up the correct configs.
+
+    When no tax configs exist for a future year, falls back to the
+    current calendar year's configs.  This matches the salary profile
+    page's behavior (which always uses the current year) and prevents
+    a mismatch between the grid's stored income amounts and the salary
+    page's live-calculated net pay.
     """
     if salary_profile is None:
         return template.default_amount
@@ -511,6 +517,19 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         tax_configs = load_tax_configs(
             salary_profile.user_id, salary_profile, tax_year=tax_year
         )
+
+        # Fall back to current-year configs when the period's year has
+        # no configs at all.  Without this, future-year periods produce
+        # zero federal tax (bracket_set=None) and the grid shows a
+        # different net pay than the salary profile page.
+        current_year = date.today().year
+        if (tax_year != current_year
+                and tax_configs["bracket_set"] is None
+                and tax_configs["state_config"] is None
+                and tax_configs["fica_config"] is None):
+            tax_configs = load_tax_configs(
+                salary_profile.user_id, salary_profile, tax_year=current_year
+            )
 
         breakdown = paycheck_calculator.calculate_paycheck(
             salary_profile, period, all_periods, tax_configs

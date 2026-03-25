@@ -12,6 +12,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
@@ -1457,4 +1458,74 @@ class TestNetBiweeklyMismatchFixes:
             assert template.default_amount == expected, (
                 f"Without tax configs, default_amount ({template.default_amount}) "
                 f"should equal gross biweekly ({expected})"
+            )
+
+    def test_future_year_transactions_use_current_year_tax_configs(
+        self, app, auth_client, seed_user, seed_periods_52
+    ):
+        """Future-year salary transactions fall back to current-year tax configs.
+
+        When tax configs exist only for 2026, periods in 2027 should use the
+        2026 configs instead of producing zero-tax paychecks.  This prevents
+        the net biweekly mismatch where the salary page (which always uses
+        current-year configs) shows a different amount than the grid.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"), tax_year=2026)
+            _seed_fica(user.id, tax_year=2026)
+            db.session.commit()
+
+            # Regenerate transactions via the recurrence engine so that
+            # future-year periods get amounts from the calculator.
+            from app.services import recurrence_engine, pay_period_service
+            periods = pay_period_service.get_all_periods(user.id)
+            recurrence_engine.regenerate_for_template(
+                profile.template, periods, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            # Find a 2026 transaction and a 2027 transaction.
+            txn_2026 = (
+                db.session.query(Transaction)
+                .join(PayPeriod)
+                .filter(
+                    Transaction.template_id == profile.template_id,
+                    Transaction.scenario_id == seed_user["scenario"].id,
+                    db.extract("year", PayPeriod.start_date) == 2026,
+                )
+                .first()
+            )
+            txn_2027 = (
+                db.session.query(Transaction)
+                .join(PayPeriod)
+                .filter(
+                    Transaction.template_id == profile.template_id,
+                    Transaction.scenario_id == seed_user["scenario"].id,
+                    db.extract("year", PayPeriod.start_date) == 2027,
+                )
+                .first()
+            )
+
+            assert txn_2026 is not None, "Expected a 2026 salary transaction"
+            assert txn_2027 is not None, "Expected a 2027 salary transaction"
+
+            gross_biweekly = (Decimal("75000.00") / 26).quantize(Decimal("0.01"))
+
+            # Both should be less than gross (taxes applied).
+            assert txn_2026.estimated_amount < gross_biweekly, (
+                f"2026 txn ({txn_2026.estimated_amount}) should be less than "
+                f"gross ({gross_biweekly}) -- taxes should be applied"
+            )
+            assert txn_2027.estimated_amount < gross_biweekly, (
+                f"2027 txn ({txn_2027.estimated_amount}) should be less than "
+                f"gross ({gross_biweekly}) -- fallback taxes should be applied"
+            )
+
+            # Both years should produce the same net pay (same tax configs).
+            assert txn_2026.estimated_amount == txn_2027.estimated_amount, (
+                f"2026 txn ({txn_2026.estimated_amount}) and 2027 txn "
+                f"({txn_2027.estimated_amount}) should match because 2027 "
+                f"falls back to 2026 tax configs"
             )
