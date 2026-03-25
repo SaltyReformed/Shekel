@@ -708,6 +708,37 @@ class PensionProfileCreateSchema(BaseSchema):
     earliest_retirement_date = fields.Date(allow_none=True)
     planned_retirement_date = fields.Date(allow_none=True)
 
+    @validates_schema
+    def validate_pension_dates(self, data, **kwargs):
+        """Cross-field date validation for pension profiles."""
+        from datetime import date as date_type  # pylint: disable=import-outside-toplevel
+
+        hire = data.get("hire_date")
+        earliest = data.get("earliest_retirement_date")
+        planned = data.get("planned_retirement_date")
+
+        if earliest and hire and earliest <= hire:
+            raise ValidationError(
+                "Earliest retirement date must be after hire date.",
+                field_name="earliest_retirement_date",
+            )
+        if planned and hire and planned <= hire:
+            raise ValidationError(
+                "Planned retirement date must be after hire date.",
+                field_name="planned_retirement_date",
+            )
+        if planned and planned <= date_type.today():
+            raise ValidationError(
+                "Planned retirement date must be in the future.",
+                field_name="planned_retirement_date",
+            )
+        if planned and earliest and planned < earliest:
+            raise ValidationError(
+                "Planned retirement date must be on or after "
+                "earliest retirement date.",
+                field_name="planned_retirement_date",
+            )
+
 
 class PensionProfileUpdateSchema(BaseSchema):
     """Validates POST data for updating a pension profile."""

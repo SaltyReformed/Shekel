@@ -587,6 +587,135 @@ class TestRetirementNegativePaths:
         ).count()
         assert count == 0
 
+    def test_create_pension_retirement_before_hire_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Planned retirement date before hire date is rejected."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Bad Dates",
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2020-01-01",
+            "planned_retirement_date": "2019-01-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_retirement_in_past_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Planned retirement date in the past is rejected."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Past Retirement",
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2010-01-01",
+            "planned_retirement_date": "2020-01-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_earliest_before_hire_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Earliest retirement date before hire date is rejected."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Bad Earliest",
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2020-01-01",
+            "earliest_retirement_date": "2019-06-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_planned_before_earliest_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Planned retirement date before earliest retirement date is rejected."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Backwards Dates",
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2010-01-01",
+            "earliest_retirement_date": "2050-01-01",
+            "planned_retirement_date": "2045-01-01",
+        })
+        assert resp.status_code == 302
+        resp2 = auth_client.get(resp.headers["Location"])
+        assert b"Please correct" in resp2.data
+
+        count = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id,
+        ).count()
+        assert count == 0
+
+    def test_create_pension_valid_dates_accepted(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Valid date ordering is accepted and pension is created."""
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "Good Dates",
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2015-01-01",
+            "earliest_retirement_date": "2045-01-01",
+            "planned_retirement_date": "2050-01-01",
+        })
+        assert resp.status_code == 302
+
+        pension = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id, name="Good Dates",
+        ).first()
+        assert pension is not None
+        assert pension.hire_date == date(2015, 1, 1)
+        assert pension.earliest_retirement_date == date(2045, 1, 1)
+        assert pension.planned_retirement_date == date(2050, 1, 1)
+
+    def test_update_pension_retirement_before_hire_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Updating planned_retirement_date to before existing hire_date is rejected."""
+        pension = _create_pension(seed_user, db.session)
+        # pension.hire_date is 2018-07-01
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 302
+        location = resp.headers.get("Location", "")
+        assert "edit" in location, (
+            f"Expected redirect to edit page, got {location}"
+        )
+        resp2 = auth_client.get(location)
+        assert b"must be after hire date" in resp2.data
+
+        # Pension should be unchanged.
+        db.session.expire_all()
+        after = db.session.get(PensionProfile, pension.id)
+        assert after.planned_retirement_date == date(2048, 7, 1)
+
     def test_edit_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods,
     ):
