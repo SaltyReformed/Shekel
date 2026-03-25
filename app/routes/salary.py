@@ -412,6 +412,61 @@ def delete_raise(raise_id):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
+@salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
+@login_required
+def update_raise(raise_id):
+    """Update an existing raise on a salary profile."""
+    salary_raise = db.session.get(SalaryRaise, raise_id)
+    if salary_raise is None:
+        flash("Raise not found.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    profile = salary_raise.salary_profile
+    if profile.user_id != current_user.id:
+        flash("Not authorized.", "danger")
+        return redirect(url_for("salary.list_profiles"))
+
+    errors = _raise_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    data = _raise_schema.load(request.form)
+    data["is_recurring"] = request.form.get("is_recurring") == "on"
+
+    # Convert percentage input (e.g. 3 → 0.03) for storage.
+    if data.get("percentage") is not None:
+        from decimal import Decimal as D
+        data["percentage"] = D(str(data["percentage"])) / D("100")
+
+    _RAISE_UPDATE_FIELDS = {
+        "raise_type_id", "effective_month", "effective_year",
+        "percentage", "flat_amount", "is_recurring", "notes",
+    }
+    for field_name, value in data.items():
+        if field_name in _RAISE_UPDATE_FIELDS:
+            setattr(salary_raise, field_name, value)
+
+    try:
+        _regenerate_salary_transactions(profile)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "user_id=%d failed to update raise %d on profile %d",
+            current_user.id, raise_id, profile.id,
+        )
+        flash("Failed to update raise. Please try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    logger.info("user_id=%d updated raise %d on profile %d", current_user.id, raise_id, profile.id)
+    flash("Raise updated.", "success")
+
+    if request.headers.get("HX-Request"):
+        return _render_raises_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+
 # ── Deductions ─────────────────────────────────────────────────────
 
 

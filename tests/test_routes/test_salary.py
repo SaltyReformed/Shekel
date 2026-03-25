@@ -522,6 +522,116 @@ class TestRaises:
             assert response.status_code == 200
             assert b'id="raises-section"' in response.data
 
+    def test_update_raise(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/raises/<id>/edit updates an existing raise."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+            cola_type = db.session.query(RaiseType).filter_by(name="cola").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0300"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/edit",
+                data={
+                    "raise_type_id": cola_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2027",
+                    "percentage": "4.50",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Raise updated." in response.data
+
+            db.session.refresh(salary_raise)
+            assert salary_raise.raise_type_id == cola_type.id
+            assert salary_raise.effective_month == 6
+            assert salary_raise.effective_year == 2027
+            assert salary_raise.percentage == Decimal("0.0450")
+
+    def test_update_raise_htmx_returns_partial(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/raises/<id>/edit with HX-Request returns the raises partial."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=1,
+                effective_year=2026,
+                flat_amount=Decimal("5000.00"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/edit",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "1",
+                    "effective_year": "2026",
+                    "flat_amount": "6000.00",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+            assert b"6000.00" in response.data
+
+    def test_update_raise_other_user_blocked(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /salary/raises/<id>/edit on another user's raise is rejected."""
+        with app.app_context():
+            # Create a raise owned by a different user.
+            other = _create_other_user_profile()
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            other_raise = SalaryRaise(
+                salary_profile_id=other["profile"].id,
+                raise_type_id=raise_type.id,
+                effective_month=6,
+                effective_year=2026,
+                percentage=Decimal("0.0300"),
+            )
+            db.session.add(other_raise)
+            db.session.commit()
+            orig_pct = other_raise.percentage
+
+            response = auth_client.post(
+                f"/salary/raises/{other_raise.id}/edit",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2026",
+                    "percentage": "10.00",
+                },
+            )
+
+            # Should redirect, not 200.
+            assert response.status_code == 302
+
+            # Raise should be unchanged.
+            db.session.expire_all()
+            after = db.session.get(SalaryRaise, other_raise.id)
+            assert after.percentage == orig_pct, (
+                "IDOR attack modified another user's raise!"
+            )
+
     def test_delete_raise(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/raises/<id>/delete removes a raise."""
         with app.app_context():
