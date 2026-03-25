@@ -136,6 +136,14 @@ class TestRetirementDashboard:
         assert b"Retirement Planning" in resp.data
         assert b"Pension Benefit Details" in resp.data
 
+    def test_dashboard_no_stale_settings_migration_message(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Dashboard must not contain the old 'settings have moved' notice."""
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        assert b"have moved to" not in resp.data
+
     def test_dashboard_requires_auth(self, client, db):
         """Unauthenticated → redirect to login."""
         resp = client.get("/retirement")
