@@ -469,6 +469,58 @@ class TestRaises:
             assert b"Cola" in response.data
             assert b"2000.00" in response.data
 
+    def test_add_raise_htmx_response_contains_raises_section_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """HTMX partial must include id='raises-section' so subsequent swaps work.
+
+        Without this id on the partial's root element, the first HTMX swap
+        replaces the target and subsequent operations cannot find #raises-section.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/raises",
+                data={
+                    "raise_type_id": raise_type.id,
+                    "effective_month": "6",
+                    "effective_year": "2027",
+                    "percentage": "3",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+
+    def test_delete_raise_htmx_response_contains_raises_section_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Delete-raise HTMX partial must also preserve the raises-section id."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+
+            salary_raise = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0200"),
+            )
+            db.session.add(salary_raise)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/raises/{salary_raise.id}/delete",
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            assert b'id="raises-section"' in response.data
+
     def test_delete_raise(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/raises/<id>/delete removes a raise."""
         with app.app_context():
