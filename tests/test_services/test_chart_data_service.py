@@ -186,6 +186,7 @@ class TestSpendingByCategory:
                         template_id=None,
                         pay_period_id=seed_periods[0].id,
                         scenario_id=seed_user["scenario"].id,
+                        account_id=seed_user["account"].id,
                         category_id=cat.id,
                         transaction_type_id=expense_type.id,
                         name=name,
@@ -221,6 +222,7 @@ class TestSpendingByCategory:
                 template_id=None,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 name="Cancelled Rent",
@@ -280,6 +282,7 @@ class TestSpendingByCategory:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=cat.id,
                     transaction_type_id=expense_type.id,
                     name=name,
@@ -346,6 +349,7 @@ class TestBudgetVsActuals:
                 template_id=None,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 name="Rent",
@@ -518,8 +522,6 @@ class TestBalanceConsistency:
                 anchor_period_id=account.current_anchor_period_id,
                 periods=periods,
                 transactions=[],
-                transfers=[],
-                account_id=account.id,
             )
 
             # Compare each period.
@@ -662,6 +664,7 @@ class TestSpendingChartRealisticData:
                         template_id=None,
                         pay_period_id=seed_periods[p_idx].id,
                         scenario_id=seed_user["scenario"].id,
+                        account_id=seed_user["account"].id,
                         category_id=cat.id,
                         transaction_type_id=expense_type.id,
                         name=f"{cat.group_name} P{p_idx}",
@@ -678,6 +681,7 @@ class TestSpendingChartRealisticData:
                     template_id=None,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=cat.id,
                     transaction_type_id=expense_type.id,
                     name=f"Cancelled {cat.group_name}",
@@ -694,6 +698,7 @@ class TestSpendingChartRealisticData:
                     template_id=None,
                     pay_period_id=seed_periods[i].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=salary_cat.id,
                     transaction_type_id=income_type.id,
                     name=f"Income Noise {i}",
@@ -708,6 +713,7 @@ class TestSpendingChartRealisticData:
                 template_id=None,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=categories_ordered[0].id,
                 transaction_type_id=expense_type.id,
                 name="Deleted Noise",
@@ -782,6 +788,7 @@ class TestSpendingChartRealisticData:
                         template_id=None,
                         pay_period_id=seed_periods[p_idx].id,
                         scenario_id=seed_user["scenario"].id,
+                        account_id=seed_user["account"].id,
                         category_id=cat.id,
                         transaction_type_id=expense_type.id,
                         name=f"Range {cat.group_name} P{p_idx}",
@@ -870,6 +877,7 @@ class TestSpendingChartRealisticData:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=cat.id,
                     transaction_type_id=expense_type.id,
                     name=name,
@@ -956,6 +964,7 @@ class TestBalanceChart52Periods:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=scenario.id,
+                    account_id=account.id,
                     category_id=salary_cat.id,
                     transaction_type_id=income_type.id,
                     name=f"Paycheck P{p_idx}",
@@ -970,6 +979,7 @@ class TestBalanceChart52Periods:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=scenario.id,
+                    account_id=account.id,
                     category_id=rent_cat.id,
                     transaction_type_id=expense_type.id,
                     name=f"Rent P{p_idx}",
@@ -983,6 +993,7 @@ class TestBalanceChart52Periods:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=scenario.id,
+                    account_id=account.id,
                     category_id=car_cat.id,
                     transaction_type_id=expense_type.id,
                     name=f"Car P{p_idx}",
@@ -997,6 +1008,7 @@ class TestBalanceChart52Periods:
                         template_id=None,
                         pay_period_id=period.id,
                         scenario_id=scenario.id,
+                        account_id=account.id,
                         category_id=rent_cat.id,
                         transaction_type_id=expense_type.id,
                         name="Cancelled Expense P10",
@@ -1022,20 +1034,11 @@ class TestBalanceChart52Periods:
                 )
                 .all()
             )
-            transfers = (
-                db.session.query(Transfer)
-                .filter_by(scenario_id=scenario.id)
-                .filter(Transfer.pay_period_id.in_(period_ids))
-                .all()
-            )
-
             calc_balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=account.current_anchor_balance,
                 anchor_period_id=seed_periods_52[0].id,
                 periods=seed_periods_52,
                 transactions=transactions,
-                transfers=transfers,
-                account_id=account.id,
             )
 
             # Call chart data service.
@@ -1283,6 +1286,7 @@ class TestNetWorthRealisticData:
                     template_id=None,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=salary_cat.id,
                     transaction_type_id=income_type.id,
                     name=f"Income P{p_idx}",
@@ -1388,6 +1392,7 @@ class TestBudgetVsActualsRealisticData:
                     template_id=None,
                     pay_period_id=seed_periods[p_idx].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     category_id=cat.id,
                     transaction_type_id=expense_type.id,
                     name=f"BvA {cat.group_name} P{p_idx}",
@@ -1451,6 +1456,7 @@ class TestBudgetVsActualsRealisticData:
                 template_id=None,
                 pay_period_id=seed_periods[5].id,  # Current period.
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=cat.id,
                 transaction_type_id=expense_type.id,
                 name="Projected Rent",
@@ -1646,3 +1652,75 @@ class TestAmortizationBreakdownExact:
             # Amortization properties hold for auto loans too.
             assert result["principal"][-1] > result["principal"][0]
             assert result["interest"][-1] < result["interest"][0]
+
+
+class TestBalanceOverTimeWithTransfers:
+    """Verify that the balance-over-time chart includes shadow transactions
+    from transfers in account balance calculations.
+
+    The chart data service's _calculate_account_balances previously used
+    template.has(account_id=) which excluded shadow transactions (they
+    have template_id=None).  The fix uses Transaction.account_id directly.
+    """
+
+    def test_balance_chart_includes_transfer_deposits(self, app, seed_user, seed_periods):
+        """Verify that balance-over-time chart data for a savings account
+        includes transfer deposit effects.  Without the fix, the chart
+        would show the anchor balance + interest only, missing all
+        deposits from transfers.
+        """
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        from app.models.ref import Status  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Create a savings account.
+            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings Chart Test",
+                current_anchor_balance=Decimal("5000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            # Add transfer categories.
+            incoming = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Incoming",
+            )
+            outgoing = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Outgoing",
+            )
+            db.session.add_all([incoming, outgoing])
+            db.session.flush()
+
+            # Create a $1000 transfer from checking to savings.
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1000.00"),
+                status_id=projected.id,
+            )
+            db.session.commit()
+
+            result = chart_data_service.get_balance_over_time(
+                seed_user["user"].id, account_ids=[savings.id],
+            )
+
+            assert result["datasets"], "Expected at least one dataset"
+            savings_dataset = result["datasets"][0]
+
+            # The first period balance should be $6000 (anchor $5000 +
+            # $1000 deposit).  Without the fix it would be $5000.
+            assert savings_dataset["data"][0] >= 6000.0, (
+                f"Savings balance {savings_dataset['data'][0]} should "
+                f"be >= $6000 (anchor $5000 + $1000 transfer deposit)"
+            )

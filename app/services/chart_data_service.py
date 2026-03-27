@@ -22,7 +22,6 @@ from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status
 from app.services import (
     amortization_engine,
@@ -197,24 +196,22 @@ def _calculate_account_balances(account, scenario, periods):
 
     period_ids = [p.id for p in periods]
 
-    # Load transactions for this account.
+    # Load transactions scoped to this account using the account_id
+    # column.  This includes shadow transactions from transfers, ad-hoc
+    # transactions, and template-generated transactions.  The old
+    # template.has(account_id=) approach excluded shadow transactions
+    # (template_id=None), causing balance charts to miss all transfer
+    # effects.  The is_override fallback also leaked overridden
+    # transactions from OTHER accounts into this account's balance.
+    # Follows the pattern in grid.py lines 87-98.
     transactions = (
         db.session.query(Transaction)
-        .filter_by(scenario_id=scenario.id)
-        .filter(Transaction.pay_period_id.in_(period_ids))
         .filter(
-            db.or_(
-                Transaction.template.has(account_id=account.id),
-                Transaction.is_override.is_(True),
-            )
+            Transaction.account_id == account.id,
+            Transaction.scenario_id == scenario.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
         )
-        .all()
-    )
-
-    transfers = (
-        db.session.query(Transfer)
-        .filter_by(scenario_id=scenario.id)
-        .filter(Transfer.pay_period_id.in_(period_ids))
         .all()
     )
 
@@ -224,8 +221,6 @@ def _calculate_account_balances(account, scenario, periods):
         "anchor_period_id": account.current_anchor_period_id,
         "periods": periods,
         "transactions": transactions,
-        "transfers": transfers,
-        "account_id": account.id,
     }
 
     if acct_type == "hysa" and account.hysa_params:
@@ -238,7 +233,7 @@ def _calculate_account_balances(account, scenario, periods):
         loan_params = _get_loan_params(account)
         if loan_params:
             balances, _ = balance_calculator.calculate_balances_with_amortization(
-                **base_args, loan_params=loan_params,
+                **base_args, account_id=account.id, loan_params=loan_params,
             )
             return balances
 
