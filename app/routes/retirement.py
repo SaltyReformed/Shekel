@@ -135,8 +135,20 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         .all()
     )
 
+    # Derive the planned retirement date.  Pension profiles are the
+    # primary source (the user explicitly entered a retirement date when
+    # creating the pension).  Fall back to the settings field for users
+    # without pensions.  When multiple pensions exist, use the latest
+    # date -- that represents when the user actually stops working.
+    # This prevents the confusing UX where entering a retirement date
+    # on the pension form has no effect on investment projections.
+    pension_dates = [
+        p.planned_retirement_date for p in pensions
+        if p.planned_retirement_date is not None
+    ]
     planned_retirement_date = (
-        settings.planned_retirement_date if settings else None
+        max(pension_dates) if pension_dates
+        else (settings.planned_retirement_date if settings else None)
     )
 
     retirement_account_projections = []
@@ -242,7 +254,20 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         )
         projected_balance = balance
 
-        if params and synthetic_periods:
+        # Determine projection periods.  Use synthetic periods (to
+        # retirement date) if available; fall back to real future pay
+        # periods so accounts still show growth even without a planned
+        # retirement date.  Without this fallback, projected_balance
+        # would equal the current balance -- hiding all future
+        # contribution and return effects.
+        projection_periods = synthetic_periods
+        if not projection_periods and current_period:
+            projection_periods = [
+                p for p in all_periods
+                if p.period_index >= current_period.period_index
+            ]
+
+        if params and projection_periods:
             acct_deductions = deductions_by_account.get(acct.id, [])
             adapted_deductions = []
             for ded in acct_deductions:
@@ -282,7 +307,7 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             proj = growth_engine.project_balance(
                 current_balance=balance,
                 assumed_annual_return=annual_return,
-                periods=synthetic_periods,
+                periods=projection_periods,
                 periodic_contribution=inputs.periodic_contribution,
                 employer_params=inputs.employer_params,
                 annual_contribution_limit=inputs.annual_contribution_limit,
@@ -294,6 +319,7 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         type_name = type_name_map.get(acct.account_type_id, "")
         retirement_account_projections.append({
             "account": acct,
+            "current_balance": balance,
             "projected_balance": projected_balance,
             "is_traditional": type_name in TRADITIONAL_TYPES,
         })
@@ -388,7 +414,11 @@ def dashboard():
             .first()
         )
         if params and params.assumed_annual_return:
-            bal = acct.current_anchor_balance or Decimal("0")
+            # Use the balance-calculator-computed balance from the gap
+            # data (includes shadow transactions from transfers), not
+            # the raw anchor which would underweight accounts that have
+            # received transfer deposits.
+            bal = proj.get("current_balance", acct.current_anchor_balance) or Decimal("0")
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:
