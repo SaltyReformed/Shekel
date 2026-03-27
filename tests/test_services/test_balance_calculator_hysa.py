@@ -23,12 +23,15 @@ HysaParams = namedtuple(
     "HysaParams", ["apy", "compounding_frequency"]
 )
 
-# Transfer/Status stubs for tests with account transfers.
-TransferStub = namedtuple("TransferStub", [
-    "pay_period_id", "from_account_id", "to_account_id",
-    "amount", "status", "is_deleted",
-])
+# Shadow transaction stub -- represents a transfer's effect as an
+# income or expense transaction.  The balance calculator sees these
+# identically to regular transactions.
 StatusStub = namedtuple("StatusStub", ["name"])
+TxnTypeStub = namedtuple("TxnTypeStub", ["name"])
+ShadowTxn = namedtuple("ShadowTxn", [
+    "pay_period_id", "estimated_amount", "status",
+    "transaction_type", "transfer_id", "is_income", "is_expense",
+])
 
 
 def _make_periods(count=4):
@@ -43,6 +46,19 @@ def _make_periods(count=4):
             start_date=start, end_date=end,
         ))
     return periods
+
+
+def _shadow_income(pay_period_id, amount, status_name="projected"):
+    """Create a shadow income transaction representing a transfer deposit."""
+    return ShadowTxn(
+        pay_period_id=pay_period_id,
+        estimated_amount=amount,
+        status=StatusStub(name=status_name),
+        transaction_type=TxnTypeStub(name="income"),
+        transfer_id=1,
+        is_income=True,
+        is_expense=False,
+    )
 
 
 class TestHysaBalanceWithInterest:
@@ -157,13 +173,13 @@ class TestHysaBalanceWithInterest:
         )
 
     def test_hysa_with_transfers(self):
-        """Transfers and interest projection combined correctly.
+        """Shadow income transactions and interest projection combined correctly.
 
         Parameters: $10,000 anchor, 4.5% APY, daily compounding,
-        2 periods, $500 transfer into account in period 2.
+        2 periods, $500 shadow income (deposit) in period 2.
 
-        Proves exact balance and interest when a transfer increases
-        the base balance mid-projection.
+        Proves exact balance and interest when a shadow income
+        transaction increases the base balance mid-projection.
         """
         periods = _make_periods(2)
         params = HysaParams(
@@ -171,22 +187,11 @@ class TestHysaBalanceWithInterest:
             compounding_frequency="daily",
         )
 
-        # Simulate a transfer into the account.
-        Transfer = namedtuple("Transfer", [
-            "pay_period_id", "from_account_id",
-            "to_account_id", "amount",
-            "status", "is_deleted",
-        ])
-        Status = namedtuple("Status", ["name"])
-
-        transfers = [
-            Transfer(
+        # Shadow income representing a transfer deposit into HYSA.
+        txns = [
+            _shadow_income(
                 pay_period_id=2,
-                from_account_id=99,
-                to_account_id=1,
                 amount=Decimal("500.00"),
-                status=Status(name="projected"),
-                is_deleted=False,
             ),
         ]
 
@@ -194,9 +199,7 @@ class TestHysaBalanceWithInterest:
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
-            transactions=[],
-            transfers=transfers,
-            account_id=1,
+            transactions=txns,
             hysa_params=params,
         )
 
@@ -224,7 +227,7 @@ class TestHysaBalanceWithInterest:
         )
 
     def test_hysa_zero_apy_no_interest(self):
-        """APY=0 → balances identical to non-HYSA."""
+        """APY=0 -> balances identical to non-HYSA."""
         periods = _make_periods(3)
         params = HysaParams(
             apy=Decimal("0.00000"),
@@ -483,7 +486,7 @@ class TestHysaBalanceWithInterest:
             )
         )
 
-        # All periods start in January → days_in_month = 31
+        # All periods start in January -> days_in_month = 31
         # Period 1: Q(10000 * 0.00375 * 14/31) = 16.94
         assert balances[1] == expected_balances[1], (
             f"Period 1 balance: expected "
@@ -623,7 +626,7 @@ class TestHysaBalanceWithInterest:
         )
 
         for pid in [1, 2, 3]:
-            # All interest = 0 (unknown frequency → ZERO),
+            # All interest = 0 (unknown frequency -> ZERO),
             # so balances = base = anchor = 10000.00
             assert balances[pid] == Decimal("10000.00"), (
                 f"Period {pid} balance: expected 10000.00, "
@@ -715,14 +718,14 @@ class TestHysaBalanceWithInterest:
         )
 
     def test_hysa_interest_on_zero_balance_with_transfer(self):
-        """Zero balance earns no interest until transfer arrives.
+        """Zero balance earns no interest until shadow deposit arrives.
 
         Parameters: $0.00 anchor, 4.5% APY, daily compounding,
-        3 periods, $500 transfer into account in period 2.
+        3 periods, $500 shadow income (deposit) in period 2.
 
-        Proves the guard clause (balance <= 0 → ZERO) prevents
+        Proves the guard clause (balance <= 0 -> ZERO) prevents
         interest on zero balances, and interest correctly starts
-        accruing once a transfer makes the balance positive.
+        accruing once a deposit makes the balance positive.
         """
         periods = _make_periods(3)
         params = HysaParams(
@@ -730,14 +733,10 @@ class TestHysaBalanceWithInterest:
             compounding_frequency="daily",
         )
 
-        transfers = [
-            TransferStub(
+        txns = [
+            _shadow_income(
                 pay_period_id=2,
-                from_account_id=99,
-                to_account_id=1,
                 amount=Decimal("500.00"),
-                status=StatusStub(name="projected"),
-                is_deleted=False,
             ),
         ]
 
@@ -759,7 +758,7 @@ class TestHysaBalanceWithInterest:
                 (period.end_date - period.start_date).days
             ))
             running = base_bals[period.id] + interest_cumulative
-            # Guard: balance <= 0 → zero interest
+            # Guard: balance <= 0 -> zero interest
             if running <= 0:
                 interest = Decimal("0.00")
             else:
@@ -779,14 +778,12 @@ class TestHysaBalanceWithInterest:
                 anchor_balance=Decimal("0.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
-                account_id=1,
+                transactions=txns,
                 hysa_params=params,
             )
         )
 
-        # Period 1: balance=0, guard clause → interest=0.00
+        # Period 1: balance=0, guard clause -> interest=0.00
         assert balances[1] == expected_balances[1], (
             f"Period 1 balance: expected "
             f"{expected_balances[1]}, got {balances[1]}"
@@ -796,7 +793,7 @@ class TestHysaBalanceWithInterest:
             f"{expected_interest[1]}, "
             f"got {interest_result[1]}"
         )
-        # Period 2: $500 transfer, Q(500 * M) = 0.86
+        # Period 2: $500 deposit, Q(500 * M) = 0.86
         assert balances[2] == expected_balances[2], (
             f"Period 2 balance: expected "
             f"{expected_balances[2]}, got {balances[2]}"
@@ -821,9 +818,9 @@ class TestHysaBalanceWithInterest:
         """Compounding with periodic $500 deposits every other period.
 
         Parameters: $10,000 anchor, 4.5% APY, daily compounding,
-        6 periods, $500 transfers in periods 2, 4, and 6.
+        6 periods, $500 shadow income (deposit) in periods 2, 4, and 6.
 
-        Proves that the interaction between transfer timing and
+        Proves that the interaction between deposit timing and
         compounding accumulation is correct across multiple
         deposit events.
         """
@@ -833,30 +830,18 @@ class TestHysaBalanceWithInterest:
             compounding_frequency="daily",
         )
 
-        transfers = [
-            TransferStub(
+        txns = [
+            _shadow_income(
                 pay_period_id=2,
-                from_account_id=99,
-                to_account_id=1,
                 amount=Decimal("500.00"),
-                status=StatusStub(name="projected"),
-                is_deleted=False,
             ),
-            TransferStub(
+            _shadow_income(
                 pay_period_id=4,
-                from_account_id=99,
-                to_account_id=1,
                 amount=Decimal("500.00"),
-                status=StatusStub(name="projected"),
-                is_deleted=False,
             ),
-            TransferStub(
+            _shadow_income(
                 pay_period_id=6,
-                from_account_id=99,
-                to_account_id=1,
                 amount=Decimal("500.00"),
-                status=StatusStub(name="projected"),
-                is_deleted=False,
             ),
         ]
 
@@ -900,9 +885,7 @@ class TestHysaBalanceWithInterest:
                 anchor_balance=Decimal("10000.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
-                account_id=1,
+                transactions=txns,
                 hysa_params=params,
             )
         )

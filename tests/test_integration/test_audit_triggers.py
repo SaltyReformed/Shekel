@@ -39,6 +39,7 @@ def _create_transaction(seed_user, seed_periods):
     txn = Transaction(
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
+        account_id=seed_user["account"].id,
         status_id=projected.id,
         name="Test Expense",
         category_id=seed_user["categories"]["Rent"].id,
@@ -398,6 +399,7 @@ class TestAuditUserIdCapture:
                 "scenario_id": str(seed_user["scenario"].id),
                 "pay_period_id": str(seed_periods[0].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
+                "account_id": str(seed_user["account"].id),
             },
         )
         rows = _get_audit_rows("transactions", "INSERT")

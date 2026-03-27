@@ -274,7 +274,40 @@ def growth_chart(account_id):
     horizon_years = request.args.get("horizon_years", type=int, default=2)
     horizon_years = max(1, min(horizon_years, 40))
 
-    current_balance = account.current_anchor_balance or Decimal("0.00")
+    # Compute current balance from transactions (including shadow
+    # deposits from transfers), not just the raw anchor.
+    anchor_bal = account.current_anchor_balance or Decimal("0.00")
+    anchor_pid = account.current_anchor_period_id
+
+    real_periods = pay_period_service.get_all_periods(current_user.id)
+    cur_period = pay_period_service.get_current_period(current_user.id)
+    chart_scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+
+    current_balance = anchor_bal
+    if chart_scenario and real_periods and anchor_pid:
+        real_period_ids = [p.id for p in real_periods]
+        chart_txns = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == account_id,
+                Transaction.pay_period_id.in_(real_period_ids),
+                Transaction.scenario_id == chart_scenario.id,
+                Transaction.is_deleted.is_(False),
+            )
+            .all()
+        )
+        chart_bals, _ = balance_calculator.calculate_balances(
+            anchor_balance=anchor_bal,
+            anchor_period_id=anchor_pid,
+            periods=real_periods,
+            transactions=chart_txns,
+        )
+        if cur_period and cur_period.id in chart_bals:
+            current_balance = chart_bals[cur_period.id]
 
     # Generate synthetic future periods for the requested horizon.
     end_date = date.today() + timedelta(days=horizon_years * 365)

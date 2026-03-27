@@ -21,11 +21,10 @@ class FakeDeduction:
 
 
 @dataclass
-class FakeTransfer:
-    to_account_id: int
-    amount: Decimal
+class FakeContribution:
+    """Shadow income transaction representing a contribution (transfer into account)."""
+    estimated_amount: Decimal
     pay_period_id: int
-    is_deleted: bool = False
 
 
 @dataclass
@@ -57,7 +56,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("0")
         assert result.employer_params is None
@@ -76,7 +75,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("500.00")
 
@@ -92,7 +91,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
         expected = (gross * Decimal("0.07")).quantize(Decimal("0.01"))
@@ -104,16 +103,15 @@ class TestCalculateInvestmentInputs:
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=None,
             employer_contribution_type="none",
         )
-        transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=2),
-            FakeTransfer(to_account_id=10, amount=Decimal("300"), pay_period_id=3),
-            FakeTransfer(to_account_id=99, amount=Decimal("1000"), pay_period_id=1),
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=2),
+            FakeContribution(estimated_amount=Decimal("300"), pay_period_id=3),
         ]
         periods = [FakePeriod(id=i, start_date=date(2026, 1, 2), period_index=i) for i in range(1, 4)]
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=transfers, all_periods=periods, current_period=periods[0],
+            all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
         assert result.periodic_contribution == Decimal("233.33")
 
@@ -128,7 +126,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
         assert result.employer_params["type"] == "flat_percentage"
@@ -148,7 +146,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
         assert result.employer_params["type"] == "match"
@@ -156,7 +154,7 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["match_cap_percentage"] == Decimal("0.06")
 
     def test_ytd_contributions_from_transfers(self):
-        """YTD contributions sum only current-year transfers up to current period."""
+        """YTD contributions sum only current-year contributions up to current period."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
@@ -168,37 +166,36 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=4, start_date=date(2026, 1, 30), period_index=3),
             FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4),
         ]
-        transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=1),
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=2),
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=3),
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=4),
-            FakeTransfer(to_account_id=10, amount=Decimal("500"), pay_period_id=5),
-            FakeTransfer(to_account_id=99, amount=Decimal("999"), pay_period_id=2),
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=1),
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=2),
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=3),
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=4),
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=5),
         ]
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=transfers, all_periods=periods, current_period=periods[3],
+            all_contributions=contributions, all_periods=periods, current_period=periods[3],
         )
         assert result.ytd_contributions == Decimal("1500")
 
     def test_combined_deductions_and_transfers(self):
-        """Deductions and transfers both contribute to periodic_contribution."""
+        """Deductions and contributions both add to periodic_contribution."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_name="flat",
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
-        transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=2),
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=2),
         ]
         periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
                     FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)]
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=transfers, all_periods=periods, current_period=periods[0],
+            all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
         assert result.periodic_contribution == Decimal("700.00")
 
@@ -216,7 +213,7 @@ class TestCalculateInvestmentInputs:
             account_id=10,
             investment_params=params,
             deductions=[],
-            all_transfers=[],
+            all_contributions=[],
             all_periods=[current_period],
             current_period=current_period,
             salary_gross_biweekly=Decimal("3846.15"),
@@ -248,7 +245,7 @@ class TestCalculateInvestmentInputs:
             account_id=10,
             investment_params=params,
             deductions=deductions,
-            all_transfers=[],
+            all_contributions=[],
             all_periods=[current_period],
             current_period=current_period,
             salary_gross_biweekly=Decimal("3846.15"),
@@ -266,7 +263,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is None
 
@@ -284,7 +281,7 @@ class TestCalculateInvestmentInputs:
         )
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=[], all_periods=[], current_period=None,
+            all_contributions=[], all_periods=[], current_period=None,
         )
         assert result.periodic_contribution == Decimal("0")
         assert result.ytd_contributions == Decimal("0")
@@ -313,7 +310,7 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         # gross * 0% = 0
         assert result.periodic_contribution == Decimal("0")
@@ -344,24 +341,25 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=deductions,
-            all_transfers=[], all_periods=[current_period], current_period=current_period,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("-500.00")
 
-    def test_soft_deleted_transfers_excluded(self):
-        """Transfers with is_deleted=True are excluded from contributions and YTD.
+    def test_pre_filtered_contributions_only(self):
+        """Only non-deleted contributions for this account are passed in.
 
-        The source filters via `not getattr(t, 'is_deleted', False)`.
-        Soft-deleted transfers must not affect projection inputs.
+        The caller pre-filters deleted contributions and contributions for
+        other accounts before calling calculate_investment_inputs.  This test
+        verifies that a single valid contribution produces the correct
+        periodic and YTD values.
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
-        transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
-            FakeTransfer(to_account_id=10, amount=Decimal("300"), pay_period_id=2, is_deleted=True),
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
@@ -369,19 +367,18 @@ class TestCalculateInvestmentInputs:
         ]
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=transfers, all_periods=periods, current_period=periods[0],
+            all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
-        # Only the non-deleted $200 transfer counts.
-        # 1 transfer across 1 period → periodic = $200
+        # 1 contribution across 1 period -- periodic = $200
         assert result.periodic_contribution == Decimal("200")
-        # YTD only includes current_period=periods[0], which has the $200 transfer
+        # YTD only includes current_period=periods[0], which has the $200 contribution
         assert result.ytd_contributions == Decimal("200")
 
-    def test_none_current_period_with_transfers(self):
-        """None current_period skips YTD calculation but still averages transfers.
+    def test_none_current_period_with_contributions(self):
+        """None current_period skips YTD calculation but still averages contributions.
 
         When current_period is None (e.g., no period is current), the
-        function should still compute periodic_contribution from transfers
+        function should still compute periodic_contribution from contributions
         but set ytd_contributions to 0.
         """
         params = FakeInvestmentParams(
@@ -389,9 +386,9 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
-        transfers = [
-            FakeTransfer(to_account_id=10, amount=Decimal("200"), pay_period_id=1),
-            FakeTransfer(to_account_id=10, amount=Decimal("400"), pay_period_id=2),
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
+            FakeContribution(estimated_amount=Decimal("400"), pay_period_id=2),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
@@ -399,7 +396,7 @@ class TestCalculateInvestmentInputs:
         ]
         result = calculate_investment_inputs(
             account_id=10, investment_params=params, deductions=[],
-            all_transfers=transfers, all_periods=periods, current_period=None,
+            all_contributions=contributions, all_periods=periods, current_period=None,
         )
         # (200 + 400) / 2 periods = 300
         assert result.periodic_contribution == Decimal("300")

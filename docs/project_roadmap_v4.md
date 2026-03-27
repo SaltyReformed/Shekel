@@ -49,6 +49,7 @@ then new features.
 | Priority | Phase | Summary |
 |---|---|---|
 | 1 | Critical Bug Fixes | Data correctness and broken workflow fixes from fixes_improvements.md |
+| 1A | Transfer Architecture Rework | Shadow transactions for transfers. See `docs/transfer_rework_design.md`. Phase I (shadow architecture) complete. Phase II (grid subtotals/footer) pending. |
 | 2 | UX/Grid Overhaul | Focused sprint to address daily-use friction in the budget grid and related views |
 | 3 | Recurring Transaction Improvements | Workflow conveniences: mortgage auto-payment, other recurring transaction quality-of-life fixes |
 | 4 | Phase 9: Smart Features | Seasonal expense forecasting, smart estimates, expense inflation, deduction inflation |

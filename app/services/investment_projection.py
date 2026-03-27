@@ -2,10 +2,14 @@
 Shekel Budget App -- Investment Projection Input Calculator
 
 Pure function that computes all inputs needed for growth_engine.project_balance()
-from raw deduction, transfer, and investment params data.
+from raw deduction, contribution, and investment params data.
 
 Used by both the investment detail route and the savings dashboard to avoid
 duplicating contribution/employer/YTD calculation logic.
+
+Contributions are derived from shadow income transactions (transfer_id IS NOT
+NULL) in the investment/retirement account.  The caller queries these
+transactions and passes them in; this module has no database access.
 """
 
 from dataclasses import dataclass
@@ -31,7 +35,7 @@ def calculate_investment_inputs(
     account_id,
     investment_params,
     deductions,
-    all_transfers,
+    all_contributions,
     all_periods,
     current_period,
     salary_gross_biweekly=None,
@@ -39,12 +43,12 @@ def calculate_investment_inputs(
     """Compute projection inputs for an investment account.
 
     Args:
-        account_id:        int -- the investment account ID.
+        account_id:         int -- the investment account ID.
         investment_params:  Object with employer fields and annual_contribution_limit.
         deductions:         List of deduction-like objects with:
                             .amount, .calc_method_name, .annual_salary, .pay_periods_per_year
-        all_transfers:      List of transfer-like objects with:
-                            .to_account_id, .amount, .pay_period_id
+        all_contributions:  List of shadow income transactions (transfer_id IS NOT NULL)
+                            in this account.  Each has .estimated_amount and .pay_period_id.
         all_periods:        List of period objects with .id, .start_date, .period_index
         current_period:     The current period object.
 
@@ -70,15 +74,17 @@ def calculate_investment_inputs(
         gross_biweekly = Decimal(str(salary_gross_biweekly))
 
     # Step 2: Transfer-based contributions (average per period).
-    acct_transfers = [
-        t for t in all_transfers
-        if t.to_account_id == account_id and not getattr(t, "is_deleted", False)
-    ]
-    if acct_transfers:
-        total_xfer = sum(Decimal(str(t.amount)) for t in acct_transfers)
-        num_periods_with_xfer = len(set(t.pay_period_id for t in acct_transfers))
-        if num_periods_with_xfer > 0:
-            periodic_contribution += (total_xfer / num_periods_with_xfer).quantize(
+    # all_contributions are shadow income transactions already filtered
+    # to this account by the caller.
+    if all_contributions:
+        total_contrib = sum(
+            Decimal(str(t.estimated_amount)) for t in all_contributions
+        )
+        num_periods_with_contrib = len(
+            set(t.pay_period_id for t in all_contributions)
+        )
+        if num_periods_with_contrib > 0:
+            periodic_contribution += (total_contrib / num_periods_with_contrib).quantize(
                 TWO_PLACES
             )
 
@@ -94,7 +100,7 @@ def calculate_investment_inputs(
             "gross_biweekly": gross_biweekly,
         }
 
-    # Step 4: YTD contributions from transfers.
+    # Step 4: YTD contributions from shadow transactions.
     ytd_contributions = ZERO
     if current_period:
         current_year = current_period.start_date.year
@@ -103,9 +109,9 @@ def calculate_investment_inputs(
             if p.start_date.year == current_year
             and p.start_date <= current_period.start_date
         }
-        for t in acct_transfers:
+        for t in all_contributions:
             if t.pay_period_id in ytd_period_ids:
-                ytd_contributions += Decimal(str(t.amount))
+                ytd_contributions += Decimal(str(t.estimated_amount))
 
     # Step 5: Annual contribution limit.
     annual_limit = getattr(investment_params, "annual_contribution_limit", None)

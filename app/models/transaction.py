@@ -22,6 +22,12 @@ class Transaction(db.Model):
         ),
         db.Index("idx_transactions_template", "template_id"),
         db.Index("idx_transactions_credit_payback", "credit_payback_for_id"),
+        db.Index("idx_transactions_account", "account_id"),
+        db.Index(
+            "idx_transactions_transfer",
+            "transfer_id",
+            postgresql_where=db.text("transfer_id IS NOT NULL"),
+        ),
         # One non-deleted transaction per template per period per scenario.
         db.Index(
             "idx_transactions_template_period_scenario",
@@ -35,6 +41,9 @@ class Transaction(db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+    )
     template_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transaction_templates.id", ondelete="SET NULL"),
@@ -63,6 +72,10 @@ class Transaction(db.Model):
     actual_amount = db.Column(db.Numeric(12, 2))
     is_override = db.Column(db.Boolean, default=False)
     is_deleted = db.Column(db.Boolean, default=False)
+    transfer_id = db.Column(
+        db.Integer,
+        db.ForeignKey("budget.transfers.id", ondelete="CASCADE"),
+    )
     credit_payback_for_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
@@ -76,12 +89,18 @@ class Transaction(db.Model):
     )
 
     # Relationships
+    account = db.relationship("Account", lazy="joined")
     template = db.relationship("TransactionTemplate", back_populates="transactions")
     pay_period = db.relationship("PayPeriod", back_populates="transactions")
     scenario = db.relationship("Scenario")
     status = db.relationship("Status", lazy="joined")
     category = db.relationship("Category", lazy="joined")
     transaction_type = db.relationship("TransactionType", lazy="joined")
+    transfer = db.relationship(
+        "Transfer",
+        backref=db.backref("shadow_transactions", passive_deletes=True),
+        lazy="select",
+    )
     credit_payback_for = db.relationship(
         "Transaction", remote_side="Transaction.id", foreign_keys=[credit_payback_for_id]
     )

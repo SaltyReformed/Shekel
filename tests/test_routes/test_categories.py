@@ -204,6 +204,7 @@ class TestCategoryDelete:
                 template_id=None,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Grocery Trip",
@@ -314,6 +315,7 @@ class TestCategoryDelete:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Soft Deleted Expense",
@@ -354,6 +356,7 @@ class TestCategoryDelete:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Active Expense",

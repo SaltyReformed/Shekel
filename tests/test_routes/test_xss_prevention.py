@@ -25,6 +25,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.services import transfer_service
 from app.services.auth_service import hash_password
 
 
@@ -149,6 +150,7 @@ def _create_transaction(seed_user, seed_periods):
     txn = Transaction(
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
+        account_id=seed_user["account"].id,
         status_id=projected.id,
         name="Test Transaction",
         category_id=seed_user["categories"]["Rent"].id,
@@ -161,21 +163,20 @@ def _create_transaction(seed_user, seed_periods):
 
 
 def _create_transfer(seed_user, seed_periods, savings_acct):
-    """Create a transfer instance for update tests."""
+    """Create a transfer with shadow transactions via the service."""
     projected = (
         db.session.query(Status).filter_by(name="projected").one()
     )
-    xfer = Transfer(
+    xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
+        amount=Decimal("100.00"),
         status_id=projected.id,
         name="Test Transfer",
-        amount=Decimal("100.00"),
     )
-    db.session.add(xfer)
     db.session.commit()
     return xfer
 
@@ -461,6 +462,7 @@ class TestXSSPrevention:
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": category.id,
                 "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
             })
 
             assert resp.status_code == 201

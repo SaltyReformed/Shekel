@@ -38,6 +38,7 @@ class TransactionCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
+    account_id = fields.Integer(required=True)
     pay_period_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
     category_id = fields.Integer(required=True)
@@ -55,6 +56,7 @@ class InlineTransactionCreateSchema(BaseSchema):
 
     estimated_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     actual_amount = fields.Decimal(places=2, as_string=True, allow_none=True, validate=validate.Range(min=0))
+    account_id = fields.Integer(required=True)
     category_id = fields.Integer(required=True)
     pay_period_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
@@ -322,6 +324,7 @@ class TransferTemplateCreateSchema(BaseSchema):
     )
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
+    category_id = fields.Integer(load_default=None, allow_none=True)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
     recurrence_pattern = fields.String(
@@ -355,6 +358,7 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
     )
     from_account_id = fields.Integer()
     to_account_id = fields.Integer()
+    category_id = fields.Integer(allow_none=True)
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
@@ -375,6 +379,7 @@ class TransferCreateSchema(BaseSchema):
     pay_period_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
     name = fields.String(validate=validate.Length(max=200))
+    category_id = fields.Integer(load_default=None, allow_none=True)
     notes = fields.String(allow_none=True)
 
     @validates_schema
@@ -396,6 +401,7 @@ class TransferUpdateSchema(BaseSchema):
     )
     status_id = fields.Integer()
     name = fields.String(validate=validate.Length(max=200))
+    category_id = fields.Integer(allow_none=True)
     notes = fields.String(allow_none=True)
 
 

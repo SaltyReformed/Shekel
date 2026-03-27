@@ -261,6 +261,10 @@ During step 5 (mark cleared expenses as done), the user scans the grid to find s
 
 ### Task 4.2: Footer Condensation
 
+**SUPERSEDED:** This task has been absorbed by Section 3A-II (Transfer Architecture
+Rework, Phase II: Grid Subtotals and Footer Condensation). Do not implement this task
+independently. See docs/transfer_rework_design.md section 18.2.
+
 **A1. Current behavior.**
 
 The footer is a `<tfoot id="grid-summary">` element (`grid/_balance_row.html`). It contains these `<tr>` rows:

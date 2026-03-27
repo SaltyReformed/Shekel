@@ -77,6 +77,20 @@
         </div>
       </div>
 
+      <div class="mb-3">
+        <label for="category_id" class="form-label">Category (optional)</label>
+        <select id="category_id" name="category_id" class="form-select">
+          <option value="">-- None --</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}"
+            {{ 'selected' if template and template.category_id == cat.id else '' }}>
+            {{ cat.group_name }}: {{ cat.item_name }}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">Expense category for this transfer (used in charts and grid grouping).</div>
+      </div>
+
       {# Recurrence rule fields #}
       <hr>
       <h5>Recurrence Rule</h5>

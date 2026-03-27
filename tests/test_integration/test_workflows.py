@@ -120,11 +120,13 @@ class TestTemplateRecurrenceToGrid:
 
 
 class TestTransferToBalance:
-    """Transfer template → balance calculator includes transfer effects."""
+    """Transfer shadow transactions affect balance calculator."""
 
     def test_transfer_reduces_source_balance(self, app, db, seed_user, seed_periods):
-        """Balance calculator subtracts outgoing transfers from the source account."""
+        """Shadow expense transaction from a transfer reduces the source account balance."""
         with app.app_context():
+            from app.services import transfer_service
+
             savings_type = db.session.query(AccountType).filter_by(name="savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
@@ -137,41 +139,39 @@ class TestTransferToBalance:
 
             projected = db.session.query(Status).filter_by(name="projected").one()
 
-            # Create a transfer in the first period.
-            xfer = Transfer(
+            # Create a transfer via the service (creates shadow transactions).
+            xfer = transfer_service.create_transfer(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings.id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                amount=Decimal("200.00"),
                 status_id=projected.id,
                 name="Save $200",
-                amount=Decimal("200.00"),
             )
-            db.session.add(xfer)
             db.session.commit()
 
-            # Calculate balances without transfers.
-            balances_no_xfer, _ = balance_calculator.calculate_balances(
+            # Load shadow transactions for the checking account.
+            shadow_txns = (
+                db.session.query(Transaction)
+                .filter_by(
+                    transfer_id=xfer.id,
+                    account_id=seed_user["account"].id,
+                )
+                .all()
+            )
+
+            # Calculate balances with the shadow expense transaction.
+            balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
                 anchor_period_id=seed_periods[0].id,
                 periods=seed_periods,
-                transactions=[],
+                transactions=shadow_txns,
             )
 
-            # Calculate balances with transfers (for checking account).
-            balances_with_xfer, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods,
-                transactions=[],
-                transfers=[xfer],
-                account_id=seed_user["account"].id,
-            )
-
-            # First period balance should be $200 less with the transfer.
-            diff = balances_no_xfer[seed_periods[0].id] - balances_with_xfer[seed_periods[0].id]
-            assert diff == Decimal("200.00")
+            # Shadow expense of $200 reduces balance: 1000 - 200 = 800.
+            assert balances[seed_periods[0].id] == Decimal("800.00")
 
 
 class TestCreditPaybackBalance:
@@ -186,6 +186,7 @@ class TestCreditPaybackBalance:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Dinner Out",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -240,6 +241,7 @@ class TestAnchorTrueUpBalance:
             txn = Transaction(
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -290,6 +292,7 @@ class TestCarryForwardWorkflow:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=projected.id,
                     name=name,
                     category_id=groceries_cat_id,
@@ -366,6 +369,7 @@ class TestCarryForwardEdgeCases:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=projected.id,
                     name=name,
                     category_id=cat_id,
@@ -424,6 +428,7 @@ class TestCarryForwardEdgeCases:
                 txn = Transaction(
                     pay_period_id=seed_periods[1].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=done.id,
                     name=name,
                     category_id=seed_user["categories"]["Rent"].id,
@@ -443,6 +448,7 @@ class TestCarryForwardEdgeCases:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=projected.id,
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -508,6 +514,7 @@ class TestCarryForwardEdgeCases:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=status.id,
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -555,6 +562,7 @@ class TestCarryForwardEdgeCases:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=status.id,
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -600,6 +608,7 @@ class TestCarryForwardEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="SelfCarry",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -646,6 +655,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Grocery Run",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -689,6 +699,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Double Credit Test",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -730,6 +741,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=done.id,
                 name="Already Paid",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -755,6 +767,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=cancelled.id,
                 name="Cancelled Order",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -784,6 +797,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=last_period.id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Last Period Purchase",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -810,6 +824,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Unmark Test",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -856,6 +871,7 @@ class TestCreditWorkflowEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
@@ -900,6 +916,7 @@ class TestFullBudgetWorkflow:
             txn1 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -909,6 +926,7 @@ class TestFullBudgetWorkflow:
             txn2 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Dining Out",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -918,6 +936,7 @@ class TestFullBudgetWorkflow:
             txn3 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Gas Station",
                 category_id=seed_user["categories"]["Groceries"].id,

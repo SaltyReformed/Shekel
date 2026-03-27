@@ -29,6 +29,7 @@ class TestCreditWorkflow:
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=projected.id,
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
@@ -82,6 +83,7 @@ class TestCreditWorkflow:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
@@ -150,6 +152,7 @@ class TestCreditWorkflow:
             txn = Transaction(
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Last Period Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -228,6 +231,7 @@ class TestCarryForward:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=projected.id,
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -271,6 +275,7 @@ class TestCarryForward:
             t1 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Unpaid",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -280,6 +285,7 @@ class TestCarryForward:
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=done.id,
                 name="Already Paid",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -333,6 +339,7 @@ class TestCarryForward:
                 template_id=template.id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Car Payment",
                 category_id=seed_user["categories"]["Car Payment"].id,
@@ -364,6 +371,7 @@ class TestCarryForward:
             t1 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -373,6 +381,7 @@ class TestCarryForward:
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=cancelled.id,
                 name="Cancelled Expense",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -411,6 +420,7 @@ class TestCarryForward:
             t1 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -420,6 +430,7 @@ class TestCarryForward:
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=received.id,
                 name="Received Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
@@ -457,6 +468,7 @@ class TestCarryForward:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Deleted Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -601,6 +613,7 @@ class TestNegativePaths:
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=status.id,
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
@@ -703,6 +716,7 @@ class TestNegativePaths:
                 template_id=template.id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Template Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -714,6 +728,7 @@ class TestNegativePaths:
             txn_adhoc = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Ad-hoc Expense",
                 category_id=seed_user["categories"]["Groceries"].id,

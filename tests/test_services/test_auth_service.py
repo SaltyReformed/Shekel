@@ -367,7 +367,7 @@ class TestRegisterUser:
             assert "12 characters" not in str(exc_info.value)
 
     def test_register_user_creates_default_categories(self, app, db):
-        """register_user() creates 22 default categories for the new user."""
+        """register_user() creates 24 default categories for the new user."""
         with app.app_context():
             user = auth_service.register_user(
                 "cats@example.com", "securepass123", "Category Test"
@@ -377,7 +377,7 @@ class TestRegisterUser:
             categories = db.session.query(Category).filter_by(
                 user_id=user.id
             ).all()
-            assert len(categories) == 22
+            assert len(categories) == 24
 
     def test_register_user_categories_have_correct_groups(self, app, db):
         """register_user() creates categories spanning all expected groups."""
@@ -393,7 +393,7 @@ class TestRegisterUser:
             groups = {c.group_name for c in categories}
             assert groups == {
                 "Income", "Home", "Auto", "Family",
-                "Health", "Financial", "Credit Card",
+                "Health", "Financial", "Transfers", "Credit Card",
             }
 
     def test_register_user_categories_include_income_salary(self, app, db):
@@ -409,6 +409,50 @@ class TestRegisterUser:
             ).first()
             assert salary_cat is not None
 
+    def test_default_categories_include_transfers(self, app, db):
+        """DEFAULT_CATEGORIES list contains the two transfer categories."""
+        from app.services.auth_service import DEFAULT_CATEGORIES
+        assert ("Transfers", "Incoming") in DEFAULT_CATEGORIES
+        assert ("Transfers", "Outgoing") in DEFAULT_CATEGORIES
+
+    def test_seed_user_creates_transfer_categories(self, app, db):
+        """register_user() creates both Transfers: Incoming and Transfers: Outgoing."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "xfer_cats@example.com", "securepass123", "Transfer Cat Test"
+            )
+            db.session.flush()
+
+            transfer_cats = db.session.query(Category).filter_by(
+                user_id=user.id, group_name="Transfers"
+            ).all()
+            assert len(transfer_cats) == 2
+            item_names = {c.item_name for c in transfer_cats}
+            assert item_names == {"Incoming", "Outgoing"}
+
+    def test_transfer_categories_have_valid_sort_order(self, app, db):
+        """Transfer categories have unique, non-null sort_order values."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "xfer_sort@example.com", "securepass123", "Transfer Sort Test"
+            )
+            db.session.flush()
+
+            all_cats = db.session.query(Category).filter_by(
+                user_id=user.id
+            ).all()
+            all_orders = [c.sort_order for c in all_cats]
+
+            # All sort_order values are non-null.
+            assert all(o is not None for o in all_orders)
+            # All sort_order values are unique (no collisions).
+            assert len(all_orders) == len(set(all_orders))
+
+            # Transfer categories specifically have valid sort_order.
+            transfer_cats = [c for c in all_cats if c.group_name == "Transfers"]
+            for cat in transfer_cats:
+                assert cat.sort_order is not None
+
     def test_register_user_categories_have_sort_order(self, app, db):
         """register_user() assigns sequential sort_order to categories."""
         with app.app_context():
@@ -421,7 +465,7 @@ class TestRegisterUser:
                 user_id=user.id
             ).order_by(Category.sort_order).all()
             orders = [c.sort_order for c in categories]
-            assert orders == list(range(22))
+            assert orders == list(range(24))
 
     def test_register_user_categories_rollback_on_failure(self, app, db):
         """register_user() categories are discarded on transaction rollback."""

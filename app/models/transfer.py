@@ -62,6 +62,9 @@ class Transfer(db.Model):
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     is_override = db.Column(db.Boolean, default=False, nullable=False)
     is_deleted = db.Column(db.Boolean, default=False, nullable=False)
+    category_id = db.Column(
+        db.Integer, db.ForeignKey("budget.categories.id")
+    )
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
@@ -81,6 +84,7 @@ class Transfer(db.Model):
     status = db.relationship("Status", lazy="joined")
     pay_period = db.relationship("PayPeriod")
     scenario = db.relationship("Scenario")
+    category = db.relationship("Category", lazy="joined")
 
     @property
     def effective_amount(self):

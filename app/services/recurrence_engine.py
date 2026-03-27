@@ -136,6 +136,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
         # No existing entry -- create a new one.
         txn = Transaction(
+            account_id=template.account_id,
             template_id=template.id,
             pay_period_id=period.id,
             scenario_id=scenario_id,

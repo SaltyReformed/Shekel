@@ -10,9 +10,14 @@ Calculation rules:
     where "remaining" means projected items not yet reflected in the anchor.
   - Subsequent periods: end_balance[n] = end_balance[n-1] + remaining_income[n] - remaining_expenses[n]
   - All periods use only projected (unsettled) items:
-      done / received → excluded (already settled)
-      projected       → estimated_amount
-      credit          → excluded (does not affect checking balance)
+      done / received -> excluded (already settled)
+      projected       -> estimated_amount
+      credit          -> excluded (does not affect checking balance)
+
+Transfer effects are included automatically via shadow transactions
+(expense and income Transaction rows with transfer_id IS NOT NULL).
+The calculator does NOT query or process Transfer objects directly.
+This eliminates the double-counting risk described in design doc section 16.1.
 """
 
 import logging
@@ -27,8 +32,7 @@ logger = logging.getLogger(__name__)
 SETTLED_STATUSES = frozenset({"done", "received"})
 
 
-def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
-                       transfers=None, account_id=None):
+def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
     """Compute projected end balances from the anchor forward.
 
     Args:
@@ -38,10 +42,8 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
                            Must start at or before the anchor period.
         transactions:      List of Transaction objects covering all supplied periods.
                            Should exclude is_deleted=True rows before passing in.
-        transfers:         Optional list of Transfer objects. When provided with
-                           account_id, transfer effects are factored into balances.
-        account_id:        The account ID to calculate balances for. Required when
-                           transfers are provided.
+                           Shadow transactions (transfer_id IS NOT NULL) participate
+                           identically to regular transactions.
 
     Returns:
         (balances, stale_anchor_warning) where:
@@ -61,38 +63,21 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
     for txn in transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
-    # Group transfers by pay_period_id if provided.
-    xfer_by_period = {}
-    if transfers and account_id:
-        for xfer in transfers:
-            xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
-
     balances = OrderedDict()
     running_balance = None  # Set when we reach the anchor period.
 
     for period in periods:
         period_txns = txn_by_period.get(period.id, [])
-        period_xfers = xfer_by_period.get(period.id, [])
 
         if period.id == anchor_period_id:
             # Anchor period: start from the real balance, add only remaining items.
             income, expenses = _sum_remaining(period_txns)
-            xfer_in, xfer_out = _sum_transfer_effects_remaining(
-                period_xfers, account_id
-            )
-            running_balance = (
-                anchor_balance + income - expenses + xfer_in - xfer_out
-            )
+            running_balance = anchor_balance + income - expenses
 
         elif running_balance is not None:
             # Post-anchor: roll forward from previous end balance.
             income, expenses = _sum_all(period_txns)
-            xfer_in, xfer_out = _sum_transfer_effects_all(
-                period_xfers, account_id
-            )
-            running_balance = (
-                running_balance + income - expenses + xfer_in - xfer_out
-            )
+            running_balance = running_balance + income - expenses
 
         else:
             # Pre-anchor period -- we don't calculate balances before the anchor.
@@ -125,7 +110,7 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
 
 def calculate_balances_with_interest(
     anchor_balance, anchor_period_id, periods, transactions,
-    transfers=None, account_id=None, hysa_params=None,
+    hysa_params=None,
 ):
     """Same as calculate_balances but also returns interest earned per period.
 
@@ -136,20 +121,17 @@ def calculate_balances_with_interest(
         anchor_balance:    Decimal -- the real balance at the anchor period.
         anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
-        transactions:      List of Transaction objects.
-        transfers:         Optional list of Transfer objects.
-        account_id:        The account ID for transfer calculations.
+        transactions:      List of Transaction objects (including shadow transactions).
         hysa_params:       Object with .apy (Decimal) and .compounding_frequency (str).
 
     Returns:
         (balances, interest_by_period) where:
-            balances: OrderedDict mapping period_id → Decimal end balance
-            interest_by_period: dict mapping period_id → Decimal interest earned
+            balances: OrderedDict mapping period_id -> Decimal end balance
+            interest_by_period: dict mapping period_id -> Decimal interest earned
     """
     # First compute base balances without interest.
     base_balances, _ = calculate_balances(
         anchor_balance, anchor_period_id, periods, transactions,
-        transfers=transfers, account_id=account_id,
     )
 
     interest_by_period = {}
@@ -191,35 +173,35 @@ def calculate_balances_with_interest(
 
 def calculate_balances_with_amortization(
     anchor_balance, anchor_period_id, periods, transactions,
-    transfers=None, account_id=None, loan_params=None,
+    account_id=None, loan_params=None,
 ):
     """Calculate balances for a debt account (mortgage or auto loan).
 
-    For debt accounts, transfers INTO the account represent payments.
-    Only the principal portion (determined by amortization) reduces the balance.
-    Interest portion is the cost of the loan.
+    Payments into the loan account are detected from shadow income
+    transactions (transfer_id IS NOT NULL, transaction_type == income).
+    Only the principal portion (determined by amortization) reduces the
+    balance; the interest portion is the cost of the loan.
 
     Args:
         anchor_balance:    Decimal -- the current principal at the anchor period.
         anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
-        transactions:      List of Transaction objects.
-        transfers:         Optional list of Transfer objects.
-        account_id:        The account ID for transfer calculations.
+        transactions:      List of Transaction objects (including shadow transactions).
+        account_id:        The loan account ID.  Used to identify payment
+                           transactions (shadow income in this account).
         loan_params:       Object with .current_principal, .interest_rate,
                            .term_months, .origination_date, .payment_day.
 
     Returns:
         (balances, principal_by_period) where:
-            balances: OrderedDict mapping period_id → Decimal end balance
-            principal_by_period: dict mapping period_id → Decimal principal paid
+            balances: OrderedDict mapping period_id -> Decimal end balance
+            principal_by_period: dict mapping period_id -> Decimal principal paid
     """
     from app.services.amortization_engine import calculate_monthly_payment
 
-    # First compute base balances (transfer effects applied normally).
+    # First compute base balances (shadow transactions applied normally).
     base_balances, _ = calculate_balances(
         anchor_balance, anchor_period_id, periods, transactions,
-        transfers=transfers, account_id=account_id,
     )
 
     principal_by_period = {}
@@ -241,11 +223,10 @@ def calculate_balances_with_amortization(
     balances = OrderedDict()
     running_principal = None
 
-    # Group transfers by period for fast lookup.
-    xfer_by_period = {}
-    if transfers and account_id:
-        for xfer in transfers:
-            xfer_by_period.setdefault(xfer.pay_period_id, []).append(xfer)
+    # Group transactions by period for payment detection.
+    txn_by_period = {}
+    for txn in transactions:
+        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
     for period in periods:
         if period.id not in base_balances:
@@ -256,15 +237,19 @@ def calculate_balances_with_amortization(
         elif running_principal is None:
             continue
 
-        # Calculate how much principal is paid this period.
-        period_xfers = xfer_by_period.get(period.id, [])
+        # Detect payments: shadow income transactions in the loan account
+        # represent money coming in to pay the loan.  These replace the
+        # old transfer-based detection (design doc section 6.2).
+        period_txns = txn_by_period.get(period.id, [])
         total_payment_in = Decimal("0.00")
-        for xfer in period_xfers:
-            status_name = xfer.status.name if xfer.status else "projected"
+        for txn in period_txns:
+            status_name = txn.status.name if txn.status else "projected"
             if status_name in ("cancelled",):
                 continue
-            if xfer.to_account_id == account_id:
-                total_payment_in += Decimal(str(xfer.amount))
+            # Shadow income transactions in this account are loan payments.
+            if (txn.transfer_id is not None
+                    and hasattr(txn, "is_income") and txn.is_income):
+                total_payment_in += Decimal(str(txn.estimated_amount))
 
         # For each payment, split into interest and principal.
         if total_payment_in > 0 and running_principal > 0:
@@ -346,52 +331,3 @@ def _sum_all(transactions):
             expenses += amount
 
     return income, expenses
-
-
-def _sum_transfer_effects_remaining(transfers, account_id):
-    """Sum transfer effects for the anchor period (remaining/projected only).
-
-    Settled transfers (done/received) are already reflected in the anchor
-    balance, so we exclude them.
-
-    Returns:
-        (incoming, outgoing) as Decimal tuple.
-    """
-    incoming = Decimal("0.00")
-    outgoing = Decimal("0.00")
-
-    for xfer in transfers:
-        status_name = xfer.status.name if xfer.status else "projected"
-        if status_name in SETTLED_STATUSES or status_name in ("cancelled",):
-            continue
-
-        amount = Decimal(str(xfer.amount))
-        if xfer.to_account_id == account_id:
-            incoming += amount
-        if xfer.from_account_id == account_id:
-            outgoing += amount
-
-    return incoming, outgoing
-
-
-def _sum_transfer_effects_all(transfers, account_id):
-    """Sum transfer effects for a post-anchor period (projected only).
-
-    Returns:
-        (incoming, outgoing) as Decimal tuple.
-    """
-    incoming = Decimal("0.00")
-    outgoing = Decimal("0.00")
-
-    for xfer in transfers:
-        status_name = xfer.status.name if xfer.status else "projected"
-        if status_name in ("cancelled", "done", "received"):
-            continue
-
-        amount = Decimal(str(xfer.amount))
-        if xfer.to_account_id == account_id:
-            incoming += amount
-        if xfer.from_account_id == account_id:
-            outgoing += amount
-
-    return incoming, outgoing

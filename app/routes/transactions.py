@@ -13,6 +13,7 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.account import Account
@@ -24,6 +25,7 @@ from app.schemas.validation import (
     InlineTransactionCreateSchema,
 )
 from app.services import credit_workflow, carry_forward_service, pay_period_service
+from app.services import transfer_service
 from app.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -76,10 +78,36 @@ def get_quick_edit(txn_id):
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
 @login_required
 def get_full_edit(txn_id):
-    """HTMX partial: return the full edit popover form."""
+    """HTMX partial: return the full edit popover form.
+
+    For shadow transactions (transfer_id IS NOT NULL), returns the
+    transfer edit form instead of the transaction edit form so the
+    user edits the parent transfer and both shadows stay in sync.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+
+    # --- Transfer detection: return transfer edit form for shadows ---
+    if txn.transfer_id is not None:
+        xfer = db.session.get(Transfer, txn.transfer_id)
+        if xfer is None:
+            return "Not found", 404
+        statuses = db.session.query(Status).all()
+        categories = (
+            db.session.query(Category)
+            .filter_by(user_id=current_user.id)
+            .order_by(Category.group_name, Category.item_name)
+            .all()
+        )
+        return render_template(
+            "transfers/_transfer_full_edit.html",
+            xfer=xfer,
+            statuses=statuses,
+            categories=categories,
+            source_txn_id=txn.id,
+        )
+
     statuses = db.session.query(Status).all()
     return render_template("grid/_transaction_full_edit.html", txn=txn, statuses=statuses)
 
@@ -88,6 +116,10 @@ def get_full_edit(txn_id):
 @login_required
 def update_transaction(txn_id):
     """Update a transaction's fields (inline edit save).
+
+    Shadow transactions (transfer_id IS NOT NULL) are routed through
+    the transfer service so both shadows and the parent transfer stay
+    in sync (design doc invariants 3-5).
 
     Returns the updated cell fragment.  Sends an HX-Trigger header
     to refresh the balance row.
@@ -103,7 +135,39 @@ def update_transaction(txn_id):
 
     data = _update_schema.load(request.form)
 
-    # Apply updates.
+    # --- Transfer detection guard ---
+    if txn.transfer_id is not None:
+        # Map transaction field names to transfer service kwargs.
+        svc_kwargs = {}
+        if "estimated_amount" in data:
+            svc_kwargs["amount"] = data["estimated_amount"]
+        if "actual_amount" in data:
+            svc_kwargs["actual_amount"] = data["actual_amount"]
+        if "status_id" in data:
+            svc_kwargs["status_id"] = data["status_id"]
+        if "notes" in data:
+            svc_kwargs["notes"] = data["notes"]
+        if "category_id" in data:
+            svc_kwargs["category_id"] = data["category_id"]
+
+        try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id, **svc_kwargs
+            )
+        except (NotFoundError, ValidationError) as exc:
+            return str(exc), 400
+
+        db.session.commit()
+        db.session.refresh(txn)
+        logger.info(
+            "user_id=%d updated shadow transaction %d (transfer %d)",
+            current_user.id, txn_id, txn.transfer_id,
+        )
+        response = render_template("grid/_transaction_cell.html", txn=txn)
+        return response, 200, {"HX-Trigger": "balanceChanged"}
+    # --- End guard ---
+
+    # Apply updates (regular transactions only).
     for field, value in data.items():
         setattr(txn, field, value)
 
@@ -125,6 +189,9 @@ def update_transaction(txn_id):
 def mark_done(txn_id):
     """Set a transaction's status to 'done' (expenses) or 'received' (income).
 
+    Shadow transactions route through the transfer service so both
+    shadows and the parent transfer are updated atomically.
+
     Automatically picks the correct status based on transaction type.
     Accepts an optional actual_amount from the form.
     """
@@ -137,6 +204,31 @@ def mark_done(txn_id):
         status = db.session.query(Status).filter_by(name="received").one()
     else:
         status = db.session.query(Status).filter_by(name="done").one()
+
+    # --- Transfer detection guard ---
+    if txn.transfer_id is not None:
+        # Use 'done' for the transfer service -- it sets the same status
+        # on both shadows.  The 'done'/'received' distinction is a
+        # display convention for regular transactions.
+        done_status = db.session.query(Status).filter_by(name="done").one()
+        svc_kwargs = {"status_id": done_status.id}
+
+        actual = request.form.get("actual_amount")
+        if actual:
+            try:
+                svc_kwargs["actual_amount"] = Decimal(actual)
+            except (InvalidOperation, ValueError, ArithmeticError):
+                return "Invalid actual amount", 400
+
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id, **svc_kwargs
+        )
+        db.session.commit()
+        db.session.refresh(txn)
+        response = render_template("grid/_transaction_cell.html", txn=txn)
+        return response, 200, {"HX-Trigger": "gridRefresh"}
+    # --- End guard ---
+
     txn.status_id = status.id
 
     # Accept an actual amount from the form.
@@ -162,6 +254,10 @@ def mark_credit(txn_id):
     if txn is None:
         return "Not found", 404
 
+    # --- Transfer detection guard: credit is not applicable to transfers ---
+    if txn.transfer_id is not None:
+        return "Cannot mark a transfer shadow as credit.", 400
+
     try:
         payback = credit_workflow.mark_as_credit(txn_id, current_user.id)
         db.session.commit()
@@ -179,6 +275,10 @@ def unmark_credit(txn_id):
     if txn is None:
         return "Not found", 404
 
+    # --- Transfer detection guard: credit is not applicable to transfers ---
+    if txn.transfer_id is not None:
+        return "Cannot unmark credit on a transfer shadow.", 400
+
     try:
         credit_workflow.unmark_credit(txn_id, current_user.id)
         db.session.commit()
@@ -191,10 +291,26 @@ def unmark_credit(txn_id):
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
 @login_required
 def cancel_transaction(txn_id):
-    """Set a transaction's status to 'cancelled'."""
+    """Set a transaction's status to 'cancelled'.
+
+    Shadow transactions route through the transfer service to cancel
+    the parent transfer and both shadows atomically.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+
+    # --- Transfer detection guard ---
+    if txn.transfer_id is not None:
+        cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id, status_id=cancelled.id
+        )
+        db.session.commit()
+        db.session.refresh(txn)
+        response = render_template("grid/_transaction_cell.html", txn=txn)
+        return response, 200, {"HX-Trigger": "gridRefresh"}
+    # --- End guard ---
 
     status = db.session.query(Status).filter_by(name="cancelled").one()
     txn.status_id = status.id
@@ -215,16 +331,20 @@ def get_quick_create():
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
+    account_id = request.args.get("account_id", type=int)
     txn_type_name = request.args.get("txn_type_name", "expense")
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
+    acct = db.session.get(Account, account_id) if account_id else None
     # Ownership check: prevent IDOR -- return identical 404 for
     # "does not exist" and "belongs to another user" so attackers
     # cannot distinguish the two cases.  See audit finding H1.
     if not category or category.user_id != current_user.id:
         return "Not found", 404
     if not period or period.user_id != current_user.id:
+        return "Not found", 404
+    if not acct or acct.user_id != current_user.id:
         return "Not found", 404
 
     # Look up the transaction type and baseline scenario for hidden fields.
@@ -241,6 +361,7 @@ def get_quick_create():
         "grid/_transaction_quick_create.html",
         category=category,
         period=period,
+        account_id=acct.id,
         scenario_id=scenario.id,
         transaction_type_id=txn_type.id,
         txn_type_name=txn_type_name,
@@ -252,18 +373,22 @@ def get_quick_create():
 def get_full_create():
     """HTMX partial: return the full create popover form.
 
-    Query params: category_id, period_id, txn_type_name.
+    Query params: category_id, period_id, account_id, txn_type_name.
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
+    account_id = request.args.get("account_id", type=int)
     txn_type_name = request.args.get("txn_type_name", "expense")
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
+    acct = db.session.get(Account, account_id) if account_id else None
     # Ownership check: same IDOR fix as get_quick_create (H1).
     if not category or category.user_id != current_user.id:
         return "Not found", 404
     if not period or period.user_id != current_user.id:
+        return "Not found", 404
+    if not acct or acct.user_id != current_user.id:
         return "Not found", 404
 
     txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
@@ -281,6 +406,7 @@ def get_full_create():
         "grid/_transaction_full_create.html",
         category=category,
         period=period,
+        account_id=acct.id,
         scenario_id=scenario.id,
         transaction_type_id=txn_type.id,
         statuses=statuses,
@@ -297,20 +423,25 @@ def get_empty_cell():
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
+    account_id = request.args.get("account_id", type=int)
     txn_type_name = request.args.get("txn_type_name", "expense")
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
+    account = db.session.get(Account, account_id) if account_id else None
     # Ownership check: same IDOR fix as get_quick_create (H1).
     if not category or category.user_id != current_user.id:
         return "Not found", 404
     if not period or period.user_id != current_user.id:
+        return "Not found", 404
+    if not account or account.user_id != current_user.id:
         return "Not found", 404
 
     return render_template(
         "grid/_transaction_empty_cell.html",
         category=category,
         period=period,
+        account=account,
         txn_type_name=txn_type_name,
     )
 
@@ -329,6 +460,11 @@ def create_inline():
         return jsonify(errors=errors), 400
 
     data = _inline_create_schema.load(request.form)
+
+    # Verify the account belongs to the current user.
+    acct = db.session.get(Account, data["account_id"])
+    if not acct or acct.user_id != current_user.id:
+        return "Not found", 404
 
     # Look up the category to derive the transaction name.
     category = db.session.get(Category, data["category_id"])
@@ -373,6 +509,11 @@ def create_transaction():
 
     data = _create_schema.load(request.form)
 
+    # Verify the account belongs to the current user.
+    acct = db.session.get(Account, data["account_id"])
+    if not acct or acct.user_id != current_user.id:
+        return "Not found", 404
+
     # Verify the pay period belongs to the current user.
     period = db.session.get(PayPeriod, data["pay_period_id"])
     if not period or period.user_id != current_user.id:
@@ -395,10 +536,18 @@ def create_transaction():
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
 @login_required
 def delete_transaction(txn_id):
-    """Soft-delete a transaction (or hard-delete if it's ad-hoc)."""
+    """Soft-delete a transaction (or hard-delete if it's ad-hoc).
+
+    Shadow transactions cannot be directly deleted -- the user must
+    delete the parent transfer instead.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+
+    # --- Transfer detection guard: block direct shadow deletion ---
+    if txn.transfer_id is not None:
+        return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
 
     if txn.template_id:
         # Template-linked: soft-delete so the recurrence engine knows.

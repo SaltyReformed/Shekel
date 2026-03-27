@@ -15,10 +15,12 @@ test_idempotency.py.  Focuses on:
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType
+from app.models.account import Account
+from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import carry_forward_service
+from app.models.transfer import Transfer
+from app.services import carry_forward_service, transfer_service
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -47,6 +49,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     txn = Transaction(
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
+        account_id=seed_user["account"].id,
         status_id=status.id,
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
@@ -256,6 +259,7 @@ class TestCarryForwardUnpaid:
             baseline_txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=baseline_scenario.id,
+                account_id=seed_user["account"].id,
                 status_id=status.id,
                 name="Baseline Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -268,6 +272,7 @@ class TestCarryForwardUnpaid:
             alt_txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=alt_scenario.id,
+                account_id=seed_user["account"].id,
                 status_id=status.id,
                 name="Alt Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -293,3 +298,288 @@ class TestCarryForwardUnpaid:
             # Alternative scenario transaction must remain in source.
             db.session.refresh(alt_txn)
             assert alt_txn.pay_period_id == seed_periods[0].id
+
+
+# ── Shadow Transaction Carry Forward Tests ─────────────────────────
+
+
+def _create_savings(seed_user):
+    """Create a savings account for transfer tests."""
+    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    acct = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=savings_type.id,
+        name="CF Savings",
+        current_anchor_balance=Decimal("0"),
+    )
+    db.session.add(acct)
+    db.session.flush()
+    return acct
+
+
+def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
+    """Create a transfer with shadows in the given period."""
+    savings = _create_savings(seed_user)
+    projected = db.session.query(Status).filter_by(name="projected").one()
+    xfer = transfer_service.create_transfer(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings.id,
+        pay_period_id=seed_periods[period_index].id,
+        scenario_id=seed_user["scenario"].id,
+        amount=Decimal("200.00"),
+        status_id=projected.id,
+        name="CF Transfer",
+    )
+    db.session.flush()
+    return xfer
+
+
+class TestCarryForwardShadowTransactions:
+    """Tests for carry forward behavior with shadow transactions."""
+
+    def test_moves_shadow_transactions_via_service(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Shadow transactions are carried forward atomically with their parent."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            regular = _create_transaction(seed_user, seed_periods, name="Regular")
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 2  # 1 regular + 1 transfer
+
+            db.session.refresh(regular)
+            assert regular.pay_period_id == seed_periods[1].id
+
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[1].id
+
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id
+            ).all()
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.pay_period_id == seed_periods[1].id
+
+    def test_deduplicates_shadow_pairs(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Both shadows from one transfer count as a single carried item."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            db.session.flush()
+
+            # Both shadows are in period 0 (query returns both).
+            shadow_count = db.session.query(Transaction).filter(
+                Transaction.transfer_id == xfer.id,
+                Transaction.pay_period_id == seed_periods[0].id,
+            ).count()
+            assert shadow_count == 2
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            # Counted as 1 transfer, not 2 shadows.
+            assert count == 1
+
+    def test_sets_is_override_on_transfer_and_shadows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Carry forward sets is_override=True on transfer and both shadows."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            db.session.flush()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            db.session.refresh(xfer)
+            assert xfer.is_override is True
+
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id
+            ).all()
+            for s in shadows:
+                assert s.is_override is True
+
+    def test_ignores_done_shadows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Done transfer and shadows are not carried forward."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            done = db.session.query(Status).filter_by(name="done").one()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, status_id=done.id
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 0
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[0].id
+
+    def test_ignores_cancelled_shadows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Cancelled transfer and shadows are not carried forward."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, status_id=cancelled.id
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 0
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[0].id
+
+    def test_ignores_soft_deleted_shadows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Soft-deleted transfer and shadows are not carried forward."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 0
+
+    def test_mixed_regular_and_shadow(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Mixed period: 2 regular + 1 transfer + 1 done regular."""
+        with app.app_context():
+            reg1 = _create_transaction(seed_user, seed_periods, name="Reg 1")
+            reg2 = _create_transaction(seed_user, seed_periods, name="Reg 2")
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            done_txn = _create_transaction(
+                seed_user, seed_periods, status_name="done", name="Done"
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 3  # 2 regular + 1 transfer
+
+            db.session.refresh(reg1)
+            db.session.refresh(reg2)
+            db.session.refresh(xfer)
+            db.session.refresh(done_txn)
+            assert reg1.pay_period_id == seed_periods[1].id
+            assert reg2.pay_period_id == seed_periods[1].id
+            assert xfer.pay_period_id == seed_periods[1].id
+            assert done_txn.pay_period_id == seed_periods[0].id
+
+    def test_multiple_transfers(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Multiple transfers in one period are each carried forward once."""
+        with app.app_context():
+            # Need a second savings account for the second transfer.
+            savings_type = db.session.query(AccountType).filter_by(
+                name="savings"
+            ).one()
+            savings2 = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="CF Savings 2",
+                current_anchor_balance=Decimal("0"),
+            )
+            db.session.add(savings2)
+            db.session.flush()
+
+            projected = db.session.query(Status).filter_by(name="projected").one()
+
+            xfer1 = _create_transfer_in_period(seed_user, seed_periods, 0)
+            xfer2 = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings2.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("150.00"),
+                status_id=projected.id,
+                name="CF Transfer 2",
+            )
+            reg = _create_transaction(seed_user, seed_periods, name="Reg")
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 3  # 1 regular + 2 transfers
+
+            db.session.refresh(xfer1)
+            db.session.refresh(xfer2)
+            assert xfer1.pay_period_id == seed_periods[1].id
+            assert xfer2.pay_period_id == seed_periods[1].id
+
+    def test_only_shadows_in_period(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Period with only shadow transactions (no regular) carries forward."""
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 1
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[1].id
+
+    def test_preserves_regular_transaction_behavior(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Regular transactions behave identically to pre-rework (regression)."""
+        with app.app_context():
+            reg1 = _create_transaction(seed_user, seed_periods, name="Reg A")
+            reg2 = _create_transaction(seed_user, seed_periods, name="Reg B")
+            reg3 = _create_transaction(seed_user, seed_periods, name="Reg C")
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert count == 3
+            for txn in [reg1, reg2, reg3]:
+                db.session.refresh(txn)
+                assert txn.pay_period_id == seed_periods[1].id

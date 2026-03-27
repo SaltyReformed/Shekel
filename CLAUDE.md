@@ -188,8 +188,46 @@ Copy `.env.example` to `.env` and configure. Key vars: `DATABASE_URL`, `SECRET_K
 
 - **No Unicode dashes.** Never use em dashes (U+2014) or en dashes (U+2013). Use `--` (double hyphen) for sentence breaks/separators and `-` (single hyphen) for ranges/short separators.
 
+## Active Work -- Transfer Architecture Rework (Section 3A)
+
+**Design document:** `docs/transfer_rework_design.md` -- Read this BEFORE starting any task
+in this section. It contains the architectural decision, schema changes, service contract,
+invariants, carry forward behavior, grid rendering changes, and implementation sequencing.
+Do not deviate from the design without explicit developer approval.
+
+**Supporting documents:**
+
+- `docs/transfer_rework_inventory.md` -- Codebase inventory of all affected files (created
+  during inventory phase).
+- `docs/transfer_rework_implementation.md` -- Detailed implementation plan with atomic commits
+  (created during planning phase).
+- `docs/project_roadmap_v4.md` -- Overall project roadmap. This rework is Section 3A.
+- `docs/implementation_plan_section4.md` -- Section 4 UX/Grid Overhaul plan. Task 4.2 is
+  superseded by Phase 3A-II of this rework.
+
+**Key invariants (memorize these -- violating any one is a critical bug):**
+
+1. Every transfer has exactly two linked shadow transactions (one expense, one income).
+2. Shadow transactions are never orphaned and never created without their sibling.
+3. Shadow transaction amounts, statuses, and periods always equal the parent transfer's.
+4. No code path directly mutates a shadow transaction. All mutations go through the transfer
+   service.
+5. The balance calculator queries ONLY budget.transactions. It must NOT also query
+   budget.transfers. Double-counting is the highest-risk failure mode.
+
+**Phase structure:**
+
+- Phase 3A-I: Shadow transaction architecture (schema, service, recurrence, routes, balance
+  calculator, grid rendering, carry forward, charts, cleanup).
+- Phase 3A-II: Grid subtotal rows and footer condensation (inline totals, Net Cash Flow row,
+  reduce sticky footer to Projected End Balance only).
+- Phase 3A-I must be fully complete and verified before Phase 3A-II begins.
+
+**When this work is complete**, remove this section and update Development Status below.
+
 ## Development Status
 
-Multi-phase project. Phases 1-8 complete (core budgeting, salary, accounts, transfers, savings, charts, UI/UX, hardening/ops). Currently preparing for production deployment. Remaining phases will be implemented as feature updates after production launch. See `docs/` for detailed plans.
-
-Do not re-implement or modify completed phase work unless explicitly asked. Do not jump ahead to future phase work without being directed to do so.
+Multi-phase project. Phases 1-8 complete (core budgeting, salary, accounts, transfers, savings,
+charts, UI/UX, hardening/ops). Currently executing Section 3A: Transfer Architecture Rework
+(see Active Work section above). Remaining phases will be implemented as feature updates after
+the rework is complete. See `docs/` for detailed plans.

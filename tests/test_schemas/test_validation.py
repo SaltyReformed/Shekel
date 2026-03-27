@@ -50,6 +50,7 @@ class TestTransactionCreateSchema:
             "scenario_id": "1",
             "category_id": "1",
             "transaction_type_id": "1",
+            "account_id": "1",
         })
         assert data["name"] == "Groceries"
         assert data["estimated_amount"] == Decimal("85.50")
@@ -73,6 +74,7 @@ class TestTransactionCreateSchema:
                 "scenario_id": "1",
                 "category_id": "1",
                 "transaction_type_id": "1",
+                "account_id": "1",
             })
         assert "estimated_amount" in exc.value.messages
 
@@ -123,6 +125,7 @@ class TestInlineTransactionCreateSchema:
             "pay_period_id": "1",
             "transaction_type_id": "1",
             "scenario_id": "1",
+            "account_id": "1",
         })
         assert data["estimated_amount"] == Decimal("50.00")
         assert "name" not in data  # Name not required for inline.
@@ -701,6 +704,7 @@ class TestTransactionCreateSchemaBoundary:
             "scenario_id": "1",
             "category_id": "1",
             "transaction_type_id": "1",
+            "account_id": "1",
         })
         # 100.12345 rounded to 2 places → 100.12 (3rd decimal is 3 < 5, rounds down).
         assert data["estimated_amount"] == Decimal("100.12")
@@ -719,6 +723,7 @@ class TestTransactionCreateSchemaBoundary:
             "scenario_id": "1",
             "category_id": "1",
             "transaction_type_id": "1",
+            "account_id": "1",
         })
         assert data["name"] == "<script>alert(1)</script>"
 
@@ -732,6 +737,7 @@ class TestTransactionCreateSchemaBoundary:
             "scenario_id": "1",
             "category_id": "1",
             "transaction_type_id": "1",
+            "account_id": "1",
         })
         assert len(data["name"]) == 200
 
@@ -746,6 +752,7 @@ class TestTransactionCreateSchemaBoundary:
                 "scenario_id": "1",
                 "category_id": "1",
                 "transaction_type_id": "1",
+                "account_id": "1",
             })
         assert "name" in exc.value.messages
 

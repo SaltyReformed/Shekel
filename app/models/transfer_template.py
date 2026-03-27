@@ -46,6 +46,9 @@ class TransferTemplate(db.Model):
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
+    category_id = db.Column(
+        db.Integer, db.ForeignKey("budget.categories.id")
+    )
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -61,6 +64,7 @@ class TransferTemplate(db.Model):
         "Account", foreign_keys=[to_account_id], lazy="joined"
     )
     recurrence_rule = db.relationship("RecurrenceRule", lazy="joined")
+    category = db.relationship("Category", lazy="joined")
     transfers = db.relationship(
         "Transfer", back_populates="template", lazy="select"
     )

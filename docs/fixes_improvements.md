@@ -188,6 +188,25 @@ See Roadmap v4 section 6.
 
 ---
 
+## Fixed -- Section 3A (Transfer Architecture Rework)
+
+### One-Time Transfers Fixed
+
+- One-time transfers now work correctly. Creating a one-time transfer (either via the
+  recurrence engine with a "once" pattern or via the ad-hoc transfer route) produces a
+  transfer record and two shadow transactions that appear in the grid and affect balances.
+- Fixed as part of the Transfer Architecture Rework (Section 3A).
+
+### Transfers Now Visible in Category Reports
+
+- Transfers (e.g., mortgage payments, savings contributions) now appear in category-based
+  spending charts alongside regular expenses, because shadow expense transactions carry the
+  transfer's category_id.
+- The separate TRANSFERS grid section has been removed. Transfer effects appear inline in
+  the INCOME and EXPENSES sections.
+
+---
+
 ## Deferred -- Evaluate Later
 
 ### Account Default Rates

@@ -5,6 +5,7 @@
    Expected context:
      category            -- Category object
      period              -- PayPeriod object
+     account_id          -- Account ID for the viewed account
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
      statuses            -- list of Status objects
@@ -23,6 +24,7 @@
         hx-target="closest td"
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="category_id" value="{{ category.id }}">
     <input type="hidden" name="pay_period_id" value="{{ period.id }}">
     <input type="hidden" name="scenario_id" value="{{ scenario_id }}">

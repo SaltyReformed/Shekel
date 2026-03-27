@@ -1,7 +1,12 @@
-{# Summary rows partial -- returned by the balance-row HTMX endpoint.
-   Replaces the entire <tfoot> when balanceChanged fires.
+{# Projected End Balance -- the only sticky footer row.
+   Returned by the balance-row HTMX endpoint.  Replaces the entire
+   <tfoot> when balanceChanged fires.  The self-referencing hx-get /
+   hx-trigger / hx-swap attributes keep the refresh cycle alive.
 
-   Expected context: periods, balances, txn_by_period, num_periods, start_offset, low_balance_threshold.
+   Total Income, Total Expenses, and Net Cash Flow are now inline
+   subtotal rows in the <tbody> (added in Tasks 13-14).
+
+   Expected context: periods, balances, account, num_periods, start_offset, low_balance_threshold.
 #}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
@@ -9,91 +14,6 @@
        hx-swap="outerHTML"
        aria-live="polite"
        aria-atomic="true">
-  {# --- Income Totals --- #}
-  <tr class="summary-row fw-bold">
-    <td class="sticky-col">Total Income</td>
-    {% for period in periods %}
-      {% set total = namespace(val=0) %}
-      {% for txn in txn_by_period.get(period.id, []) %}
-        {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
-          {% set total.val = total.val + (txn.effective_amount|float) %}
-        {% endif %}
-      {% endfor %}
-      <td class="text-end font-mono">
-        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
-      </td>
-    {% endfor %}
-  </tr>
-
-  {# --- Expense Totals --- #}
-  <tr class="summary-row fw-bold">
-    <td class="sticky-col">Total Expenses</td>
-    {% for period in periods %}
-      {% set total = namespace(val=0) %}
-      {% for txn in txn_by_period.get(period.id, []) %}
-        {% if txn.is_expense and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
-          {% set total.val = total.val + (txn.effective_amount|float) %}
-        {% endif %}
-      {% endfor %}
-      <td class="text-end font-mono">
-        {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
-      </td>
-    {% endfor %}
-  </tr>
-
-  {# --- Net Transfers --- #}
-  {% if xfer_by_period is defined and xfer_by_period %}
-  <tr class="summary-row fw-bold">
-    <td class="sticky-col">Net Transfers</td>
-    {% for period in periods %}
-      {% set xfer_net = namespace(val=0) %}
-      {% for xfer in xfer_by_period.get(period.id, []) %}
-        {% if not xfer.is_deleted and xfer.status.name not in ('cancelled', 'done', 'received') %}
-          {% if account is defined and account %}
-            {% if xfer.to_account_id == account.id %}
-              {% set xfer_net.val = xfer_net.val + (xfer.effective_amount|float) %}
-            {% endif %}
-            {% if xfer.from_account_id == account.id %}
-              {% set xfer_net.val = xfer_net.val - (xfer.effective_amount|float) %}
-            {% endif %}
-          {% endif %}
-        {% endif %}
-      {% endfor %}
-      <td class="text-end font-mono {{ 'balance-negative' if xfer_net.val < 0 else '' }}">
-        {% if xfer_net.val != 0 %}
-          ${{ "{:,.0f}".format(xfer_net.val) }}
-        {% endif %}
-      </td>
-    {% endfor %}
-  </tr>
-  {% endif %}
-
-  {# --- Net --- #}
-  <tr class="summary-row fw-bold">
-    <td class="sticky-col">Net (Income − Expenses)</td>
-    {% for period in periods %}
-      {% set inc = namespace(val=0) %}
-      {% set exp = namespace(val=0) %}
-      {% for txn in txn_by_period.get(period.id, []) %}
-        {% if not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
-          {% if txn.is_income %}
-            {% set inc.val = inc.val + (txn.effective_amount|float) %}
-          {% elif txn.is_expense %}
-            {% set exp.val = exp.val + (txn.effective_amount|float) %}
-          {% endif %}
-        {% endif %}
-      {% endfor %}
-      {% set net = inc.val - exp.val %}
-      <td class="text-end font-mono {{ 'balance-negative' if net < 0 else '' }}">
-        {% if net != 0 %}
-          {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-          ${{ "{:,.0f}".format(net) }}
-        {% endif %}
-      </td>
-    {% endfor %}
-  </tr>
-
-  {# --- Projected End Balance --- #}
   <tr class="balance-row-summary fw-bold">
     <td class="sticky-col">
       <i class="bi bi-bank"></i> Projected End Balance

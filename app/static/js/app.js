@@ -361,7 +361,9 @@ document.addEventListener('keydown', function(e) {
       return !tr.classList.contains('section-banner-income') &&
              !tr.classList.contains('section-banner-expense') &&
              !tr.classList.contains('spacer-row') &&
-             !tr.classList.contains('group-header-row');
+             !tr.classList.contains('group-header-row') &&
+             !tr.classList.contains('subtotal-row') &&
+             !tr.classList.contains('net-cash-flow-row');
     });
   }
 

@@ -3,9 +3,10 @@
    Expand button or F2 opens the full create popover.
 
    Expected context:
-     category          -- Category object
-     period            -- PayPeriod object
-     scenario_id       -- baseline scenario ID
+     category            -- Category object
+     period              -- PayPeriod object
+     account_id          -- Account ID for the viewed account
+     scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
 #}
 <form class="txn-quick-edit d-flex align-items-center gap-1"
@@ -14,6 +15,7 @@
       hx-target="closest td"
       hx-swap="innerHTML"
       hx-disabled-elt="find input">
+  <input type="hidden" name="account_id" value="{{ account_id }}">
   <input type="hidden" name="category_id" value="{{ category.id }}">
   <input type="hidden" name="pay_period_id" value="{{ period.id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
@@ -32,7 +34,8 @@
           aria-label="More options"
           data-category-id="{{ category.id }}"
           data-period-id="{{ period.id }}"
-          data-txn-type-name="{{ txn_type_name }}">
+          data-txn-type-name="{{ txn_type_name }}"
+          data-account-id="{{ account_id }}">
     <i class="bi bi-three-dots"></i>
   </button>
 </form>

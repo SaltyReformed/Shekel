@@ -34,6 +34,7 @@ class TestCalculateBalances:
             inc = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
+                account_id=account.id,
                 status_id=projected.id,
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
@@ -46,6 +47,7 @@ class TestCalculateBalances:
             exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
+                account_id=account.id,
                 status_id=projected.id,
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -70,6 +72,7 @@ class TestCalculateBalances:
         """Done items in the anchor period are already in the anchor balance."""
         with app.app_context():
             scenario = seed_user["scenario"]
+            account = seed_user["account"]
             periods = seed_periods
 
             done = db.session.query(Status).filter_by(name="done").one()
@@ -81,6 +84,7 @@ class TestCalculateBalances:
             done_exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
+                account_id=account.id,
                 status_id=done.id,
                 name="Already Paid",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -95,6 +99,7 @@ class TestCalculateBalances:
             proj_exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
+                account_id=account.id,
                 status_id=projected.id,
                 name="Upcoming",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -119,6 +124,7 @@ class TestCalculateBalances:
         """Credit-status transactions do not affect checking balance."""
         with app.app_context():
             scenario = seed_user["scenario"]
+            account = seed_user["account"]
             periods = seed_periods
 
             credit = db.session.query(Status).filter_by(name="credit").one()
@@ -128,6 +134,7 @@ class TestCalculateBalances:
             credit_exp = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
+                account_id=account.id,
                 status_id=credit.id,
                 name="CC Purchase",
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -152,6 +159,7 @@ class TestCalculateBalances:
         """Balances roll forward correctly across multiple periods."""
         with app.app_context():
             scenario = seed_user["scenario"]
+            account = seed_user["account"]
             periods = seed_periods
 
             projected = db.session.query(Status).filter_by(name="projected").one()
@@ -170,6 +178,7 @@ class TestCalculateBalances:
                 t = Transaction(
                     pay_period_id=period.id,
                     scenario_id=scenario.id,
+                    account_id=account.id,
                     status_id=projected.id,
                     name=name,
                     category_id=cat_id,
@@ -213,11 +222,13 @@ class FakePeriod:
 
 
 class FakeTxn:
-    def __init__(self, pay_period_id, status_name, type_name, estimated_amount):
+    def __init__(self, pay_period_id, status_name, type_name, estimated_amount,
+                 transfer_id=None):
         self.pay_period_id = pay_period_id
         self.status = FakeStatus(status_name)
         self.transaction_type = FakeType(type_name)
         self.estimated_amount = Decimal(str(estimated_amount))
+        self.transfer_id = transfer_id
 
     @property
     def is_income(self):
@@ -226,16 +237,6 @@ class FakeTxn:
     @property
     def is_expense(self):
         return self.transaction_type and self.transaction_type.name == "expense"
-
-
-class FakeTransfer:
-    def __init__(self, pay_period_id, from_account_id, to_account_id, amount,
-                 status_name="projected"):
-        self.pay_period_id = pay_period_id
-        self.from_account_id = from_account_id
-        self.to_account_id = to_account_id
-        self.amount = Decimal(str(amount))
-        self.status = FakeStatus(status_name)
 
 
 class TestBalanceCalculatorEdgeCases:
@@ -301,42 +302,43 @@ class TestBalanceCalculatorEdgeCases:
         # Period 2: 500 + 2000 - 750 = 1750
         assert balances[2] == Decimal("1750.00")
 
-    def test_mixed_transactions_and_transfers(self):
-        """Anchor period with a projected expense and outgoing transfer."""
+    def test_mixed_transactions_and_shadow_expense(self):
+        """Anchor period with a regular expense and a shadow expense (transfer out)."""
         periods = [FakePeriod(1)]
-        txns = [FakeTxn(1, "projected", "expense", "300.00")]
-        xfers = [FakeTransfer(1, from_account_id=10, to_account_id=20, amount="200.00")]
-
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("1000.00"),
-            anchor_period_id=1,
-            periods=periods,
-            transactions=txns,
-            transfers=xfers,
-            account_id=10,
-        )
-
-        # 1000 - 300 (expense) - 200 (outgoing transfer) = 500
-        assert balances[1] == Decimal("500.00")
-
-    def test_multiple_transfers_same_period(self):
-        """Anchor period with 1 incoming + 1 outgoing transfer."""
-        periods = [FakePeriod(1)]
-        xfers = [
-            FakeTransfer(1, from_account_id=20, to_account_id=10, amount="500.00"),
-            FakeTransfer(1, from_account_id=10, to_account_id=30, amount="150.00"),
+        txns = [
+            FakeTxn(1, "projected", "expense", "300.00"),
+            # Shadow expense from a transfer (outgoing $200).
+            FakeTxn(1, "projected", "expense", "200.00", transfer_id=1),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
-            transactions=[],
-            transfers=xfers,
-            account_id=10,
+            transactions=txns,
         )
 
-        # 1000 + 500 (incoming) - 150 (outgoing) = 1350
+        # 1000 - 300 (expense) - 200 (shadow expense) = 500
+        assert balances[1] == Decimal("500.00")
+
+    def test_shadow_income_and_expense_same_period(self):
+        """Anchor period with shadow income + shadow expense (transfer in + out)."""
+        periods = [FakePeriod(1)]
+        txns = [
+            # Shadow income: $500 transfer into this account.
+            FakeTxn(1, "projected", "income", "500.00", transfer_id=1),
+            # Shadow expense: $150 transfer out of this account.
+            FakeTxn(1, "projected", "expense", "150.00", transfer_id=2),
+        ]
+
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=txns,
+        )
+
+        # 1000 + 500 (shadow income) - 150 (shadow expense) = 1350
         assert balances[1] == Decimal("1350.00")
 
     def test_settled_transactions_excluded_post_anchor(self):
@@ -360,30 +362,28 @@ class TestBalanceCalculatorEdgeCases:
         # Period 2: 1000 - 100 (only projected expense counted) = 900
         assert balances[2] == Decimal("900.00")
 
-    def test_cancelled_transfers_excluded(self):
-        """Transfer with 'cancelled' status is excluded from balance calculation."""
+    def test_cancelled_shadow_excluded(self):
+        """Cancelled shadow transaction is excluded from balance calculation."""
         periods = [FakePeriod(1)]
-        xfers = [
-            FakeTransfer(1, from_account_id=10, to_account_id=20, amount="500.00",
-                         status_name="cancelled"),
-            FakeTransfer(1, from_account_id=10, to_account_id=30, amount="100.00",
-                         status_name="projected"),
+        txns = [
+            # Cancelled shadow expense -- should be ignored.
+            FakeTxn(1, "cancelled", "expense", "500.00", transfer_id=1),
+            # Projected shadow expense -- should be counted.
+            FakeTxn(1, "projected", "expense", "100.00", transfer_id=2),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=1,
             periods=periods,
-            transactions=[],
-            transfers=xfers,
-            account_id=10,
+            transactions=txns,
         )
 
-        # 1000 - 100 (only projected transfer) = 900; cancelled ignored
+        # 1000 - 100 (only projected shadow) = 900; cancelled ignored
         assert balances[1] == Decimal("900.00")
 
-    def test_empty_transactions_and_transfers(self):
-        """Empty lists for both → balance equals anchor balance."""
+    def test_empty_transactions(self):
+        """Empty transaction list -> balance equals anchor balance."""
         periods = [FakePeriod(1)]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -391,8 +391,6 @@ class TestBalanceCalculatorEdgeCases:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            transfers=[],
-            account_id=10,
         )
 
         assert balances[1] == Decimal("2500.00")
@@ -410,34 +408,27 @@ class TestBalanceCalculatorEdgeCases:
 
         assert len(balances) == 0
 
-    def test_five_period_rollforward_with_transfers(self):
-        """5 periods with income, expenses, and transfers. Verify each balance."""
+    def test_five_period_rollforward_with_shadows(self):
+        """5 periods with income, expenses, and shadow transactions. Verify each balance."""
         periods = [FakePeriod(i) for i in range(1, 6)]
-        account_id = 10
 
         txns = [
             # Period 1 (anchor): income 2000, expense 800
             FakeTxn(1, "projected", "income", "2000.00"),
             FakeTxn(1, "projected", "expense", "800.00"),
-            # Period 2: income 2000, expense 600
+            # Period 2: income 2000, expense 600, shadow expense 300 (transfer out)
             FakeTxn(2, "projected", "income", "2000.00"),
             FakeTxn(2, "projected", "expense", "600.00"),
-            # Period 3: expense 1500 (no income)
+            FakeTxn(2, "projected", "expense", "300.00", transfer_id=1),
+            # Period 3: expense 1500, shadow income 500 (transfer in)
             FakeTxn(3, "projected", "expense", "1500.00"),
+            FakeTxn(3, "projected", "income", "500.00", transfer_id=2),
             # Period 4: income 2000, expense 900
             FakeTxn(4, "projected", "income", "2000.00"),
             FakeTxn(4, "projected", "expense", "900.00"),
-            # Period 5: income 2000
+            # Period 5: income 2000, shadow expense 1000 (transfer out)
             FakeTxn(5, "projected", "income", "2000.00"),
-        ]
-
-        xfers = [
-            # Period 2: outgoing 300 from account 10
-            FakeTransfer(2, from_account_id=10, to_account_id=20, amount="300.00"),
-            # Period 3: incoming 500 to account 10
-            FakeTransfer(3, from_account_id=20, to_account_id=10, amount="500.00"),
-            # Period 5: outgoing 1000 from account 10
-            FakeTransfer(5, from_account_id=10, to_account_id=30, amount="1000.00"),
+            FakeTxn(5, "projected", "expense", "1000.00", transfer_id=3),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -445,8 +436,6 @@ class TestBalanceCalculatorEdgeCases:
             anchor_period_id=1,
             periods=periods,
             transactions=txns,
-            transfers=xfers,
-            account_id=account_id,
         )
 
         # Period 1: 1000 + 2000 - 800 = 2200
@@ -459,6 +448,19 @@ class TestBalanceCalculatorEdgeCases:
         assert balances[4] == Decimal("3400.00")
         # Period 5: 3400 + 2000 - 1000 = 4400
         assert balances[5] == Decimal("4400.00")
+
+    def test_no_transfers_parameter_accepted(self):
+        """calculate_balances no longer accepts a transfers keyword argument."""
+        import pytest
+        periods = [FakePeriod(1)]
+        with pytest.raises(TypeError):
+            balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=[],
+                transfers=[],
+            )
 
 
 # -------------------------------------------------------------------
