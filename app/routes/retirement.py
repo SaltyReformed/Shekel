@@ -18,9 +18,10 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
-from app.models.transfer import Transfer
+from app.models.scenario import Scenario
+from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.models.ref import AccountType
+from app.models.ref import AccountType, TransactionType
 from app.services.investment_projection import calculate_investment_inputs
 from app.schemas.validation import (
     PensionProfileCreateSchema,
@@ -28,6 +29,7 @@ from app.schemas.validation import (
     RetirementSettingsSchema,
 )
 from app.services import (
+    balance_calculator,
     growth_engine,
     pay_period_service,
     paycheck_calculator,
@@ -157,14 +159,17 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
 
     period_ids = [p.id for p in all_periods]
-    all_acct_transfers = []
-    if account_ids and period_ids:
-        all_acct_transfers = (
-            db.session.query(Transfer)
+    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    all_acct_contributions = []
+    if account_ids and period_ids and income_type:
+        all_acct_contributions = (
+            db.session.query(Transaction)
             .filter(
-                Transfer.to_account_id.in_(account_ids),
-                Transfer.pay_period_id.in_(period_ids),
-                Transfer.is_deleted.is_(False),
+                Transaction.account_id.in_(account_ids),
+                Transaction.transfer_id.isnot(None),
+                Transaction.transaction_type_id == income_type.id,
+                Transaction.pay_period_id.in_(period_ids),
+                Transaction.is_deleted.is_(False),
             )
             .all()
         )
@@ -184,13 +189,57 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             end_date=planned_retirement_date,
         )
 
+    # Compute actual current balances for each account by running
+    # transactions (including shadow deposits from transfers) through
+    # the balance calculator.  Using the raw anchor would miss
+    # accumulated transfer contributions, understating balances.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=user_id, is_baseline=True)
+        .first()
+    )
+    acct_balance_map = {}
+    if scenario and period_ids:
+        for acct in accounts:
+            anchor = acct.current_anchor_balance or Decimal("0")
+            anchor_pid = acct.current_anchor_period_id or (
+                current_period.id if current_period else None
+            )
+            if anchor_pid:
+                acct_txns = (
+                    db.session.query(Transaction)
+                    .filter(
+                        Transaction.account_id == acct.id,
+                        Transaction.pay_period_id.in_(period_ids),
+                        Transaction.scenario_id == scenario.id,
+                        Transaction.is_deleted.is_(False),
+                    )
+                    .all()
+                )
+                bals, _ = balance_calculator.calculate_balances(
+                    anchor_balance=anchor,
+                    anchor_period_id=anchor_pid,
+                    periods=all_periods,
+                    transactions=acct_txns,
+                )
+                acct_balance_map[acct.id] = (
+                    bals.get(current_period.id, anchor)
+                    if current_period else anchor
+                )
+            else:
+                acct_balance_map[acct.id] = anchor
+
     for acct in accounts:
         params = (
             db.session.query(InvestmentParams)
             .filter_by(account_id=acct.id)
             .first()
         )
-        balance = acct.current_anchor_balance or Decimal("0")
+        # Use balance-calculator-computed balance (includes shadow
+        # transactions from transfers), not the raw anchor.
+        balance = acct_balance_map.get(
+            acct.id, acct.current_anchor_balance or Decimal("0")
+        )
         projected_balance = balance
 
         if params and synthetic_periods:
@@ -205,11 +254,19 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                     "pay_periods_per_year": ded_profile.pay_periods_per_year or 26,
                 })())
 
+            # Filter contributions to this specific account.  Without
+            # this, contributions from ALL retirement accounts are
+            # mixed together, overstating each account's rate.
+            acct_contributions = [
+                t for t in all_acct_contributions
+                if t.account_id == acct.id
+            ]
+
             inputs = calculate_investment_inputs(
                 account_id=acct.id,
                 investment_params=params,
                 deductions=adapted_deductions,
-                all_transfers=all_acct_transfers,
+                all_contributions=acct_contributions,
                 all_periods=all_periods,
                 current_period=current_period,
                 salary_gross_biweekly=salary_gross_biweekly,
