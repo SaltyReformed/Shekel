@@ -17,14 +17,15 @@ from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.transfer import Transfer
-from app.models.ref import AccountType
+from app.models.transaction import Transaction
+from app.models.ref import AccountType, TransactionType
 from app.models.user import UserSettings
 from app.schemas.validation import (
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
 )
-from app.services import growth_engine, pay_period_service, paycheck_calculator
+from app.models.scenario import Scenario
+from app.services import balance_calculator, growth_engine, pay_period_service, paycheck_calculator
 from app.services.investment_projection import calculate_investment_inputs
 
 logger = logging.getLogger(__name__)
@@ -56,8 +57,48 @@ def dashboard(account_id):
     all_periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
 
-    # Current balance from anchor.
-    current_balance = account.current_anchor_balance or Decimal("0.00")
+    # Compute current balance by running ALL account transactions
+    # (including shadow transactions from transfers) through the balance
+    # calculator.  Using the raw anchor_balance would miss transfer
+    # deposits, understating the balance by the total of all missed
+    # contributions.  Follows the grid.py account-scoped query pattern.
+    anchor_balance = account.current_anchor_balance or Decimal("0.00")
+    anchor_period_id = account.current_anchor_period_id or (
+        current_period.id if current_period else None
+    )
+
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+
+    period_ids = [p.id for p in all_periods]
+    acct_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    balances = {}
+    if anchor_period_id and scenario:
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=anchor_period_id,
+            periods=all_periods,
+            transactions=acct_transactions,
+        )
+
+    # Current balance includes shadow transactions (transfer deposits).
+    current_balance = (
+        balances.get(current_period.id, anchor_balance)
+        if current_period else anchor_balance
+    )
 
     # Load active salary profile for employer contribution gross calculation.
     salary_gross_biweekly = Decimal("0")
@@ -96,23 +137,26 @@ def dashboard(account_id):
             "pay_periods_per_year": profile.pay_periods_per_year or 26,
         })())
 
-    # Load transfers targeting this account (for contribution averaging and YTD).
+    # Load shadow income transactions in this account (contributions via transfers).
     period_ids = [p.id for p in all_periods]
-    acct_transfers = (
-        db.session.query(Transfer)
+    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    acct_contributions = (
+        db.session.query(Transaction)
         .filter(
-            Transfer.to_account_id == account_id,
-            Transfer.pay_period_id.in_(period_ids),
-            Transfer.is_deleted.is_(False),
+            Transaction.account_id == account_id,
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if period_ids else []
+    ) if period_ids and income_type else []
 
     inputs = calculate_investment_inputs(
         account_id=account_id,
         investment_params=params,
         deductions=adapted_deductions,
-        all_transfers=acct_transfers,
+        all_contributions=acct_contributions,
         all_periods=all_periods,
         current_period=current_period,
         salary_gross_biweekly=salary_gross_biweekly,
@@ -281,21 +325,24 @@ def growth_chart(account_id):
         })())
 
     period_ids = [p.id for p in all_periods]
-    acct_transfers = (
-        db.session.query(Transfer)
+    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    acct_contributions = (
+        db.session.query(Transaction)
         .filter(
-            Transfer.to_account_id == account_id,
-            Transfer.pay_period_id.in_(period_ids),
-            Transfer.is_deleted.is_(False),
+            Transaction.account_id == account_id,
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if period_ids else []
+    ) if period_ids and income_type else []
 
     inputs = calculate_investment_inputs(
         account_id=account_id,
         investment_params=params,
         deductions=adapted_deductions,
-        all_transfers=acct_transfers,
+        all_contributions=acct_contributions,
         all_periods=all_periods,
         current_period=current_period,
         salary_gross_biweekly=salary_gross_biweekly,
