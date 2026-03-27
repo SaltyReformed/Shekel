@@ -35,8 +35,6 @@
   --shekel-section-income-text: #5ED9A0;
   --shekel-section-expense-bg: #3D1A2E;
   --shekel-section-expense-text: #D97BA0;
-  --shekel-section-transfer-bg: #1A2E3D;
-  --shekel-section-transfer-text: #7BA0D9;
   --shekel-group-header-bg: #2A2F38;
   --shekel-summary-bg: #1E2228;
 }
@@ -139,8 +137,6 @@
   --shekel-section-income-text: #1A6B40;
   --shekel-section-expense-bg: #EDCFDE;
   --shekel-section-expense-text: #6B1A40;
-  --shekel-section-transfer-bg: #CFE0ED;
-  --shekel-section-transfer-text: #1A406B;
   --shekel-group-header-bg: #F0F3F7;
   --shekel-summary-bg: #F0F4F8;
 }
@@ -204,7 +200,6 @@
 /* Don't override section banners, spacers, or summary rows on hover */
 .grid-table tbody tr.section-banner-income:hover td,
 .grid-table tbody tr.section-banner-expense:hover td,
-.grid-table tbody tr.section-banner-transfer:hover td,
 .grid-table tbody tr.spacer-row:hover td {
   background-color: transparent;
 }
@@ -295,17 +290,6 @@ thead .sticky-col {
   padding-bottom: 0.5rem;
 }
 
-.section-banner-transfer td {
-  background-color: var(--shekel-section-transfer-bg) !important;
-  color: var(--shekel-section-transfer-text);
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-}
-
 /* Category sub-headers */
 .group-header-row td {
   background-color: var(--shekel-group-header-bg);
@@ -334,18 +318,39 @@ thead .sticky-col {
   z-index: 2;
 }
 
-.summary-row {
-  background-color: var(--shekel-summary-bg);
+/* Inline subtotal rows (Total Income, Total Expenses) in tbody */
+.subtotal-row td,
+.subtotal-row th {
+  background-color: var(--shekel-row-hover) !important;
+  border-top: 1px solid var(--shekel-border-strong);
+  font-size: 13px;
 }
 
-.summary-row td {
-  border-top: 2px solid var(--shekel-accent);
+.subtotal-row .sticky-col {
+  background-color: var(--shekel-row-hover) !important;
+  z-index: 3;
+}
+
+/* Prevent hover override on subtotal rows */
+.grid-table tbody tr.subtotal-row:hover td {
+  background-color: var(--shekel-row-hover) !important;
+}
+
+/* Net Cash Flow row -- more prominent than subtotals */
+.net-cash-flow-row td,
+.net-cash-flow-row th {
   background-color: var(--shekel-summary-bg) !important;
+  border-top: 2px solid var(--shekel-border-strong);
+  font-size: 13px;
 }
 
-.summary-row .sticky-col {
+.net-cash-flow-row .sticky-col {
   background-color: var(--shekel-summary-bg) !important;
   z-index: 3;
+}
+
+.grid-table tbody tr.net-cash-flow-row:hover td {
+  background-color: var(--shekel-summary-bg) !important;
 }
 
 .balance-row-summary {
@@ -446,6 +451,11 @@ thead .sticky-col {
 
 .txn-cell:hover {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
+}
+
+.txn-cell .bi-arrow-left-right {
+  opacity: 0.6;
+  font-size: 0.7rem;
 }
 
 .txn-empty-cell {
@@ -593,7 +603,10 @@ thead .sticky-col {
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   padding: 12px;
-  position: absolute;
+  /* Fixed positioning escapes the grid-scroll-wrapper's overflow:auto
+     clipping.  The popover is now a sibling of the wrapper, not a child,
+     so it cannot be obscured by the sticky tfoot. */
+  position: fixed;
   z-index: 100;
 }
 

@@ -159,6 +159,22 @@
         {% endif %}
       {% endfor %}
 
+      {# --- Total Income Subtotal --- #}
+      <tr class="subtotal-row subtotal-row-income">
+        <th class="sticky-col row-label fw-bold">Total Income</th>
+        {% for period in periods %}
+          {% set total = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.is_income and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+              {% set total.val = total.val + (txn.effective_amount|float) %}
+            {% endif %}
+          {% endfor %}
+          <td class="text-end font-mono fw-bold">
+            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+
       {# --- Spacer between Income and Expenses --- #}
       <tr class="spacer-row">
         <td colspan="{{ periods|length + 1 }}"></td>
@@ -223,72 +239,56 @@
         {% endif %}
       {% endfor %}
 
-      {# --- Transfers Section --- #}
-      {% set has_any_transfers = [] %}
-      {% for period in periods %}
-        {% for xfer in xfer_by_period.get(period.id, []) %}
-          {% if has_any_transfers.append(1) %}{% endif %}
-        {% endfor %}
-      {% endfor %}
-
-      {% if has_any_transfers %}
-      <tr class="spacer-row">
-        <td colspan="{{ periods|length + 1 }}"></td>
-      </tr>
-
-      <tr class="section-banner-transfer">
-        <td class="sticky-col" colspan="{{ periods|length + 1 }}">
-          TRANSFERS
-        </td>
-      </tr>
-
-      {# Group transfers by template name (or "Ad-hoc" for non-template transfers) #}
-      {% set xfer_groups = {} %}
-      {% for period in periods %}
-        {% for xfer in xfer_by_period.get(period.id, []) %}
-          {% set group_key = xfer.name or 'Ad-hoc Transfer' %}
-          {% if xfer_groups.update({group_key: true}) %}{% endif %}
-        {% endfor %}
-      {% endfor %}
-
-      {% for group_name in xfer_groups.keys() %}
-      <tr>
-        <th scope="row" class="sticky-col row-label" title="{{ group_name }}">
-          <i class="bi bi-arrow-left-right small text-muted me-1"></i>{{ group_name }}
-        </th>
+      {# --- Total Expenses Subtotal --- #}
+      <tr class="subtotal-row subtotal-row-expense">
+        <th class="sticky-col row-label fw-bold">Total Expenses</th>
         {% for period in periods %}
-          {% set period_xfers = xfer_by_period.get(period.id, []) %}
-          {% set matched = [] %}
-          {% for xfer in period_xfers %}
-            {% set xfer_group = xfer.name or 'Ad-hoc Transfer' %}
-            {% if xfer_group == group_name and not xfer.is_deleted and xfer.status.name != 'cancelled' %}
-              {% if matched.append(xfer) %}{% endif %}
+          {% set total = namespace(val=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if txn.is_expense and not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+              {% set total.val = total.val + (txn.effective_amount|float) %}
             {% endif %}
           {% endfor %}
-          <td class="text-end cell">
-            {% if matched %}
-              {% for xfer in matched %}
-                <div id="xfer-cell-{{ xfer.id }}">
-                  {% include "transfers/_transfer_cell.html" with context %}
-                </div>
-              {% endfor %}
-            {% else %}
-              {% include "transfers/_transfer_empty_cell.html" with context %}
+          <td class="text-end font-mono fw-bold">
+            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+
+      {# --- Net Cash Flow --- #}
+      <tr class="net-cash-flow-row">
+        <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
+        {% for period in periods %}
+          {% set ns = namespace(income=0, expense=0) %}
+          {% for txn in txn_by_period.get(period.id, []) %}
+            {% if not txn.is_deleted and txn.status.name not in ('credit', 'cancelled', 'done', 'received') %}
+              {% if txn.is_income %}
+                {% set ns.income = ns.income + (txn.effective_amount|float) %}
+              {% elif txn.is_expense %}
+                {% set ns.expense = ns.expense + (txn.effective_amount|float) %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {% set net = ns.income - ns.expense %}
+          <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}">
+            {% if net != 0 %}
+              {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+              ${{ "{:,.0f}".format(net) }}
             {% endif %}
           </td>
         {% endfor %}
       </tr>
-      {% endfor %}
-      {% endif %}
 
     </tbody>
 
     {% include "grid/_balance_row.html" %}
   </table>
-
-  {# Popover container for the full edit form -- positioned absolutely within the grid wrapper #}
-  <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
 </div>
+
+{# Popover container for the full edit form -- positioned fixed outside
+   the grid-scroll-wrapper so overflow:auto does not clip it.  The sticky
+   footer (tfoot) can no longer obscure the popover's action buttons. #}
+<div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
 
 {# --- Add Transaction Modal --- #}
 <div class="modal fade" id="addTransactionModal" tabindex="-1" aria-labelledby="addTransactionModalLabel">
@@ -303,6 +303,7 @@
             hx-disabled-elt="find button[type=submit]">
         <div class="modal-body">
           <input type="hidden" name="scenario_id" value="{{ scenario.id }}">
+          <input type="hidden" name="account_id" value="{{ account.id }}">
 
           <div class="mb-3">
             <label class="form-label">Name</label>
