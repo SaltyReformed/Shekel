@@ -20,8 +20,6 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
 from app.schemas.validation import (
     AccountCreateSchema,
     AccountUpdateSchema,
@@ -574,37 +572,22 @@ def hysa_detail(account_id):
 
     period_ids = [p.id for p in all_periods]
 
-    all_transactions = (
+    # Load transactions scoped to this account using the account_id
+    # column.  This includes shadow transactions from transfers, ad-hoc
+    # transactions, and template-generated transactions.  The old
+    # template_account_map approach silently excluded shadow transactions
+    # (template_id=None), causing HYSA projections to miss all transfer
+    # deposits.  Follows the pattern in grid.py lines 87-98.
+    acct_transactions = (
         db.session.query(Transaction)
         .filter(
+            Transaction.account_id == account.id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
         )
         .all()
     ) if scenario and period_ids else []
-
-    all_transfers = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.pay_period_id.in_(period_ids),
-            Transfer.scenario_id == scenario.id,
-            Transfer.is_deleted.is_(False),
-        )
-        .all()
-    ) if scenario and period_ids else []
-
-    # Filter transactions for this account.
-    template_account_map = dict(
-        db.session.query(TransactionTemplate.id, TransactionTemplate.account_id)
-        .filter_by(user_id=user_id)
-        .all()
-    ) if scenario else {}
-
-    acct_transactions = [
-        txn for txn in all_transactions
-        if txn.template_id and template_account_map.get(txn.template_id) == account.id
-    ]
 
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
     anchor_period_id = account.current_anchor_period_id or (
@@ -619,8 +602,6 @@ def hysa_detail(account_id):
             anchor_period_id=anchor_period_id,
             periods=all_periods,
             transactions=acct_transactions,
-            transfers=all_transfers,
-            account_id=account.id,
             hysa_params=params,
         )
 
