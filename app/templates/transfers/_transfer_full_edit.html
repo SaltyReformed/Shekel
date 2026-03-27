@@ -1,8 +1,10 @@
 {# Transfer full edit popover -- renders inside #txn-popover container.
-   Contains amount, status, notes, and quick status action buttons.
+   Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
 
-   Expected context: xfer, statuses.
+   Expected context: xfer, statuses, categories.
+   Optional: source_txn_id -- when opened from a shadow transaction cell,
+   the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 #}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
@@ -14,9 +16,16 @@
   </div>
 
   <form hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"
-        hx-target="#xfer-cell-{{ xfer.id }}"
+        hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}"
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
+
+    {# Pass source_txn_id so the transfer route handler can render the
+       correct template (transaction cell for grid, transfer cell for
+       management page).  Only present when opened from a shadow cell. #}
+    {% if source_txn_id %}
+      <input type="hidden" name="source_txn_id" value="{{ source_txn_id }}">
+    {% endif %}
 
     {# Amount #}
     <div class="mb-2">
@@ -34,6 +43,19 @@
         {% for s in statuses %}
         <option value="{{ s.id }}" {{ 'selected' if xfer.status_id == s.id else '' }}>
           {{ s.name|capitalize }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Category #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Category</label>
+      <select name="category_id" class="form-select form-select-sm">
+        <option value="">-- None --</option>
+        {% for cat in categories %}
+        <option value="{{ cat.id }}" {{ 'selected' if xfer.category_id == cat.id else '' }}>
+          {{ cat.group_name }}: {{ cat.item_name }}
         </option>
         {% endfor %}
       </select>
@@ -65,14 +87,16 @@
     {% if xfer.status.name == 'projected' %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transfers.mark_done', xfer_id=xfer.id) }}"
-            hx-target="#xfer-cell-{{ xfer.id }}" hx-swap="innerHTML"
+            hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}" hx-swap="innerHTML"
+            {% if source_txn_id %}hx-vals='{"source_txn_id": "{{ source_txn_id }}"}'{% endif %}
             hx-disabled-elt="this"
             aria-label="Mark as done">
       <i class="bi bi-check-circle"></i> Done
     </button>
     <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
             hx-post="{{ url_for('transfers.cancel_transfer', xfer_id=xfer.id) }}"
-            hx-target="#xfer-cell-{{ xfer.id }}" hx-swap="innerHTML"
+            hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}" hx-swap="innerHTML"
+            {% if source_txn_id %}hx-vals='{"source_txn_id": "{{ source_txn_id }}"}'{% endif %}
             hx-disabled-elt="this"
             aria-label="Cancel transfer">
       <i class="bi bi-x-octagon"></i> Cancel

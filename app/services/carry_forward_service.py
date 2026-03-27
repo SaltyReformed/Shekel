@@ -11,6 +11,7 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.ref import Status
+from app.services import transfer_service
 from app.exceptions import NotFoundError
 from app.utils.log_events import log_event, BUSINESS
 
@@ -78,8 +79,21 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         .all()
     )
 
-    count = 0
+    # Partition into regular transactions and shadow transactions.
+    # Shadows are routed through the transfer service so the parent
+    # transfer and both shadows move atomically (design doc invariant 5).
+    regular_txns = []
+    shadow_txns = []
     for txn in projected_txns:
+        if txn.transfer_id is None:
+            regular_txns.append(txn)
+        else:
+            shadow_txns.append(txn)
+
+    count = 0
+
+    # Move regular transactions (unchanged logic).
+    for txn in regular_txns:
         txn.pay_period_id = target_period_id
 
         # If this transaction was auto-generated from a template, flag as override.
@@ -87,6 +101,25 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
             txn.is_override = True
 
         count += 1
+
+    # Move transfers via the service.  De-duplicate by transfer_id because
+    # the query is not account-scoped and may return both shadows from the
+    # same transfer.  Each transfer counts as 1 carried-forward item.
+    moved_transfer_ids = set()
+    for txn in shadow_txns:
+        if txn.transfer_id not in moved_transfer_ids:
+            # The service moves the parent transfer AND both shadows
+            # to the target period, even if only one shadow was in
+            # the query results.  This self-heals any period mismatch
+            # between siblings (design doc section 10A.2).
+            transfer_service.update_transfer(
+                txn.transfer_id,
+                user_id,
+                pay_period_id=target_period_id,
+                is_override=True,
+            )
+            moved_transfer_ids.add(txn.transfer_id)
+            count += 1
 
     db.session.flush()
     log_event(logger, logging.INFO, "carry_forward", BUSINESS,

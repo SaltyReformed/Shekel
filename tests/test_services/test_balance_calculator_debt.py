@@ -23,14 +23,16 @@ def _period(id, index, start, end):
     )
 
 
-def _transfer(pay_period_id, from_account_id, to_account_id, amount, status="projected"):
-    """Create a mock Transfer."""
+def _shadow_income(pay_period_id, amount, transfer_id=1, status="projected"):
+    """Create a mock shadow income transaction (loan payment)."""
     return SimpleNamespace(
         pay_period_id=pay_period_id,
-        from_account_id=from_account_id,
-        to_account_id=to_account_id,
-        amount=Decimal(str(amount)),
+        estimated_amount=Decimal(str(amount)),
         status=SimpleNamespace(name=status),
+        transaction_type=SimpleNamespace(name="income"),
+        transfer_id=transfer_id,
+        is_income=True,
+        is_expense=False,
     )
 
 
@@ -57,16 +59,15 @@ class TestDebtBalanceCalculator:
         params = _loan_params(principal="100000", rate="0.06", term=360)
 
         # Transfer of $599.55 (standard payment for $100k at 6%, 30yr)
-        transfers = [
-            _transfer(2, from_account_id=99, to_account_id=1, amount="599.55"),
+        txns = [
+            _shadow_income(2, "599.55"),
         ]
 
         balances, principal_by_period = calculate_balances_with_amortization(
             anchor_balance=Decimal("100000.00"),
             anchor_period_id=1,
             periods=periods,
-            transactions=[],
-            transfers=transfers,
+            transactions=txns,
             account_id=1,
             loan_params=params,
         )
@@ -105,7 +106,6 @@ class TestDebtBalanceCalculator:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            transfers=[],
             account_id=1,
             loan_params=params,
         )
@@ -123,17 +123,16 @@ class TestDebtBalanceCalculator:
         ]
         params = _loan_params(principal="100000", rate="0.06", term=360)
 
-        transfers = [
-            _transfer(2, from_account_id=99, to_account_id=1, amount="599.55"),
-            _transfer(3, from_account_id=99, to_account_id=1, amount="599.55"),
+        txns = [
+            _shadow_income(2, "599.55", transfer_id=1),
+            _shadow_income(3, "599.55", transfer_id=2),
         ]
 
         balances, principal_by_period = calculate_balances_with_amortization(
             anchor_balance=Decimal("100000.00"),
             anchor_period_id=1,
             periods=periods,
-            transactions=[],
-            transfers=transfers,
+            transactions=txns,
             account_id=1,
             loan_params=params,
         )
@@ -264,17 +263,21 @@ class TestDebtBalanceCalculator:
 
             exp_b[p.id] = rp
 
+        # Build shadow income transactions, one per payment period.
+        # Each gets a unique transfer_id.
+        sorted_pids = sorted(pay_pids)
+        txns = [
+            _shadow_income(pid, str(pmt), transfer_id=i + 1)
+            for i, pid in enumerate(sorted_pids)
+        ]
+
         # Call the service under test.
         balances, pbp = (
             calculate_balances_with_amortization(
                 anchor_balance=Decimal("200000.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=[
-                    _transfer(pid, 99, 1, str(pmt))
-                    for pid in sorted(pay_pids)
-                ],
+                transactions=txns,
                 account_id=1,
                 loan_params=_loan_params(
                     principal="200000",
@@ -345,10 +348,10 @@ class TestDebtBalanceCalculator:
 
         # $1000 payments in periods 2, 3, 4.
         # Each $1000 is entirely principal (no interest).
-        transfers = [
-            _transfer(2, 99, 1, "1000.00"),
-            _transfer(3, 99, 1, "1000.00"),
-            _transfer(4, 99, 1, "1000.00"),
+        txns = [
+            _shadow_income(2, "1000.00", transfer_id=1),
+            _shadow_income(3, "1000.00", transfer_id=2),
+            _shadow_income(4, "1000.00", transfer_id=3),
         ]
 
         balances, principal_by_period = (
@@ -356,8 +359,7 @@ class TestDebtBalanceCalculator:
                 anchor_balance=Decimal("12000.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
+                transactions=txns,
                 account_id=1,
                 loan_params=params,
             )
@@ -427,8 +429,8 @@ class TestDebtBalanceCalculator:
         )
 
         # Transfer that should have no effect.
-        transfers = [
-            _transfer(2, 99, 1, "599.55"),
+        txns = [
+            _shadow_income(2, "599.55"),
         ]
 
         balances, principal_by_period = (
@@ -436,8 +438,7 @@ class TestDebtBalanceCalculator:
                 anchor_balance=Decimal("0.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
+                transactions=txns,
                 account_id=1,
                 loan_params=params,
             )
@@ -490,8 +491,8 @@ class TestDebtBalanceCalculator:
         )
 
         # $600 deliberately exceeds $500 remaining.
-        transfers = [
-            _transfer(2, 99, 1, "600.00"),
+        txns = [
+            _shadow_income(2, "600.00"),
         ]
 
         balances, principal_by_period = (
@@ -499,8 +500,7 @@ class TestDebtBalanceCalculator:
                 anchor_balance=Decimal("500.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
+                transactions=txns,
                 account_id=1,
                 loan_params=params,
             )
@@ -554,13 +554,13 @@ class TestDebtBalanceCalculator:
             principal="100000", rate="0.06", term=360,
         )
 
-        transfers = [
+        txns = [
             # Cancelled: should be ignored.
-            _transfer(
-                2, 99, 1, "599.55", status="cancelled",
+            _shadow_income(
+                2, "599.55", transfer_id=1, status="cancelled",
             ),
             # Projected: should apply normally.
-            _transfer(3, 99, 1, "599.55"),
+            _shadow_income(3, "599.55", transfer_id=2),
         ]
 
         balances, principal_by_period = (
@@ -568,8 +568,7 @@ class TestDebtBalanceCalculator:
                 anchor_balance=Decimal("100000.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
+                transactions=txns,
                 account_id=1,
                 loan_params=params,
             )
@@ -625,9 +624,9 @@ class TestDebtBalanceCalculator:
 
         # Two transfers in period 2:
         # $599.55 regular + $200.00 extra = $799.55 total
-        transfers = [
-            _transfer(2, 99, 1, "599.55"),  # regular
-            _transfer(2, 99, 1, "200.00"),  # extra
+        txns = [
+            _shadow_income(2, "599.55", transfer_id=1),  # regular
+            _shadow_income(2, "200.00", transfer_id=2),  # extra
         ]
 
         balances, principal_by_period = (
@@ -635,8 +634,7 @@ class TestDebtBalanceCalculator:
                 anchor_balance=Decimal("100000.00"),
                 anchor_period_id=1,
                 periods=periods,
-                transactions=[],
-                transfers=transfers,
+                transactions=txns,
                 account_id=1,
                 loan_params=params,
             )

@@ -100,6 +100,7 @@ def mark_as_credit(transaction_id, user_id):
 
     # Create the payback transaction.
     payback = Transaction(
+        account_id=txn.account_id,
         template_id=None,  # Ad-hoc, not from a template.
         pay_period_id=next_period.id,
         scenario_id=txn.scenario_id,

@@ -25,13 +25,11 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
+from app.models.ref import TransactionType
 from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import amortization_engine, balance_calculator, growth_engine, pay_period_service, savings_goal_service
 from app.services.investment_projection import calculate_investment_inputs
-from app.services.account_resolver import resolve_grid_account
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +62,11 @@ def dashboard():
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
 
-    # Load all transactions and transfers once, then filter per-account.
+    # Load all transactions once, then filter per-account using the
+    # account_id column.  This includes shadow transactions (transfer_id
+    # IS NOT NULL) which represent deposits/withdrawals from transfers.
+    # Without these, non-checking account balances silently exclude all
+    # transfer effects -- a $500 HYSA deposit would be invisible.
     period_ids = [p.id for p in all_periods]
 
     all_transactions = (
@@ -77,29 +79,21 @@ def dashboard():
         .all()
     ) if scenario and period_ids else []
 
-    all_transfers = (
-        db.session.query(Transfer)
+    # Load shadow income transactions for investment contribution
+    # calculations.  Queried once and filtered per-account in the loop
+    # below (matching investment.py's per-account scoping pattern).
+    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    all_shadow_income = (
+        db.session.query(Transaction)
         .filter(
-            Transfer.pay_period_id.in_(period_ids),
-            Transfer.scenario_id == scenario.id,
-            Transfer.is_deleted.is_(False),
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if scenario and period_ids else []
-
-    # Map template_id → account_id so we can filter transactions per-account
-    # without N+1 queries through the template relationship.
-    template_account_map = dict(
-        db.session.query(TransactionTemplate.id, TransactionTemplate.account_id)
-        .filter_by(user_id=user_id)
-        .all()
-    ) if scenario else {}
-
-    # The grid uses a resolved account for its balance view.  Ad-hoc
-    # transactions (no template) are created in that context, so
-    # attribute them to the same account.
-    grid_account = resolve_grid_account(user_id, current_user.settings)
-    grid_account_id = grid_account.id if grid_account else None
+    ) if scenario and period_ids and income_type else []
 
     # Load HYSA params for all HYSA accounts in one query.
     hysa_type = (
@@ -185,14 +179,13 @@ def dashboard():
     # Compute projected balances for each account.
     account_data = []
     for acct in accounts:
-        # Include transactions belonging to this account (via template).
-        # Ad-hoc transactions (no template_id) are attributed to the grid
-        # account since they were created in that context.
+        # Filter transactions by the account_id column (added in Task 1
+        # of the transfer rework).  This includes shadow transactions
+        # from transfers, ad-hoc transactions, and template-generated
+        # transactions -- all of which have account_id set at creation.
         acct_transactions = [
             txn for txn in all_transactions
-            if (txn.template_id
-                and template_account_map.get(txn.template_id) == acct.id)
-            or (not txn.template_id and acct.id == grid_account_id)
+            if txn.account_id == acct.id
         ]
 
         anchor_balance = acct.current_anchor_balance or Decimal("0.00")
@@ -211,8 +204,6 @@ def dashboard():
                     anchor_period_id=anchor_period_id,
                     periods=all_periods,
                     transactions=acct_transactions,
-                    transfers=all_transfers,
-                    account_id=acct.id,
                     hysa_params=acct_hysa_params,
                 )
             else:
@@ -221,8 +212,6 @@ def dashboard():
                     anchor_period_id=anchor_period_id,
                     periods=all_periods,
                     transactions=acct_transactions,
-                    transfers=all_transfers,
-                    account_id=acct.id,
                 )
 
         # Get projected balance at current period and a few future milestones.
@@ -272,11 +261,20 @@ def dashboard():
                     "pay_periods_per_year": profile.pay_periods_per_year or 26,
                 })())
 
+            # Filter contributions to this specific account (matching
+            # investment.py's per-account scoping pattern).  Without
+            # this, contributions from ALL investment accounts would be
+            # mixed together, overstating each account's contribution.
+            acct_contributions = [
+                t for t in all_shadow_income
+                if t.account_id == acct.id
+            ]
+
             inputs = calculate_investment_inputs(
                 account_id=acct.id,
                 investment_params=acct_investment_params,
                 deductions=adapted_deductions,
-                all_transfers=all_transfers,
+                all_contributions=acct_contributions,
                 all_periods=all_periods,
                 current_period=current_period,
                 salary_gross_biweekly=salary_gross_biweekly,
@@ -287,8 +285,11 @@ def dashboard():
                 if p.period_index >= current_period.period_index
             ]
             if future_periods:
+                # Use the balance-calculator-computed current_bal
+                # (which includes shadow transactions from transfers),
+                # not the raw anchor_balance.
                 projection = growth_engine.project_balance(
-                    current_balance=anchor_balance,
+                    current_balance=current_bal,
                     assumed_annual_return=acct_investment_params.assumed_annual_return,
                     periods=future_periods,
                     periodic_contribution=inputs.periodic_contribution,

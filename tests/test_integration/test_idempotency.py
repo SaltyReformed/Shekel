@@ -249,6 +249,7 @@ class TestTransactionDoubleSubmit:
                 "scenario_id": str(seed_user["scenario"].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(expense_type.id),
+                "account_id": str(seed_user["account"].id),
             }
 
             # First submit.
@@ -299,6 +300,7 @@ class TestTransactionDoubleSubmit:
                 "scenario_id": str(seed_user["scenario"].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(expense_type.id),
+                "account_id": str(seed_user["account"].id),
             }
 
             # First submit -- valid.
@@ -312,6 +314,7 @@ class TestTransactionDoubleSubmit:
                 "scenario_id": str(seed_user["scenario"].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(expense_type.id),
+                "account_id": str(seed_user["account"].id),
             }
             resp2 = auth_client.post("/transactions", data=invalid_data)
             assert resp2.status_code == 400
@@ -344,6 +347,7 @@ class TestTransactionDoubleSubmit:
                 "scenario_id": str(seed_user["scenario"].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(expense_type.id),
+                "account_id": str(seed_user["account"].id),
             }
             resp1 = auth_client.post("/transactions", data=invalid_data)
             assert resp1.status_code == 400
@@ -356,6 +360,7 @@ class TestTransactionDoubleSubmit:
                 "scenario_id": str(seed_user["scenario"].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(expense_type.id),
+                "account_id": str(seed_user["account"].id),
             }
             resp2 = auth_client.post("/transactions", data=valid_data)
             assert resp2.status_code == 201
@@ -495,6 +500,7 @@ class TestMarkDoneDoubleSubmit:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Electricity",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -552,6 +558,7 @@ class TestCarryForwardDoubleSubmit:
                 txn = Transaction(
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
                     status_id=projected.id,
                     name=f"Item {i}",
                     category_id=seed_user["categories"]["Groceries"].id,

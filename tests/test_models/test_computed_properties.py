@@ -34,6 +34,7 @@ class TestTransactionEffectiveAmount:
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=status.id,
             name="Test",
             category_id=seed_user["categories"]["Groceries"].id,
@@ -147,6 +148,7 @@ class TestTransactionTypeProperties:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
@@ -167,6 +169,7 @@ class TestTransactionTypeProperties:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=projected.id,
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,

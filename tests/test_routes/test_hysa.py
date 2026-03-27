@@ -284,3 +284,79 @@ class TestCreateHysaAccount:
         assert params.account_id == account.id
         assert params.apy == Decimal("0.04500")
         assert params.compounding_frequency == "daily"
+
+
+class TestHysaDetailShadowTransactions:
+    """Verify that the HYSA detail page includes shadow transactions
+    from transfers in its balance calculation and projection.
+    """
+
+    def test_hysa_detail_includes_transfer_deposit(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Verify that the HYSA detail page includes shadow income
+        transactions from transfers in the balance projection.  Without
+        this, the HYSA projected balance underestimates by the total of
+        all missed transfer deposits, and interest compounds on the
+        wrong base amount.
+        """
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        from app.models.ref import Status  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        account, _ = _create_hysa_account(seed_user, db.session)
+        account.current_anchor_period_id = seed_periods[0].id
+        db.session.commit()
+
+        # Add transfer categories required by the service.
+        incoming = Category(
+            user_id=seed_user["user"].id,
+            group_name="Transfers", item_name="Incoming",
+        )
+        outgoing = Category(
+            user_id=seed_user["user"].id,
+            group_name="Transfers", item_name="Outgoing",
+        )
+        db.session.add_all([incoming, outgoing])
+        db.session.flush()
+
+        # Create a $500 transfer from checking to HYSA.
+        projected = db.session.query(Status).filter_by(name="projected").one()
+        transfer_service.create_transfer(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=account.id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("500.00"),
+            status_id=projected.id,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/hysa")
+        assert resp.status_code == 200
+
+        html = resp.data.decode()
+        # Anchor $10,000 + $500 deposit + interest at 4.5% APY daily
+        # compounding = ~$10,601.  Without the fix, the balance would
+        # be ~$10,096 (interest on anchor only, deposit missing).
+        # Check for "10,6" to confirm the deposit is reflected.
+        assert "10,6" in html
+
+    def test_hysa_detail_no_transfers_regression(
+        self, auth_client, seed_user, db, seed_periods
+    ):
+        """Verify that the HYSA detail page still works correctly when
+        there are no transfers.  The account_id query must return an
+        empty set without errors, and the balance equals anchor + interest.
+        """
+        account, _ = _create_hysa_account(seed_user, db.session)
+        account.current_anchor_period_id = seed_periods[0].id
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/hysa")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Anchor is $10,000.  With only interest, balance should be
+        # just above $10,000.  Check for "10,0" to confirm.
+        assert "10,0" in html

@@ -873,3 +873,162 @@ class TestSavingsNegativePaths:
                 user_id=seed_user["user"].id,
             ).count()
             assert count == 0
+
+
+# ── Shadow Transaction Inclusion Tests ────────────────────────────
+
+
+class TestSavingsDashboardShadowTransactions:
+    """Verify that the savings dashboard includes shadow transactions
+    (from transfers) in account balance calculations.
+
+    Before this fix, the dashboard filtered transactions by template_id,
+    which excluded shadow transactions (template_id=None).  The correct
+    filter uses the account_id column added in Task 1 of the transfer
+    rework.
+    """
+
+    def test_hysa_balance_includes_transfer_deposit(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Verify that the savings dashboard passes shadow income
+        transactions to the HYSA balance calculator, so transfer deposits
+        increase the projected balance.  Without this, HYSA projections
+        underestimate the balance by the total of all missed deposits.
+        """
+        from app.models.hysa_params import HysaParams as HP  # pylint: disable=import-outside-toplevel
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        from app.models.ref import Status  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Create HYSA account with known anchor balance.
+            hysa_type = db.session.query(AccountType).filter_by(name="hysa").one()
+            hysa = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="High Yield Savings",
+                current_anchor_balance=Decimal("10000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(hysa)
+            db.session.flush()
+
+            hp = HP(
+                account_id=hysa.id,
+                apy=Decimal("0.04500"),  # 4.5% stored as decimal
+                compounding_frequency="daily",
+            )
+            db.session.add(hp)
+
+            # Add transfer categories required by transfer_service.
+            incoming = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Incoming",
+            )
+            outgoing = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Outgoing",
+            )
+            db.session.add_all([incoming, outgoing])
+            db.session.flush()
+
+            # Create a $500 transfer from checking to HYSA.
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=hysa.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("500.00"),
+                status_id=projected.id,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            # The HYSA should show in the dashboard.  Its balance should
+            # include the $500 deposit + interest.  With anchor $10,000
+            # + $500 deposit + daily compounding at 4.5% APY, the
+            # balance will be ~$10,601.  The key assertion is that the
+            # balance exceeds $10,500 (anchor + deposit), proving the
+            # deposit was included before interest compounded.
+            html = resp.data.decode()
+            assert "High Yield Savings" in html
+            # Without the fix, the balance would be ~$10,096 (anchor
+            # + interest only, no deposit).  With the fix, it exceeds
+            # $10,500.  Check for "10,6" which confirms the deposit
+            # is reflected ($10,601 with interest).
+            assert "10,6" in html
+
+    def test_savings_balance_includes_transfer_deposit(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Verify that a regular savings account (no HYSA params) includes
+        shadow income from transfers in its balance calculation.  The
+        balance for a savings account receiving a $1000 transfer must
+        reflect the deposit, not just the anchor balance.
+        """
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        from app.models.ref import Status  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="Emergency Fund")
+            savings.current_anchor_period_id = seed_periods[0].id
+            savings.current_anchor_balance = Decimal("3000.00")
+            db.session.flush()
+
+            # Transfer categories.
+            incoming = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Incoming",
+            )
+            outgoing = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers", item_name="Outgoing",
+            )
+            db.session.add_all([incoming, outgoing])
+            db.session.flush()
+
+            projected = db.session.query(Status).filter_by(name="projected").one()
+            transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1000.00"),
+                status_id=projected.id,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # Anchor $3,000 + $1,000 deposit = $4,000 at period 0.
+            assert "4,000" in html
+
+    def test_account_with_no_transfers_still_works(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Verify that the savings dashboard renders correctly for
+        accounts that have no transfers.  The account_id filter must
+        produce an empty list without errors, not crash or show stale
+        data from another account's transactions.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="Plain Savings")
+            savings.current_anchor_period_id = seed_periods[0].id
+            savings.current_anchor_balance = Decimal("2000.00")
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert "Plain Savings" in html
+            assert "2,000" in html

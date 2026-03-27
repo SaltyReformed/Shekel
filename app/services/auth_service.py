@@ -41,6 +41,8 @@ DEFAULT_CATEGORIES = [
     ("Health", "Dental"),
     ("Financial", "Savings Transfer"),
     ("Financial", "Extra Debt Payment"),
+    ("Transfers", "Incoming"),
+    ("Transfers", "Outgoing"),
     ("Credit Card", "Payback"),
 ]
 

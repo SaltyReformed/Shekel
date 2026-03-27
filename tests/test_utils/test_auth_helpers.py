@@ -75,6 +75,7 @@ class TestGetOwnedViaParent:
         txn = Transaction(
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=projected.id,
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
@@ -122,6 +123,7 @@ class TestGetOwnedViaParent:
             txn2 = Transaction(
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
+                account_id=second_user["account"].id,
                 status_id=projected.id,
                 name="Other User Expense",
                 category_id=second_user["categories"]["Rent"].id,

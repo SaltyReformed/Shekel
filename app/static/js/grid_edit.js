@@ -12,26 +12,41 @@ var activePopover = null;
 
 /**
  * Position and show the popover below (or above) the given cell.
+ *
+ * The popover uses position:fixed so coordinates are relative to the
+ * viewport.  This allows it to escape the grid-scroll-wrapper's
+ * overflow:auto clipping -- the sticky footer cannot obscure the
+ * popover's action buttons.
+ *
  * Returns the popover element for further setup.
  */
 function positionPopover(cell) {
-    const popover = document.getElementById('txn-popover');
-    const gridWrapper = cell.closest('.grid-scroll-wrapper');
-    if (!popover || !gridWrapper) return null;
+    var popover = document.getElementById('txn-popover');
+    if (!popover) return null;
 
     // Close any existing popover first.
     closeFullEdit();
 
-    // Calculate position relative to the grid wrapper.
-    const cellRect = cell.getBoundingClientRect();
-    const wrapperRect = gridWrapper.getBoundingClientRect();
-    let topPos = (cellRect.bottom - wrapperRect.top + gridWrapper.scrollTop);
-    const leftPos = (cellRect.left - wrapperRect.left + gridWrapper.scrollLeft);
+    // Viewport-relative coordinates from the triggering cell.
+    var cellRect = cell.getBoundingClientRect();
 
-    // If the popover would go below the viewport, position above the cell.
-    if (cellRect.bottom + 300 > window.innerHeight) {
-        topPos = (cellRect.top - wrapperRect.top + gridWrapper.scrollTop) - 300;
+    // Estimated popover height for flip-above logic.  The actual height
+    // is unknown until content is injected, so use a conservative guess.
+    var popoverHeight = 300;
+    var topPos = cellRect.bottom;
+    var leftPos = cellRect.left;
+
+    // If the popover would extend below the viewport, open above the cell.
+    if (cellRect.bottom + popoverHeight > window.innerHeight) {
+        topPos = cellRect.top - popoverHeight;
+        // Clamp to top of viewport if the cell is very near the top.
         if (topPos < 0) topPos = 0;
+    }
+
+    // Clamp horizontal position so the popover does not overflow the
+    // right edge of the viewport.
+    if (leftPos + 280 > window.innerWidth) {
+        leftPos = window.innerWidth - 290;
     }
 
     popover.style.top = topPos + 'px';
@@ -59,6 +74,13 @@ function showPopover(popover, html) {
     setTimeout(function() {
         document.addEventListener('click', handleClickOutside);
     }, 0);
+
+    // Close the popover if the grid scrolls -- position:fixed means
+    // the popover would float detached from its cell otherwise.
+    var wrapper = document.querySelector('.grid-scroll-wrapper');
+    if (wrapper) {
+        wrapper.addEventListener('scroll', closeFullEdit);
+    }
 }
 
 /**
@@ -84,32 +106,10 @@ function openFullEdit(txnId, triggerEl) {
 }
 
 /**
- * Open the full edit popover for a transfer.
- * Same pattern as openFullEdit but fetches from the transfer endpoint.
- */
-function openTransferFullEdit(xferId, triggerEl) {
-    const cell = triggerEl.closest('td');
-    const popover = positionPopover(cell);
-    if (!popover) return;
-
-    fetch('/transfers/' + xferId + '/full-edit', {
-        headers: { 'HX-Request': 'true' }
-    })
-    .then(function(r) { return r.text(); })
-    .then(function(html) {
-        showPopover(popover, html);
-    })
-    .catch(function() {
-        closeFullEdit();
-    });
-}
-
-
-/**
  * Open the full create popover for an empty cell.
  * Loads the create form via fetch, anchored to the cell.
  */
-function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
+function openFullCreate(categoryId, periodId, txnTypeName, accountId, triggerEl) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
@@ -122,7 +122,8 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
     // Load the full create form via fetch.
     fetch('/transactions/new/full?category_id=' + categoryId +
           '&period_id=' + periodId +
-          '&txn_type_name=' + encodeURIComponent(txnTypeName), {
+          '&txn_type_name=' + encodeURIComponent(txnTypeName) +
+          '&account_id=' + accountId, {
         headers: { 'HX-Request': 'true' }
     })
     .then(function(r) { return r.text(); })
@@ -149,6 +150,12 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
         setTimeout(function() {
             document.addEventListener('click', handleClickOutside);
         }, 0);
+
+        // Close on grid scroll (position:fixed detaches from cell).
+        var wrapper = document.querySelector('.grid-scroll-wrapper');
+        if (wrapper) {
+            wrapper.addEventListener('scroll', closeFullEdit);
+        }
     })
     .catch(function() {
         closeFullEdit();
@@ -159,13 +166,20 @@ function openFullCreate(categoryId, periodId, txnTypeName, triggerEl) {
  * Close the full edit popover and clean up listeners.
  */
 function closeFullEdit() {
-    const popover = document.getElementById('txn-popover');
+    var popover = document.getElementById('txn-popover');
     if (popover) {
         popover.classList.add('d-none');
         popover.innerHTML = '';
     }
     activePopover = null;
     document.removeEventListener('click', handleClickOutside);
+
+    // Remove the scroll listener that was added in showPopover /
+    // openFullCreate to close the popover when the grid scrolls.
+    var wrapper = document.querySelector('.grid-scroll-wrapper');
+    if (wrapper) {
+        wrapper.removeEventListener('scroll', closeFullEdit);
+    }
 }
 
 /**
@@ -187,13 +201,6 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             const quickForm = quickInput.closest('.txn-quick-edit');
 
-            // Transfer expand button.
-            const xferBtn = quickForm.querySelector('.xfer-expand-btn');
-            if (xferBtn) {
-                openTransferFullEdit(parseInt(xferBtn.dataset.xferId), quickInput);
-                return;
-            }
-
             // Transaction expand button.
             const expandBtn = quickForm.querySelector('.txn-expand-btn');
             if (quickForm.dataset.mode === 'create') {
@@ -201,6 +208,7 @@ document.addEventListener('keydown', function(e) {
                     parseInt(expandBtn.dataset.categoryId),
                     parseInt(expandBtn.dataset.periodId),
                     expandBtn.dataset.txnTypeName,
+                    parseInt(expandBtn.dataset.accountId),
                     quickInput
                 );
             } else {
@@ -225,20 +233,6 @@ document.addEventListener('keydown', function(e) {
             e.preventDefault();
             const quickForm = quickInput.closest('.txn-quick-edit');
 
-            // Transfer quick edit -- revert to display mode.
-            const xferBtn = quickForm.querySelector('.xfer-expand-btn');
-            if (xferBtn) {
-                const xferId = xferBtn.dataset.xferId;
-                const targetDiv = document.getElementById('xfer-cell-' + xferId);
-                if (targetDiv) {
-                    htmx.ajax('GET', '/transfers/cell/' + xferId, {
-                        target: targetDiv,
-                        swap: 'innerHTML'
-                    });
-                }
-                return;
-            }
-
             // Transaction quick edit/create.
             const expandBtn = quickForm.querySelector('.txn-expand-btn');
             if (quickForm.dataset.mode === 'create') {
@@ -247,7 +241,8 @@ document.addEventListener('keydown', function(e) {
                     htmx.ajax('GET',
                         '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
                         '&period_id=' + expandBtn.dataset.periodId +
-                        '&txn_type_name=' + encodeURIComponent(expandBtn.dataset.txnTypeName),
+                        '&txn_type_name=' + encodeURIComponent(expandBtn.dataset.txnTypeName) +
+                        '&account_id=' + expandBtn.dataset.accountId,
                         { target: td, swap: 'innerHTML' }
                     );
                 }
@@ -268,13 +263,6 @@ document.addEventListener('keydown', function(e) {
 
 // --- Delegated click handlers (CSP-compliant, replaces inline onclick) ---
 document.addEventListener('click', function(e) {
-    // Open transfer full edit popover (expand button in transfer quick-edit)
-    var xferEditBtn = e.target.closest('.xfer-expand-btn[data-xfer-id]');
-    if (xferEditBtn) {
-        openTransferFullEdit(parseInt(xferEditBtn.dataset.xferId), xferEditBtn);
-        return;
-    }
-
     // Open full edit popover (expand button in quick-edit mode)
     var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
     if (editBtn) {
@@ -289,6 +277,7 @@ document.addEventListener('click', function(e) {
             parseInt(createBtn.dataset.categoryId),
             parseInt(createBtn.dataset.periodId),
             createBtn.dataset.txnTypeName,
+            parseInt(createBtn.dataset.accountId),
             createBtn
         );
         return;

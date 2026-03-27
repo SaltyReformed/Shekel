@@ -1517,7 +1517,7 @@ class TestRegistration:
             categories = db.session.query(Category).filter_by(
                 user_id=user.id
             ).all()
-            assert len(categories) == 22
+            assert len(categories) == 24
 
     def test_register_success_creates_checking_account(self, app, client):
         """POST /register creates a default checking account for the new user."""

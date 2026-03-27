@@ -117,6 +117,7 @@ class TestEffectiveAmountDecimal:
             template_id=None,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=credit_status.id,
             name="Test Credit",
             category_id=seed_user["categories"]["Rent"].id,
@@ -137,6 +138,7 @@ class TestEffectiveAmountDecimal:
             template_id=None,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=cancelled_status.id,
             name="Test Cancelled",
             category_id=seed_user["categories"]["Rent"].id,
@@ -450,34 +452,40 @@ class TestTemplateOwnership:
 
 
 class TestBalanceWithTransfers:
-    """Verify balance_calculator accounts for transfers correctly."""
+    """Verify balance_calculator accounts for transfer shadows correctly."""
 
     def test_outgoing_transfer_reduces_balance(self, app, db, seed_user, seed_periods):
-        """An outgoing transfer reduces the source account's balance."""
+        """A shadow expense from a transfer reduces the source account's balance."""
+        from app.services import transfer_service
+
         projected = db.session.query(Status).filter_by(name="projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 
-        xfer = Transfer(
+        xfer = transfer_service.create_transfer(
             user_id=seed_user["user"].id,
             from_account_id=account.id,
             to_account_id=savings_acct.id,
             pay_period_id=seed_periods[1].id,
             scenario_id=seed_user["scenario"].id,
+            amount=Decimal("200.00"),
             status_id=projected.id,
             name="To Savings",
-            amount=Decimal("200.00"),
         )
-        db.session.add(xfer)
         db.session.commit()
+
+        # Load only the checking account's shadow (the expense shadow).
+        shadow_txns = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer.id, account_id=account.id)
+            .all()
+        )
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,
-            transactions=[],
-            transfers=[xfer],
-            account_id=account.id,
+            transactions=shadow_txns,
         )
 
         # Period 0 (anchor): 1000
@@ -485,64 +493,80 @@ class TestBalanceWithTransfers:
         assert balances[seed_periods[1].id] == Decimal("800.00")
 
     def test_incoming_transfer_increases_balance(self, app, db, seed_user, seed_periods):
-        """An incoming transfer increases the destination account's balance."""
+        """A shadow income from a transfer increases the destination account's balance."""
+        from app.services import transfer_service
+
         projected = db.session.query(Status).filter_by(name="projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 
-        xfer = Transfer(
+        xfer = transfer_service.create_transfer(
             user_id=seed_user["user"].id,
             from_account_id=savings_acct.id,
             to_account_id=account.id,
             pay_period_id=seed_periods[1].id,
             scenario_id=seed_user["scenario"].id,
+            amount=Decimal("300.00"),
             status_id=projected.id,
             name="From Savings",
-            amount=Decimal("300.00"),
         )
-        db.session.add(xfer)
         db.session.commit()
+
+        # Load only the checking account's shadow (the income shadow).
+        shadow_txns = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer.id, account_id=account.id)
+            .all()
+        )
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,
-            transactions=[],
-            transfers=[xfer],
-            account_id=account.id,
+            transactions=shadow_txns,
         )
 
         assert balances[seed_periods[1].id] == Decimal("1300.00")
 
     def test_cancelled_transfer_no_effect(self, app, db, seed_user, seed_periods):
-        """A cancelled transfer should not affect the balance."""
+        """A cancelled transfer's shadows should not affect the balance."""
+        from app.services import transfer_service
+
+        projected = db.session.query(Status).filter_by(name="projected").one()
         cancelled = db.session.query(Status).filter_by(name="cancelled").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 
-        xfer = Transfer(
+        xfer = transfer_service.create_transfer(
             user_id=seed_user["user"].id,
             from_account_id=account.id,
             to_account_id=savings_acct.id,
             pay_period_id=seed_periods[1].id,
             scenario_id=seed_user["scenario"].id,
-            status_id=cancelled.id,
-            name="Cancelled",
             amount=Decimal("500.00"),
+            status_id=projected.id,
+            name="Cancelled",
         )
-        db.session.add(xfer)
+        # Cancel the transfer (updates both shadows to cancelled).
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id, status_id=cancelled.id
+        )
         db.session.commit()
+
+        shadow_txns = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer.id, account_id=account.id)
+            .all()
+        )
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=seed_periods[0].id,
             periods=seed_periods,
-            transactions=[],
-            transfers=[xfer],
-            account_id=account.id,
+            transactions=shadow_txns,
         )
 
-        # Cancelled transfer should not reduce balance.
+        # Cancelled transfer shadows should not reduce balance.
         assert balances[seed_periods[1].id] == Decimal("1000.00")
 
 

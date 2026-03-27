@@ -39,6 +39,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="p
     txn = Transaction(
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
+        account_id=seed_user["account"].id,
         status_id=status.id,
         name=name,
         category_id=seed_user["categories"][category_key].id,
@@ -888,6 +889,7 @@ class TestNumericEdgeCases:
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
                 status_id=status.id,
                 name="Overflow Test",
                 category_id=seed_user["categories"]["Rent"].id,
@@ -960,6 +962,7 @@ class TestAuthEdgeCases:
             txn2 = Transaction(
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
+                account_id=second_user["account"].id,
                 status_id=status.id,
                 name="Other's Expense",
                 category_id=second_user["categories"]["Rent"].id,

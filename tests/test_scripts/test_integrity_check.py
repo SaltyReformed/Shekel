@@ -107,11 +107,12 @@ class TestReferentialIntegrity:
         txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transactions
-                (pay_period_id, scenario_id, status_id, name,
+                (pay_period_id, scenario_id, account_id, status_id, name,
                  transaction_type_id, estimated_amount)
-            VALUES (99999, :sid, :stid, 'Ghost Txn', :ttid, 50.00)
+            VALUES (99999, :sid, :aid, :stid, 'Ghost Txn', :ttid, 50.00)
         """), {
             "sid": seed_user["scenario"].id,
+            "aid": seed_user["account"].id,
             "stid": status.id,
             "ttid": txn_type.id,
         })
@@ -460,6 +461,7 @@ class TestDataConsistency:
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
             status_id=status_done.id,
             name="Done No Actual",
             transaction_type_id=txn_type.id,

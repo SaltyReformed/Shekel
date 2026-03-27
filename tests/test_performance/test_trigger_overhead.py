@@ -214,12 +214,14 @@ class TestRecurrenceEngineOverhead:
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
+        account_id = perf_user["account"].id
 
         def _bulk_insert():
             for i, period in enumerate(perf_periods[:100]):
                 txn = Transaction(
                     pay_period_id=period.id,
                     scenario_id=scenario_id,
+                    account_id=account_id,
                     status_id=projected.id,
                     name=f"Bulk Txn {i}",
                     category_id=category_id,
@@ -286,6 +288,7 @@ class TestRecurrenceEngineOverhead:
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
+        account_id = perf_user["account"].id
         batch_size = min(len(perf_periods), 100)
 
         # Pre-insert rows to update.
@@ -293,6 +296,7 @@ class TestRecurrenceEngineOverhead:
             txn = Transaction(
                 pay_period_id=period.id,
                 scenario_id=scenario_id,
+                account_id=account_id,
                 status_id=projected.id,
                 name=f"Update Txn {i}",
                 category_id=category_id,
@@ -361,6 +365,7 @@ class TestRecurrenceEngineOverhead:
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
+        account_id = perf_user["account"].id
         batch_size = min(len(perf_periods), 100)
 
         def _insert_batch(label):
@@ -369,6 +374,7 @@ class TestRecurrenceEngineOverhead:
                 txn = Transaction(
                     pay_period_id=period.id,
                     scenario_id=scenario_id,
+                    account_id=account_id,
                     status_id=projected.id,
                     name=f"Delete {label} {i}",
                     category_id=category_id,

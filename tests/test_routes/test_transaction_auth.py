@@ -81,6 +81,7 @@ def _create_other_user_with_txn(seed_user, seed_periods):
     txn = Transaction(
         pay_period_id=other_periods[0].id,
         scenario_id=scenario.id,
+        account_id=account.id,
         status_id=projected.id,
         name="Other User Rent",
         category_id=category.id,
@@ -244,6 +245,7 @@ class TestCreateOwnership:
                 "pay_period_id": other["period"].id,  # Other user's period
                 "transaction_type_id": expense_type.id,
                 "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
             })
             assert resp.status_code == 404
 
@@ -259,6 +261,7 @@ class TestCreateOwnership:
                 "pay_period_id": seed_periods[0].id,
                 "transaction_type_id": expense_type.id,
                 "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
             })
             assert resp.status_code == 404
 
@@ -275,6 +278,7 @@ class TestCreateOwnership:
                 "pay_period_id": other["period"].id,  # Other user's period
                 "transaction_type_id": expense_type.id,
                 "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
             })
             assert resp.status_code == 404
 
@@ -295,6 +299,7 @@ class TestCreateOwnership:
                 "scenario_id": other["scenario"].id,  # Other user's scenario
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
             })
             # BUG: create_transaction does not verify scenario_id belongs to
             # current_user. The transaction is created under the other user's
@@ -323,6 +328,7 @@ class TestCreateOwnership:
                 "pay_period_id": seed_periods[0].id,
                 "transaction_type_id": expense_type.id,
                 "scenario_id": other["scenario"].id,  # Other user's scenario
+                "account_id": str(seed_user["account"].id),
             })
             # BUG: create_inline does not verify scenario_id belongs to
             # current_user. Same ownership gap as create_transaction.
@@ -350,6 +356,7 @@ class TestCreateOwnership:
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
             })
             assert resp.status_code == 404
             assert b"Pay period not found" in resp.data
@@ -381,6 +388,7 @@ class TestCreateOwnership:
                     "scenario_id": seed_user["scenario"].id,
                     "category_id": 999999,
                     "transaction_type_id": expense_type.id,
+                    "account_id": str(seed_user["account"].id),
                 })
 
             db.session.rollback()  # Clear the failed DB transaction
@@ -405,6 +413,7 @@ class TestCreateOwnership:
                 "pay_period_id": 999999,
                 "transaction_type_id": expense_type.id,
                 "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
             })
             # Inline route checks category first (passes), then period (404).
             assert resp.status_code == 404
@@ -433,6 +442,7 @@ class TestFormRenderingOwnership:
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -446,6 +456,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -459,6 +470,7 @@ class TestFormRenderingOwnership:
                 "category_id": other["category"].id,
                 "period_id": other["period"].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -472,6 +484,7 @@ class TestFormRenderingOwnership:
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -485,6 +498,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -498,6 +512,7 @@ class TestFormRenderingOwnership:
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -511,6 +526,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
 
@@ -523,6 +539,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
 
@@ -535,6 +552,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
 
@@ -547,6 +565,7 @@ class TestFormRenderingOwnership:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
                 "txn_type_name": "expense",
+                "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
 

@@ -38,6 +38,11 @@
     {% endif %}
   {% endif %}
 
+  {# Transfer indicator #}
+  {% if t.transfer_id %}
+    <i class="bi bi-arrow-left-right text-muted ms-1 small" title="Transfer" aria-label="Transfer"></i>
+  {% endif %}
+
   {# Override indicator #}
   {% if t.is_override %}
     <i class="bi bi-pencil text-info ms-1 small" title="Overridden"></i>

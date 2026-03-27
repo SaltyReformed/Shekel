@@ -6,9 +6,11 @@ of Transaction records.  Reuses _match_periods from the transaction
 recurrence engine for pattern matching.
 
 Key differences from transaction recurrence:
-  - No salary linkage or category.
+  - No salary linkage.
   - Single amount column (no estimated/actual split).
   - Simpler amount logic: always uses template.default_amount.
+  - Delegates transfer creation to transfer_service.create_transfer()
+    so that shadow transactions are created atomically.
 """
 
 import logging
@@ -20,6 +22,7 @@ from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.services.recurrence_engine import _match_periods
+from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 
 logger = logging.getLogger(__name__)
@@ -93,20 +96,20 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         if should_skip:
             continue
 
-        xfer = Transfer(
+        # Delegate to the transfer service so shadow transactions are
+        # created atomically alongside the transfer record.
+        xfer = transfer_service.create_transfer(
             user_id=template.user_id,
-            transfer_template_id=template.id,
             from_account_id=template.from_account_id,
             to_account_id=template.to_account_id,
             pay_period_id=period.id,
             scenario_id=scenario_id,
-            status_id=projected_status.id,
-            name=template.name,
             amount=template.default_amount,
-            is_override=False,
-            is_deleted=False,
+            status_id=projected_status.id,
+            category_id=template.category_id,
+            name=template.name,
+            transfer_template_id=template.id,
         )
-        db.session.add(xfer)
         created.append(xfer)
 
     db.session.flush()
@@ -190,6 +193,10 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
 def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
     """Resolve override/delete conflicts after a regeneration.
 
+    Routes all mutations through the transfer service so shadow
+    transactions are updated atomically.  Soft-deleted transfers are
+    restored via ``transfer_service.restore_transfer`` before updating.
+
     Each transfer is ownership-checked via its direct ``user_id`` column
     before any modification -- transfers not owned by ``user_id`` are
     silently skipped (defense-in-depth against IDOR).
@@ -220,10 +227,21 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
                 )
                 continue
 
-            xfer.is_override = False
-            xfer.is_deleted = False
+            # Soft-deleted transfers must be restored before they can
+            # be updated.  restore_transfer sets is_deleted=False on the
+            # transfer and both shadows, and verifies invariants.
+            if xfer.is_deleted:
+                transfer_service.restore_transfer(xfer_id, user_id)
+
+            # Build the update kwargs: clear override flag and apply
+            # the new amount if provided.  update_transfer propagates
+            # these to both shadow transactions atomically.
+            svc_kwargs = {"is_override": False}
             if new_amount is not None:
-                xfer.amount = new_amount
+                svc_kwargs["amount"] = new_amount
+
+            transfer_service.update_transfer(xfer_id, user_id, **svc_kwargs)
+
         db.session.flush()
 
 
