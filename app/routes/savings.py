@@ -285,8 +285,11 @@ def dashboard():
                 if p.period_index >= current_period.period_index
             ]
             if future_periods:
+                # Use the balance-calculator-computed current_bal
+                # (which includes shadow transactions from transfers),
+                # not the raw anchor_balance.
                 projection = growth_engine.project_balance(
-                    current_balance=anchor_balance,
+                    current_balance=current_bal,
                     assumed_annual_return=acct_investment_params.assumed_annual_return,
                     periods=future_periods,
                     periodic_contribution=inputs.periodic_contribution,
