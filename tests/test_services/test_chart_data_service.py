@@ -582,6 +582,27 @@ class TestHelpers:
 # ── Realistic Data Scale Tests (WU 8.1) ──────────────────────────────────
 
 
+def _freeze_chart_today(monkeypatch):
+    """Patch date.today() in chart_data_service to return a date in period 5.
+
+    The seed_periods fixture generates 10 biweekly periods starting
+    2026-01-02. Period 5 runs 2026-03-13 to 2026-03-26. Freezing today
+    to 2026-03-20 keeps period_range calculations stable regardless of
+    the actual wall-clock date.
+    """
+    target = date(2026, 3, 20)
+
+    class _FrozenDate(date):
+        """Date subclass with a fixed today() for test isolation."""
+
+        @classmethod
+        def today(cls):
+            """Return the frozen date."""
+            return target
+
+    monkeypatch.setattr("app.services.chart_data_service.date", _FrozenDate)
+
+
 class TestSpendingChartRealisticData:
     """Verify get_spending_by_category with realistic data volumes.
 
@@ -591,7 +612,7 @@ class TestSpendingChartRealisticData:
     """
 
     def test_spending_chart_many_categories_many_periods(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods, monkeypatch,
     ):
         """60 expense transactions across 6 categories summed exactly.
 
@@ -603,7 +624,8 @@ class TestSpendingChartRealisticData:
         Amount formula: category_index c (0-5), period_index p (0-9):
             amount = (c + 1) * 100 + p * 10
 
-        With today=2026-03-20, 'last_12' includes periods 0-5 (6 periods).
+        Today is frozen to 2026-03-20 (period 5).  'last_12' includes
+        periods 0-5 (6 periods).
         Expected sums per category group (p=0..5):
             c=0 (Home):          6*100 + 10*(0+1+2+3+4+5) = 750
             c=1 (Auto):          6*200 + 150 = 1350
@@ -612,6 +634,7 @@ class TestSpendingChartRealisticData:
             c=4 (Utilities):     6*500 + 150 = 3150
             c=5 (Entertainment): 6*600 + 150 = 3750
         """
+        _freeze_chart_today(monkeypatch)
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
@@ -751,7 +774,7 @@ class TestSpendingChartRealisticData:
             # inflate the sums beyond the expected values.
 
     def test_spending_chart_period_range_filtering(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods, monkeypatch,
     ):
         """Period ranges 'current' and 'last_3' correctly restrict data.
 
@@ -759,12 +782,13 @@ class TestSpendingChartRealisticData:
         returns spending from only the current period, and 'last_3'
         returns spending from exactly 3 periods.
 
-        With today=2026-03-20, current period index = 5.
+        Today is frozen to 2026-03-20 (period 5).
           current:  period 5 only
           last_3:   periods 3, 4, 5
 
         Amount formula: (c + 1) * 50 + p * 5
         """
+        _freeze_chart_today(monkeypatch)
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
@@ -839,7 +863,7 @@ class TestSpendingChartRealisticData:
                 )
 
     def test_spending_chart_mixed_done_and_projected_included(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods, monkeypatch,
     ):
         """Both done and projected transactions contribute to spending sums.
 
@@ -849,6 +873,7 @@ class TestSpendingChartRealisticData:
 
         Expected sum: 100 + 200 + 300 + 400 = 1000.0
         """
+        _freeze_chart_today(monkeypatch)
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
@@ -1431,7 +1456,7 @@ class TestBudgetVsActualsRealisticData:
             assert result_map["Utilities"]["actual"] == 450.0
 
     def test_budget_vs_actuals_projected_uses_estimated_for_both(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods, monkeypatch,
     ):
         """Projected transactions: estimated in estimated column, 0 in actual.
 
@@ -1439,9 +1464,11 @@ class TestBudgetVsActualsRealisticData:
         actual_amount for the actual column.  Since projected transactions
         have actual_amount=None, the actual column receives 0.
 
-        Seed: 1 projected expense, estimated=500, actual=None.
+        Seed: 1 projected expense in period 5 (frozen as current),
+        estimated=500, actual=None.
         Expected: estimated=[500.0], actual=[0.0].
         """
+        _freeze_chart_today(monkeypatch)
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)

@@ -16,14 +16,39 @@ to another user.
 # data creation.
 # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
 
+from datetime import date as _real_date
+
+
+def _freeze_today_to_period_5(monkeypatch):
+    """Patch date.today() in pay_period_service to return a date in period 5.
+
+    The seed_periods fixture generates 10 biweekly periods starting
+    2026-01-02. Period 5 runs 2026-03-13 to 2026-03-26. Freezing today
+    to 2026-03-20 keeps the grid offset calculations stable regardless
+    of the actual wall-clock date.
+    """
+    target = _real_date(2026, 3, 20)
+
+    class _FrozenDate(_real_date):
+        """Date subclass with a fixed today() for test isolation."""
+
+        @classmethod
+        def today(cls):
+            """Return the frozen date."""
+            return target
+
+    monkeypatch.setattr("app.services.pay_period_service.date", _FrozenDate)
+
 
 class TestGridIsolation:
     """Verify the budget grid (/) shows only the logged-in user's transactions."""
 
     def test_user_a_sees_own_transactions(
-        self, app, auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, auth_client, seed_full_user_data, seed_full_second_user_data,
+        monkeypatch,
     ):
         """User A sees 'Rent Payment' but not 'Second User Rent' on the grid."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created (default view starts at the current period).
@@ -38,9 +63,11 @@ class TestGridIsolation:
             assert b"Second User Rent" not in response.data
 
     def test_user_b_sees_own_transactions(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data,
+        monkeypatch,
     ):
         """User B sees 'Second User Rent' but not 'Rent Payment' on the grid."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created.
