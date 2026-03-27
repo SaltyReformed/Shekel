@@ -9,12 +9,14 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, RecurrencePattern, Status
+from app.services import transfer_service
 from app.services.auth_service import hash_password
 
 
@@ -58,20 +60,19 @@ def _create_template(seed_user, savings_acct, with_rule=True):
 
 
 def _create_transfer(seed_user, seed_periods, savings_acct, template=None):
-    """Helper: create a transfer instance in the first period."""
+    """Helper: create a transfer with shadow transactions via the service."""
     projected = db.session.query(Status).filter_by(name="projected").one()
-    xfer = Transfer(
+    xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
+        amount=Decimal("200.00"),
         status_id=projected.id,
         transfer_template_id=template.id if template else None,
         name="Monthly Savings",
-        amount=Decimal("200.00"),
     )
-    db.session.add(xfer)
     db.session.commit()
     return xfer
 
@@ -133,18 +134,17 @@ def _create_other_user_with_template():
     db.session.flush()
 
     projected = db.session.query(Status).filter_by(name="projected").one()
-    xfer = Transfer(
+    xfer = transfer_service.create_transfer(
         user_id=other_user.id,
         from_account_id=checking.id,
         to_account_id=savings.id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
+        amount=Decimal("100.00"),
         status_id=projected.id,
         transfer_template_id=template.id,
         name="Other Transfer",
-        amount=Decimal("100.00"),
     )
-    db.session.add(xfer)
     db.session.commit()
 
     return {
@@ -1019,3 +1019,285 @@ class TestTransferNegativePaths:
                 user_id=seed_user["user"].id,
             ).count()
             assert count == 0
+
+
+# ── Shadow Context Response Tests (H1 fix) ────────────────────────
+
+
+def _get_expense_shadow(xfer):
+    """Return the expense-side shadow transaction for a transfer."""
+    from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
+    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    return (
+        db.session.query(Transaction)
+        .filter_by(transfer_id=xfer.id, transaction_type_id=expense_type.id)
+        .one()
+    )
+
+
+class TestShadowContextResponse:
+    """Verify that transfer route handlers render _transaction_cell.html
+    (not _transfer_cell.html) when the request includes source_txn_id,
+    indicating the form was opened from a shadow transaction cell in the grid.
+
+    Fixes H1, L2, L3 from transfer_rework_verification.md.
+    """
+
+    def test_update_from_shadow_renders_transaction_cell(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """PATCH with source_txn_id renders _transaction_cell.html content.
+
+        When the transfer full edit popover is opened from a shadow
+        transaction cell in the grid, the response must contain the
+        transaction cell template (with ``txn-cell-`` IDs and transaction
+        HTMX routes) so the cell remains interactive after the update.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+            shadow = _get_expense_shadow(xfer)
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "300.00", "source_txn_id": str(shadow.id)},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Must render _transaction_cell.html (has transaction routes).
+            assert "transactions.get_quick_edit" in html or f"txn_id={shadow.id}" in html or "txn-cell" in html
+            # Must NOT render _transfer_cell.html (has transfer routes).
+            assert "xfer-cell-" not in html
+            assert "transfers/quick-edit" not in html.replace("transfers/instance", "")
+
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+            # Verify the transfer amount was actually updated.
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("300.00")
+
+            # Verify the shadow amount was synced.
+            db.session.refresh(shadow)
+            assert shadow.estimated_amount == Decimal("300.00")
+
+    def test_mark_done_from_shadow_renders_transaction_cell_with_grid_refresh(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST mark-done with source_txn_id renders _transaction_cell.html
+        and triggers gridRefresh (not balanceChanged).
+
+        Status changes affect subtotal rows and cell visibility, so the
+        transfer route must match the transaction route guard pattern of
+        triggering gridRefresh when called from a shadow cell context.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+            shadow = _get_expense_shadow(xfer)
+
+            resp = auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done",
+                data={"source_txn_id": str(shadow.id)},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Transaction cell, not transfer cell.
+            assert "xfer-cell-" not in html
+
+            # Must trigger gridRefresh for status changes.
+            assert resp.headers.get("HX-Trigger") == "gridRefresh"
+
+            # Verify the transfer and both shadows are done.
+            db.session.refresh(xfer)
+            assert xfer.status.name == "done"
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert all(s.status.name == "done" for s in shadows)
+
+    def test_cancel_from_shadow_renders_transaction_cell_with_grid_refresh(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST cancel with source_txn_id renders _transaction_cell.html
+        and triggers gridRefresh.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+            shadow = _get_expense_shadow(xfer)
+
+            resp = auth_client.post(
+                f"/transfers/instance/{xfer.id}/cancel",
+                data={"source_txn_id": str(shadow.id)},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "xfer-cell-" not in html
+            assert resp.headers.get("HX-Trigger") == "gridRefresh"
+
+            db.session.refresh(xfer)
+            assert xfer.status.name == "cancelled"
+
+    def test_update_without_source_txn_id_renders_transfer_cell(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """PATCH without source_txn_id renders _transfer_cell.html (regression).
+
+        When the transfer management page (not the grid) submits an
+        update, there is no source_txn_id.  The response must render
+        the transfer cell template with ``xfer-cell-`` IDs as before.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "350.00"},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Must render _transfer_cell.html (management page context).
+            assert f"xfer-cell-{xfer.id}" in html or "xfer-cell-" in html
+
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("350.00")
+
+    def test_invalid_source_txn_id_falls_back_gracefully(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """PATCH with nonexistent source_txn_id falls back to transfer cell.
+
+        If source_txn_id is invalid (e.g., tampered or stale), the
+        handler must not crash.  It falls back to the transfer cell
+        template as a safe default.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods, savings)
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "400.00", "source_txn_id": "999999"},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Falls back to transfer cell (safe default).
+            assert "xfer-cell-" in html
+
+            # Data still updated correctly.
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("400.00")
+
+    def test_mismatched_source_txn_id_falls_back_gracefully(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """PATCH with source_txn_id from a different transfer falls back.
+
+        If source_txn_id points to a shadow of a DIFFERENT transfer,
+        the handler must not render the wrong transaction cell.  It
+        falls back to the transfer cell template.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer_a = _create_transfer(seed_user, seed_periods, savings)
+            xfer_b = _create_transfer(seed_user, seed_periods, savings)
+
+            # Get a shadow from transfer B.
+            shadow_b = _get_expense_shadow(xfer_b)
+
+            # Send it with transfer A's update.
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_a.id}",
+                data={"amount": "450.00", "source_txn_id": str(shadow_b.id)},
+            )
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Falls back to transfer cell (mismatch detected).
+            assert "xfer-cell-" in html
+
+            # Transfer A still updated correctly.
+            db.session.refresh(xfer_a)
+            assert xfer_a.amount == Decimal("450.00")
+
+
+# ── Reactivation Service Integration Tests (M1) ──────────────────
+
+
+class TestReactivateUsesService:
+    """Verify that reactivate_transfer_template delegates to
+    transfer_service.restore_transfer instead of directly manipulating
+    ORM objects, ensuring all transfer mutations flow through the
+    service layer.
+    """
+
+    def test_reactivate_restores_via_service_with_invariant_correction(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Verify that the reactivate route uses the transfer service to
+        restore soft-deleted transfers, including the service's invariant
+        correction logic.  An intentionally drifted shadow amount should
+        be corrected on reactivation, proving the service was called.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer_id = xfer.id
+
+            # Soft-delete the transfer and shadows via the service.
+            transfer_service.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
+            db.session.commit()
+
+            # Drift one shadow's amount while soft-deleted.
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .first()
+            )
+            shadow.estimated_amount = Decimal("999.00")
+            db.session.commit()
+
+            # Deactivate the template to match the route's expectations.
+            template.is_active = False
+            db.session.commit()
+
+            # Reactivate via the route.
+            response = auth_client.post(
+                f"/transfers/{template.id}/reactivate",
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+
+            # Transfer restored.
+            db.session.refresh(xfer)
+            assert xfer.is_deleted is False
+
+            # Both shadows restored AND the drifted amount corrected.
+            # This proves the service's invariant correction ran.
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.is_deleted is False
+                assert s.estimated_amount == Decimal("200.00")

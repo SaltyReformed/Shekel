@@ -925,3 +925,177 @@ class TestSoftDeleteHandling:
 
             with pytest.raises(ValidationError, match="soft-deleted"):
                 _get_shadow_transactions(xfer_id)
+
+
+# ── Restore Tests (M1) ──────────────────────────────────────────
+
+
+class TestRestoreTransfer:
+    """Tests for transfer_service.restore_transfer."""
+
+    def test_restores_transfer_and_shadows(self, app, db, transfer_data):
+        """Verify that restore_transfer reverses a soft-delete by setting
+        is_deleted=False on the transfer and both shadow transactions.
+        This is the inverse of delete_transfer(soft=True) and must restore
+        all three entities atomically.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Confirm all three are soft-deleted.
+            assert xfer.is_deleted is True
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            assert all(s.is_deleted for s in shadows)
+
+            # Restore.
+            result = transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            assert result.is_deleted is False
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.is_deleted is False
+            # Amount, status, period unchanged.
+            assert result.amount == Decimal("250.00")
+
+    def test_rejects_nonexistent_transfer(self, app, db, transfer_data):
+        """Verify that restore_transfer raises NotFoundError for a transfer
+        ID that does not exist, using the same generic message as other
+        not-found conditions to avoid leaking valid ID information.
+        """
+        with app.app_context():
+            with pytest.raises(NotFoundError, match="not found"):
+                transfer_service.restore_transfer(
+                    999999, transfer_data["user"].id
+                )
+
+    def test_rejects_wrong_user(self, app, db, transfer_data, second_user):
+        """Verify that restore_transfer raises NotFoundError when called
+        with a user_id that does not own the transfer.  The error message
+        must be identical to the nonexistent case to prevent ownership
+        enumeration.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            transfer_service.delete_transfer(
+                xfer.id, td["user"].id, soft=True
+            )
+
+            with pytest.raises(NotFoundError, match="not found"):
+                transfer_service.restore_transfer(
+                    xfer.id, second_user["user"].id
+                )
+
+    def test_idempotent_on_active_transfer(self, app, db, transfer_data):
+        """Verify that calling restore_transfer on an already-active
+        transfer completes without error.  This idempotency ensures that
+        bulk reactivation workflows do not fail when processing a mix of
+        deleted and active transfers.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+
+            # Not deleted -- restore is a no-op.
+            result = transfer_service.restore_transfer(
+                xfer.id, td["user"].id
+            )
+            assert result.is_deleted is False
+            assert result.amount == Decimal("250.00")
+
+    def test_corrects_drifted_shadow_amounts(self, app, db, transfer_data):
+        """Verify that restore_transfer detects and corrects shadow
+        estimated_amount values that drifted from the transfer amount
+        during the soft-deleted period.  This defense-in-depth check
+        prevents restoring inconsistent shadow data that would cause
+        incorrect balance calculations.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Simulate drift: directly change a shadow's amount.
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).first()
+            shadow.estimated_amount = Decimal("999.00")
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Both shadows must match transfer amount (250.00), not 999.00.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                assert s.estimated_amount == Decimal("250.00")
+
+    def test_corrects_drifted_shadow_status(self, app, db, transfer_data):
+        """Verify that restore_transfer detects and corrects shadow
+        status_id values that drifted from the transfer status during the
+        soft-deleted period.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Simulate drift: change one shadow's status.
+            done_status = db.session.query(Status).filter_by(name="done").one()
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).first()
+            shadow.status_id = done_status.id
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Both shadows must match transfer's projected status.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                assert s.status_id == td["projected_status"].id
+
+    def test_raises_on_missing_shadows(self, app, db, transfer_data):
+        """Verify that restore_transfer raises ValidationError when a
+        soft-deleted transfer has no shadow transactions, indicating data
+        corruption that cannot be automatically repaired.  The error
+        message must clearly identify this as a data integrity issue.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            db.session.commit()
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            # Simulate corruption: hard-delete shadows directly.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                db.session.delete(s)
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="integrity"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)

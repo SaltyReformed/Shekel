@@ -649,3 +649,129 @@ def delete_transfer(transfer_id, user_id, soft=False):
 
     logger.info("Hard-deleted transfer %d.", transfer_id)
     return None
+
+
+def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
+    """Restore a soft-deleted transfer and its shadow transactions.
+
+    This is the inverse of ``delete_transfer(soft=True)``.  Sets
+    ``is_deleted=False`` on the transfer and both shadows, then
+    verifies and corrects shadow invariants (amount, status, period)
+    that may have drifted while the transfer was soft-deleted.
+
+    Idempotent: calling on an already-active transfer is a no-op.
+
+    Args:
+        transfer_id: The primary key of the transfer to restore.
+        user_id:     The expected owner (defense-in-depth).
+
+    Returns:
+        The restored (or already-active) Transfer object.
+
+    Raises:
+        NotFoundError: If the transfer does not exist or does not
+            belong to user_id.
+        ValidationError: If shadow transactions are missing or have
+            an invalid type pairing, indicating data corruption that
+            cannot be automatically repaired.
+    """
+    # Must allow deleted transfers since that is the expected input.
+    xfer = _get_transfer_or_raise(transfer_id, user_id, allow_deleted=True)
+
+    # Idempotent: if the transfer is already active, return unchanged.
+    # Matches the idempotent pattern of delete_transfer(soft=True).
+    if not xfer.is_deleted:
+        logger.debug(
+            "restore_transfer called on active transfer %d; no-op.",
+            transfer_id,
+        )
+        return xfer
+
+    xfer.is_deleted = False
+
+    # Load ALL shadows without filtering by is_deleted -- they are
+    # soft-deleted and that is exactly what we are undoing.  Same
+    # query pattern as delete_transfer(soft=True).
+    shadows = (
+        db.session.query(Transaction)
+        .filter_by(transfer_id=transfer_id)
+        .all()
+    )
+
+    # ── Validate shadow count ───────────────────────────────────────
+    if len(shadows) != 2:
+        logger.error(
+            "Cannot restore transfer %d: expected 2 shadow transactions, "
+            "found %d.  Shadow IDs: %s.  Data integrity issue.",
+            transfer_id, len(shadows), [s.id for s in shadows],
+        )
+        # Roll back the is_deleted change on the transfer since we
+        # cannot restore it in a consistent state.
+        xfer.is_deleted = True
+        raise ValidationError(
+            f"Transfer {transfer_id} has {len(shadows)} shadow "
+            f"transactions (expected 2).  Cannot restore -- data "
+            f"integrity issue requiring manual intervention."
+        )
+
+    # ── Validate shadow type pairing ────────────────────────────────
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="expense").one()
+    )
+    income_type = (
+        db.session.query(TransactionType).filter_by(name="income").one()
+    )
+    type_ids = {s.transaction_type_id for s in shadows}
+    if type_ids != {expense_type.id, income_type.id}:
+        logger.error(
+            "Cannot restore transfer %d: shadow type pairing is invalid.  "
+            "Expected one expense and one income, found type_ids=%s.",
+            transfer_id, type_ids,
+        )
+        xfer.is_deleted = True
+        raise ValidationError(
+            f"Transfer {transfer_id} shadows do not have the expected "
+            f"expense/income type pairing.  Cannot restore -- data "
+            f"integrity issue requiring manual intervention."
+        )
+
+    # ── Restore shadows and verify invariants ───────────────────────
+    for shadow in shadows:
+        shadow.is_deleted = False
+
+        # Invariant 3: shadow amount must match transfer amount.
+        if shadow.estimated_amount != xfer.amount:
+            logger.warning(
+                "Correcting shadow %d estimated_amount drift: %s -> %s "
+                "(transfer %d amount).",
+                shadow.id, shadow.estimated_amount, xfer.amount,
+                transfer_id,
+            )
+            shadow.estimated_amount = xfer.amount
+
+        # Invariant 4: shadow status must match transfer status.
+        if shadow.status_id != xfer.status_id:
+            logger.warning(
+                "Correcting shadow %d status_id drift: %s -> %s "
+                "(transfer %d status).",
+                shadow.id, shadow.status_id, xfer.status_id,
+                transfer_id,
+            )
+            shadow.status_id = xfer.status_id
+
+        # Invariant 5: shadow period must match transfer period.
+        if shadow.pay_period_id != xfer.pay_period_id:
+            logger.warning(
+                "Correcting shadow %d pay_period_id drift: %s -> %s "
+                "(transfer %d period).",
+                shadow.id, shadow.pay_period_id, xfer.pay_period_id,
+                transfer_id,
+            )
+            shadow.pay_period_id = xfer.pay_period_id
+
+    db.session.flush()
+    logger.info(
+        "Restored transfer %d with %d shadows.",
+        transfer_id, len(shadows),
+    )
+    return xfer

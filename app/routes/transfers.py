@@ -8,13 +8,14 @@ transactions.py (grid cell HTMX endpoints).
 
 import logging
 from datetime import date
-from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
+from app.models.category import Category
+from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.recurrence_rule import RecurrenceRule
@@ -28,9 +29,9 @@ from app.schemas.validation import (
     TransferCreateSchema,
     TransferUpdateSchema,
 )
-from app.services import transfer_recurrence, pay_period_service
+from app.services import transfer_recurrence, transfer_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
-from app.exceptions import RecurrenceConflict
+from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,12 @@ def new_transfer_template():
         .order_by(Account.sort_order, Account.name)
         .all()
     )
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=current_user.id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
     patterns = db.session.query(RecurrencePattern).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -80,6 +87,7 @@ def new_transfer_template():
         "transfers/form.html",
         template=None,
         accounts=accounts,
+        categories=categories,
         patterns=patterns,
         periods=periods,
         current_period=current_period,
@@ -195,12 +203,19 @@ def edit_transfer_template(template_id):
         .order_by(Account.sort_order, Account.name)
         .all()
     )
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=current_user.id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
     patterns = db.session.query(RecurrencePattern).all()
 
     return render_template(
         "transfers/form.html",
         template=template,
         accounts=accounts,
+        categories=categories,
         patterns=patterns,
         periods=[],
         current_period=None,
@@ -266,7 +281,7 @@ def update_transfer_template(template_id):
             flash("Invalid destination account.", "danger")
             return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
 
-    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "is_active", "sort_order"}
+    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "category_id", "is_active", "sort_order"}
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
@@ -302,7 +317,12 @@ def update_transfer_template(template_id):
 @transfers_bp.route("/transfers/<int:template_id>/delete", methods=["POST"])
 @login_required
 def delete_transfer_template(template_id):
-    """Deactivate a transfer template (stops future generation, keeps history)."""
+    """Deactivate a transfer template (stops future generation, keeps history).
+
+    Soft-deletes projected transfers and their shadow transactions via
+    the transfer service to maintain the three-level cascade:
+    template deactivation -> transfer soft-delete -> shadow soft-delete.
+    """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
         flash("Recurring transfer not found.", "danger")
@@ -310,18 +330,27 @@ def delete_transfer_template(template_id):
 
     template.is_active = False
 
+    # Find projected, non-deleted transfers to soft-delete.
     projected_status = db.session.query(Status).filter_by(name="projected").one()
-    deleted_count = db.session.query(Transfer).filter(
-        Transfer.transfer_template_id == template.id,
-        Transfer.status_id == projected_status.id,
-        Transfer.is_deleted.is_(False),
-    ).update({"is_deleted": True}, synchronize_session="fetch")
+    transfers_to_delete = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.transfer_template_id == template.id,
+            Transfer.status_id == projected_status.id,
+            Transfer.is_deleted.is_(False),
+        )
+        .all()
+    )
+
+    # Route each through the service to ensure shadows are soft-deleted.
+    for xfer in transfers_to_delete:
+        transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
 
     db.session.commit()
 
     flash(
         f"Recurring transfer '{template.name}' deactivated. "
-        f"{deleted_count} projected transfer(s) removed.",
+        f"{len(transfers_to_delete)} projected transfer(s) removed.",
         "info",
     )
     return redirect(url_for("transfers.list_transfer_templates"))
@@ -330,7 +359,10 @@ def delete_transfer_template(template_id):
 @transfers_bp.route("/transfers/<int:template_id>/reactivate", methods=["POST"])
 @login_required
 def reactivate_transfer_template(template_id):
-    """Reactivate a deactivated transfer template."""
+    """Reactivate a deactivated transfer template.
+
+    Restores soft-deleted transfers and their shadow transactions.
+    """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
         flash("Recurring transfer not found.", "danger")
@@ -338,12 +370,24 @@ def reactivate_transfer_template(template_id):
 
     template.is_active = True
 
+    # Find soft-deleted projected transfers to restore.
     projected_status = db.session.query(Status).filter_by(name="projected").one()
-    restored_count = db.session.query(Transfer).filter(
-        Transfer.transfer_template_id == template.id,
-        Transfer.status_id == projected_status.id,
-        Transfer.is_deleted.is_(True),
-    ).update({"is_deleted": False}, synchronize_session="fetch")
+    transfers_to_restore = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.transfer_template_id == template.id,
+            Transfer.status_id == projected_status.id,
+            Transfer.is_deleted.is_(True),
+        )
+        .all()
+    )
+
+    # Restore transfers and shadows via the service so all mutations
+    # flow through the single enforcement point (design doc section 4.1).
+    for xfer in transfers_to_restore:
+        transfer_service.restore_transfer(xfer.id, current_user.id)
+
+    restored_count = len(transfers_to_restore)
 
     if template.recurrence_rule:
         scenario = (
@@ -400,15 +444,22 @@ def get_full_edit(xfer_id):
     if xfer is None:
         return "Not found", 404
     statuses = db.session.query(Status).all()
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=current_user.id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
     return render_template(
-        "transfers/_transfer_full_edit.html", xfer=xfer, statuses=statuses,
+        "transfers/_transfer_full_edit.html",
+        xfer=xfer, statuses=statuses, categories=categories,
     )
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
 @login_required
 def update_transfer(xfer_id):
-    """Update a transfer's fields (inline edit save)."""
+    """Update a transfer and its shadow transactions (inline edit save)."""
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
@@ -419,16 +470,28 @@ def update_transfer(xfer_id):
 
     data = _xfer_update_schema.load(request.form)
 
-    _TRANSFER_UPDATE_FIELDS = {"amount", "status_id", "name", "notes"}
-    for field, value in data.items():
-        if field in _TRANSFER_UPDATE_FIELDS:
-            setattr(xfer, field, value)
-
+    # Auto-set is_override when a template-linked transfer's amount changes.
     if xfer.transfer_template_id and "amount" in data:
-        xfer.is_override = True
+        data["is_override"] = True
+
+    try:
+        transfer_service.update_transfer(xfer.id, current_user.id, **data)
+    except NotFoundError:
+        return "Not found", 404
+    except ShekelValidationError as exc:
+        return jsonify(errors={"_schema": [str(exc)]}), 400
 
     db.session.commit()
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer_id)
+
+    # When opened from a shadow transaction cell in the grid, render the
+    # transaction cell template so the cell remains interactive.  When
+    # opened from the transfer management page, render the transfer cell.
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        return response, 200, {"HX-Trigger": "balanceChanged"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
@@ -440,32 +503,33 @@ def update_transfer(xfer_id):
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])
 @login_required
 def create_ad_hoc():
-    """Create an ad-hoc (one-time) transfer."""
+    """Create an ad-hoc (one-time) transfer with shadow transactions."""
     errors = _xfer_create_schema.validate(request.form)
     if errors:
         return jsonify(errors=errors), 400
 
     data = _xfer_create_schema.load(request.form)
 
-    period = db.session.get(PayPeriod, data["pay_period_id"])
-    if not period or period.user_id != current_user.id:
-        return "Pay period not found", 404
-
-    from_acct = db.session.get(Account, data["from_account_id"])
-    to_acct = db.session.get(Account, data["to_account_id"])
-    if not from_acct or from_acct.user_id != current_user.id:
-        return "Invalid source account", 404
-    if not to_acct or to_acct.user_id != current_user.id:
-        return "Invalid destination account", 404
-
     projected = db.session.query(Status).filter_by(name="projected").one()
 
-    xfer = Transfer(
-        user_id=current_user.id,
-        status_id=projected.id,
-        **data,
-    )
-    db.session.add(xfer)
+    try:
+        xfer = transfer_service.create_transfer(
+            user_id=current_user.id,
+            from_account_id=data["from_account_id"],
+            to_account_id=data["to_account_id"],
+            pay_period_id=data["pay_period_id"],
+            scenario_id=data["scenario_id"],
+            amount=data["amount"],
+            status_id=projected.id,
+            category_id=data.get("category_id"),
+            name=data.get("name"),
+            notes=data.get("notes"),
+        )
+    except NotFoundError:
+        return "Not found", 404
+    except ShekelValidationError as exc:
+        return jsonify(errors={"_schema": [str(exc)]}), 400
+
     db.session.commit()
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
@@ -479,15 +543,17 @@ def create_ad_hoc():
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["DELETE"])
 @login_required
 def delete_transfer(xfer_id):
-    """Soft-delete a template transfer or hard-delete an ad-hoc transfer."""
+    """Soft-delete a template transfer or hard-delete an ad-hoc transfer.
+
+    Routes through transfer_service to ensure shadow transactions are
+    also deleted (soft or hard) alongside the parent transfer.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
-    if xfer.transfer_template_id:
-        xfer.is_deleted = True
-    else:
-        db.session.delete(xfer)
+    soft = bool(xfer.transfer_template_id)
+    transfer_service.delete_transfer(xfer.id, current_user.id, soft=soft)
 
     db.session.commit()
     logger.info("user_id=%d deleted transfer %d", current_user.id, xfer_id)
@@ -500,16 +566,24 @@ def delete_transfer(xfer_id):
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/mark-done", methods=["POST"])
 @login_required
 def mark_done(xfer_id):
-    """Mark a transfer as 'done' (settled)."""
+    """Mark a transfer and its shadows as 'done' (settled)."""
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
-    status = db.session.query(Status).filter_by(name="done").one()
-    xfer.status_id = status.id
+    done_status = db.session.query(Status).filter_by(name="done").one()
+    transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_status.id)
 
     db.session.commit()
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
+
+    # Grid shadow context: render transaction cell with gridRefresh
+    # (matches the transaction route guard pattern for status changes).
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
@@ -521,16 +595,26 @@ def mark_done(xfer_id):
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
 @login_required
 def cancel_transfer(xfer_id):
-    """Mark a transfer as 'cancelled'."""
+    """Mark a transfer and its shadows as 'cancelled'."""
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
-    status = db.session.query(Status).filter_by(name="cancelled").one()
-    xfer.status_id = status.id
+    cancelled_status = db.session.query(Status).filter_by(name="cancelled").one()
+    transfer_service.update_transfer(
+        xfer.id, current_user.id, status_id=cancelled_status.id
+    )
 
     db.session.commit()
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
+
+    # Grid shadow context: render transaction cell with gridRefresh
+    # (matches the transaction route guard pattern for status changes).
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
@@ -550,3 +634,58 @@ def _get_owned_transfer(xfer_id):
     if xfer.user_id != current_user.id:
         return None
     return xfer
+
+
+def _resolve_shadow_context(xfer):
+    """Check for a source_txn_id in the request indicating grid shadow context.
+
+    When the transfer full edit popover is opened from a shadow transaction
+    cell in the budget grid, the form includes ``source_txn_id`` so the
+    handler can render ``_transaction_cell.html`` (the correct template
+    for grid cells) instead of ``_transfer_cell.html`` (which targets
+    non-existent ``#xfer-cell-`` IDs in the grid).
+
+    Validates that the shadow transaction exists, is a shadow of the
+    given transfer, and belongs to the current user.
+
+    Args:
+        xfer: The Transfer object that was just updated.
+
+    Returns:
+        Transaction or None.  The validated shadow Transaction if the
+        request originated from a grid cell, or None if the request
+        came from the transfer management page (no source_txn_id).
+    """
+    source_txn_id = request.form.get("source_txn_id", type=int)
+    if source_txn_id is None:
+        return None
+
+    shadow = db.session.get(Transaction, source_txn_id)
+    if shadow is None:
+        logger.warning(
+            "source_txn_id=%d not found for transfer %d; "
+            "falling back to transfer cell response.",
+            source_txn_id, xfer.id,
+        )
+        return None
+
+    # Verify the transaction is actually a shadow of this transfer.
+    if shadow.transfer_id != xfer.id:
+        logger.warning(
+            "source_txn_id=%d has transfer_id=%s, expected %d; "
+            "falling back to transfer cell response.",
+            source_txn_id, shadow.transfer_id, xfer.id,
+        )
+        return None
+
+    # Ownership check via the shadow's pay period (same pattern as
+    # _get_owned_transaction in transactions.py).
+    if shadow.pay_period.user_id != current_user.id:
+        logger.warning(
+            "source_txn_id=%d belongs to another user; "
+            "falling back to transfer cell response.",
+            source_txn_id,
+        )
+        return None
+
+    return shadow
