@@ -28,9 +28,9 @@ ITERATIONS = 5
 WARMUP = 2
 
 
-def _create_template(perf_user, pattern_name="every_period"):
+def _create_template(perf_user, pattern_name="Every Period"):
     """Create a template with a recurrence rule for benchmarking."""
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
 
     rule = RecurrenceRule(
@@ -211,7 +211,7 @@ class TestRecurrenceEngineOverhead:
         Direct ORM inserts to isolate trigger overhead from recurrence logic.
         """
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
         account_id = perf_user["account"].id
@@ -285,7 +285,7 @@ class TestRecurrenceEngineOverhead:
         (editing amounts, marking done, changing statuses).
         """
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
         account_id = perf_user["account"].id
@@ -362,7 +362,7 @@ class TestRecurrenceEngineOverhead:
     def test_bulk_delete_trigger_overhead(self, app, db, perf_user, perf_periods):
         """Bulk DELETE of transactions: overhead with triggers under 20%."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
         account_id = perf_user["account"].id

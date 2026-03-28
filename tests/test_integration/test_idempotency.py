@@ -35,8 +35,8 @@ from app.models.transaction_template import TransactionTemplate
 def _create_profile(seed_user):
     """Helper: create a salary profile with linked template and recurrence."""
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = (
         db.session.query(Category)
@@ -117,7 +117,7 @@ class TestTemplateDoubleSubmit:
     def test_duplicate_template_creates_second(self, app, auth_client, seed_user):
         """POST /templates twice with same name creates two templates."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             data = {
                 "name": "Monthly Rent",
@@ -240,7 +240,7 @@ class TestTransactionDoubleSubmit:
         # the duplicated amount. This is a real financial risk.
         """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             data = {
                 "name": "Rent",
@@ -291,7 +291,7 @@ class TestTransactionDoubleSubmit:
         with the original values unchanged.
         """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             valid_data = {
                 "name": "Electric Bill",
@@ -338,7 +338,7 @@ class TestTransactionDoubleSubmit:
         submission from succeeding.
         """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # First submit -- invalid (missing name).
             invalid_data = {
@@ -495,7 +495,7 @@ class TestMarkDoneDoubleSubmit:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -550,7 +550,7 @@ class TestCarryForwardDoubleSubmit:
 
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create 3 projected transactions in period 0.
             amounts = [Decimal("850.00"), Decimal("125.50"), Decimal("43.99")]

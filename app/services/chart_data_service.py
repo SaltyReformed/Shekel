@@ -24,7 +24,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.ref import AccountType
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.services import (
     amortization_engine,
     balance_calculator,
@@ -53,9 +53,6 @@ def _to_chart_float(value):
         float: The value as a native Python float.
     """
     return float(value)
-
-# Mapping of account type categories to y-axis assignment for dual-axis.
-_LEFT_AXIS_CATEGORIES = {"asset"}
 
 # Named period range → count of periods to look back from current.
 _RANGE_LOOKBACK = {
@@ -217,7 +214,7 @@ def _calculate_account_balances(account, scenario, periods):
         .all()
     )
 
-    acct_type = account.account_type.name if account.account_type else ""
+    acct_type_id = account.account_type_id if account.account_type else None
     base_args = {
         "anchor_balance": account.current_anchor_balance,
         "anchor_period_id": account.current_anchor_period_id,
@@ -225,13 +222,16 @@ def _calculate_account_balances(account, scenario, periods):
         "transactions": transactions,
     }
 
-    if acct_type == "hysa" and account.hysa_params:
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA) and account.hysa_params:
         balances, _ = balance_calculator.calculate_balances_with_interest(
             **base_args, hysa_params=account.hysa_params,
         )
         return balances
 
-    if acct_type in ("mortgage", "auto_loan"):
+    if acct_type_id in (
+        ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
+        ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
+    ):
         loan_params = _get_loan_params(account)
         if loan_params:
             balances, _ = balance_calculator.calculate_balances_with_amortization(
@@ -252,14 +252,14 @@ def _get_loan_params(account):
     Returns:
         MortgageParams or AutoLoanParams, or None.
     """
-    acct_type = account.account_type.name if account.account_type else ""
-    if acct_type == "mortgage":
+    acct_type_id = account.account_type_id if account.account_type else None
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
         return (
             db.session.query(MortgageParams)
             .filter_by(account_id=account.id)
             .first()
         )
-    if acct_type == "auto_loan":
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
         return (
             db.session.query(AutoLoanParams)
             .filter_by(account_id=account.id)
@@ -309,15 +309,28 @@ def get_balance_over_time(user_id, account_ids=None, start=None, end=None):
     datasets = []
     all_accounts_info = []
 
+    asset_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+
     for account in all_accounts:
-        category = account.account_type.category if account.account_type else "asset"
+        # Derive category label from the relationship for the chart data
+        # contract (used by get_net_worth_over_time to determine sign).
+        category = (
+            account.account_type.category.name.lower()
+            if (account.account_type and account.account_type.category)
+            else "asset"
+        )
         all_accounts_info.append({
             "id": account.id, "name": account.name, "category": category,
         })
 
     for account in chart_accounts:
-        category = account.account_type.category if account.account_type else "asset"
-        axis = "y" if category in _LEFT_AXIS_CATEGORIES else "y1"
+        # Use category_id for axis assignment -- assets on left y-axis.
+        cat_id = (
+            account.account_type.category_id
+            if account.account_type
+            else asset_cat_id
+        )
+        axis = "y" if cat_id == asset_cat_id else "y1"
 
         balances = _calculate_account_balances(account, scenario, periods)
         if balances is None:
@@ -352,7 +365,7 @@ def _get_expense_transactions(scenario_id, period_ids, status_filter=None):
         .filter(
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
-            Transaction.transaction_type.has(name="expense"),
+            Transaction.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             Transaction.is_deleted.is_(False),
         )
     )
@@ -478,7 +491,10 @@ def get_loan_accounts(user_id):
         .filter(
             Account.user_id == user_id,
             Account.is_active.is_(True),
-            AccountType.name.in_(["mortgage", "auto_loan"]),
+            AccountType.id.in_([
+                ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
+                ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
+            ]),
         )
         .order_by(Account.name)
         .all()
@@ -508,7 +524,10 @@ def _find_loan_account(user_id, account_id=None):
         .filter(
             Account.user_id == user_id,
             Account.is_active.is_(True),
-            AccountType.name.in_(["mortgage", "auto_loan"]),
+            AccountType.id.in_([
+                ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
+                ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
+            ]),
         )
         .order_by(Account.name)
         .first()

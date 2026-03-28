@@ -14,6 +14,8 @@ from sqlalchemy.exc import IntegrityError
 
 from collections import OrderedDict
 
+from app import ref_cache
+from app.enums import AcctTypeEnum, AcctCategoryEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.auto_loan_params import AutoLoanParams
@@ -25,8 +27,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.ref import TransactionType
-from app.models.ref import AccountType
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import amortization_engine, balance_calculator, growth_engine, pay_period_service, savings_goal_service
 from app.services.investment_projection import calculate_investment_inputs
@@ -82,43 +82,42 @@ def dashboard():
     # Load shadow income transactions for investment contribution
     # calculations.  Queried once and filtered per-account in the loop
     # below (matching investment.py's per-account scoping pattern).
-    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     all_shadow_income = (
         db.session.query(Transaction)
         .filter(
             Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type.id,
+            Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if scenario and period_ids and income_type else []
+    ) if scenario and period_ids else []
 
     # Load HYSA params for all HYSA accounts in one query.
-    hysa_type = (
-        db.session.query(AccountType).filter_by(name="hysa").first()
-    )
+    hysa_type_id = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
     hysa_params_map = {}
-    if hysa_type:
-        hysa_account_ids = [a.id for a in accounts if a.account_type_id == hysa_type.id]
-        if hysa_account_ids:
-            for hp in db.session.query(HysaParams).filter(
-                HysaParams.account_id.in_(hysa_account_ids)
-            ).all():
-                hysa_params_map[hp.account_id] = hp
+    hysa_account_ids = [a.id for a in accounts if a.account_type_id == hysa_type_id]
+    if hysa_account_ids:
+        for hp in db.session.query(HysaParams).filter(
+            HysaParams.account_id.in_(hysa_account_ids)
+        ).all():
+            hysa_params_map[hp.account_id] = hp
 
     # Load loan params for mortgage and auto loan accounts.
-    mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").first()
-    auto_loan_type = db.session.query(AccountType).filter_by(name="auto_loan").first()
+    mortgage_type_id = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
+    auto_loan_type_id = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
 
     # Load investment params for retirement/investment accounts.
     investment_params_map = {}
-    retirement_types = [
-        db.session.query(AccountType).filter_by(name=n).first()
-        for n in ("401k", "roth_401k", "traditional_ira", "roth_ira", "brokerage")
-    ]
-    retirement_type_ids = {rt.id for rt in retirement_types if rt}
+    retirement_type_ids = {
+        ref_cache.acct_type_id(AcctTypeEnum.K401),
+        ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K),
+        ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA),
+        ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA),
+        ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE),
+    }
     if retirement_type_ids:
         inv_account_ids = [
             a.id for a in accounts if a.account_type_id in retirement_type_ids
@@ -161,20 +160,18 @@ def dashboard():
         ).quantize(Decimal("0.01"))
 
     loan_params_map = {}
-    if mortgage_type:
-        mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type.id]
-        if mortgage_ids:
-            for mp in db.session.query(MortgageParams).filter(
-                MortgageParams.account_id.in_(mortgage_ids)
-            ).all():
-                loan_params_map[mp.account_id] = mp
-    if auto_loan_type:
-        auto_loan_ids = [a.id for a in accounts if a.account_type_id == auto_loan_type.id]
-        if auto_loan_ids:
-            for alp in db.session.query(AutoLoanParams).filter(
-                AutoLoanParams.account_id.in_(auto_loan_ids)
-            ).all():
-                loan_params_map[alp.account_id] = alp
+    mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type_id]
+    if mortgage_ids:
+        for mp in db.session.query(MortgageParams).filter(
+            MortgageParams.account_id.in_(mortgage_ids)
+        ).all():
+            loan_params_map[mp.account_id] = mp
+    auto_loan_ids = [a.id for a in accounts if a.account_type_id == auto_loan_type_id]
+    if auto_loan_ids:
+        for alp in db.session.query(AutoLoanParams).filter(
+            AutoLoanParams.account_id.in_(auto_loan_ids)
+        ).all():
+            loan_params_map[alp.account_id] = alp
 
     # Compute projected balances for each account.
     account_data = []
@@ -407,16 +404,10 @@ def dashboard():
                 avg_monthly_expenses = per_period * Decimal("26") / Decimal("12")
 
     # Sum savings + HYSA balances for emergency fund calculation.
-    savings_type = (
-        db.session.query(AccountType)
-        .filter_by(name="savings")
-        .first()
-    )
-    savings_type_ids = set()
-    if savings_type:
-        savings_type_ids.add(savings_type.id)
-    if hysa_type:
-        savings_type_ids.add(hysa_type.id)
+    savings_type_ids = {
+        ref_cache.acct_type_id(AcctTypeEnum.SAVINGS),
+        hysa_type_id,
+    }
 
     total_savings = Decimal("0.00")
     for ad in account_data:
@@ -435,21 +426,26 @@ def dashboard():
 
     # Group accounts by category for the dashboard layout.
     # Desired order: Asset, Liability, Retirement, Investment.
-    category_order = ["asset", "liability", "retirement", "investment"]
+    category_order = [
+        ("asset", ref_cache.acct_category_id(AcctCategoryEnum.ASSET)),
+        ("liability", ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)),
+        ("retirement", ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)),
+        ("investment", ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)),
+    ]
     grouped_accounts = OrderedDict()
-    for cat in category_order:
+    for cat_label, cat_id in category_order:
         cat_accounts = [
             ad for ad in account_data
             if ad["account"].account_type
-            and (ad["account"].account_type.category or "").lower() == cat
+            and ad["account"].account_type.category_id == cat_id
         ]
         if cat_accounts:
-            grouped_accounts[cat] = cat_accounts
+            grouped_accounts[cat_label] = cat_accounts
     # Catch any accounts without a category.
     uncategorized = [
         ad for ad in account_data
         if not ad["account"].account_type
-        or not ad["account"].account_type.category
+        or not ad["account"].account_type.category_id
     ]
     if uncategorized:
         grouped_accounts["other"] = uncategorized

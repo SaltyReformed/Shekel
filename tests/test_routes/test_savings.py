@@ -37,7 +37,7 @@ def _create_savings_account(seed_user, name="Savings"):
     Returns:
         Account: the new savings account.
     """
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -85,7 +85,7 @@ def _create_other_user_with_goal():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     account = Account(
         user_id=other_user.id,
         account_type_id=savings_type.id,
@@ -119,7 +119,7 @@ def _create_investment_account_with_params(seed_user, seed_periods):
     Returns:
         (Account, InvestmentParams)
     """
-    acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+    acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
@@ -148,7 +148,7 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     Returns:
         (Account, InvestmentParams, SalaryProfile, PaycheckDeduction)
     """
-    acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+    acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
@@ -345,7 +345,7 @@ class TestDashboard:
             db.session.flush()
 
             # Create 401k with employer flat 5% but NO employee deduction.
-            acct_type = db.session.query(AccountType).filter_by(name="401k").one()
+            acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
             acct = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=acct_type.id,
@@ -804,7 +804,7 @@ class TestSavingsNegativePaths:
     ):
         """POST /savings/goals/<id>/delete for another user's goal is blocked."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             other_acct = Account(
                 user_id=second_user["user"].id,
                 account_type_id=savings_type.id,
@@ -903,7 +903,7 @@ class TestSavingsDashboardShadowTransactions:
 
         with app.app_context():
             # Create HYSA account with known anchor balance.
-            hysa_type = db.session.query(AccountType).filter_by(name="hysa").one()
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             hysa = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,

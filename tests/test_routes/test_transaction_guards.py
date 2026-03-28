@@ -21,7 +21,7 @@ from app.services import transfer_service
 
 def _create_savings(seed_user):
     """Create a savings account for the test user."""
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -49,8 +49,8 @@ def _create_test_transfer(seed_user, seed_periods):
     )
     db.session.commit()
 
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
     shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
     expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
     income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -60,7 +60,7 @@ def _create_test_transfer(seed_user, seed_periods):
 def _create_regular_txn(seed_user, seed_periods):
     """Create a regular transaction (no transfer_id)."""
     projected = db.session.query(Status).filter_by(name="Projected").one()
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=seed_periods[0].id,

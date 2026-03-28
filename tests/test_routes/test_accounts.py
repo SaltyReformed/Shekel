@@ -7,6 +7,8 @@ management endpoints (§2.1 of the test plan).
 
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.user import User, UserSettings
@@ -31,7 +33,7 @@ def _create_other_user_account():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = Account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
@@ -75,7 +77,7 @@ class TestAccountCreate:
     def test_create_account(self, app, auth_client, seed_user):
         """POST /accounts creates a new account and redirects to the list."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
             response = auth_client.post("/accounts", data={
                 "name": "Savings",
@@ -109,7 +111,7 @@ class TestAccountCreate:
         """POST /accounts with a duplicate name shows a warning flash."""
         with app.app_context():
             # "Checking" already exists from seed_user.
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
             response = auth_client.post("/accounts", data={
                 "name": "Checking",
@@ -137,7 +139,7 @@ class TestAccountUpdate:
         """POST /accounts/<id> updates the account and redirects."""
         with app.app_context():
             account_id = seed_user["account"].id
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
             response = auth_client.post(f"/accounts/{account_id}", data={
                 "name": "Primary Checking",
@@ -155,7 +157,7 @@ class TestAccountUpdate:
         """POST /accounts/<id> with a duplicate name shows a warning."""
         with app.app_context():
             # Create a second account first.
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             second = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -253,7 +255,7 @@ class TestAccountDeactivate:
             from app.models.transfer_template import TransferTemplate
 
             # Create a second account and an active transfer template.
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -308,7 +310,7 @@ class TestAccountDeactivate:
     def test_create_account_double_submit(self, app, auth_client, seed_user):
         """POST /accounts twice with the same name flashes duplicate on 2nd."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             data = {
                 "name": "Emergency Fund",
                 "account_type_id": savings_type.id,
@@ -519,7 +521,10 @@ class TestAccountTypes:
         """POST /accounts/types/<id> renames an account type."""
         with app.app_context():
             # Create a type to rename (unique name to avoid ref table collisions).
-            new_type = AccountType(name="rename_source")
+            new_type = AccountType(
+                name="rename_source",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+            )
             db.session.add(new_type)
             db.session.commit()
 
@@ -538,7 +543,10 @@ class TestAccountTypes:
     def test_delete_unused_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types/<id>/delete deletes an unused type."""
         with app.app_context():
-            new_type = AccountType(name="crypto")
+            new_type = AccountType(
+                name="crypto",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+            )
             db.session.add(new_type)
             db.session.commit()
             type_id = new_type.id
@@ -556,10 +564,10 @@ class TestAccountTypes:
     def test_create_duplicate_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types with a duplicate name shows a warning."""
         with app.app_context():
-            # "checking" already exists from ref seed.
+            # "Checking" already exists from ref seed (exact case match required).
             response = auth_client.post(
                 "/accounts/types",
-                data={"name": "checking"},
+                data={"name": "Checking"},
                 follow_redirects=True,
             )
 
@@ -571,7 +579,7 @@ class TestAccountTypes:
         with app.app_context():
             # "checking" is used by seed_user's account.
             checking_type = (
-                db.session.query(AccountType).filter_by(name="checking").one()
+                db.session.query(AccountType).filter_by(name="Checking").one()
             )
 
             response = auth_client.post(
@@ -603,7 +611,7 @@ class TestAccountNegativePaths:
     def test_update_nonexistent_account(self, app, auth_client, seed_user):
         """POST /accounts/999999 for a nonexistent account redirects with flash."""
         with app.app_context():
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
             resp = auth_client.post("/accounts/999999", data={
                 "name": "Ghost",
@@ -698,7 +706,7 @@ class TestAccountNegativePaths:
     def test_create_account_missing_name(self, app, auth_client, seed_user):
         """POST /accounts with missing name field fails schema validation and creates no record."""
         with app.app_context():
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
             resp = auth_client.post("/accounts", data={
                 "account_type_id": checking_type.id,
@@ -717,7 +725,7 @@ class TestAccountNegativePaths:
     def test_create_account_xss_in_name(self, app, auth_client, seed_user):
         """POST /accounts with script tag in name is stored but Jinja2 auto-escapes on render."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
             # Schema accepts the name (no character restrictions, 32 chars < 100 max).
             resp = auth_client.post("/accounts", data={

@@ -32,7 +32,7 @@ class TestResolveGridAccount:
     def test_setting_configured_returns_that_account(self, app, db, seed_user):
         """When default_grid_account_id is set, returns that account."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -54,7 +54,7 @@ class TestResolveGridAccount:
     def test_inactive_configured_account_falls_back(self, app, db, seed_user):
         """When configured account is inactive, falls back to checking."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -76,7 +76,7 @@ class TestResolveGridAccount:
     def test_override_takes_precedence(self, app, db, seed_user):
         """override_account_id takes priority over setting."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -112,7 +112,7 @@ class TestResolveGridAccount:
             db.session.add(other_user)
             db.session.flush()
 
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = Account(
                 user_id=other_user.id,
                 account_type_id=checking_type.id,
@@ -146,7 +146,7 @@ class TestResolveGridAccount:
             acct.is_active = False
             db.session.flush()
 
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -161,7 +161,7 @@ class TestResolveGridAccount:
     def test_deterministic_ordering(self, app, db, seed_user):
         """With multiple checking accounts, returns the one with lowest sort_order then id."""
         with app.app_context():
-            checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+            checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
             # The seed checking account has sort_order=0.  Create another with sort_order=0
             # but it will have a higher id.
@@ -181,7 +181,7 @@ class TestResolveGridAccount:
     def test_override_inactive_falls_back(self, app, db, seed_user):
         """Override with inactive account falls back to checking."""
         with app.app_context():
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             inactive = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,

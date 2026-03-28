@@ -11,7 +11,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.ref import AccountType
 
 
-def _create_investment_account(seed_user, db_session, type_name="401k",
+def _create_investment_account(seed_user, db_session, type_name="401(k)",
                                 name="My 401k", balance="50000.00"):
     """Helper to create an investment/retirement account."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
@@ -48,7 +48,7 @@ def _create_other_investment(second_user, db_session):
     Builds on the shared second_user fixture. Returns the Account
     (no InvestmentParams -- IDOR tests verify none get created).
     """
-    acct_type = db_session.query(AccountType).filter_by(name="401k").one()
+    acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
     account = Account(
         user_id=second_user["user"].id,
         account_type_id=acct_type.id,
@@ -105,7 +105,7 @@ class TestInvestmentDashboard:
     def test_dashboard_brokerage(self, auth_client, seed_user, db, seed_periods):
         """Brokerage account (no contribution limit) works."""
         acct = _create_investment_account(
-            seed_user, db.session, type_name="brokerage",
+            seed_user, db.session, type_name="Brokerage",
             name="Brokerage", balance="25000.00",
         )
         _create_investment_params(

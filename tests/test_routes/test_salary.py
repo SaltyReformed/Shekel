@@ -32,8 +32,8 @@ from app.services.auth_service import hash_password
 def _create_profile(seed_user):
     """Helper: create a salary profile with linked template and recurrence."""
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     # Find or create Salary category.
     cat = (
@@ -98,7 +98,7 @@ def _create_other_user_profile():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = Account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
@@ -116,8 +116,8 @@ def _create_other_user_profile():
     db.session.flush()
 
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = Category(user_id=other_user.id, group_name="Income", item_name="Salary")
     db.session.add(cat)
@@ -1169,8 +1169,8 @@ def _create_second_user_salary_profile(second_user_data):
         SalaryProfile: the created profile.
     """
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = (
         db.session.query(Category)

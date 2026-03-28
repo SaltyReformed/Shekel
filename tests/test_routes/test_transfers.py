@@ -22,7 +22,7 @@ from app.services.auth_service import hash_password
 
 def _create_savings_account(seed_user):
     """Helper: create a second (savings) account for the test user."""
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -38,7 +38,7 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     """Helper: create a transfer template with optional recurrence rule."""
     rule = None
     if with_rule:
-        every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+        every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
         rule = RecurrenceRule(
             user_id=seed_user["user"].id,
             pattern_id=every_period.id,
@@ -94,8 +94,8 @@ def _create_other_user_with_template():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
     checking = Account(
         user_id=other_user.id, account_type_id=checking_type.id,
@@ -211,13 +211,16 @@ class TestTemplateCreate:
         """POST /transfers creates a template with recurrence and generates transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
 
             response = auth_client.post("/transfers", data={
                 "name": "Weekly Savings",
                 "default_amount": "150.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": "every_period",
+                "recurrence_pattern": str(every_period.id),
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -262,12 +265,15 @@ class TestTemplateCreate:
         one template in the database."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
             form_data = {
                 "name": "Duplicate Transfer",
                 "default_amount": "100.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "every_period",
+                "recurrence_pattern": str(every_period.id),
             }
 
             # -- First submission: succeeds --
@@ -364,13 +370,16 @@ class TestTemplateUpdate:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
 
             response = auth_client.post(f"/transfers/{template.id}", data={
                 "name": "Updated Savings",
                 "default_amount": "300.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": "every_period",
+                "recurrence_pattern": str(every_period.id),
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -790,7 +799,7 @@ def _create_second_user_transfer(second_user_data):
     from datetime import date as _date  # pylint: disable=import-outside-toplevel
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     savings = Account(
         user_id=second_user_data["user"].id,
         account_type_id=savings_type.id,
@@ -1027,7 +1036,7 @@ class TestTransferNegativePaths:
 def _get_expense_shadow(xfer):
     """Return the expense-side shadow transaction for a transfer."""
     from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     return (
         db.session.query(Transaction)
         .filter_by(transfer_id=xfer.id, transaction_type_id=expense_type.id)

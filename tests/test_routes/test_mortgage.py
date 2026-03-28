@@ -13,7 +13,7 @@ from app.models.ref import AccountType
 
 def _create_mortgage_account(seed_user, db_session, name="My Mortgage"):
     """Helper to create a mortgage account with params."""
-    mortgage_type = db_session.query(AccountType).filter_by(name="mortgage").one()
+    mortgage_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
     account = Account(
         user_id=seed_user["user"].id,
         account_type_id=mortgage_type.id,
@@ -44,7 +44,7 @@ def _create_other_mortgage(second_user, db_session):
     with MortgageParams already attached.
     """
     mortgage_type = db_session.query(AccountType).filter_by(
-        name="mortgage"
+        name="Mortgage"
     ).one()
     account = Account(
         user_id=second_user["user"].id,
@@ -562,7 +562,7 @@ class TestPayoffSlider:
         """Mortgage dashboard renders a range slider for extra payment."""
         from app.models.mortgage_params import MortgageParams
 
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
+        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         account = Account(
             user_id=seed_user["user"].id,
             account_type_id=mortgage_type.id,
@@ -772,7 +772,7 @@ class TestCreateMortgageAccount:
 
     def test_create_mortgage_account(self, auth_client, seed_user, db, seed_periods):
         """Creating mortgage account type redirects to mortgage dashboard."""
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
+        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         resp = auth_client.post(
             "/accounts",
             data={

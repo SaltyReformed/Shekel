@@ -30,7 +30,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum
 from app.exceptions import RecurrenceConflict
 from app.models.salary_profile import SalaryProfile
 from app.utils.log_events import log_event, BUSINESS
@@ -72,8 +72,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # No recurrence rule -- nothing to generate (one-time / manual).
         return []
 
-    pattern_name = rule.pattern.name
-    if pattern_name == "once":
+    pattern_id = rule.pattern_id
+    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
         # 'once' items are manually placed; no auto-generation.
         return []
 
@@ -88,7 +88,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Determine which periods match the recurrence pattern.
-    matching_periods = _match_periods(rule, pattern_name, periods, effective_from)
+    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
 
     # Check for existing transactions to avoid duplicates and respect overrides.
     existing = _get_existing_map(template.id, scenario_id, matching_periods)
@@ -285,12 +285,17 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
 # --- Pattern Matching Helpers -------------------------------------------
 
 
-def _match_periods(rule, pattern_name, periods, effective_from):
+def _rp_id(member):
+    """Shorthand for recurrence_pattern_id to keep dispatch lines readable."""
+    return ref_cache.recurrence_pattern_id(member)
+
+
+def _match_periods(rule, pattern_id, periods, effective_from):
     """Return the subset of periods that match the recurrence pattern.
 
     Args:
         rule:           The RecurrenceRule object.
-        pattern_name:   The pattern name string.
+        pattern_id:     The recurrence pattern integer ID.
         periods:        All candidate PayPeriod objects.
         effective_from: Only include periods starting on or after this date.
 
@@ -305,37 +310,37 @@ def _match_periods(rule, pattern_name, periods, effective_from):
     if rule.end_date is not None:
         candidates = [p for p in candidates if p.start_date <= rule.end_date]
 
-    if pattern_name == "every_period":
+    if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_PERIOD):
         return candidates
 
-    if pattern_name == "every_n_periods":
+    if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):
         n = rule.interval_n or 1
         offset = rule.offset_periods or 0
         return [p for p in candidates if (p.period_index - offset) % n == 0]
 
-    if pattern_name == "monthly":
+    if pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY):
         return _match_monthly(candidates, rule.day_of_month or 1)
 
-    if pattern_name == "monthly_first":
+    if pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY_FIRST):
         return _match_monthly_first(candidates)
 
-    if pattern_name == "quarterly":
+    if pattern_id == _rp_id(RecurrencePatternEnum.QUARTERLY):
         start_month = rule.month_of_year or 1
         day = rule.day_of_month or 1
         return _match_quarterly(candidates, start_month, day)
 
-    if pattern_name == "semi_annual":
+    if pattern_id == _rp_id(RecurrencePatternEnum.SEMI_ANNUAL):
         start_month = rule.month_of_year or 1
         day = rule.day_of_month or 1
         return _match_semi_annual(candidates, start_month, day)
 
-    if pattern_name == "annual":
+    if pattern_id == _rp_id(RecurrencePatternEnum.ANNUAL):
         month = rule.month_of_year or 1
         day = rule.day_of_month or 1
         return _match_annual(candidates, month, day)
 
     # Unknown pattern -- return nothing.
-    logger.warning("Unknown recurrence pattern: %s", pattern_name)
+    logger.warning("Unknown recurrence pattern ID: %s", pattern_id)
     return []
 
 

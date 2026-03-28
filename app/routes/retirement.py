@@ -12,6 +12,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -21,7 +23,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.models.ref import AccountType, TransactionType
 from app.services.investment_projection import calculate_investment_inputs
 from app.schemas.validation import (
     PensionProfileCreateSchema,
@@ -46,7 +47,7 @@ _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
 
 # Account types considered "traditional" (pre-tax contributions).
-TRADITIONAL_TYPES = frozenset({"401k", "traditional_ira"})
+TRADITIONAL_TYPES = frozenset({"401(k)", "Traditional IRA"})
 
 
 def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
@@ -117,9 +118,12 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             net_biweekly = breakdown.net_pay
 
     # Load retirement/investment accounts and project balances.
+    from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
     retirement_types = (
         db.session.query(AccountType)
-        .filter(AccountType.category.in_(["retirement", "investment"]))
+        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
         .all()
     )
     retirement_type_ids = {rt.id for rt in retirement_types}
@@ -171,15 +175,15 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
 
     period_ids = [p.id for p in all_periods]
-    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     all_acct_contributions = []
-    if account_ids and period_ids and income_type:
+    if account_ids and period_ids:
         all_acct_contributions = (
             db.session.query(Transaction)
             .filter(
                 Transaction.account_id.in_(account_ids),
                 Transaction.transfer_id.isnot(None),
-                Transaction.transaction_type_id == income_type.id,
+                Transaction.transaction_type_id == income_type_id,
                 Transaction.pay_period_id.in_(period_ids),
                 Transaction.is_deleted.is_(False),
             )

@@ -80,7 +80,7 @@ XSS_PAYLOADS = [
 def _create_savings_account(seed_user):
     """Create a savings account for the test user (needed by transfers)."""
     savings_type = (
-        db.session.query(AccountType).filter_by(name="savings").one()
+        db.session.query(AccountType).filter_by(name="Savings").one()
     )
     acct = Account(
         user_id=seed_user["user"].id,
@@ -96,7 +96,7 @@ def _create_savings_account(seed_user):
 def _create_mortgage_account_with_params(seed_user):
     """Create a mortgage account with MortgageParams for escrow tests."""
     mortgage_type = (
-        db.session.query(AccountType).filter_by(name="mortgage").one()
+        db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     acct = Account(
         user_id=seed_user["user"].id,
@@ -142,7 +142,7 @@ def _create_salary_profile(seed_user, seed_periods):
 def _create_transaction(seed_user, seed_periods):
     """Create a transaction for update tests."""
     expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
+        db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     projected = (
         db.session.query(Status).filter_by(name="Projected").one()
@@ -216,12 +216,12 @@ class TestXSSPrevention:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             category = seed_user["categories"]["Rent"]
             every_period = (
                 db.session.query(RecurrencePattern)
-                .filter_by(name="every_period").one()
+                .filter_by(name="Every Period").one()
             )
 
             # POST the XSS payload as the template name.
@@ -231,7 +231,7 @@ class TestXSSPrevention:
                 "category_id": category.id,
                 "account_id": seed_user["account"].id,
                 "transaction_type_id": expense_type.id,
-                "recurrence_pattern": every_period.name,
+                "recurrence_pattern": str(every_period.id),
             })
 
             # GET the list page where the name renders.
@@ -250,7 +250,7 @@ class TestXSSPrevention:
         with app.app_context():
             savings_type = (
                 db.session.query(AccountType)
-                .filter_by(name="savings").one()
+                .filter_by(name="Savings").one()
             )
 
             resp = auth_client.post("/accounts", data={
@@ -361,7 +361,7 @@ class TestXSSPrevention:
             savings_acct = _create_savings_account(seed_user)
             every_period = (
                 db.session.query(RecurrencePattern)
-                .filter_by(name="every_period").one()
+                .filter_by(name="Every Period").one()
             )
 
             auth_client.post("/transfers", data={
@@ -369,7 +369,7 @@ class TestXSSPrevention:
                 "default_amount": "100.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings_acct.id,
-                "recurrence_pattern": every_period.name,
+                "recurrence_pattern": str(every_period.id),
             })
 
             resp = auth_client.get("/transfers")
@@ -450,7 +450,7 @@ class TestXSSPrevention:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             category = seed_user["categories"]["Rent"]
 
@@ -596,7 +596,7 @@ class TestXSSPrevention:
             js_payload = "javascript:alert(1)"
             savings_type = (
                 db.session.query(AccountType)
-                .filter_by(name="savings").one()
+                .filter_by(name="Savings").one()
             )
 
             auth_client.post("/accounts", data={
@@ -626,12 +626,12 @@ class TestXSSPrevention:
             js_payload = "javascript:alert(1)"
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             category = seed_user["categories"]["Rent"]
             every_period = (
                 db.session.query(RecurrencePattern)
-                .filter_by(name="every_period").one()
+                .filter_by(name="Every Period").one()
             )
 
             auth_client.post("/templates", data={
@@ -640,7 +640,7 @@ class TestXSSPrevention:
                 "category_id": category.id,
                 "account_id": seed_user["account"].id,
                 "transaction_type_id": expense_type.id,
-                "recurrence_pattern": every_period.name,
+                "recurrence_pattern": str(every_period.id),
             })
 
             resp = auth_client.get("/templates")

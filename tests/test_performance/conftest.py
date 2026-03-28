@@ -32,7 +32,7 @@ def perf_user(app, db):
     _db.session.add(settings)
 
     checking_type = (
-        _db.session.query(AccountType).filter_by(name="checking").one()
+        _db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = Account(
         user_id=user.id,

@@ -14,6 +14,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, TransactionType, Status
+from app import ref_cache
+from app.enums import RecurrencePatternEnum
 from app.services import recurrence_engine
 from app.services.recurrence_engine import (
     _match_periods,
@@ -25,6 +27,11 @@ from app.services.recurrence_engine import (
 )
 from app.exceptions import RecurrenceConflict
 
+# Map human-readable pattern names to RecurrencePatternEnum members for
+# use in FakeRule and test helpers.  Allows tests to construct FakeRule
+# with a pattern name string and resolve it to the integer ID via ref_cache.
+_PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
+
 
 # --- Fake Objects for Pure Pattern Matching Tests ----------------------------
 
@@ -35,10 +42,16 @@ class FakePattern:
 
 
 class FakeRule:
-    def __init__(self, pattern_name="every_period", interval_n=1,
+    def __init__(self, pattern_name="Every Period", interval_n=1,
                  offset_periods=0, day_of_month=None, month_of_year=None,
                  start_period_id=None, start_period=None, end_date=None):
         self.pattern = FakePattern(pattern_name)
+        # Resolve pattern_id from ref_cache for ID-based dispatch.
+        enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
+        self.pattern_id = (
+            ref_cache.recurrence_pattern_id(enum_member)
+            if enum_member else None
+        )
         self.interval_n = interval_n
         self.offset_periods = offset_periods
         self.day_of_month = day_of_month
@@ -84,7 +97,7 @@ class TestRecurrenceGeneration:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -120,7 +133,7 @@ class TestRecurrenceGeneration:
         """every_period creates a transaction in every pay period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -144,7 +157,7 @@ class TestRecurrenceGeneration:
         """every_n_periods with n=2, offset=1 generates every other period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_n_periods",
+                seed_user, "Every N Periods",
                 interval_n=2, offset_periods=1,
             )
             created = recurrence_engine.generate_for_template(
@@ -164,7 +177,7 @@ class TestRecurrenceGeneration:
         """'once' pattern does not auto-generate -- user places it manually."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "once",
+                seed_user, "Once",
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -176,7 +189,7 @@ class TestRecurrenceGeneration:
         """Does not create duplicates for periods that already have entries."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period",
+                seed_user, "Every Period",
             )
 
             # First generation.
@@ -196,7 +209,7 @@ class TestRecurrenceGeneration:
         """Overridden entries are not replaced during generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period",
+                seed_user, "Every Period",
             )
 
             # Generate entries.
@@ -228,7 +241,7 @@ class TestRecurrenceGeneration:
         """Done/received/credit transactions are immutable to the engine."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period",
+                seed_user, "Every Period",
             )
 
             created = recurrence_engine.generate_for_template(
@@ -441,11 +454,11 @@ class TestMatchPeriodsEdgeCases:
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
-        rule = FakeRule(pattern_name="every_period")
+        rule = FakeRule(pattern_name="Every Period")
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26 - 3  # Periods 3-25.
@@ -453,11 +466,12 @@ class TestMatchPeriodsEdgeCases:
             assert period.start_date >= effective_from
 
     def test_unknown_pattern_returns_empty(self, biweekly_periods):
-        """Unrecognized pattern name returns an empty list."""
+        """Unrecognized pattern ID returns an empty list."""
         rule = FakeRule(pattern_name="bogus_pattern")
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "bogus_pattern", biweekly_periods,
+        # Pass a bogus integer pattern_id that doesn't match any known pattern.
+        matched = _match_periods(rule, 99999, biweekly_periods,
                                  effective_from)
 
         assert matched == []
@@ -468,19 +482,19 @@ class TestMatchPeriodsFull:
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
-        rule = FakeRule(pattern_name="every_period")
+        rule = FakeRule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
 
     def test_no_periods_empty_result(self):
         """Empty periods list produces an empty result."""
-        rule = FakeRule(pattern_name="every_period")
+        rule = FakeRule(pattern_name="Every Period")
 
-        matched = _match_periods(rule, "every_period", [],
+        matched = _match_periods(rule, rule.pattern_id, [],
                                  date(2026, 1, 1))
 
         assert matched == []
@@ -511,12 +525,12 @@ class TestMatchPeriodsEdgeCaseSafety:
         # ZeroDivisionError or infinite loop. The 'or 1' fallback
         # should prevent this.
         rule = FakeRule(
-            pattern_name="every_n_periods",
+            pattern_name="Every N Periods",
             interval_n=0,
             offset_periods=0,
         )
         matched = _match_periods(
-            rule, "every_n_periods", biweekly_periods,
+            rule, rule.pattern_id, biweekly_periods,
             biweekly_periods[0].start_date,
         )
         # 0 or 1 = 1 in Python (0 is falsy), so n=1 and every
@@ -539,12 +553,12 @@ class TestMatchPeriodsEdgeCaseSafety:
         the DB column default (1) was not applied.
         """
         rule = FakeRule(
-            pattern_name="every_n_periods",
+            pattern_name="Every N Periods",
             interval_n=None,
             offset_periods=0,
         )
         matched = _match_periods(
-            rule, "every_n_periods", biweekly_periods,
+            rule, rule.pattern_id, biweekly_periods,
             biweekly_periods[0].start_date,
         )
         # None or 1 = 1 in Python, so every period matches.
@@ -566,18 +580,18 @@ class TestMatchPeriodsEdgeCaseSafety:
         day_of_month < 1 from being stored.
         """
         rule_zero = FakeRule(
-            pattern_name="monthly", day_of_month=0,
+            pattern_name="Monthly", day_of_month=0,
         )
         rule_one = FakeRule(
-            pattern_name="monthly", day_of_month=1,
+            pattern_name="Monthly", day_of_month=1,
         )
         effective = biweekly_periods[0].start_date
 
         matched_zero = _match_periods(
-            rule_zero, "monthly", biweekly_periods, effective,
+            rule_zero, rule_zero.pattern_id, biweekly_periods, effective,
         )
         matched_one = _match_periods(
-            rule_one, "monthly", biweekly_periods, effective,
+            rule_one, rule_one.pattern_id, biweekly_periods, effective,
         )
         # 0 or 1 = 1 in Python (0 is falsy).
         # Prevented in production by ck_recurrence_rules_dom.
@@ -647,18 +661,18 @@ class TestMatchPeriodsEdgeCaseSafety:
         patterns), so None is a valid state the fallback handles.
         """
         rule_none = FakeRule(
-            pattern_name="monthly", day_of_month=None,
+            pattern_name="Monthly", day_of_month=None,
         )
         rule_one = FakeRule(
-            pattern_name="monthly", day_of_month=1,
+            pattern_name="Monthly", day_of_month=1,
         )
         effective = biweekly_periods[0].start_date
 
         matched_none = _match_periods(
-            rule_none, "monthly", biweekly_periods, effective,
+            rule_none, rule_none.pattern_id, biweekly_periods, effective,
         )
         matched_one = _match_periods(
-            rule_one, "monthly", biweekly_periods, effective,
+            rule_one, rule_one.pattern_id, biweekly_periods, effective,
         )
         # None or 1 = 1 in Python.
         assert (
@@ -688,21 +702,21 @@ class TestMatchPeriodsEdgeCaseSafety:
         # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
         # Prevented in production by ck_recurrence_rules_moy.
         rule_zero = FakeRule(
-            pattern_name="quarterly",
+            pattern_name="Quarterly",
             month_of_year=0,
             day_of_month=15,
         )
         rule_one = FakeRule(
-            pattern_name="quarterly",
+            pattern_name="Quarterly",
             month_of_year=1,
             day_of_month=15,
         )
         matched_zero = _match_periods(
-            rule_zero, "quarterly",
+            rule_zero, rule_zero.pattern_id,
             biweekly_periods, effective,
         )
         matched_one = _match_periods(
-            rule_one, "quarterly",
+            rule_one, rule_one.pattern_id,
             biweekly_periods, effective,
         )
         # 0 or 1 = 1 in Python (0 is falsy).
@@ -765,13 +779,13 @@ class TestMatchPeriodsEdgeCaseSafety:
         # Via _match_periods -- 13 or 1 = 13 (truthy).
         # No fallback; passes 13 to _match_annual.
         rule = FakeRule(
-            pattern_name="annual",
+            pattern_name="Annual",
             month_of_year=13,
             day_of_month=15,
         )
         with pytest.raises(ValueError):
             _match_periods(
-                rule, "annual", biweekly_periods,
+                rule, rule.pattern_id, biweekly_periods,
                 biweekly_periods[0].start_date,
             )
 
@@ -791,7 +805,7 @@ class TestGenerateForTemplate:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -828,7 +842,7 @@ class TestGenerateForTemplate:
         """effective_from = 4th period's start → only generates from period 4."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             effective_from = seed_periods[3].start_date
             created = recurrence_engine.generate_for_template(
@@ -849,7 +863,7 @@ class TestGenerateForTemplate:
         """Soft-deleted entries are not duplicated on re-generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             # First generation.
@@ -875,7 +889,7 @@ class TestGenerateForTemplate:
         """Monthly pattern across 10 periods produces one per unique month."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "monthly", day_of_month=15,
+                seed_user, "Monthly", day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -904,7 +918,7 @@ class TestRegenerateForTemplate:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -941,7 +955,7 @@ class TestRegenerateForTemplate:
         """Regenerate with changed amount → old entries deleted, new created."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             # Generate initial entries.
@@ -973,7 +987,7 @@ class TestRegenerateForTemplate:
         """Regenerate with soft-deleted entry raises RecurrenceConflict."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1009,7 +1023,7 @@ class TestResolveConflicts:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -1050,7 +1064,7 @@ class TestResolveConflicts:
         """action='keep' leaves overridden transaction unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1080,7 +1094,7 @@ class TestResolveConflicts:
         """action='update' clears flags and applies new_amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1113,7 +1127,7 @@ class TestResolveConflicts:
         """action='update' with new_amount=None clears flags but keeps amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1147,7 +1161,7 @@ class TestResolveConflicts:
         """update with wrong user_id silently skips the transaction."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -1177,7 +1191,7 @@ class TestResolveConflicts:
         """keep with wrong user_id leaves transaction unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -1206,7 +1220,7 @@ class TestResolveConflicts:
         """update with correct user_id modifies the transaction."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -1236,7 +1250,7 @@ class TestResolveConflicts:
         with app.app_context():
             # Create template and transaction for user A.
             template_a = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created_a = recurrence_engine.generate_for_template(
                 template_a, seed_periods, seed_user["scenario"].id,
@@ -1255,7 +1269,7 @@ class TestResolveConflicts:
                 num_periods=10,
             )
             template_b = self._make_template_with_rule(
-                second_user, "every_period", category_key="Rent",
+                second_user, "Every Period", category_key="Rent",
             )
             created_b = recurrence_engine.generate_for_template(
                 template_b, periods_b, second_user["scenario"].id,
@@ -1296,7 +1310,7 @@ class TestCrossUserIsolation:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -1339,7 +1353,7 @@ class TestCrossUserIsolation:
         with app.app_context():
             # Template belongs to seed_user (user A).
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             # SECURITY: Attempt to generate into user B's
@@ -1384,7 +1398,7 @@ class TestNegativePaths:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -1427,7 +1441,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period", default_amount=Decimal("0.00")
+                seed_user, "Every Period", default_amount=Decimal("0.00")
             )
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
@@ -1451,7 +1465,7 @@ class TestNegativePaths:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             template = TransactionTemplate(
@@ -1486,7 +1500,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             # Initial generation.
@@ -1530,7 +1544,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
                 template, [], seed_user["scenario"].id,
@@ -1551,7 +1565,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1596,7 +1610,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "every_period"
+                seed_user, "Every Period"
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1637,10 +1651,10 @@ class TestEndDate:
         """end_date stops generation after that date (every_period)."""
         # End date after the 5th period's start_date (period index 4).
         end = biweekly_periods[4].start_date
-        rule = FakeRule(pattern_name="every_period", end_date=end)
+        rule = FakeRule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 5
@@ -1649,10 +1663,10 @@ class TestEndDate:
 
     def test_end_date_none_means_indefinite(self, biweekly_periods):
         """NULL end_date generates for all periods (no change from default)."""
-        rule = FakeRule(pattern_name="every_period", end_date=None)
+        rule = FakeRule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
@@ -1660,11 +1674,11 @@ class TestEndDate:
     def test_end_date_with_monthly_pattern(self, biweekly_periods):
         """end_date works with monthly pattern -- only months before end."""
         # End in March 2026.
-        rule = FakeRule(pattern_name="monthly", day_of_month=15,
+        rule = FakeRule(pattern_name="Monthly", day_of_month=15,
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "monthly", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Should get Jan, Feb, Mar only.
@@ -1674,11 +1688,11 @@ class TestEndDate:
 
     def test_end_date_before_first_period(self, biweekly_periods):
         """end_date before all periods returns empty list."""
-        rule = FakeRule(pattern_name="every_period",
+        rule = FakeRule(pattern_name="Every Period",
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert matched == []
@@ -1688,9 +1702,9 @@ class TestEndDate:
         # effective_from at period 5, end_date at period 10.
         effective_from = biweekly_periods[5].start_date
         end = biweekly_periods[10].start_date
-        rule = FakeRule(pattern_name="every_period", end_date=end)
+        rule = FakeRule(pattern_name="Every Period", end_date=end)
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Periods 5 through 10 inclusive.
@@ -1702,11 +1716,11 @@ class TestEndDate:
     def test_end_date_mid_period_includes_that_period(self, biweekly_periods):
         """A period whose start_date is on the end_date is included."""
         target_period = biweekly_periods[7]
-        rule = FakeRule(pattern_name="every_period",
+        rule = FakeRule(pattern_name="Every Period",
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_period", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert target_period in matched
@@ -1715,11 +1729,11 @@ class TestEndDate:
         """end_date works correctly with every_n_periods pattern."""
         # Every 3 periods, end at period 12.
         end = biweekly_periods[11].start_date
-        rule = FakeRule(pattern_name="every_n_periods", interval_n=3,
+        rule = FakeRule(pattern_name="Every N Periods", interval_n=3,
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, "every_n_periods", biweekly_periods,
+        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).
@@ -1741,7 +1755,7 @@ class TestEndDateIntegration:
         )
         expense_type = (
             db.session.query(TransactionType)
-            .filter_by(name="expense")
+            .filter_by(name="Expense")
             .one()
         )
 
@@ -1777,7 +1791,7 @@ class TestEndDateIntegration:
             # Use the 5th period's start_date as end_date.
             end = seed_periods[4].start_date
             template = self._make_template_with_rule(
-                seed_user, "every_period", end_date=end,
+                seed_user, "Every Period", end_date=end,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -1794,7 +1808,7 @@ class TestEndDateIntegration:
         with app.app_context():
             end = seed_periods[2].start_date
             template = self._make_template_with_rule(
-                seed_user, "every_period", end_date=end,
+                seed_user, "Every Period", end_date=end,
             )
 
             # Initial generation.

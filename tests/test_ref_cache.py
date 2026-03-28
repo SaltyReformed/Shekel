@@ -118,7 +118,7 @@ class TestEffectiveAmount:
             credit_id = ref_cache.status_id(StatusEnum.CREDIT)
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             txn = Transaction(
@@ -146,7 +146,7 @@ class TestEffectiveAmount:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             txn = Transaction(
@@ -173,7 +173,7 @@ class TestEffectiveAmount:
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             txn = Transaction(
@@ -205,7 +205,7 @@ class TestGridShowsPaidNotDone:
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             txn = Transaction(

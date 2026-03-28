@@ -93,8 +93,8 @@ class TestCreateTransfer:
             )
             assert len(shadows) == 2
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             types = {s.transaction_type_id for s in shadows}
             assert types == {expense_type.id, income_type.id}
@@ -120,8 +120,8 @@ class TestCreateTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
@@ -147,8 +147,8 @@ class TestCreateTransfer:
                 category_id=rent_cat.id,
             )
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -162,8 +162,8 @@ class TestCreateTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -237,7 +237,7 @@ class TestCreateTransfer:
 
             xfer = _create_basic_transfer(td)
 
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
             assert income.category_id is None
@@ -445,7 +445,7 @@ class TestUpdateTransfer:
             rent_cat = td["categories"]["Rent"]
 
             # Record the income shadow's initial category.
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             income_before = [s for s in shadows if s.transaction_type_id == income_type.id][0]
             original_income_cat = income_before.category_id
@@ -454,7 +454,7 @@ class TestUpdateTransfer:
                 xfer.id, td["user"].id, category_id=rent_cat.id
             )
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -585,7 +585,7 @@ class TestUpdateTransfer:
                 xfer.id, td["user"].id, category_id=None
             )
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             assert expense.category_id == td["outgoing_cat"].id
@@ -724,8 +724,8 @@ class TestInvariants:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             type_ids = [s.transaction_type_id for s in shadows]

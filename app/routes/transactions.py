@@ -18,9 +18,9 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.account import Account
 from app.models.category import Category
-from app.models.ref import Status, TransactionType
+from app.models.ref import Status
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.schemas.validation import (
     TransactionUpdateSchema,
     TransactionCreateSchema,
@@ -327,12 +327,15 @@ def cancel_transaction(txn_id):
 def get_quick_create():
     """HTMX partial: return a quick-create input for an empty cell.
 
-    Query params: category_id, period_id, txn_type_name.
+    Query params: category_id, period_id, transaction_type_id.
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
     account_id = request.args.get("account_id", type=int)
-    txn_type_name = request.args.get("txn_type_name", "expense")
+    transaction_type_id = request.args.get(
+        "transaction_type_id", type=int,
+        default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+    )
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
@@ -347,8 +350,7 @@ def get_quick_create():
     if not acct or acct.user_id != current_user.id:
         return "Not found", 404
 
-    # Look up the transaction type and baseline scenario for hidden fields.
-    txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
+    # Look up the baseline scenario for hidden fields.
     scenario = (
         db.session.query(Scenario)
         .filter_by(user_id=current_user.id, is_baseline=True)
@@ -363,8 +365,8 @@ def get_quick_create():
         period=period,
         account_id=acct.id,
         scenario_id=scenario.id,
-        transaction_type_id=txn_type.id,
-        txn_type_name=txn_type_name,
+        transaction_type_id=transaction_type_id,
+        txn_type_id=transaction_type_id,
     )
 
 
@@ -373,12 +375,15 @@ def get_quick_create():
 def get_full_create():
     """HTMX partial: return the full create popover form.
 
-    Query params: category_id, period_id, account_id, txn_type_name.
+    Query params: category_id, period_id, account_id, transaction_type_id.
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
     account_id = request.args.get("account_id", type=int)
-    txn_type_name = request.args.get("txn_type_name", "expense")
+    transaction_type_id = request.args.get(
+        "transaction_type_id", type=int,
+        default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+    )
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
@@ -391,7 +396,6 @@ def get_full_create():
     if not acct or acct.user_id != current_user.id:
         return "Not found", 404
 
-    txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
     scenario = (
         db.session.query(Scenario)
         .filter_by(user_id=current_user.id, is_baseline=True)
@@ -408,7 +412,7 @@ def get_full_create():
         period=period,
         account_id=acct.id,
         scenario_id=scenario.id,
-        transaction_type_id=txn_type.id,
+        transaction_type_id=transaction_type_id,
         statuses=statuses,
     )
 
@@ -419,12 +423,15 @@ def get_empty_cell():
     """HTMX partial: return the empty cell placeholder.
 
     Used by Escape key to revert a quick-create form back to the dash.
-    Query params: category_id, period_id, txn_type_name.
+    Query params: category_id, period_id, transaction_type_id.
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
     account_id = request.args.get("account_id", type=int)
-    txn_type_name = request.args.get("txn_type_name", "expense")
+    transaction_type_id = request.args.get(
+        "transaction_type_id", type=int,
+        default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+    )
 
     category = db.session.get(Category, category_id)
     period = db.session.get(PayPeriod, period_id)
@@ -442,7 +449,7 @@ def get_empty_cell():
         category=category,
         period=period,
         account=account,
-        txn_type_name=txn_type_name,
+        txn_type_id=transaction_type_id,
     )
 
 

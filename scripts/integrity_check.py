@@ -399,15 +399,16 @@ def check_data_consistency(session):
         session, "DC-03", "consistency", "warning",
         "Typed accounts missing their type-specific params",
         """
-        SELECT a.id, a.name, at.name AS type_name, at.category
+        SELECT a.id, a.name, at.name AS type_name, atc.name AS category_name
         FROM budget.accounts a
         JOIN ref.account_types at ON a.account_type_id = at.id
+        JOIN ref.account_type_categories atc ON at.category_id = atc.id
         LEFT JOIN budget.hysa_params hp ON hp.account_id = a.id
         LEFT JOIN budget.mortgage_params mp ON mp.account_id = a.id
         LEFT JOIN budget.auto_loan_params alp ON alp.account_id = a.id
-        WHERE (at.name = 'hysa' AND hp.id IS NULL)
-           OR (at.name = 'mortgage' AND mp.id IS NULL)
-           OR (at.name = 'auto_loan' AND alp.id IS NULL)
+        WHERE (at.name = 'HYSA' AND hp.id IS NULL)
+           OR (at.name = 'Mortgage' AND mp.id IS NULL)
+           OR (at.name = 'Auto Loan' AND alp.id IS NULL)
         """,
     ))
 

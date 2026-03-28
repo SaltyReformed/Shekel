@@ -150,7 +150,7 @@
                     </div>
                   {% endfor %}
                 {% else %}
-                  {% set txn_type_name = "income" %}
+                  {% set txn_type_id = TXN_TYPE_INCOME %}
                   {% include "grid/_transaction_empty_cell.html" with context %}
                 {% endif %}
               </td>
@@ -230,7 +230,7 @@
                     </div>
                   {% endfor %}
                 {% else %}
-                  {% set txn_type_name = "expense" %}
+                  {% set txn_type_id = TXN_TYPE_EXPENSE %}
                   {% include "grid/_transaction_empty_cell.html" with context %}
                 {% endif %}
               </td>
@@ -318,7 +318,7 @@
             <label class="form-label">Type</label>
             <select name="transaction_type_id" class="form-select" required>
               {% for tt in transaction_types %}
-              <option value="{{ tt.id }}" {{ 'selected' if tt.name == 'expense' else '' }}>{{ tt.name|capitalize }}</option>
+              <option value="{{ tt.id }}" {{ 'selected' if tt.id == TXN_TYPE_EXPENSE else '' }}>{{ tt.name }}</option>
               {% endfor %}
             </select>
           </div>

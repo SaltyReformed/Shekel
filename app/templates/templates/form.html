@@ -52,8 +52,8 @@
           <select id="transaction_type_id" name="transaction_type_id" class="form-select" required>
             {% for tt in txn_types %}
             <option value="{{ tt.id }}"
-              {{ 'selected' if (template and template.transaction_type_id == tt.id) or (not template and tt.name == 'expense') else '' }}>
-              {{ tt.name|capitalize }}
+              {{ 'selected' if (template and template.transaction_type_id == tt.id) or (not template and tt.id == TXN_TYPE_EXPENSE) else '' }}>
+              {{ tt.name }}
             </option>
             {% endfor %}
           </select>
@@ -89,11 +89,17 @@
 
       <div class="mb-3">
         <label for="recurrence_pattern" class="form-label">Pattern</label>
-        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select">
+        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
+                data-every-n="{{ REC_EVERY_N_PERIODS }}"
+                data-monthly="{{ REC_MONTHLY }}"
+                data-quarterly="{{ REC_QUARTERLY }}"
+                data-semi-annual="{{ REC_SEMI_ANNUAL }}"
+                data-annual="{{ REC_ANNUAL }}"
+                data-once="{{ REC_ONCE }}">
           <option value="">None (one-time / manual)</option>
           {% for p in patterns %}
-          <option value="{{ p.name }}"
-            {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern.name == p.name else '' }}>
+          <option value="{{ p.id }}"
+            {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern_id == p.id else '' }}>
             {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
           </option>
           {% endfor %}

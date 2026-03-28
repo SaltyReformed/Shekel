@@ -170,7 +170,7 @@ class TestTemplateCreateSchema:
         assert "name" in exc.value.messages
 
     def test_invalid_recurrence_pattern(self):
-        """Invalid recurrence_pattern fails OneOf validation."""
+        """Non-integer recurrence_pattern fails Integer field validation."""
         with pytest.raises(ValidationError) as exc:
             TemplateCreateSchema().load({
                 "name": "Test",
@@ -178,7 +178,7 @@ class TestTemplateCreateSchema:
                 "category_id": "1",
                 "transaction_type_id": "1",
                 "account_id": "1",
-                "recurrence_pattern": "daily",  # Not in valid list.
+                "recurrence_pattern": "daily",  # Not a valid integer.
             })
         assert "recurrence_pattern" in exc.value.messages
 

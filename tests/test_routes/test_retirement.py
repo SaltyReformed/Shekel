@@ -24,8 +24,8 @@ from app.models.ref import (
 def _create_salary_profile(seed_user, db_session):
     """Helper to create a salary profile with all required relations."""
     filing_status = db_session.query(FilingStatus).filter_by(name="single").one()
-    income_type = db_session.query(TransactionType).filter_by(name="income").one()
-    every_period = db_session.query(RecurrencePattern).filter_by(name="every_period").one()
+    income_type = db_session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = db_session.query(Category).filter_by(
         user_id=seed_user["user"].id, item_name="Salary"
@@ -90,7 +90,7 @@ def _create_pension(seed_user, db_session, salary_profile=None):
 
 
 
-def _create_retirement_account(seed_user, db_session, type_name="401k"):
+def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     """Helper to create a retirement account with investment params."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = Account(
@@ -424,8 +424,8 @@ class TestRetirementProjections:
         self, auth_client, seed_user, db, seed_periods
     ):
         """Multiple retirement accounts all project correctly."""
-        _create_retirement_account(seed_user, db.session, "401k")
-        _create_retirement_account(seed_user, db.session, "roth_ira")
+        _create_retirement_account(seed_user, db.session, "401(k)")
+        _create_retirement_account(seed_user, db.session, "Roth IRA")
 
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id
@@ -435,8 +435,8 @@ class TestRetirementProjections:
 
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
-        assert b"Test 401k" in resp.data
-        assert b"Test roth_ira" in resp.data
+        assert b"Test 401(k)" in resp.data
+        assert b"Test Roth IRA" in resp.data
 
     def test_dashboard_uses_projected_salary_for_gap(
         self, auth_client, seed_user, db, seed_periods
@@ -518,7 +518,7 @@ class TestGapAnalysisFragment:
         settings.planned_retirement_date = date(2050, 1, 1)
         db.session.commit()
 
-        _create_retirement_account(seed_user, db.session, type_name="401k")
+        _create_retirement_account(seed_user, db.session, type_name="401(k)")
 
         resp = auth_client.get(
             "/retirement/gap?return_rate=10.0",

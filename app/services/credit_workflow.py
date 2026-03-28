@@ -11,9 +11,8 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
-from app.models.ref import TransactionType
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.exceptions import NotFoundError, ValidationError
 
@@ -78,8 +77,7 @@ def mark_as_credit(transaction_id, user_id):
             "Only projected transactions can be marked as credit."
         )
 
-    # TransactionType lookup -- still name-based (Commit #2 will replace).
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     # Update the original transaction's status.
     txn.status_id = credit_id
@@ -109,7 +107,7 @@ def mark_as_credit(transaction_id, user_id):
         status_id=projected_id,
         name=f"CC Payback: {txn.name}",
         category_id=category.id,
-        transaction_type_id=expense_type.id,
+        transaction_type_id=expense_type_id,
         estimated_amount=payback_amount,
         credit_payback_for_id=txn.id,
     )

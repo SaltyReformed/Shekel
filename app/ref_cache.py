@@ -8,9 +8,10 @@ the database on every request.
 Usage::
 
     from app import ref_cache
-    from app.enums import StatusEnum
+    from app.enums import StatusEnum, AcctTypeEnum
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    checking_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
 
 The cache is initialized by ``create_app()`` after reference tables
 are seeded.  If any enum member has no corresponding database row,
@@ -22,17 +23,20 @@ Flask application; the cache is written once at startup and read-only
 thereafter.
 """
 
-# ------------------------------------------------------------------
-# Implementation Plan Discrepancies (Commit #1)
-# ------------------------------------------------------------------
-# - None found.
-# ------------------------------------------------------------------
-
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import (
+    AcctCategoryEnum,
+    AcctTypeEnum,
+    RecurrencePatternEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 
 # Module-level state -- populated by init(), read by accessors.
-_status_map = {}     # StatusEnum member -> int (database PK)
-_txn_type_map = {}   # TxnTypeEnum member -> int (database PK)
+_status_map = {}               # StatusEnum member -> int (database PK)
+_txn_type_map = {}             # TxnTypeEnum member -> int (database PK)
+_acct_type_map = {}            # AcctTypeEnum member -> int (database PK)
+_acct_category_map = {}        # AcctCategoryEnum member -> int (database PK)
+_recurrence_pattern_map = {}   # RecurrencePatternEnum member -> int (database PK)
 _initialized = False
 
 
@@ -47,24 +51,36 @@ def init(db_session):
         db_session: An active SQLAlchemy session (typically ``db.session``).
 
     Raises:
-        RuntimeError: If any StatusEnum or TxnTypeEnum member has no
-            matching row in the database.  The error message names
-            every missing member.
+        RuntimeError: If any enum member has no matching row in the
+            database.  The error message names every missing member.
     """
     # Deferred imports to avoid circular dependencies.  The models
     # module imports from extensions, which must be initialized before
     # the cache loads.
-    from app.models.ref import Status, TransactionType  # pylint: disable=import-outside-toplevel
+    from app.models.ref import (  # pylint: disable=import-outside-toplevel
+        AccountType,
+        AccountTypeCategory,
+        RecurrencePattern,
+        Status,
+        TransactionType,
+    )
 
-    global _status_map, _txn_type_map, _initialized  # pylint: disable=global-statement
+    global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
+    global _acct_category_map, _recurrence_pattern_map, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
     _status_map = {}
     _txn_type_map = {}
+    _acct_type_map = {}
+    _acct_category_map = {}
+    _recurrence_pattern_map = {}
 
     # Build name -> id lookup from the database.
     status_rows = {row.name: row.id for row in db_session.query(Status).all()}
     txn_type_rows = {row.name: row.id for row in db_session.query(TransactionType).all()}
+    acct_type_rows = {row.name: row.id for row in db_session.query(AccountType).all()}
+    acct_category_rows = {row.name: row.id for row in db_session.query(AccountTypeCategory).all()}
+    recurrence_pattern_rows = {row.name: row.id for row in db_session.query(RecurrencePattern).all()}
 
     # Map each enum member to its database ID, collecting any misses.
     missing = []
@@ -82,6 +98,27 @@ def init(db_session):
             missing.append(f"TransactionType.{member.name} (expected name={member.value!r})")
         else:
             _txn_type_map[member] = db_id
+
+    for member in AcctTypeEnum:
+        db_id = acct_type_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"AccountType.{member.name} (expected name={member.value!r})")
+        else:
+            _acct_type_map[member] = db_id
+
+    for member in AcctCategoryEnum:
+        db_id = acct_category_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"AccountTypeCategory.{member.name} (expected name={member.value!r})")
+        else:
+            _acct_category_map[member] = db_id
+
+    for member in RecurrencePatternEnum:
+        db_id = recurrence_pattern_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"RecurrencePattern.{member.name} (expected name={member.value!r})")
+        else:
+            _recurrence_pattern_map[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -126,3 +163,58 @@ def txn_type_id(member):
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     return _txn_type_map[member]
+
+
+def acct_type_id(member):
+    """Return the integer primary key for an AcctTypeEnum member.
+
+    Args:
+        member: An ``AcctTypeEnum`` member (e.g. ``AcctTypeEnum.CHECKING``).
+
+    Returns:
+        int -- the ``ref.account_types.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid AcctTypeEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _acct_type_map[member]
+
+
+def acct_category_id(member):
+    """Return the integer primary key for an AcctCategoryEnum member.
+
+    Args:
+        member: An ``AcctCategoryEnum`` member (e.g. ``AcctCategoryEnum.ASSET``).
+
+    Returns:
+        int -- the ``ref.account_type_categories.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid AcctCategoryEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _acct_category_map[member]
+
+
+def recurrence_pattern_id(member):
+    """Return the integer primary key for a RecurrencePatternEnum member.
+
+    Args:
+        member: A ``RecurrencePatternEnum`` member
+                (e.g. ``RecurrencePatternEnum.MONTHLY``).
+
+    Returns:
+        int -- the ``ref.recurrence_patterns.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid RecurrencePatternEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _recurrence_pattern_map[member]

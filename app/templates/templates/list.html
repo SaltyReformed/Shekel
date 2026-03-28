@@ -45,7 +45,7 @@
       <td>{{ t.name }}</td>
       <td>{{ t.category.display_name if t.category else '--' }}</td>
       <td>
-        {% if t.transaction_type.name == 'income' %}
+        {% if t.transaction_type_id == TXN_TYPE_INCOME %}
           <span class="badge bg-success">Income</span>
         {% else %}
           <span class="badge bg-danger">Expense</span>
@@ -56,21 +56,21 @@
         {% if t.recurrence_rule %}
           {% set rr = t.recurrence_rule %}
           {% set pname = rr.pattern.name %}
-          {% if pname == 'every_period' %}
+          {% if pname == 'Every Period' %}
             Every paycheck
-          {% elif pname == 'every_n_periods' %}
+          {% elif pname == 'Every N Periods' %}
             Every {{ rr.interval_n }} paychecks
-          {% elif pname == 'monthly' and rr.day_of_month %}
+          {% elif pname == 'Monthly' and rr.day_of_month %}
             Monthly (day {{ rr.day_of_month }})
-          {% elif pname == 'monthly_first' %}
+          {% elif pname == 'Monthly First' %}
             Monthly (first paycheck)
-          {% elif pname == 'quarterly' %}
+          {% elif pname == 'Quarterly' %}
             Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-          {% elif pname == 'semi_annual' %}
+          {% elif pname == 'Semi-Annual' %}
             Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-          {% elif pname == 'annual' %}
+          {% elif pname == 'Annual' %}
             Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-          {% elif pname == 'once' %}
+          {% elif pname == 'Once' %}
             One-time
           {% else %}
             {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}

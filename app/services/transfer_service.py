@@ -34,7 +34,8 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.models.ref import TransactionType
+from app import ref_cache
+from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -291,19 +292,15 @@ def _get_shadow_transactions(transfer_id):
             f"Data integrity issue -- cannot proceed."
         )
 
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
-    )
-    income_type = (
-        db.session.query(TransactionType).filter_by(name="income").one()
-    )
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     expense_shadow = None
     income_shadow = None
     for s in shadows:
-        if s.transaction_type_id == expense_type.id:
+        if s.transaction_type_id == expense_type_id:
             expense_shadow = s
-        elif s.transaction_type_id == income_type.id:
+        elif s.transaction_type_id == income_type_id:
             income_shadow = s
 
     if expense_shadow is None or income_shadow is None:
@@ -384,12 +381,8 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     _get_owned_transfer_template(transfer_template_id, user_id)
 
     # ── Ref data lookups ───────────────────────────────────────────
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
-    )
-    income_type = (
-        db.session.query(TransactionType).filter_by(name="income").one()
-    )
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     incoming_cat_id, outgoing_cat_id = _lookup_transfer_categories(user_id)
 
     # ── Determine names ────────────────────────────────────────────
@@ -435,7 +428,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         status_id=status_id,
         name=expense_shadow_name,
         category_id=expense_cat_id,
-        transaction_type_id=expense_type.id,
+        transaction_type_id=expense_type_id,
         estimated_amount=amount,
         actual_amount=None,
         is_override=False,
@@ -455,7 +448,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         status_id=status_id,
         name=income_shadow_name,
         category_id=income_cat_id,
-        transaction_type_id=income_type.id,
+        transaction_type_id=income_type_id,
         estimated_amount=amount,
         actual_amount=None,
         is_override=False,
@@ -715,14 +708,10 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
         )
 
     # ── Validate shadow type pairing ────────────────────────────────
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
-    )
-    income_type = (
-        db.session.query(TransactionType).filter_by(name="income").one()
-    )
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     type_ids = {s.transaction_type_id for s in shadows}
-    if type_ids != {expense_type.id, income_type.id}:
+    if type_ids != {expense_type_id, income_type_id}:
         logger.error(
             "Cannot restore transfer %d: shadow type pairing is invalid.  "
             "Expected one expense and one income, found type_ids=%s.",

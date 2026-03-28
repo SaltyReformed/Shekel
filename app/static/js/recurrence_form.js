@@ -1,10 +1,22 @@
 /**
  * Recurrence form -- show/hide fields based on pattern selection.
  * Used by both recurring-transaction and recurring-transfer forms.
+ *
+ * Pattern IDs are read from data attributes on the select element
+ * (set server-side from the ref cache) so this file never hardcodes
+ * database IDs.
  */
 (function() {
   var patternSelect = document.getElementById('recurrence_pattern');
   if (!patternSelect) return;
+
+  // Read pattern IDs from data attributes set on the select element.
+  var EVERY_N  = patternSelect.getAttribute('data-every-n');
+  var MONTHLY  = patternSelect.getAttribute('data-monthly');
+  var QUARTERLY = patternSelect.getAttribute('data-quarterly');
+  var SEMI_ANNUAL = patternSelect.getAttribute('data-semi-annual');
+  var ANNUAL   = patternSelect.getAttribute('data-annual');
+  var ONCE     = patternSelect.getAttribute('data-once');
 
   var container = document.getElementById('recurrence-fields');
   var interval = document.getElementById('field-interval');
@@ -21,16 +33,16 @@
     }
     container.classList.remove('d-none');
 
-    interval.classList.toggle('d-none', pattern !== 'every_n_periods');
-    dom.classList.toggle('d-none', ['monthly', 'quarterly', 'semi_annual', 'annual'].indexOf(pattern) === -1);
-    moy.classList.toggle('d-none', ['quarterly', 'semi_annual', 'annual'].indexOf(pattern) === -1);
+    interval.classList.toggle('d-none', pattern !== EVERY_N);
+    dom.classList.toggle('d-none', [MONTHLY, QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) === -1);
+    moy.classList.toggle('d-none', [QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) === -1);
 
     if (startPeriod) {
-      startPeriod.classList.toggle('d-none', pattern === 'once');
+      startPeriod.classList.toggle('d-none', pattern === ONCE);
     }
 
     if (endDate) {
-      endDate.classList.toggle('d-none', pattern === 'once');
+      endDate.classList.toggle('d-none', pattern === ONCE);
     }
 
     fetchPreview();
@@ -40,7 +52,7 @@
     if (!preview) return;
 
     var pattern = patternSelect.value;
-    if (!pattern || pattern === 'once') {
+    if (!pattern || pattern === ONCE) {
       preview.innerHTML = '<small class="text-muted">Select a pattern to see upcoming dates</small>';
       return;
     }

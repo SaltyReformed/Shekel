@@ -10,11 +10,13 @@ from decimal import Decimal
 
 import bcrypt
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.user import User, UserSettings
 from app.models.account import Account
 from app.models.category import Category
-from app.models.ref import AccountType, FilingStatus, TaxType
+from app.models.ref import FilingStatus, TaxType
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.exceptions import AuthError, ConflictError, ValidationError
@@ -388,10 +390,10 @@ def register_user(email, password, display_name):
     db.session.add(settings)
 
     # Create default checking account.
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     account = Account(
         user_id=user.id,
-        account_type_id=checking_type.id,
+        account_type_id=checking_type_id,
         name="Checking",
         current_anchor_balance=0,
     )

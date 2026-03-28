@@ -3,23 +3,12 @@ Shekel Budget App -- Reference Table Enums
 
 Python Enums whose members correspond 1:1 with rows in the ref schema
 lookup tables.  The *value* of each member is the database ``name``
-column after the Commit #1 migration runs.
+column after all migrations have run.
 
 These enums are the single source of truth for valid reference values.
 The ref_cache module maps each member to its database integer ID at
 startup, so application code never needs to query by name at runtime.
 """
-
-# ------------------------------------------------------------------
-# Implementation Plan Discrepancies (Commit #1)
-# ------------------------------------------------------------------
-# - TransactionType name capitalization deferred to Commit #2.
-#   The plan originally had it in Commit #1's migration, but this
-#   creates a broken intermediate state because routes/services still
-#   use filter_by(name="income") and filter_by(name="expense") until
-#   Commit #2 replaces those calls.  TxnTypeEnum values therefore
-#   remain lowercase to match the current database names.
-# ------------------------------------------------------------------
 
 import enum
 
@@ -42,10 +31,68 @@ class StatusEnum(enum.Enum):
 class TxnTypeEnum(enum.Enum):
     """Transaction type values.
 
-    Values match ``ref.transaction_types.name``.  These are still
-    lowercase because the database rename happens in Commit #2
-    alongside the code changes that replace filter_by(name=...) calls.
+    Values match ``ref.transaction_types.name`` after the Commit #2
+    migration capitalizes the display names.
     """
 
-    INCOME = "income"
-    EXPENSE = "expense"
+    INCOME = "Income"
+    EXPENSE = "Expense"
+
+
+class AcctCategoryEnum(enum.Enum):
+    """Account type category values.
+
+    Groups account types into high-level buckets for dashboard layout
+    and chart axis assignment.  Values match
+    ``ref.account_type_categories.name``.
+    """
+
+    ASSET = "Asset"
+    LIABILITY = "Liability"
+    RETIREMENT = "Retirement"
+    INVESTMENT = "Investment"
+
+
+class AcctTypeEnum(enum.Enum):
+    """Account type values.
+
+    Values match ``ref.account_types.name`` after the Commit #2
+    migration capitalizes the display names.  Each member maps 1:1
+    to a row in the account_types table.
+    """
+
+    CHECKING = "Checking"
+    SAVINGS = "Savings"
+    HYSA = "HYSA"
+    MONEY_MARKET = "Money Market"
+    CD = "CD"
+    HSA = "HSA"
+    CREDIT_CARD = "Credit Card"
+    MORTGAGE = "Mortgage"
+    AUTO_LOAN = "Auto Loan"
+    STUDENT_LOAN = "Student Loan"
+    PERSONAL_LOAN = "Personal Loan"
+    HELOC = "HELOC"
+    K401 = "401(k)"
+    ROTH_401K = "Roth 401(k)"
+    TRADITIONAL_IRA = "Traditional IRA"
+    ROTH_IRA = "Roth IRA"
+    BROKERAGE = "Brokerage"
+    PLAN_529 = "529 Plan"
+
+
+class RecurrencePatternEnum(enum.Enum):
+    """Recurrence pattern values.
+
+    Values match ``ref.recurrence_patterns.name`` after the Commit #2
+    migration capitalizes the display names.
+    """
+
+    EVERY_PERIOD = "Every Period"
+    EVERY_N_PERIODS = "Every N Periods"
+    MONTHLY = "Monthly"
+    MONTHLY_FIRST = "Monthly First"
+    QUARTERLY = "Quarterly"
+    SEMI_ANNUAL = "Semi-Annual"
+    ANNUAL = "Annual"
+    ONCE = "Once"

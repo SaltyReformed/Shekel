@@ -24,7 +24,7 @@ from app.services.recurrence_engine import _match_periods
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     if rule is None:
         return []
 
-    pattern_name = rule.pattern.name
-    if pattern_name == "once":
+    pattern_id = rule.pattern_id
+    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
         return []
 
     if effective_from is None and rule.start_period_id and rule.start_period:
@@ -68,7 +68,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
-    matching_periods = _match_periods(rule, pattern_name, periods, effective_from)
+    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
     existing = _get_existing_map(template.id, scenario_id, matching_periods)
 
     created = []

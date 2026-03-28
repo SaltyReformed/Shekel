@@ -41,7 +41,7 @@ def _create_other_user_with_txn(seed_user, seed_periods):
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = Account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
@@ -76,7 +76,7 @@ def _create_other_user_with_txn(seed_user, seed_periods):
     db.session.flush()
 
     projected = db.session.query(Status).filter_by(name="Projected").one()
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
     txn = Transaction(
         pay_period_id=other_periods[0].id,
@@ -237,7 +237,7 @@ class TestCreateOwnership:
         """POST /transactions/inline rejects another user's pay_period_id."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             resp = auth_client.post("/transactions/inline", data={
                 "estimated_amount": "50.00",
@@ -253,7 +253,7 @@ class TestCreateOwnership:
         """POST /transactions/inline rejects another user's category_id."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             resp = auth_client.post("/transactions/inline", data={
                 "estimated_amount": "50.00",
@@ -269,7 +269,7 @@ class TestCreateOwnership:
         """POST /transactions rejects another user's pay_period_id."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             resp = auth_client.post("/transactions", data={
                 "name": "Sneaky Expense",
@@ -289,7 +289,7 @@ class TestCreateOwnership:
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -319,7 +319,7 @@ class TestCreateOwnership:
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions/inline", data={
@@ -346,7 +346,7 @@ class TestCreateOwnership:
         """POST /transactions with nonexistent pay_period_id returns 404."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -373,7 +373,7 @@ class TestCreateOwnership:
         """POST /transactions with nonexistent category_id raises unhandled DB error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             # BUG: create_transaction does not validate category_id existence
@@ -404,7 +404,7 @@ class TestCreateOwnership:
         """POST /transactions/inline with nonexistent pay_period_id returns 404."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions/inline", data={
@@ -438,10 +438,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/new/quick returns 404 for another user's category."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/quick", query_string={
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -452,10 +453,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/new/quick returns 404 for another user's period."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/quick", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -466,10 +468,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/new/quick returns 404 when both resources are foreign."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/quick", query_string={
                 "category_id": other["category"].id,
                 "period_id": other["period"].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -480,10 +483,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/new/full returns 404 for another user's category."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/full", query_string={
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -494,10 +498,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/new/full returns 404 for another user's period."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/full", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -508,10 +513,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/empty-cell returns 404 for another user's category."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/empty-cell", query_string={
                 "category_id": other["category"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -522,10 +528,11 @@ class TestFormRenderingOwnership:
         """GET /transactions/empty-cell returns 404 for another user's period."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/empty-cell", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": other["period"].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 404
@@ -535,10 +542,11 @@ class TestFormRenderingOwnership:
     ):
         """GET /transactions/new/quick returns 200 for the user's own resources."""
         with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/quick", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
@@ -548,10 +556,11 @@ class TestFormRenderingOwnership:
     ):
         """GET /transactions/new/full returns 200 for the user's own resources."""
         with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/new/full", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
@@ -561,10 +570,11 @@ class TestFormRenderingOwnership:
     ):
         """GET /transactions/empty-cell returns 200 for the user's own resources."""
         with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             resp = auth_client.get("/transactions/empty-cell", query_string={
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "period_id": seed_periods[0].id,
-                "txn_type_name": "expense",
+                "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200

@@ -41,8 +41,8 @@ class TestSalaryToGrid:
     def test_salary_generates_income_per_period(self, app, db, seed_user, seed_periods):
         """Creating a salary template with every_period recurrence populates all periods."""
         with app.app_context():
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
-            every_period = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
             # Create recurrence rule and template (mimics salary profile creation).
             rule = RecurrenceRule(user_id=seed_user["user"].id, pattern_id=every_period.id)
@@ -70,7 +70,7 @@ class TestSalaryToGrid:
             # One income transaction per period.
             assert len(txns) == 10
             for txn in txns:
-                assert txn.transaction_type.name == "income"
+                assert txn.transaction_type.name == "Income"
                 assert txn.estimated_amount == Decimal("2884.62")
                 assert txn.status.name == "Projected"
 
@@ -81,8 +81,8 @@ class TestTemplateRecurrenceToGrid:
     def test_monthly_recurrence_hits_correct_periods(self, app, db, seed_user, seed_periods):
         """Monthly recurrence on day 15 places transactions in periods containing that day."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            monthly = db.session.query(RecurrencePattern).filter_by(name="monthly").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             rule = RecurrenceRule(user_id=seed_user["user"].id, pattern_id=monthly.id, day_of_month=15)
             db.session.add(rule)
@@ -127,7 +127,7 @@ class TestTransferToBalance:
         with app.app_context():
             from app.services import transfer_service
 
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
@@ -181,7 +181,7 @@ class TestCreditPaybackBalance:
         """Marking as credit creates payback and makes original effective_amount 0."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -235,7 +235,7 @@ class TestAnchorTrueUpBalance:
         """Changing anchor balance shifts all downstream period balances by the same delta."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create an expense in period 1.
             txn = Transaction(
@@ -284,7 +284,7 @@ class TestCarryForwardWorkflow:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
 
             # Create 2 projected expenses in period 0.
@@ -356,7 +356,7 @@ class TestCarryForwardEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
             rent_cat_id = seed_user["categories"]["Rent"].id
 
@@ -420,7 +420,7 @@ class TestCarryForwardEdgeCases:
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             done = db.session.query(Status).filter_by(name="Paid").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create 2 existing 'done' transactions in the TARGET period.
             existing_ids = []
@@ -500,7 +500,7 @@ class TestCarryForwardEdgeCases:
             done = db.session.query(Status).filter_by(name="Paid").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             credit = db.session.query(Status).filter_by(name="Credit").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # 2 projected (should move), 1 done, 1 cancelled, 1 credit (should stay).
             status_names = [
@@ -555,7 +555,7 @@ class TestCarryForwardEdgeCases:
         with app.app_context():
             done = db.session.query(Status).filter_by(name="Paid").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Source has only non-projected transactions.
             for name, status in [("Paid", done), ("Nope", cancelled)]:
@@ -603,7 +603,7 @@ class TestCarryForwardEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -650,7 +650,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -694,7 +694,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -736,7 +736,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             done = db.session.query(Status).filter_by(name="Paid").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -762,7 +762,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -791,7 +791,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             last_period = seed_periods[-1]
             txn = Transaction(
@@ -819,7 +819,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -866,7 +866,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -910,7 +910,7 @@ class TestFullBudgetWorkflow:
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             done = db.session.query(Status).filter_by(name="Paid").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Step 1: Create 3 projected expenses in period 0.
             txn1 = Transaction(

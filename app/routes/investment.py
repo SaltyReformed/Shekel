@@ -12,13 +12,14 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app import ref_cache
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
-from app.models.ref import AccountType, TransactionType
 from app.models.user import UserSettings
 from app.schemas.validation import (
     InvestmentParamsCreateSchema,
@@ -36,7 +37,7 @@ _create_schema = InvestmentParamsCreateSchema()
 _update_schema = InvestmentParamsUpdateSchema()
 
 # Account types that are "traditional" (pre-tax, taxed on withdrawal).
-TRADITIONAL_TYPES = frozenset({"401k", "traditional_ira"})
+TRADITIONAL_TYPES = frozenset({"401(k)", "Traditional IRA"})
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
@@ -139,18 +140,18 @@ def dashboard(account_id):
 
     # Load shadow income transactions in this account (contributions via transfers).
     period_ids = [p.id for p in all_periods]
-    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type.id,
+            Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if period_ids and income_type else []
+    ) if period_ids else []
 
     inputs = calculate_investment_inputs(
         account_id=account_id,
@@ -358,18 +359,18 @@ def growth_chart(account_id):
         })())
 
     period_ids = [p.id for p in all_periods]
-    income_type = db.session.query(TransactionType).filter_by(name="income").first()
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type.id,
+            Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
         )
         .all()
-    ) if period_ids and income_type else []
+    ) if period_ids else []
 
     inputs = calculate_investment_inputs(
         account_id=account_id,

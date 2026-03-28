@@ -16,7 +16,7 @@ from app.models.savings_goal import SavingsGoal
 
 def _create_savings_account(seed_user, db_session, name="My Savings"):
     """Helper to create a savings account."""
-    savings_type = db_session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db_session.query(AccountType).filter_by(name="Savings").one()
     account = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -30,7 +30,7 @@ def _create_savings_account(seed_user, db_session, name="My Savings"):
 
 def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     """Helper to create a HYSA account with params."""
-    hysa_type = db_session.query(AccountType).filter_by(name="hysa").one()
+    hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = Account(
         user_id=seed_user["user"].id,
         account_type_id=hysa_type.id,
@@ -101,7 +101,7 @@ class TestDashboardGrouping:
 
     def test_dashboard_mortgage_shows_rate(self, auth_client, seed_user, db, seed_periods):
         """Mortgage card shows interest rate."""
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
+        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = Account(
             user_id=seed_user["user"].id,
             account_type_id=mortgage_type.id,
@@ -131,7 +131,7 @@ class TestDashboardGrouping:
 
     def test_dashboard_auto_loan_shows_payment(self, auth_client, seed_user, db, seed_periods):
         """Auto loan card shows monthly payment."""
-        auto_type = db.session.query(AccountType).filter_by(name="auto_loan").one()
+        auto_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         acct = Account(
             user_id=seed_user["user"].id,
             account_type_id=auto_type.id,
@@ -161,7 +161,7 @@ class TestDashboardGrouping:
 
     def test_dashboard_liability_category(self, auth_client, seed_user, db, seed_periods):
         """Liabilities grouped under Liability header."""
-        mortgage_type = db.session.query(AccountType).filter_by(name="mortgage").one()
+        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = Account(
             user_id=seed_user["user"].id,
             account_type_id=mortgage_type.id,

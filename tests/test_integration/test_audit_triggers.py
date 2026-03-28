@@ -35,7 +35,7 @@ def _get_audit_rows(table_name=None, operation=None):
 def _create_transaction(seed_user, seed_periods):
     """Helper: create a minimal transaction and return it."""
     projected = db.session.query(Status).filter_by(name="Projected").one()
-    expense = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     txn = Transaction(
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
@@ -388,7 +388,7 @@ class TestAuditUserIdCapture:
     ):
         """An authenticated POST that modifies data records user_id in audit_log."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         auth_client.post(
             "/transactions",
             data={

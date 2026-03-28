@@ -39,8 +39,8 @@ class TestSeedSecondUser:
     def test_has_own_account(self, seed_user, seed_second_user):
         """Second user has a distinct checking account with correct balance."""
         assert seed_user["account"].id != seed_second_user["account"].id
-        assert seed_user["account"].account_type.name == "checking"
-        assert seed_second_user["account"].account_type.name == "checking"
+        assert seed_user["account"].account_type.name == "Checking"
+        assert seed_second_user["account"].account_type.name == "Checking"
         assert seed_second_user["account"].current_anchor_balance == Decimal("2000.00")
 
     def test_has_own_scenario(self, seed_user, seed_second_user):

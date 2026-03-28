@@ -5,16 +5,16 @@
      category      -- Category object for this row
      period        -- PayPeriod object for this column
      account       -- Account object for the viewed account
-     txn_type_name -- "income" or "expense"
+     txn_type_id   -- integer transaction type ID (TXN_TYPE_INCOME or TXN_TYPE_EXPENSE)
 #}
 <div class="txn-cell txn-empty-cell"
-     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period.id, txn_type_name=txn_type_name, account_id=account.id) }}"
+     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period.id, transaction_type_id=txn_type_id, account_id=account.id) }}"
      hx-trigger="click"
      hx-target="closest td"
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="Add {{ txn_type_name }} for {{ category.item_name }}"
+     aria-label="Add transaction for {{ category.item_name }}"
      title="Click to add a transaction">
   <span class="text-muted">&mdash;</span>
 </div>

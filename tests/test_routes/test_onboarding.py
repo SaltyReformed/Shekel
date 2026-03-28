@@ -42,7 +42,7 @@ class TestOnboardingBanner:
 
         # transaction template
         income_type = db.session.query(TransactionType).filter_by(
-            name="income"
+            name="Income"
         ).one()
         tmpl = TransactionTemplate(
             user_id=user.id,

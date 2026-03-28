@@ -109,7 +109,7 @@ function openFullEdit(txnId, triggerEl) {
  * Open the full create popover for an empty cell.
  * Loads the create form via fetch, anchored to the cell.
  */
-function openFullCreate(categoryId, periodId, txnTypeName, accountId, triggerEl) {
+function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
@@ -122,7 +122,7 @@ function openFullCreate(categoryId, periodId, txnTypeName, accountId, triggerEl)
     // Load the full create form via fetch.
     fetch('/transactions/new/full?category_id=' + categoryId +
           '&period_id=' + periodId +
-          '&txn_type_name=' + encodeURIComponent(txnTypeName) +
+          '&transaction_type_id=' + encodeURIComponent(txnTypeId) +
           '&account_id=' + accountId, {
         headers: { 'HX-Request': 'true' }
     })
@@ -207,7 +207,7 @@ document.addEventListener('keydown', function(e) {
                 openFullCreate(
                     parseInt(expandBtn.dataset.categoryId),
                     parseInt(expandBtn.dataset.periodId),
-                    expandBtn.dataset.txnTypeName,
+                    parseInt(expandBtn.dataset.txnTypeId),
                     parseInt(expandBtn.dataset.accountId),
                     quickInput
                 );
@@ -241,7 +241,7 @@ document.addEventListener('keydown', function(e) {
                     htmx.ajax('GET',
                         '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
                         '&period_id=' + expandBtn.dataset.periodId +
-                        '&txn_type_name=' + encodeURIComponent(expandBtn.dataset.txnTypeName) +
+                        '&transaction_type_id=' + encodeURIComponent(expandBtn.dataset.txnTypeId) +
                         '&account_id=' + expandBtn.dataset.accountId,
                         { target: td, swap: 'innerHTML' }
                     );
@@ -276,7 +276,7 @@ document.addEventListener('click', function(e) {
         openFullCreate(
             parseInt(createBtn.dataset.categoryId),
             parseInt(createBtn.dataset.periodId),
-            createBtn.dataset.txnTypeName,
+            parseInt(createBtn.dataset.txnTypeId),
             parseInt(createBtn.dataset.accountId),
             createBtn
         );

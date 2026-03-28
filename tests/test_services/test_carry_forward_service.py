@@ -44,7 +44,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         The created Transaction object (flushed, not committed).
     """
     status = db.session.query(Status).filter_by(name=status_name).one()
-    expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
     txn = Transaction(
         pay_period_id=seed_periods[period_index].id,
@@ -252,7 +252,7 @@ class TestCarryForwardUnpaid:
 
             status = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             # Baseline projected transaction.
@@ -305,7 +305,7 @@ class TestCarryForwardUnpaid:
 
 def _create_savings(seed_user):
     """Create a savings account for transfer tests."""
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -508,7 +508,7 @@ class TestCarryForwardShadowTransactions:
         with app.app_context():
             # Need a second savings account for the second transfer.
             savings_type = db.session.query(AccountType).filter_by(
-                name="savings"
+                name="Savings"
             ).one()
             savings2 = Account(
                 user_id=seed_user["user"].id,

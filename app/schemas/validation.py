@@ -90,13 +90,10 @@ class TemplateCreateSchema(BaseSchema):
     account_id = fields.Integer(required=True)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
-    recurrence_pattern = fields.String(
-        validate=validate.OneOf([
-            "every_period", "every_n_periods", "monthly",
-            "monthly_first", "quarterly", "semi_annual",
-            "annual", "once",
-        ])
-    )
+    # The value is the integer primary key of a ref.recurrence_patterns row,
+    # submitted as a string via HTML form data.  Route-level code validates
+    # existence via db.session.get().
+    recurrence_pattern = fields.Integer(validate=validate.Range(min=1))
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
@@ -327,13 +324,10 @@ class TransferTemplateCreateSchema(BaseSchema):
     category_id = fields.Integer(load_default=None, allow_none=True)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
-    recurrence_pattern = fields.String(
-        validate=validate.OneOf([
-            "every_period", "every_n_periods", "monthly",
-            "monthly_first", "quarterly", "semi_annual",
-            "annual", "once",
-        ])
-    )
+    # The value is the integer primary key of a ref.recurrence_patterns row,
+    # submitted as a string via HTML form data.  Route-level code validates
+    # existence via db.session.get().
+    recurrence_pattern = fields.Integer(validate=validate.Range(min=1))
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))

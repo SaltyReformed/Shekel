@@ -170,7 +170,7 @@ class TestCategoryDelete:
         """POST /categories/<id>/delete for a category used by a template is rejected."""
         with app.app_context():
             category = seed_user["categories"]["Rent"]
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
@@ -197,7 +197,7 @@ class TestCategoryDelete:
         """POST /categories/<id>/delete for a category used by a transaction is rejected."""
         with app.app_context():
             category = seed_user["categories"]["Groceries"]
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
@@ -266,7 +266,7 @@ class TestCategoryDelete:
 
             # User B creates a template referencing User B's OWN category.
             txn_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
             tpl_b = TransactionTemplate(
                 user_id=seed_second_user["user"].id,
@@ -307,7 +307,7 @@ class TestCategoryDelete:
             db.session.flush()
 
             txn_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
             projected = db.session.query(Status).filter_by(
                 name="Projected"
@@ -348,7 +348,7 @@ class TestCategoryDelete:
             db.session.flush()
 
             txn_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
             projected = db.session.query(Status).filter_by(
                 name="Projected"

@@ -77,7 +77,7 @@ def _shadow_income(pay_period_id, amount, status_name="Projected"):
             excludes_from_balance=excludes,
         ),
         status_id=sid,
-        transaction_type=TxnTypeStub(name="income"),
+        transaction_type=TxnTypeStub(name="Income"),
         transfer_id=1,
         is_income=True,
         is_expense=False,

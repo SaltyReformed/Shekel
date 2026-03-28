@@ -31,7 +31,7 @@ from app.services import balance_calculator, carry_forward_service, credit_workf
 
 
 def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="Projected",
-                      txn_type_name="expense", amount="100.00", name="Test Item",
+                      txn_type_name="Expense", amount="100.00", name="Test Item",
                       category_key="Rent"):
     """Create and flush a transaction with sensible defaults."""
     status = db.session.query(Status).filter_by(name=status_name).one()
@@ -53,7 +53,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
 
 def _make_savings_account(seed_user):
     """Create a second (savings) account for transfer tests."""
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
@@ -238,7 +238,7 @@ class TestStateMachineViolations:
         """
         with app.app_context():
             txn = _make_transaction(
-                seed_user, seed_periods, txn_type_name="income",
+                seed_user, seed_periods, txn_type_name="Income",
                 name="Paycheck", category_key="Salary", amount="3000.00",
                 status_name="Received",
             )
@@ -516,7 +516,7 @@ class TestReferentialIntegrity:
         """
         with app.app_context():
             # Create a template.
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -588,7 +588,7 @@ class TestCreditWorkflowEdgeCases:
         """
         with app.app_context():
             txn = _make_transaction(
-                seed_user, seed_periods, txn_type_name="income",
+                seed_user, seed_periods, txn_type_name="Income",
                 name="Paycheck", category_key="Salary", amount="3000.00",
             )
             db.session.commit()
@@ -631,7 +631,7 @@ class TestCarryForwardEdgeCases:
         """
         with app.app_context():
             # Create a template-linked transaction in period 0.
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -837,7 +837,7 @@ class TestBalanceCalculatorBoundary:
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods, period_index=1,
-                txn_type_name="income", name="Paycheck",
+                txn_type_name="Income", name="Paycheck",
                 category_key="Salary", amount="2000.00",
             )
             db.session.commit()
@@ -885,7 +885,7 @@ class TestNumericEdgeCases:
             from sqlalchemy.exc import DataError
 
             status = db.session.query(Status).filter_by(name="Projected").one()
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
@@ -913,7 +913,7 @@ class TestNumericEdgeCases:
             from app.schemas.validation import TransactionCreateSchema
             schema = TransactionCreateSchema()
 
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             errors = schema.validate({
@@ -957,7 +957,7 @@ class TestAuthEdgeCases:
 
             # Create a transaction for user 2.
             status = db.session.query(Status).filter_by(name="Projected").one()
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn2 = Transaction(
                 pay_period_id=periods2[0].id,
@@ -1189,7 +1189,7 @@ class TestCrossResourceIDOR:
         with app.app_context():
             # Create a savings account and transfer template for second user.
             savings_type = db.session.query(AccountType).filter_by(
-                name="savings",
+                name="Savings",
             ).one()
             savings_acct2 = Account(
                 user_id=second_user["user"].id,

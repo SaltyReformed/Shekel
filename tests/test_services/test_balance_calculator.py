@@ -28,8 +28,8 @@ class TestCalculateBalances:
             periods = seed_periods
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Add one income and one expense, both projected.
             txns = []
@@ -79,7 +79,7 @@ class TestCalculateBalances:
 
             done = db.session.query(Status).filter_by(name="Paid").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txns = []
             # A 'done' expense -- already reflected in anchor, should be skipped.
@@ -130,7 +130,7 @@ class TestCalculateBalances:
             periods = seed_periods
 
             credit = db.session.query(Status).filter_by(name="Credit").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txns = []
             credit_exp = Transaction(
@@ -165,8 +165,8 @@ class TestCalculateBalances:
             periods = seed_periods
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txns = []
             # Period 0: income 2000, expense 800.
@@ -268,12 +268,12 @@ class FakeTxn:
     @property
     def is_income(self):
         """True if this transaction represents income."""
-        return self.transaction_type and self.transaction_type.name == "income"
+        return self.transaction_type and self.transaction_type.name == "Income"
 
     @property
     def is_expense(self):
         """True if this transaction represents an expense."""
-        return self.transaction_type and self.transaction_type.name == "expense"
+        return self.transaction_type and self.transaction_type.name == "Expense"
 
 
 class TestBalanceCalculatorEdgeCases:
@@ -282,7 +282,7 @@ class TestBalanceCalculatorEdgeCases:
     def test_anchor_balance_none_defaults_to_zero(self):
         """anchor_balance=None → Decimal('0.00'), projected income still added."""
         periods = [FakePeriod(1)]
-        txns = [FakeTxn(1, "Projected", "income", "500.00")]
+        txns = [FakeTxn(1, "Projected", "Income", "500.00")]
 
         balances, _ = balance_calculator.calculate_balances(
             anchor_balance=None,
@@ -297,10 +297,10 @@ class TestBalanceCalculatorEdgeCases:
         """Periods before the anchor are not included in output."""
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3), FakePeriod(4)]
         txns = [
-            FakeTxn(1, "Projected", "income", "100.00"),
-            FakeTxn(2, "Projected", "income", "200.00"),
-            FakeTxn(3, "Projected", "income", "300.00"),
-            FakeTxn(4, "Projected", "expense", "50.00"),
+            FakeTxn(1, "Projected", "Income", "100.00"),
+            FakeTxn(2, "Projected", "Income", "200.00"),
+            FakeTxn(3, "Projected", "Income", "300.00"),
+            FakeTxn(4, "Projected", "Expense", "50.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -323,8 +323,8 @@ class TestBalanceCalculatorEdgeCases:
         """Post-anchor period with both income and expense rolls forward correctly."""
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            FakeTxn(2, "Projected", "income", "2000.00"),
-            FakeTxn(2, "Projected", "expense", "750.00"),
+            FakeTxn(2, "Projected", "Income", "2000.00"),
+            FakeTxn(2, "Projected", "Expense", "750.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -343,9 +343,9 @@ class TestBalanceCalculatorEdgeCases:
         """Anchor period with a regular expense and a shadow expense (transfer out)."""
         periods = [FakePeriod(1)]
         txns = [
-            FakeTxn(1, "Projected", "expense", "300.00"),
+            FakeTxn(1, "Projected", "Expense", "300.00"),
             # Shadow expense from a transfer (outgoing $200).
-            FakeTxn(1, "Projected", "expense", "200.00", transfer_id=1),
+            FakeTxn(1, "Projected", "Expense", "200.00", transfer_id=1),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -363,9 +363,9 @@ class TestBalanceCalculatorEdgeCases:
         periods = [FakePeriod(1)]
         txns = [
             # Shadow income: $500 transfer into this account.
-            FakeTxn(1, "Projected", "income", "500.00", transfer_id=1),
+            FakeTxn(1, "Projected", "Income", "500.00", transfer_id=1),
             # Shadow expense: $150 transfer out of this account.
-            FakeTxn(1, "Projected", "expense", "150.00", transfer_id=2),
+            FakeTxn(1, "Projected", "Expense", "150.00", transfer_id=2),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -382,9 +382,9 @@ class TestBalanceCalculatorEdgeCases:
         """Post-anchor period: done/received transactions excluded, only projected counted."""
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            FakeTxn(2, "Paid", "expense", "999.00"),
-            FakeTxn(2, "Received", "income", "888.00"),
-            FakeTxn(2, "Projected", "expense", "100.00"),
+            FakeTxn(2, "Paid", "Expense", "999.00"),
+            FakeTxn(2, "Received", "Income", "888.00"),
+            FakeTxn(2, "Projected", "Expense", "100.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -404,9 +404,9 @@ class TestBalanceCalculatorEdgeCases:
         periods = [FakePeriod(1)]
         txns = [
             # Cancelled shadow expense -- should be ignored.
-            FakeTxn(1, "Cancelled", "expense", "500.00", transfer_id=1),
+            FakeTxn(1, "Cancelled", "Expense", "500.00", transfer_id=1),
             # Projected shadow expense -- should be counted.
-            FakeTxn(1, "Projected", "expense", "100.00", transfer_id=2),
+            FakeTxn(1, "Projected", "Expense", "100.00", transfer_id=2),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -451,21 +451,21 @@ class TestBalanceCalculatorEdgeCases:
 
         txns = [
             # Period 1 (anchor): income 2000, expense 800
-            FakeTxn(1, "Projected", "income", "2000.00"),
-            FakeTxn(1, "Projected", "expense", "800.00"),
+            FakeTxn(1, "Projected", "Income", "2000.00"),
+            FakeTxn(1, "Projected", "Expense", "800.00"),
             # Period 2: income 2000, expense 600, shadow expense 300 (transfer out)
-            FakeTxn(2, "Projected", "income", "2000.00"),
-            FakeTxn(2, "Projected", "expense", "600.00"),
-            FakeTxn(2, "Projected", "expense", "300.00", transfer_id=1),
+            FakeTxn(2, "Projected", "Income", "2000.00"),
+            FakeTxn(2, "Projected", "Expense", "600.00"),
+            FakeTxn(2, "Projected", "Expense", "300.00", transfer_id=1),
             # Period 3: expense 1500, shadow income 500 (transfer in)
-            FakeTxn(3, "Projected", "expense", "1500.00"),
-            FakeTxn(3, "Projected", "income", "500.00", transfer_id=2),
+            FakeTxn(3, "Projected", "Expense", "1500.00"),
+            FakeTxn(3, "Projected", "Income", "500.00", transfer_id=2),
             # Period 4: income 2000, expense 900
-            FakeTxn(4, "Projected", "income", "2000.00"),
-            FakeTxn(4, "Projected", "expense", "900.00"),
+            FakeTxn(4, "Projected", "Income", "2000.00"),
+            FakeTxn(4, "Projected", "Expense", "900.00"),
             # Period 5: income 2000, shadow expense 1000 (transfer out)
-            FakeTxn(5, "Projected", "income", "2000.00"),
-            FakeTxn(5, "Projected", "expense", "1000.00", transfer_id=3),
+            FakeTxn(5, "Projected", "Income", "2000.00"),
+            FakeTxn(5, "Projected", "Expense", "1000.00", transfer_id=3),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -534,170 +534,170 @@ class TestBalanceCalculatorFIN:
         # --- Period 0 (S10 + S1): anchor with standard mix ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(0, "Projected", "income", "2500.00")
+            FakeTxn(0, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(0, "Projected", "expense", "850.00")
+            FakeTxn(0, "Projected", "Expense", "850.00")
         )
         # Projected utilities.
         txns.append(
-            FakeTxn(0, "Projected", "expense", "125.50")
+            FakeTxn(0, "Projected", "Expense", "125.50")
         )
         # Projected groceries.
         txns.append(
-            FakeTxn(0, "Projected", "expense", "200.00")
+            FakeTxn(0, "Projected", "Expense", "200.00")
         )
 
         # --- Period 1 (S2): done expense -- excluded ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(1, "Projected", "income", "2500.00")
+            FakeTxn(1, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(1, "Projected", "expense", "850.00")
+            FakeTxn(1, "Projected", "Expense", "850.00")
         )
         # Done expense (actual would be 275.50); service
         # excludes done entirely -- never reads actual_amount.
         txns.append(
-            FakeTxn(1, "Paid", "expense", "300.00")
+            FakeTxn(1, "Paid", "Expense", "300.00")
         )
 
         # --- Period 2 (S3): cancelled expense -- excluded ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(2, "Projected", "income", "2500.00")
+            FakeTxn(2, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(2, "Projected", "expense", "850.00")
+            FakeTxn(2, "Projected", "Expense", "850.00")
         )
         # Cancelled: would subtract 500 if counted.
         txns.append(
-            FakeTxn(2, "Cancelled", "expense", "500.00")
+            FakeTxn(2, "Cancelled", "Expense", "500.00")
         )
 
         # --- Period 3 (S4): credit expense -- excluded ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(3, "Projected", "income", "2500.00")
+            FakeTxn(3, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(3, "Projected", "expense", "850.00")
+            FakeTxn(3, "Projected", "Expense", "850.00")
         )
         # Credit: on credit card, not checking -- excluded.
         txns.append(
-            FakeTxn(3, "Credit", "expense", "450.00")
+            FakeTxn(3, "Credit", "Expense", "450.00")
         )
 
         # --- Period 4 (S5): only cancelled + credit ---
         # No projected items; balance carries forward unchanged.
         txns.append(
-            FakeTxn(4, "Cancelled", "expense", "600.00")
+            FakeTxn(4, "Cancelled", "Expense", "600.00")
         )
         txns.append(
-            FakeTxn(4, "Credit", "expense", "350.00")
+            FakeTxn(4, "Credit", "Expense", "350.00")
         )
 
         # --- Period 5 (S6): done income + done expense ---
         # Both excluded; only the projected expense counts.
         txns.append(
-            FakeTxn(5, "Paid", "income", "2500.00")
+            FakeTxn(5, "Paid", "Income", "2500.00")
         )
         txns.append(
-            FakeTxn(5, "Paid", "expense", "850.00")
+            FakeTxn(5, "Paid", "Expense", "850.00")
         )
         # Only projected item in this period.
         txns.append(
-            FakeTxn(5, "Projected", "expense", "150.00")
+            FakeTxn(5, "Projected", "Expense", "150.00")
         )
 
         # --- Period 6 (S7): received income -- excluded ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(6, "Projected", "income", "2500.00")
+            FakeTxn(6, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(6, "Projected", "expense", "850.00")
+            FakeTxn(6, "Projected", "Expense", "850.00")
         )
         # Received: already settled -- excluded.
         txns.append(
-            FakeTxn(6, "Received", "income", "100.00")
+            FakeTxn(6, "Received", "Income", "100.00")
         )
 
         # --- Period 7 (S8): zero-amount projected expense ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(7, "Projected", "income", "2500.00")
+            FakeTxn(7, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(7, "Projected", "expense", "850.00")
+            FakeTxn(7, "Projected", "Expense", "850.00")
         )
         # Zero expense: included in sum but adds nothing.
         txns.append(
-            FakeTxn(7, "Projected", "expense", "0.00")
+            FakeTxn(7, "Projected", "Expense", "0.00")
         )
 
         # --- Period 8 (S9): fractional-cent expenses ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(8, "Projected", "income", "2500.00")
+            FakeTxn(8, "Projected", "Income", "2500.00")
         )
         # Three 33.33 expenses; sum = 99.99, NOT 100.00.
         txns.append(
-            FakeTxn(8, "Projected", "expense", "33.33")
+            FakeTxn(8, "Projected", "Expense", "33.33")
         )
         txns.append(
-            FakeTxn(8, "Projected", "expense", "33.33")
+            FakeTxn(8, "Projected", "Expense", "33.33")
         )
         txns.append(
-            FakeTxn(8, "Projected", "expense", "33.33")
+            FakeTxn(8, "Projected", "Expense", "33.33")
         )
 
         # --- Period 9 (S2 repeat): done income -- excluded ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(9, "Projected", "income", "2500.00")
+            FakeTxn(9, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(9, "Projected", "expense", "850.00")
+            FakeTxn(9, "Projected", "Expense", "850.00")
         )
         # Done income (actual would be 520.00) -- excluded.
         txns.append(
-            FakeTxn(9, "Paid", "income", "500.00")
+            FakeTxn(9, "Paid", "Income", "500.00")
         )
 
         # --- Period 10 (S3 repeat): cancelled expense ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(10, "Projected", "income", "2500.00")
+            FakeTxn(10, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(10, "Projected", "expense", "850.00")
+            FakeTxn(10, "Projected", "Expense", "850.00")
         )
         # Cancelled expense -- excluded.
         txns.append(
-            FakeTxn(10, "Cancelled", "expense", "200.00")
+            FakeTxn(10, "Cancelled", "Expense", "200.00")
         )
 
         # --- Period 11 (S4 repeat): credit expense ---
         # Projected paycheck.
         txns.append(
-            FakeTxn(11, "Projected", "income", "2500.00")
+            FakeTxn(11, "Projected", "Income", "2500.00")
         )
         # Projected rent.
         txns.append(
-            FakeTxn(11, "Projected", "expense", "850.00")
+            FakeTxn(11, "Projected", "Expense", "850.00")
         )
         # Credit expense -- excluded.
         txns.append(
-            FakeTxn(11, "Credit", "expense", "175.00")
+            FakeTxn(11, "Credit", "Expense", "175.00")
         )
 
         # --- Periods 12-51 (S1): standard mix each period ---
@@ -706,19 +706,19 @@ class TestBalanceCalculatorFIN:
         for p in range(12, 52):
             # Paycheck.
             txns.append(
-                FakeTxn(p, "Projected", "income", "2500.00")
+                FakeTxn(p, "Projected", "Income", "2500.00")
             )
             # Rent.
             txns.append(
-                FakeTxn(p, "Projected", "expense", "850.00")
+                FakeTxn(p, "Projected", "Expense", "850.00")
             )
             # Utilities.
             txns.append(
-                FakeTxn(p, "Projected", "expense", "125.50")
+                FakeTxn(p, "Projected", "Expense", "125.50")
             )
             # Groceries.
             txns.append(
-                FakeTxn(p, "Projected", "expense", "200.00")
+                FakeTxn(p, "Projected", "Expense", "200.00")
             )
 
         # -------------------------------------------------------
@@ -740,9 +740,9 @@ class TestBalanceCalculatorFIN:
                 if txn.status.name != "Projected":
                     continue
                 # Classify by raw attribute, not service prop.
-                if txn.transaction_type.name == "income":
+                if txn.transaction_type.name == "Income":
                     period_inc += txn.estimated_amount
-                elif txn.transaction_type.name == "expense":
+                elif txn.transaction_type.name == "Expense":
                     period_exp += txn.estimated_amount
             running = running + period_inc - period_exp
             oracle_expected[i] = running
@@ -777,9 +777,9 @@ class TestBalanceCalculatorFIN:
         for txn in txns:
             if txn.status.name != "Projected":
                 continue
-            if txn.transaction_type.name == "income":
+            if txn.transaction_type.name == "Income":
                 total_net += txn.estimated_amount
-            elif txn.transaction_type.name == "expense":
+            elif txn.transaction_type.name == "Expense":
                 total_net -= txn.estimated_amount
         cumulative_expected = anchor_balance + total_net
         assert result[periods[51].id] == cumulative_expected, (
@@ -805,15 +805,15 @@ class TestBalanceCalculatorFIN:
         for p in range(3):
             # Income: 2500.00 each period.
             txns.append(
-                FakeTxn(p, "Projected", "income", "2500.00")
+                FakeTxn(p, "Projected", "Income", "2500.00")
             )
             # Expense 1: 850.00 each period.
             txns.append(
-                FakeTxn(p, "Projected", "expense", "850.00")
+                FakeTxn(p, "Projected", "Expense", "850.00")
             )
             # Expense 2: 850.00 each period.
             txns.append(
-                FakeTxn(p, "Projected", "expense", "850.00")
+                FakeTxn(p, "Projected", "Expense", "850.00")
             )
 
         result, _ = balance_calculator.calculate_balances(
@@ -855,11 +855,11 @@ class TestBalanceCalculatorFIN:
         for p in range(3):
             # Large income: 50000.00.
             txns.append(
-                FakeTxn(p, "Projected", "income", "50000.00")
+                FakeTxn(p, "Projected", "Income", "50000.00")
             )
             # Large expense: 49999.99 (net +0.01 per period).
             txns.append(
-                FakeTxn(p, "Projected", "expense", "49999.99")
+                FakeTxn(p, "Projected", "Expense", "49999.99")
             )
 
         result, _ = balance_calculator.calculate_balances(
@@ -904,10 +904,10 @@ class TestBalanceCalculatorFIN:
         for p in range(5):
             # Standard mix: income 2500, expense 850.
             txns.append(
-                FakeTxn(p, "Projected", "income", "2500.00")
+                FakeTxn(p, "Projected", "Income", "2500.00")
             )
             txns.append(
-                FakeTxn(p, "Projected", "expense", "850.00")
+                FakeTxn(p, "Projected", "Expense", "850.00")
             )
 
         # Independent expected values.
@@ -971,16 +971,16 @@ class TestBalanceCalculatorFIN:
 
         txns = [
             # --- Period 0: income 2500, expense 850 ---
-            FakeTxn(0, "Projected", "income", "2500.00"),
-            FakeTxn(0, "Projected", "expense", "850.00"),
+            FakeTxn(0, "Projected", "Income", "2500.00"),
+            FakeTxn(0, "Projected", "Expense", "850.00"),
             # --- Period 1: same + zero-amount expense ---
-            FakeTxn(1, "Projected", "income", "2500.00"),
-            FakeTxn(1, "Projected", "expense", "850.00"),
+            FakeTxn(1, "Projected", "Income", "2500.00"),
+            FakeTxn(1, "Projected", "Expense", "850.00"),
             # Zero expense: included but contributes nothing.
-            FakeTxn(1, "Projected", "expense", "0.00"),
+            FakeTxn(1, "Projected", "Expense", "0.00"),
             # --- Period 2: same as period 0 (no zero exp) ---
-            FakeTxn(2, "Projected", "income", "2500.00"),
-            FakeTxn(2, "Projected", "expense", "850.00"),
+            FakeTxn(2, "Projected", "Income", "2500.00"),
+            FakeTxn(2, "Projected", "Expense", "850.00"),
         ]
 
         result, _ = balance_calculator.calculate_balances(
@@ -1021,11 +1021,11 @@ class TestBalanceCalculatorFIN:
 
         txns = [
             # Period 0: received income -- excluded from anchor.
-            FakeTxn(0, "Received", "income", "5000.00"),
+            FakeTxn(0, "Received", "Income", "5000.00"),
             # Period 1: received expense -- excluded post-anchor.
-            FakeTxn(1, "Received", "expense", "500.00"),
+            FakeTxn(1, "Received", "Expense", "500.00"),
             # Period 2: received income -- excluded post-anchor.
-            FakeTxn(2, "Received", "income", "3000.00"),
+            FakeTxn(2, "Received", "Income", "3000.00"),
         ]
 
         result, _ = balance_calculator.calculate_balances(
@@ -1077,13 +1077,13 @@ class TestNegativePaths:
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns = [
             # Period 1 (anchor): income 2000, zero expense
-            FakeTxn(1, "Projected", "income", "2000.00"),
-            FakeTxn(1, "Projected", "expense", "0.00"),  # zero -- must not affect balance
+            FakeTxn(1, "Projected", "Income", "2000.00"),
+            FakeTxn(1, "Projected", "Expense", "0.00"),  # zero -- must not affect balance
             # Period 2: expense 500, zero expense
-            FakeTxn(2, "Projected", "expense", "500.00"),
-            FakeTxn(2, "Projected", "expense", "0.00"),  # zero -- must not affect balance
+            FakeTxn(2, "Projected", "Expense", "500.00"),
+            FakeTxn(2, "Projected", "Expense", "0.00"),  # zero -- must not affect balance
             # Period 3: expense 300 only
-            FakeTxn(3, "Projected", "expense", "300.00"),
+            FakeTxn(3, "Projected", "Expense", "300.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -1115,11 +1115,11 @@ class TestNegativePaths:
             # Anchor: received income -- already settled, must be excluded.
             # actual_amount would be on the real ORM object but the balance
             # calculator never reads it; it skips the entire txn (status_id != projected_id).
-            FakeTxn(1, "Received", "income", "2500.00"),
+            FakeTxn(1, "Received", "Income", "2500.00"),
             # Anchor: projected expense -- included in remaining calculation.
-            FakeTxn(1, "Projected", "expense", "800.00"),
+            FakeTxn(1, "Projected", "Expense", "800.00"),
             # Period 2: projected expense.
-            FakeTxn(2, "Projected", "expense", "600.00"),
+            FakeTxn(2, "Projected", "Expense", "600.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -1145,12 +1145,12 @@ class TestNegativePaths:
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns = [
             # Period 1 (anchor): projected income
-            FakeTxn(1, "Projected", "income", "2000.00"),
+            FakeTxn(1, "Projected", "Income", "2000.00"),
             # Period 2: two cancelled expenses -- must be excluded
-            FakeTxn(2, "Cancelled", "expense", "500.00"),
-            FakeTxn(2, "Cancelled", "expense", "300.00"),
+            FakeTxn(2, "Cancelled", "Expense", "500.00"),
+            FakeTxn(2, "Cancelled", "Expense", "300.00"),
             # Period 3: projected expense
-            FakeTxn(3, "Projected", "expense", "400.00"),
+            FakeTxn(3, "Projected", "Expense", "400.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -1182,9 +1182,9 @@ class TestNegativePaths:
         txns = [
             # Anchor: done income -- already settled. The balance calculator skips
             # it entirely (status_id != projected_id), so estimated_amount is never read.
-            FakeTxn(1, "Paid", "income", "2500.00"),
+            FakeTxn(1, "Paid", "Income", "2500.00"),
             # Period 2: projected expense
-            FakeTxn(2, "Projected", "expense", "1000.00"),
+            FakeTxn(2, "Projected", "Expense", "1000.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -1211,17 +1211,17 @@ class TestNegativePaths:
         periods = [FakePeriod(1)]
         txns = [
             # projected income -- INCLUDED (only projected items count in _sum_remaining)
-            FakeTxn(1, "Projected", "income", "1500.00"),
+            FakeTxn(1, "Projected", "Income", "1500.00"),
             # done expense -- EXCLUDED (status_id != projected_id: already in anchor)
-            FakeTxn(1, "Paid", "expense", "999.00"),
+            FakeTxn(1, "Paid", "Expense", "999.00"),
             # received income -- EXCLUDED (status_id != projected_id: already in anchor)
-            FakeTxn(1, "Received", "income", "888.00"),
+            FakeTxn(1, "Received", "Income", "888.00"),
             # credit expense -- EXCLUDED (credit card, not checking balance)
-            FakeTxn(1, "Credit", "expense", "777.00"),
+            FakeTxn(1, "Credit", "Expense", "777.00"),
             # cancelled expense -- EXCLUDED (user cancelled it)
-            FakeTxn(1, "Cancelled", "expense", "666.00"),
+            FakeTxn(1, "Cancelled", "Expense", "666.00"),
             # projected expense -- INCLUDED
-            FakeTxn(1, "Projected", "expense", "750.00"),
+            FakeTxn(1, "Projected", "Expense", "750.00"),
         ]
 
         balances, _ = balance_calculator.calculate_balances(
@@ -1243,8 +1243,8 @@ class TestStaleAnchorWarning:
         """Warning is True when a done transaction exists after the anchor."""
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns = [
-            FakeTxn(1, "Projected", "income", "1000.00"),
-            FakeTxn(2, "Paid", "expense", "500.00"),
+            FakeTxn(1, "Projected", "Income", "1000.00"),
+            FakeTxn(2, "Paid", "Expense", "500.00"),
         ]
         _, warning = balance_calculator.calculate_balances(
             anchor_balance=Decimal("5000.00"),
@@ -1258,9 +1258,9 @@ class TestStaleAnchorWarning:
         """Warning is False when all post-anchor transactions are projected."""
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns = [
-            FakeTxn(1, "Projected", "income", "1000.00"),
-            FakeTxn(2, "Projected", "expense", "500.00"),
-            FakeTxn(3, "Projected", "expense", "200.00"),
+            FakeTxn(1, "Projected", "Income", "1000.00"),
+            FakeTxn(2, "Projected", "Expense", "500.00"),
+            FakeTxn(3, "Projected", "Expense", "200.00"),
         ]
         _, warning = balance_calculator.calculate_balances(
             anchor_balance=Decimal("5000.00"),
@@ -1274,8 +1274,8 @@ class TestStaleAnchorWarning:
         """Done transactions in the anchor period do not trigger the warning."""
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns = [
-            FakeTxn(1, "Paid", "income", "1000.00"),
-            FakeTxn(2, "Projected", "expense", "200.00"),
+            FakeTxn(1, "Paid", "Income", "1000.00"),
+            FakeTxn(2, "Projected", "Expense", "200.00"),
         ]
         _, warning = balance_calculator.calculate_balances(
             anchor_balance=Decimal("5000.00"),
@@ -1289,7 +1289,7 @@ class TestStaleAnchorWarning:
         """Warning is True for received (income) status in post-anchor."""
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            FakeTxn(2, "Received", "income", "3000.00"),
+            FakeTxn(2, "Received", "Income", "3000.00"),
         ]
         _, warning = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
@@ -1303,8 +1303,8 @@ class TestStaleAnchorWarning:
         """Credit and cancelled statuses do not trigger the warning."""
         periods = [FakePeriod(1), FakePeriod(2)]
         txns = [
-            FakeTxn(2, "Credit", "expense", "100.00"),
-            FakeTxn(2, "Cancelled", "expense", "200.00"),
+            FakeTxn(2, "Credit", "Expense", "100.00"),
+            FakeTxn(2, "Cancelled", "Expense", "200.00"),
         ]
         _, warning = balance_calculator.calculate_balances(
             anchor_balance=Decimal("1000.00"),
@@ -1329,12 +1329,12 @@ class TestStaleAnchorWarning:
         """The warning flag is informational only -- balances are unchanged."""
         periods = [FakePeriod(1), FakePeriod(2), FakePeriod(3)]
         txns_projected = [
-            FakeTxn(2, "Projected", "expense", "500.00"),
-            FakeTxn(3, "Projected", "expense", "200.00"),
+            FakeTxn(2, "Projected", "Expense", "500.00"),
+            FakeTxn(3, "Projected", "Expense", "200.00"),
         ]
         txns_with_done = [
-            FakeTxn(2, "Paid", "expense", "500.00"),
-            FakeTxn(3, "Projected", "expense", "200.00"),
+            FakeTxn(2, "Paid", "Expense", "500.00"),
+            FakeTxn(3, "Projected", "Expense", "200.00"),
         ]
 
         balances_projected, warn_projected = balance_calculator.calculate_balances(

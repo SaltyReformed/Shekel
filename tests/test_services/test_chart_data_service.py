@@ -116,7 +116,7 @@ class TestBalanceOverTime:
             # Add a savings account.
             savings_type = (
                 db.session.query(AccountType)
-                .filter_by(name="savings")
+                .filter_by(name="Savings")
                 .one()
             )
             savings = Account(
@@ -171,7 +171,7 @@ class TestSpendingByCategory:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             done_status = (
@@ -211,7 +211,7 @@ class TestSpendingByCategory:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             cancelled_status = (
@@ -249,7 +249,7 @@ class TestSpendingByCategory:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             done = db.session.query(Status).filter_by(name="Paid").one()
@@ -338,7 +338,7 @@ class TestBudgetVsActuals:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             done_status = (
@@ -381,7 +381,7 @@ class TestAmortizationBreakdown:
         with app.app_context():
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage")
+                .filter_by(name="Mortgage")
                 .one()
             )
             account = Account(
@@ -453,7 +453,7 @@ class TestNetWorthOverTime:
         with app.app_context():
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage")
+                .filter_by(name="Mortgage")
                 .one()
             )
             mortgage = Account(
@@ -551,7 +551,7 @@ class TestHelpers:
             # Add a mortgage account.
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage")
+                .filter_by(name="Mortgage")
                 .one()
             )
             account = Account(
@@ -568,7 +568,7 @@ class TestHelpers:
             )
             assert len(result) == 1
             assert result[0]["name"] == "Home Loan"
-            assert result[0]["type"] == "mortgage"
+            assert result[0]["type"] == "Mortgage"
 
     def test_get_salary_profiles(self, app, seed_user):
         """Returns empty list when no profiles exist."""
@@ -638,11 +638,11 @@ class TestSpendingChartRealisticData:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
             done_status = (
                 db.session.query(Status).filter_by(name="Paid").one()
@@ -792,7 +792,7 @@ class TestSpendingChartRealisticData:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             done_status = (
                 db.session.query(Status).filter_by(name="Paid").one()
@@ -877,7 +877,7 @@ class TestSpendingChartRealisticData:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             done_status = (
                 db.session.query(Status).filter_by(name="Paid").one()
@@ -954,11 +954,11 @@ class TestBalanceChart52Periods:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
             projected_status = (
                 db.session.query(Status).filter_by(name="Projected").one()
@@ -1187,7 +1187,7 @@ class TestNetWorthRealisticData:
         with app.app_context():
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage").one()
+                .filter_by(name="Mortgage").one()
             )
             mortgage = Account(
                 user_id=seed_user["user"].id,
@@ -1272,14 +1272,14 @@ class TestNetWorthRealisticData:
         with app.app_context():
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
             projected_status = (
                 db.session.query(Status).filter_by(name="Projected").one()
             )
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage").one()
+                .filter_by(name="Mortgage").one()
             )
 
             # Create mortgage account with params.
@@ -1378,7 +1378,7 @@ class TestBudgetVsActualsRealisticData:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             done_status = (
                 db.session.query(Status).filter_by(name="Paid").one()
@@ -1472,7 +1472,7 @@ class TestBudgetVsActualsRealisticData:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             projected_status = (
                 db.session.query(Status).filter_by(name="Projected").one()
@@ -1529,7 +1529,7 @@ class TestAmortizationBreakdownExact:
         with app.app_context():
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage").one()
+                .filter_by(name="Mortgage").one()
             )
             account = Account(
                 user_id=seed_user["user"].id,
@@ -1613,7 +1613,7 @@ class TestAmortizationBreakdownExact:
         with app.app_context():
             auto_loan_type = (
                 db.session.query(AccountType)
-                .filter_by(name="auto_loan").one()
+                .filter_by(name="Auto Loan").one()
             )
             account = Account(
                 user_id=seed_user["user"].id,
@@ -1702,7 +1702,7 @@ class TestBalanceOverTimeWithTransfers:
 
         with app.app_context():
             # Create a savings account.
-            savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = Account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,

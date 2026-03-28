@@ -104,7 +104,7 @@ class TestReferentialIntegrity:
             "SET session_replication_role = 'replica'"
         ))
         status = db.session.query(Status).filter_by(name="Projected").one()
-        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transactions
                 (pay_period_id, scenario_id, account_id, status_id, name,
@@ -132,7 +132,7 @@ class TestReferentialIntegrity:
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
-        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transaction_templates
                 (user_id, account_id, category_id, transaction_type_id,
@@ -227,7 +227,7 @@ class TestOrphanDetection:
     def test_or02_detects_unused_recurrence_rule(self, app, db, seed_user):
         """OR-02 detects a recurrence rule not referenced by any template."""
         pattern = db.session.query(RecurrencePattern).filter_by(
-            name="every_period"
+            name="Every Period"
         ).one()
         rule = RecurrenceRule(
             user_id=seed_user["user"].id,
@@ -254,7 +254,7 @@ class TestOrphanDetection:
 
     def test_or01_detects_orphaned_template(self, app, db, seed_user):
         """OR-01: Template with no recurrence rule and no transactions."""
-        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         category = list(seed_user["categories"].values())[0]
 
         # Create a template with no recurrence_rule_id and no transactions.
@@ -456,7 +456,7 @@ class TestDataConsistency:
     ):
         """DC-01 flags a transaction with status 'done' but no actual_amount."""
         status_done = db.session.query(Status).filter_by(name="Paid").one()
-        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -526,7 +526,7 @@ class TestDataConsistency:
         self, app, db, seed_user
     ):
         """DC-05 flags an active template referencing an inactive account."""
-        txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         account = seed_user["account"]
         category = list(seed_user["categories"].values())[0]
 
@@ -612,7 +612,7 @@ class TestDataConsistency:
         db.session.add(scenario2)
         db.session.flush()
 
-        checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+        checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
         account2 = Account(
             user_id=user2.id,
             account_type_id=checking_type.id,

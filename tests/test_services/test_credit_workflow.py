@@ -24,7 +24,7 @@ class TestCreditWorkflow:
     def _create_expense(self, seed_user, seed_periods, amount="100.00"):
         """Helper: create a projected expense in the first period."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -78,7 +78,7 @@ class TestCreditWorkflow:
         """Marking income as credit raises ValidationError."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -147,7 +147,7 @@ class TestCreditWorkflow:
         with app.app_context():
             # Create expense in the last period (no period follows it).
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[-1].id,
@@ -224,7 +224,7 @@ class TestCarryForward:
         """Carry forward moves projected items to the target period."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create two projected expenses in the first period.
             for name in ("Expense A", "Expense B"):
@@ -269,7 +269,7 @@ class TestCarryForward:
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             done = db.session.query(Status).filter_by(name="Paid").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # One projected, one done.
             t1 = Transaction(
@@ -320,7 +320,7 @@ class TestCarryForward:
         """Template-linked items are flagged is_override when carried forward."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create a template (without full recurrence for simplicity).
             template = TransactionTemplate(
@@ -365,7 +365,7 @@ class TestCarryForward:
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # One projected (should move), one cancelled (should stay).
             t1 = Transaction(
@@ -413,8 +413,8 @@ class TestCarryForward:
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             received = db.session.query(Status).filter_by(name="Received").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             # One projected expense (should move), one received income (should stay).
             t1 = Transaction(
@@ -462,7 +462,7 @@ class TestCarryForward:
         """Soft-deleted projected items are excluded from carry forward."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Soft-deleted projected expense -- should NOT be moved.
             txn = Transaction(
@@ -608,7 +608,7 @@ class TestNegativePaths:
                         status_name="Projected"):
         """Helper: create an expense in the first period with the given status."""
         status = db.session.query(Status).filter_by(name=status_name).one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -697,7 +697,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create a template for a template-linked transaction.
             template = TransactionTemplate(

@@ -85,37 +85,17 @@ def create_app(config_name=None):
     # --- Template Filters --------------------------------------------------
     @app.template_filter("format_account_type")
     def format_account_type(value):
-        """Convert a raw account type name to a user-friendly display string.
+        """Convert an account type name to a user-friendly display string.
 
-        Uses an explicit mapping for names that need special formatting
-        (e.g. acronyms, parenthetical notation) and falls back to
-        replacing underscores with spaces and title-casing.
+        After the Commit #2 migration, database names are already
+        stored as properly formatted display strings (e.g. 'HYSA',
+        '401(k)').  This filter now acts as a pass-through for all
+        seeded types but retains the signature so existing templates
+        continue to work without modification.
         """
         if value is None:
             return ""
-
-        # Explicit mapping for known account types
-        display_names = {
-            "checking": "Checking",
-            "savings": "Savings",
-            "hysa": "HYSA",
-            "money_market": "Money Market",
-            "cd": "CD",
-            "hsa": "HSA",
-            "credit_card": "Credit Card",
-            "mortgage": "Mortgage",
-            "auto_loan": "Auto Loan",
-            "student_loan": "Student Loan",
-            "personal_loan": "Personal Loan",
-            "heloc": "HELOC",
-            "401k": "401(k)",
-            "roth_401k": "Roth 401(k)",
-            "traditional_ira": "Traditional IRA",
-            "roth_ira": "Roth IRA",
-            "brokerage": "Brokerage",
-            "529": "529 Plan",
-        }
-        return display_names.get(value, value.replace("_", " ").title())
+        return value
 
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)
@@ -147,21 +127,65 @@ def create_app(config_name=None):
     # warning and skip -- the cache will initialize on the next startup
     # after the migration completes.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+    from app.enums import (  # pylint: disable=import-outside-toplevel
+        AcctCategoryEnum, AcctTypeEnum, RecurrencePatternEnum,
+        StatusEnum, TxnTypeEnum,
+    )
     try:
         with app.app_context():
             ref_cache.init(db.session)
 
+        # Status IDs
         app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
         app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
         app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
         app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
         app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
         app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
+
+        # Transaction type IDs
+        app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+
+        # Account type IDs -- all types registered so templates can use
+        # integer comparisons instead of string-based name checks.
+        app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+        app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
+        app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
+        app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
+        app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
+        app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
+        app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
+        app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
+        app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
+        app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
+        app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
+        app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
+        app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
+        app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
+        app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
+        app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
+        app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
+        app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
+
+        # Recurrence pattern IDs
+        app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
+        app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
+        app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
+        app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
+        app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
+        app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
+        app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
+
+        # Account category IDs
+        app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+        app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+        app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+        app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
     except Exception:  # pylint: disable=broad-except
         app.logger.warning(
             "ref_cache initialization skipped (migration pending or DB unavailable). "
-            "Status ID Jinja globals will not be available until next restart."
+            "Ref ID Jinja globals will not be available until next restart."
         )
 
     app.logger.info("Shekel app created with config=%s", config_name)
@@ -219,14 +243,14 @@ def _register_context_processors(app):
         """Inject recurrence pattern labels into all template contexts."""
         return {
             "recurrence_pattern_labels": {
-                "every_period": "Every paycheck",
-                "every_n_periods": "Every N paychecks",
-                "monthly": "Monthly (specific day)",
-                "monthly_first": "Monthly (first paycheck of month)",
-                "quarterly": "Quarterly",
-                "semi_annual": "Every 6 months",
-                "annual": "Yearly",
-                "once": "One-time",
+                "Every Period": "Every paycheck",
+                "Every N Periods": "Every N paychecks",
+                "Monthly": "Monthly (specific day)",
+                "Monthly First": "Monthly (first paycheck of month)",
+                "Quarterly": "Quarterly",
+                "Semi-Annual": "Every 6 months",
+                "Annual": "Yearly",
+                "Once": "One-time",
             }
         }
 
@@ -378,43 +402,80 @@ def _seed_ref_tables():
     # pylint: disable=import-outside-toplevel
     from sqlalchemy.exc import ProgrammingError
     from app.models.ref import (
-        AccountType, CalcMethod, DeductionTiming, FilingStatus,
-        RaiseType, RecurrencePattern, Status, TaxType, TransactionType,
+        AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
+        FilingStatus, RaiseType, RecurrencePattern, Status, TaxType,
+        TransactionType,
     )
 
-    ref_data = {
-        AccountType: [
-            "checking", "savings", "hysa", "money_market", "cd", "hsa",
-            "credit_card", "mortgage", "auto_loan", "student_loan",
-            "personal_loan", "heloc",
-            "401k", "roth_401k", "traditional_ira", "roth_ira",
-            "brokerage", "529",
-        ],
-        TransactionType: ["income", "expense"],
-        Status: [
-            {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
-            {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-            {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-            {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
-            {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
-            {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-        ],
-        RecurrencePattern: [
-            "every_period", "every_n_periods", "monthly", "monthly_first",
-            "quarterly", "semi_annual", "annual", "once",
-        ],
-        FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
-        DeductionTiming: ["pre_tax", "post_tax"],
-        CalcMethod: ["flat", "percentage"],
-        TaxType: ["flat", "none", "bracket"],
-        RaiseType: ["merit", "cola", "custom"],
-    }
-
     try:
+        # ── Seed AccountTypeCategory (must precede AccountType) ──────
+        category_seeds = ["Asset", "Liability", "Retirement", "Investment"]
+        for cat_name in category_seeds:
+            if not db.session.query(AccountTypeCategory).filter_by(name=cat_name).first():
+                db.session.add(AccountTypeCategory(name=cat_name))
+        db.session.flush()
+
+        # Build category name->id lookup for AccountType seeding.
+        cat_lookup = {
+            c.name: c.id
+            for c in db.session.query(AccountTypeCategory).all()
+        }
+
+        # ── Seed AccountType with FK, booleans ───────────────────────
+        # Each entry: (name, category_name, has_parameters, has_amortization)
+        acct_type_seeds = [
+            ("Checking",        "Asset",      False, False),
+            ("Savings",         "Asset",      False, False),
+            ("HYSA",            "Asset",      True,  False),
+            ("Money Market",    "Asset",      False, False),
+            ("CD",              "Asset",      False, False),
+            ("HSA",             "Asset",      False, False),
+            ("Credit Card",     "Liability",  False, False),
+            ("Mortgage",        "Liability",  True,  True),
+            ("Auto Loan",       "Liability",  True,  True),
+            ("Student Loan",    "Liability",  True,  True),
+            ("Personal Loan",   "Liability",  True,  True),
+            ("HELOC",           "Liability",  False, True),
+            ("401(k)",          "Retirement", True,  False),
+            ("Roth 401(k)",     "Retirement", True,  False),
+            ("Traditional IRA", "Retirement", True,  False),
+            ("Roth IRA",        "Retirement", True,  False),
+            ("Brokerage",       "Investment", True,  False),
+            ("529 Plan",        "Investment", False, False),
+        ]
+        for name, cat_name, has_params, has_amort in acct_type_seeds:
+            if not db.session.query(AccountType).filter_by(name=name).first():
+                db.session.add(AccountType(
+                    name=name,
+                    category_id=cat_lookup[cat_name],
+                    has_parameters=has_params,
+                    has_amortization=has_amort,
+                ))
+
+        # ── Seed remaining ref tables ────────────────────────────────
+        ref_data = {
+            TransactionType: ["Income", "Expense"],
+            Status: [
+                {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
+                {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+                {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+                {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+                {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+                {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+            ],
+            RecurrencePattern: [
+                "Every Period", "Every N Periods", "Monthly", "Monthly First",
+                "Quarterly", "Semi-Annual", "Annual", "Once",
+            ],
+            FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
+            DeductionTiming: ["pre_tax", "post_tax"],
+            CalcMethod: ["flat", "percentage"],
+            TaxType: ["flat", "none", "bracket"],
+            RaiseType: ["merit", "cola", "custom"],
+        }
+
         for model, entries in ref_data.items():
             for entry in entries:
-                # Entries are either plain strings (name only) or dicts
-                # with name + additional columns (e.g. Status booleans).
                 if isinstance(entry, dict):
                     name = entry["name"]
                     if not db.session.query(model).filter_by(name=name).first():
@@ -422,23 +483,6 @@ def _seed_ref_tables():
                 else:
                     if not db.session.query(model).filter_by(name=entry).first():
                         db.session.add(model(name=entry))
-        db.session.flush()
-
-        # Backfill category on account types.
-        category_map = {
-            "checking": "asset", "savings": "asset", "hysa": "asset",
-            "money_market": "asset", "cd": "asset", "hsa": "asset",
-            "credit_card": "liability", "mortgage": "liability",
-            "auto_loan": "liability", "student_loan": "liability",
-            "personal_loan": "liability", "heloc": "liability",
-            "401k": "retirement", "roth_401k": "retirement",
-            "traditional_ira": "retirement", "roth_ira": "retirement",
-            "brokerage": "investment", "529": "investment",
-        }
-        for type_name, category in category_map.items():
-            at = db.session.query(AccountType).filter_by(name=type_name).first()
-            if at and at.category != category:
-                at.category = category
 
         db.session.commit()
     except ProgrammingError:

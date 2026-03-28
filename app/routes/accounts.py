@@ -11,6 +11,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.auto_loan_params import AutoLoanParams
@@ -130,7 +132,7 @@ def create_account():
 
     # Auto-create type-specific params.
     account_type = db.session.get(AccountType, account.account_type_id)
-    if account_type and account_type.name == "hysa":
+    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
         params = HysaParams(account_id=account.id)
         db.session.add(params)
 
@@ -140,9 +142,9 @@ def create_account():
     flash(f"Account '{account.name}' created.", "success")
 
     # Redirect to detail page for debt accounts (params need user input).
-    if account_type and account_type.name == "mortgage":
+    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
         return redirect(url_for("mortgage.dashboard", account_id=account.id))
-    if account_type and account_type.name == "auto_loan":
+    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
         return redirect(url_for("auto_loan.dashboard", account_id=account.id))
 
     return redirect(url_for("accounts.list_accounts"))
@@ -371,7 +373,10 @@ def create_account_type():
         flash("An account type with that name already exists.", "warning")
         return redirect(url_for("settings.show", section="account-types"))
 
-    account_type = AccountType(**data)
+    account_type = AccountType(
+        category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+        **data,
+    )
     db.session.add(account_type)
     db.session.commit()
 
@@ -545,7 +550,7 @@ def hysa_detail(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     # Verify this is a HYSA account.
-    if not account.account_type or account.account_type.name != "hysa":
+    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
         flash("This account is not a HYSA.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 
@@ -646,7 +651,7 @@ def update_hysa_params(account_id):
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
-    if not account.account_type or account.account_type.name != "hysa":
+    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
         flash("This account is not a HYSA.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 

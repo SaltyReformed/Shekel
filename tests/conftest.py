@@ -28,8 +28,9 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
-    RaiseType, RecurrencePattern, Status, TaxType, TransactionType,
+    AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
+    FilingStatus, RaiseType, RecurrencePattern, Status, TaxType,
+    TransactionType,
 )
 from app.services.auth_service import hash_password
 
@@ -221,7 +222,7 @@ def seed_user(app, db):
     db.session.add(settings)
 
     checking_type = (
-        db.session.query(AccountType).filter_by(name="checking").one()
+        db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = Account(
         user_id=user.id,
@@ -332,7 +333,7 @@ def second_user(app, db):
     db.session.add(settings)
 
     checking_type = (
-        db.session.query(AccountType).filter_by(name="checking").one()
+        db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = Account(
         user_id=user.id,
@@ -427,7 +428,7 @@ def seed_second_user(app, db):
     db.session.add(settings)
 
     checking_type = (
-        db.session.query(AccountType).filter_by(name="checking").one()
+        db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = Account(
         user_id=user.id,
@@ -538,16 +539,16 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
     # Look up reference data.
     every_period = (
         db.session.query(RecurrencePattern)
-        .filter_by(name="every_period").one()
+        .filter_by(name="Every Period").one()
     )
     expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
+        db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     projected_status = (
         db.session.query(Status).filter_by(name="Projected").one()
     )
     savings_acct_type = (
-        db.session.query(AccountType).filter_by(name="savings").one()
+        db.session.query(AccountType).filter_by(name="Savings").one()
     )
     filing_single = (
         db.session.query(FilingStatus).filter_by(name="single").one()
@@ -662,16 +663,16 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     # Look up reference data.
     every_period = (
         db.session.query(RecurrencePattern)
-        .filter_by(name="every_period").one()
+        .filter_by(name="Every Period").one()
     )
     expense_type = (
-        db.session.query(TransactionType).filter_by(name="expense").one()
+        db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     projected_status = (
         db.session.query(Status).filter_by(name="Projected").one()
     )
     savings_acct_type = (
-        db.session.query(AccountType).filter_by(name="savings").one()
+        db.session.query(AccountType).filter_by(name="Savings").one()
     )
     filing_single = (
         db.session.query(FilingStatus).filter_by(name="single").one()
@@ -912,20 +913,60 @@ def _create_audit_infrastructure():
 
 
 def _seed_ref_tables():
-    """Populate reference tables for the test database."""
-    # IMPORTANT: These values must match the production seed data in
-    # scripts/seed_ref_tables.py and app/__init__.py.  Any value that
-    # exists in production but not here will cause tests to miss
-    # behavior that depends on that value.  See audit finding H-002.
+    """Populate reference tables for the test database.
+
+    IMPORTANT: These values must match the production seed data in
+    app/__init__.py ``_seed_reference_data()``.  Any value that exists
+    in production but not here will cause tests to miss behavior that
+    depends on that value.  See audit finding H-002.
+    """
+    # ── Seed AccountTypeCategory (must precede AccountType) ──────
+    category_seeds = ["Asset", "Liability", "Retirement", "Investment"]
+    for cat_name in category_seeds:
+        if not _db.session.query(AccountTypeCategory).filter_by(name=cat_name).first():
+            _db.session.add(AccountTypeCategory(name=cat_name))
+    _db.session.flush()
+
+    # Build category name->id lookup for AccountType seeding.
+    cat_lookup = {
+        c.name: c.id
+        for c in _db.session.query(AccountTypeCategory).all()
+    }
+
+    # ── Seed AccountType with FK, booleans ───────────────────────
+    # Each entry: (name, category_name, has_parameters, has_amortization)
+    acct_type_seeds = [
+        ("Checking",        "Asset",      False, False),
+        ("Savings",         "Asset",      False, False),
+        ("HYSA",            "Asset",      True,  False),
+        ("Money Market",    "Asset",      False, False),
+        ("CD",              "Asset",      False, False),
+        ("HSA",             "Asset",      False, False),
+        ("Credit Card",     "Liability",  False, False),
+        ("Mortgage",        "Liability",  True,  True),
+        ("Auto Loan",       "Liability",  True,  True),
+        ("Student Loan",    "Liability",  True,  True),
+        ("Personal Loan",   "Liability",  True,  True),
+        ("HELOC",           "Liability",  False, True),
+        ("401(k)",          "Retirement", True,  False),
+        ("Roth 401(k)",     "Retirement", True,  False),
+        ("Traditional IRA", "Retirement", True,  False),
+        ("Roth IRA",        "Retirement", True,  False),
+        ("Brokerage",       "Investment", True,  False),
+        ("529 Plan",        "Investment", False, False),
+    ]
+    for name, cat_name, has_params, has_amort in acct_type_seeds:
+        if not _db.session.query(AccountType).filter_by(name=name).first():
+            _db.session.add(AccountType(
+                name=name,
+                category_id=cat_lookup[cat_name],
+                has_parameters=has_params,
+                has_amortization=has_amort,
+            ))
+
+    # ── Seed remaining ref tables ────────────────────────────────
     ref_data = [
-        (AccountType, [
-            "checking", "savings", "hysa", "money_market", "cd", "hsa",
-            "credit_card", "mortgage", "auto_loan", "student_loan",
-            "personal_loan", "heloc",
-            "401k", "roth_401k", "traditional_ira", "roth_ira",
-            "brokerage", "529",
-        ]),
-        (TransactionType, ["income", "expense"]),
+        (TransactionType, ["Income", "Expense"]),
         (Status, [
             {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
             {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
@@ -935,9 +976,8 @@ def _seed_ref_tables():
             {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
         ]),
         (RecurrencePattern, [
-            "every_period", "every_n_periods", "monthly",
-            "monthly_first", "quarterly", "semi_annual",
-            "annual", "once",
+            "Every Period", "Every N Periods", "Monthly", "Monthly First",
+            "Quarterly", "Semi-Annual", "Annual", "Once",
         ]),
         (FilingStatus, [
             "single", "married_jointly", "married_separately",
@@ -965,20 +1005,3 @@ def _seed_ref_tables():
                 )
                 if existing is None:
                     _db.session.add(model_class(name=entry))
-
-    # Backfill category on account types.
-    _db.session.flush()
-    category_map = {
-        "checking": "asset", "savings": "asset", "hysa": "asset",
-        "money_market": "asset", "cd": "asset", "hsa": "asset",
-        "credit_card": "liability", "mortgage": "liability",
-        "auto_loan": "liability", "student_loan": "liability",
-        "personal_loan": "liability", "heloc": "liability",
-        "401k": "retirement", "roth_401k": "retirement",
-        "traditional_ira": "retirement", "roth_ira": "retirement",
-        "brokerage": "investment", "529": "investment",
-    }
-    for type_name, category in category_map.items():
-        at = _db.session.query(AccountType).filter_by(name=type_name).first()
-        if at:
-            at.category = category

@@ -117,7 +117,7 @@ class TestPaydayWorkflowRegression:
             )
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
 
             txn = Transaction(
@@ -170,7 +170,7 @@ class TestPaydayWorkflowRegression:
             )
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             past_period = seed_periods[0]
@@ -268,7 +268,7 @@ class TestPaydayWorkflowRegression:
             )
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             txn = Transaction(
@@ -314,7 +314,7 @@ class TestPaydayWorkflowRegression:
             )
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             # Create expense in seed_periods[0]; the payback will go to
@@ -360,7 +360,7 @@ class TestPaydayWorkflowRegression:
             assert payback.estimated_amount == Decimal("75.00")
             assert payback.category.group_name == "Credit Card"
             assert payback.category.item_name == "Payback"
-            assert payback.transaction_type.name == "expense"
+            assert payback.transaction_type.name == "Expense"
 
     # -- C-0-6 -------------------------------------------------------
 
@@ -378,11 +378,11 @@ class TestPaydayWorkflowRegression:
             )
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
 
             # Create income and expense in the current period so the
@@ -482,11 +482,11 @@ class TestPaydayWorkflowRegression:
             )
             income_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="income").one()
+                .filter_by(name="Income").one()
             )
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense").one()
+                .filter_by(name="Expense").one()
             )
             account = seed_user["account"]
 

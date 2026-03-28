@@ -24,7 +24,7 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.ref import RecurrencePattern, Status
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum
 from app.schemas.validation import (
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -124,18 +124,17 @@ def create_transfer_template():
 
     # Create the recurrence rule if a pattern was specified.
     rule = None
-    pattern_name = data.pop("recurrence_pattern", None)
-    if pattern_name:
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
+    pattern_id_str = data.pop("recurrence_pattern", None)
+    if pattern_id_str:
+        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
+        if pattern is None:
+            flash("Invalid recurrence pattern.", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
 
         interval_n = data.pop("interval_n", 1)
         offset_periods = data.pop("offset_periods", 0)
 
-        if pattern_name == "every_n_periods" and start_period_id and interval_n:
+        if int(pattern_id_str) == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS) and start_period_id and interval_n:
             start_period = db.session.get(PayPeriod, start_period_id)
             if not start_period or start_period.user_id != current_user.id:
                 flash("Invalid start period.", "danger")
@@ -244,9 +243,12 @@ def update_transfer_template(template_id):
     end_date = data.pop("end_date", None)
 
     # Update recurrence rule if pattern changed.
-    pattern_name = data.pop("recurrence_pattern", None)
-    if pattern_name:
-        pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
+    pattern_id_str = data.pop("recurrence_pattern", None)
+    if pattern_id_str:
+        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
+        if pattern is None:
+            flash("Invalid recurrence pattern.", "danger")
+            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
         if template.recurrence_rule:
             template.recurrence_rule.pattern_id = pattern.id
             template.recurrence_rule.interval_n = data.pop("interval_n", 1)

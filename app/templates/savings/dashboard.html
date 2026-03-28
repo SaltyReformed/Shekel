@@ -47,17 +47,17 @@
         <div class="d-flex justify-content-between align-items-start">
           <div>
             <h6 class="card-title mb-1">
-              {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+              {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
                 <i class="bi bi-bank2 text-info"></i>
-              {% elif ad.account.account_type and ad.account.account_type.name == 'savings' %}
+              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_SAVINGS %}
                 <i class="bi bi-piggy-bank text-success"></i>
-              {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_MORTGAGE %}
                 <i class="bi bi-house text-warning"></i>
-              {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_AUTO_LOAN %}
                 <i class="bi bi-car-front text-warning"></i>
-              {% elif ad.account.account_type and ad.account.account_type.category == 'retirement' %}
+              {% elif ad.account.account_type and ad.account.account_type.category_id == ACCT_CAT_RETIREMENT %}
                 <i class="bi bi-briefcase text-info"></i>
-              {% elif ad.account.account_type and ad.account.account_type.category == 'investment' %}
+              {% elif ad.account.account_type and ad.account.account_type.category_id == ACCT_CAT_INVESTMENT %}
                 <i class="bi bi-graph-up text-success"></i>
               {% else %}
                 <i class="bi bi-bank text-primary"></i>
@@ -65,11 +65,11 @@
               {{ ad.account.name }}
             </h6>
             <small class="text-muted">
-              {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+              {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
                 HYSA
-              {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_MORTGAGE %}
                 Mortgage
-              {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_AUTO_LOAN %}
                 Auto Loan
               {% elif ad.account.account_type %}
                 {{ ad.account.account_type.name|format_account_type }}
@@ -90,22 +90,22 @@
              class="btn btn-sm btn-outline-secondary" title="New transfer from this account">
             <i class="bi bi-arrow-left-right"></i>
           </a>
-          {% if ad.account.account_type and ad.account.account_type.name == 'hysa' %}
+          {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
           <a href="{{ url_for('accounts.hysa_detail', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-info" title="HYSA Detail">
             <i class="bi bi-graph-up"></i>
           </a>
-          {% elif ad.account.account_type and ad.account.account_type.name == 'mortgage' %}
+          {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_MORTGAGE %}
           <a href="{{ url_for('mortgage.dashboard', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-warning" title="Mortgage Detail">
             <i class="bi bi-house"></i>
           </a>
-          {% elif ad.account.account_type and ad.account.account_type.name == 'auto_loan' %}
+          {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_AUTO_LOAN %}
           <a href="{{ url_for('auto_loan.dashboard', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-warning" title="Auto Loan Detail">
             <i class="bi bi-car-front"></i>
           </a>
-          {% elif ad.account.account_type and ad.account.account_type.category in ('retirement', 'investment') %}
+          {% elif ad.account.account_type and ad.account.account_type.category_id in (ACCT_CAT_RETIREMENT, ACCT_CAT_INVESTMENT) %}
           <a href="{{ url_for('investment.dashboard', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-info" title="Investment Detail">
             <i class="bi bi-graph-up"></i>

@@ -173,7 +173,7 @@ class TestSpendingFragment:
             # Create an expense transaction in a recent period.
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             done_status = (
@@ -236,7 +236,7 @@ class TestBudgetFragment:
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType)
-                .filter_by(name="expense")
+                .filter_by(name="Expense")
                 .one()
             )
             projected_status = (
@@ -284,7 +284,7 @@ class TestAmortizationFragment:
         with app.app_context():
             mortgage_type = (
                 db.session.query(AccountType)
-                .filter_by(name="mortgage")
+                .filter_by(name="Mortgage")
                 .one()
             )
             account = Account(

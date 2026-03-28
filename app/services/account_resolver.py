@@ -11,9 +11,10 @@ grid for balance calculations.  Fallback chain:
 5. None
 """
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.ref import AccountType
 
 
 def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
@@ -40,18 +41,15 @@ def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
             return acct
 
     # 3. First active checking account.
-    checking_type = (
-        db.session.query(AccountType).filter_by(name="checking").first()
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    acct = (
+        db.session.query(Account)
+        .filter_by(user_id=user_id, is_active=True, account_type_id=checking_type_id)
+        .order_by(Account.sort_order, Account.id)
+        .first()
     )
-    if checking_type:
-        acct = (
-            db.session.query(Account)
-            .filter_by(user_id=user_id, is_active=True, account_type_id=checking_type.id)
-            .order_by(Account.sort_order, Account.id)
-            .first()
-        )
-        if acct:
-            return acct
+    if acct:
+        return acct
 
     # 4. First active account of any type.
     return (

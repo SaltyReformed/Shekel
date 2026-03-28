@@ -31,7 +31,7 @@ from app.services.auth_service import hash_password
 
 
 def _create_template(seed_user, name="Rent", amount="1200.00",
-                     txn_type="expense", pattern_name=None):
+                     txn_type="Expense", pattern_name=None):
     """Create a transaction template for the test user.
 
     Args:
@@ -90,7 +90,7 @@ def _create_other_user_with_template():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = Account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
@@ -112,7 +112,7 @@ def _create_other_user_with_template():
     db.session.add(category)
     db.session.flush()
 
-    txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+    txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     template = TransactionTemplate(
         user_id=other_user.id,
         account_id=account.id,
@@ -175,7 +175,7 @@ class TestTemplateCreate:
     def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods):
         """POST /templates creates a template without recurrence."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -198,8 +198,11 @@ class TestTemplateCreate:
     def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods):
         """POST /templates creates a template with recurrence and generates transactions."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Rent Payment",
@@ -207,7 +210,7 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": "every_period",
+                "recurrence_pattern": str(every_period.id),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -242,7 +245,7 @@ class TestTemplateCreate:
         """POST /templates with another user's account is rejected."""
         with app.app_context():
             other = _create_other_user_with_template()
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -260,7 +263,7 @@ class TestTemplateCreate:
         """POST /templates with another user's category is rejected."""
         with app.app_context():
             other = _create_other_user_with_template()
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Sneaky Template",
@@ -292,7 +295,7 @@ class TestTemplateUpdate:
     def test_update_template_success(self, app, auth_client, seed_user, seed_periods):
         """POST /templates/<id> updates template fields."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
 
             resp = auth_client.post(f"/templates/{template.id}", data={
                 "name": "Updated Rent",
@@ -350,7 +353,7 @@ class TestTemplateUpdate:
     def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods):
         """POST /templates/<id> flashes warning when recurrence conflict occurs."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
 
             # Generate transactions via recurrence, then override one.
             from app.services import recurrence_engine, pay_period_service
@@ -367,9 +370,12 @@ class TestTemplateUpdate:
                 txn.is_override = True
                 db.session.commit()
 
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
             resp = auth_client.post(f"/templates/{template.id}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": "every_period",
+                "recurrence_pattern": str(every_period.id),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -386,7 +392,7 @@ class TestTemplateDelete:
     def test_delete_deactivates_and_soft_deletes(self, app, auth_client, seed_user, seed_periods):
         """POST /templates/<id>/delete deactivates template and soft-deletes projected txns."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
 
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
@@ -453,7 +459,7 @@ class TestTemplateReactivate:
     def test_reactivate_restores_transactions(self, app, auth_client, seed_user, seed_periods):
         """POST /templates/<id>/reactivate restores soft-deleted txns."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
 
             # Generate and then delete.
             from app.services import recurrence_engine, pay_period_service
@@ -508,9 +514,12 @@ class TestPreviewRecurrence:
     def test_preview_monthly(self, app, auth_client, seed_user, seed_periods):
         """Preview for monthly pattern returns occurrence list."""
         with app.app_context():
+            monthly = db.session.query(RecurrencePattern).filter_by(
+                name="Monthly"
+            ).one()
             resp = auth_client.get(
-                "/templates/preview-recurrence"
-                "?recurrence_pattern=monthly&day_of_month=15"
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={monthly.id}&day_of_month=15"
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data or b"No matching" in resp.data
@@ -518,17 +527,20 @@ class TestPreviewRecurrence:
     def test_preview_once_pattern(self, app, auth_client, seed_user, seed_periods):
         """Preview for 'once' pattern returns no-preview message."""
         with app.app_context():
+            once = db.session.query(RecurrencePattern).filter_by(
+                name="Once"
+            ).one()
             resp = auth_client.get(
-                "/templates/preview-recurrence?recurrence_pattern=once"
+                f"/templates/preview-recurrence?recurrence_pattern={once.id}"
             )
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
     def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods):
-        """Preview for unknown pattern returns unknown message."""
+        """Preview for unknown pattern ID returns unknown message."""
         with app.app_context():
             resp = auth_client.get(
-                "/templates/preview-recurrence?recurrence_pattern=bogus_pattern"
+                "/templates/preview-recurrence?recurrence_pattern=999999"
             )
             assert resp.status_code == 200
             assert b"Unknown pattern" in resp.data
@@ -543,8 +555,11 @@ class TestPreviewRecurrence:
     def test_preview_every_period(self, app, auth_client, seed_user, seed_periods):
         """Preview for every_period pattern returns occurrence list."""
         with app.app_context():
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
             resp = auth_client.get(
-                "/templates/preview-recurrence?recurrence_pattern=every_period"
+                f"/templates/preview-recurrence?recurrence_pattern={every_period.id}"
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
@@ -562,10 +577,14 @@ class TestPreviewRecurrence:
         disclosure (H3).
         """
         with app.app_context():
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
             # Baseline: request with no start_period_id.
             baseline_resp = auth_client.get(
                 "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": "every_period"},
+                query_string={"recurrence_pattern": every_period.id},
             )
 
             # Request with User B's period ID -- should fall through
@@ -573,7 +592,7 @@ class TestPreviewRecurrence:
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": "every_period",
+                    "recurrence_pattern": every_period.id,
                     "start_period_id": seed_second_periods[0].id,
                 },
             )
@@ -587,10 +606,13 @@ class TestPreviewRecurrence:
     ):
         """Passing own start_period_id works normally (positive regression)."""
         with app.app_context():
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": "every_period",
+                    "recurrence_pattern": every_period.id,
                     "start_period_id": seed_periods[0].id,
                 },
             )
@@ -608,16 +630,20 @@ class TestPreviewRecurrence:
         the user's own period list.
         """
         with app.app_context():
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
             # Baseline: no start_period_id.
             baseline_resp = auth_client.get(
                 "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": "every_period"},
+                query_string={"recurrence_pattern": every_period.id},
             )
 
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": "every_period",
+                    "recurrence_pattern": every_period.id,
                     "start_period_id": 999999,
                 },
             )
@@ -636,7 +662,7 @@ class TestTemplateNegativePaths:
     def test_delete_already_deactivated_template(self, app, auth_client, seed_user, seed_periods):
         """Deleting an already-deactivated template is idempotent."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
             template.is_active = False
             db.session.commit()
 
@@ -657,7 +683,7 @@ class TestTemplateNegativePaths:
     def test_reactivate_already_active_template(self, app, auth_client, seed_user, seed_periods):
         """Reactivating an already-active template is idempotent."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="every_period")
+            template = _create_template(seed_user, pattern_name="Every Period")
             assert template.is_active is True
 
             resp = auth_client.post(
@@ -677,7 +703,7 @@ class TestTemplateNegativePaths:
     def test_create_template_missing_name(self, app, auth_client, seed_user):
         """Creating a template without name fails schema validation."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -698,7 +724,7 @@ class TestTemplateNegativePaths:
     def test_create_template_missing_category(self, app, auth_client, seed_user):
         """Creating a template without category_id fails schema validation."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             resp = auth_client.post("/templates", data={
                 "name": "No Category Template",
@@ -718,7 +744,7 @@ class TestTemplateNegativePaths:
     def test_create_template_negative_amount(self, app, auth_client, seed_user):
         """Negative amount rejected by schema Range(min=0) validator."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -761,7 +787,7 @@ class TestTemplateNegativePaths:
     def test_create_template_xss_in_name(self, app, auth_client, seed_user):
         """XSS payload in template name is escaped by Jinja2 auto-escaping."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -790,7 +816,7 @@ class TestTemplateNegativePaths:
     ):
         """Template creation with another user's category is rejected and DB unchanged."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             other_cat = second_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={
@@ -815,7 +841,7 @@ class TestTemplateNegativePaths:
     ):
         """Template creation with another user's account is rejected and DB unchanged."""
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
 
             resp = auth_client.post("/templates", data={

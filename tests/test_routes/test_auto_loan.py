@@ -13,7 +13,7 @@ from app.models.ref import AccountType
 
 def _create_auto_loan_account(seed_user, db_session, name="My Auto Loan"):
     """Helper to create an auto loan account with params."""
-    auto_loan_type = db_session.query(AccountType).filter_by(name="auto_loan").one()
+    auto_loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
     account = Account(
         user_id=seed_user["user"].id,
         account_type_id=auto_loan_type.id,
@@ -44,7 +44,7 @@ def _create_other_auto_loan(second_user, db_session):
     with AutoLoanParams already attached.
     """
     auto_type = db_session.query(AccountType).filter_by(
-        name="auto_loan"
+        name="Auto Loan"
     ).one()
     account = Account(
         user_id=second_user["user"].id,
@@ -377,7 +377,7 @@ class TestCreateAutoLoanAccount:
 
     def test_create_auto_loan_account(self, auth_client, seed_user, db, seed_periods):
         """Creating auto loan account type redirects to auto loan dashboard."""
-        auto_type = db.session.query(AccountType).filter_by(name="auto_loan").one()
+        auto_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         resp = auth_client.post(
             "/accounts",
             data={

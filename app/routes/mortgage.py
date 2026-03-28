@@ -12,6 +12,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.mortgage_params import MortgageParams, MortgageRateHistory, EscrowComponent
@@ -44,7 +46,7 @@ def _load_mortgage_account(account_id):
     if account is None or account.user_id != current_user.id:
         return None, None
 
-    if not account.account_type or account.account_type.name != "mortgage":
+    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
         return None, None
 
     params = (
@@ -169,7 +171,7 @@ def create_params(account_id):
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
         return redirect(url_for("savings.dashboard"))
-    if not account.account_type or account.account_type.name != "mortgage":
+    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
         flash("This account is not a mortgage.", "warning")
         return redirect(url_for("savings.dashboard"))
 

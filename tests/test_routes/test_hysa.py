@@ -12,7 +12,7 @@ from app.models.ref import AccountType
 
 def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     """Helper to create a HYSA account with params."""
-    hysa_type = db_session.query(AccountType).filter_by(name="hysa").one()
+    hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = Account(
         user_id=seed_user["user"].id,
         account_type_id=hysa_type.id,
@@ -33,7 +33,7 @@ def _create_other_hysa(second_user, db_session):
 
     Builds on the shared second_user fixture. Returns (Account, HysaParams).
     """
-    hysa_type = db_session.query(AccountType).filter_by(name="hysa").one()
+    hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = Account(
         user_id=second_user["user"].id,
         account_type_id=hysa_type.id,
@@ -266,7 +266,7 @@ class TestCreateHysaAccount:
 
     def test_create_hysa_account_auto_params(self, auth_client, seed_user, db, seed_periods):
         """POST to create account with HYSA type → auto-creates HysaParams."""
-        hysa_type = db.session.query(AccountType).filter_by(name="hysa").one()
+        hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
         resp = auth_client.post(
             "/accounts",

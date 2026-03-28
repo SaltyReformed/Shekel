@@ -30,7 +30,7 @@ class TestTransactionEffectiveAmount:
     def _make_txn(self, seed_user, seed_periods, status_name, estimated, actual=None):
         """Helper: create a transaction with given status and amounts."""
         status = db.session.query(Status).filter_by(name=status_name).one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
@@ -144,7 +144,7 @@ class TestTransactionTypeProperties:
         """is_income returns True for income-type transactions."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
@@ -165,7 +165,7 @@ class TestTransactionTypeProperties:
         """is_expense returns True for expense-type transactions."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
@@ -194,7 +194,7 @@ class TestTransferEffectiveAmount:
         from app.models.account import Account
         from app.models.ref import AccountType
 
-        savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = Account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,

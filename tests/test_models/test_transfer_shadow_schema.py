@@ -53,7 +53,7 @@ class TestTransactionTransferId:
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
         data = seed_full_user_data
         account_id = (
-            data["account"].id if txn_type_name == "expense"
+            data["account"].id if txn_type_name == "Expense"
             else data["savings_account"].id
         )
         txn = Transaction(
@@ -75,7 +75,7 @@ class TestTransactionTransferId:
         """Transaction with transfer_id saves and resolves the relationship."""
         with app.app_context():
             xfer = self._make_transfer(seed_full_user_data)
-            txn = self._make_shadow(seed_full_user_data, xfer, "expense")
+            txn = self._make_shadow(seed_full_user_data, xfer, "Expense")
 
             assert txn.transfer_id == xfer.id
             assert txn.transfer is not None
@@ -85,7 +85,7 @@ class TestTransactionTransferId:
         """Regular transaction with transfer_id=None saves without error."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             data = seed_full_user_data
             txn = Transaction(
                 pay_period_id=data["periods"][0].id,
@@ -110,8 +110,8 @@ class TestTransactionTransferId:
         """ON DELETE CASCADE removes both shadow transactions when transfer is deleted."""
         with app.app_context():
             xfer = self._make_transfer(seed_full_user_data)
-            shadow_expense = self._make_shadow(seed_full_user_data, xfer, "expense")
-            shadow_income = self._make_shadow(seed_full_user_data, xfer, "income")
+            shadow_expense = self._make_shadow(seed_full_user_data, xfer, "Expense")
+            shadow_income = self._make_shadow(seed_full_user_data, xfer, "Income")
             expense_id = shadow_expense.id
             income_id = shadow_income.id
 
@@ -130,8 +130,8 @@ class TestTransactionTransferId:
         """Transfer.shadow_transactions backref returns both linked transactions."""
         with app.app_context():
             xfer = self._make_transfer(seed_full_user_data)
-            shadow_expense = self._make_shadow(seed_full_user_data, xfer, "expense")
-            shadow_income = self._make_shadow(seed_full_user_data, xfer, "income")
+            shadow_expense = self._make_shadow(seed_full_user_data, xfer, "Expense")
+            shadow_income = self._make_shadow(seed_full_user_data, xfer, "Income")
 
             shadows = xfer.shadow_transactions
             assert len(shadows) == 2

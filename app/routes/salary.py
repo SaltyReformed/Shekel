@@ -37,8 +37,9 @@ from app.models.ref import (
     RaiseType,
     RecurrencePattern,
     TaxType,
-    TransactionType,
 )
+from app import ref_cache
+from app.enums import AcctCategoryEnum, TxnTypeEnum
 from app.schemas.validation import (
     CalibrationSchema,
     DeductionCreateSchema,
@@ -154,8 +155,8 @@ def create_profile():
         db.session.add(salary_category)
         db.session.flush()
 
-    # Get income transaction type
-    income_type = db.session.query(TransactionType).filter_by(name="income").one()
+    # Get income transaction type ID from ref_cache.
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     # Get default account
     account = (
@@ -175,7 +176,7 @@ def create_profile():
         # Create every_period recurrence rule
         every_period_pattern = (
             db.session.query(RecurrencePattern)
-            .filter_by(name="every_period")
+            .filter_by(name="Every Period")
             .one()
         )
         rule = RecurrenceRule(
@@ -191,7 +192,7 @@ def create_profile():
             account_id=account.id,
             category_id=salary_category.id,
             recurrence_rule_id=rule.id,
-            transaction_type_id=income_type.id,
+            transaction_type_id=income_type_id,
             name=data["name"],
             default_amount=data["annual_salary"] / (data.get("pay_periods_per_year", 26)),
             is_active=True,
@@ -1077,10 +1078,12 @@ def _render_deductions_partial(profile):
 
 def _get_investment_accounts(user_id):
     """Load retirement/investment accounts for the target account dropdown."""
-    from app.models.ref import AccountType as AT
+    from app.models.ref import AccountType as AT  # pylint: disable=import-outside-toplevel
+    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
     retirement_types = (
         db.session.query(AT)
-        .filter(AT.category.in_(["retirement", "investment"]))
+        .filter(AT.category_id.in_([retirement_cat_id, investment_cat_id]))
         .all()
     )
     type_ids = {rt.id for rt in retirement_types}

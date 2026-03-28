@@ -45,8 +45,8 @@ def _create_other_user():
     settings = UserSettings(user_id=other.id)
     db.session.add(settings)
 
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
     account = Account(
         user_id=other.id,
@@ -91,7 +91,7 @@ def _create_other_user():
 
 def _create_savings_account(user_id):
     """Create a savings account for the given user."""
-    savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = Account(
         user_id=user_id,
         account_type_id=savings_type.id,
@@ -112,7 +112,7 @@ class TestEffectiveAmountDecimal:
     def test_transaction_credit_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled/credit Transaction.effective_amount must be Decimal."""
         credit_status = db.session.query(Status).filter_by(name="Credit").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
             template_id=None,
             pay_period_id=seed_periods[0].id,
@@ -133,7 +133,7 @@ class TestEffectiveAmountDecimal:
     def test_transaction_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled Transaction.effective_amount must be Decimal."""
         cancelled_status = db.session.query(Status).filter_by(name="Cancelled").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
             template_id=None,
             pay_period_id=seed_periods[0].id,
@@ -416,7 +416,7 @@ class TestTemplateOwnership:
     ):
         """Creating a transaction template with foreign account returns error."""
         other = _create_other_user()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/templates", data={
             "name": "Malicious Template",
@@ -434,7 +434,7 @@ class TestTemplateOwnership:
     ):
         """Creating a transaction template with foreign category returns error."""
         other = _create_other_user()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/templates", data={
             "name": "Malicious Template Cat",

@@ -98,7 +98,7 @@ class TestTransactionCRUD:
     def _create_test_txn(self, seed_user, seed_periods):
         """Helper: create and return a projected expense."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -117,7 +117,7 @@ class TestTransactionCRUD:
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions creates a new ad-hoc transaction."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             response = auth_client.post("/transactions", data={
                 "name": "New Expense",
@@ -171,7 +171,7 @@ class TestTransactionCRUD:
         """POST /transactions/<id>/mark-done sets status to received for income."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -201,7 +201,7 @@ class TestTransactionCRUD:
             txn = self._create_test_txn(seed_user, seed_periods)
             # Simulate template linkage.
             from app.models.transaction_template import TransactionTemplate
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -307,7 +307,7 @@ class TestTransactionCRUD:
     def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions with all fields creates a complete transaction."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             response = auth_client.post("/transactions", data={
@@ -344,11 +344,12 @@ class TestTransactionCRUD:
             ).delete()
             db.session.commit()
 
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             response = auth_client.get(
                 f"/transactions/new/quick"
                 f"?category_id={seed_user['categories']['Rent'].id}"
                 f"&period_id={seed_periods[0].id}"
-                f"&txn_type_name=expense"
+                f"&transaction_type_id={expense_type.id}"
                 f"&account_id={seed_user['account'].id}"
             )
             assert response.status_code == 400
@@ -361,7 +362,7 @@ class TestTransactionNegativePaths:
     def _create_test_txn(self, seed_user, seed_periods):
         """Helper: create and return a projected expense."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -447,7 +448,7 @@ class TestTransactionNegativePaths:
         """POST /transactions without required 'name' field returns 400 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -471,7 +472,7 @@ class TestTransactionNegativePaths:
         """POST /transactions with negative estimated_amount returns 400."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -496,7 +497,7 @@ class TestTransactionNegativePaths:
         """POST /transactions with estimated_amount=0.00 succeeds (Range min=0 is inclusive)."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -520,7 +521,7 @@ class TestTransactionNegativePaths:
         """POST /transactions without required pay_period_id returns 400 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -560,7 +561,7 @@ class TestTransactionNegativePaths:
             db.session.commit()
 
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -720,7 +721,7 @@ class TestTransactionNegativePaths:
         """Transaction name with script tag is stored but auto-escaped in rendered output."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
-                name="expense"
+                name="Expense"
             ).one()
 
             resp = auth_client.post("/transactions", data={
@@ -843,7 +844,7 @@ class TestAccountIdColumn:
     def test_transaction_model_has_account_id(self, app, db, seed_user, seed_periods):
         """Create a Transaction with account_id. Verify it saves and the relationship resolves."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         account = seed_user["account"]
 
         txn = Transaction(
@@ -871,7 +872,7 @@ class TestAccountIdColumn:
         from sqlalchemy.exc import IntegrityError
 
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
@@ -909,7 +910,7 @@ class TestAccountIdColumn:
         from app.services import credit_workflow
 
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         account = seed_user["account"]
 
         txn = Transaction(
@@ -936,7 +937,7 @@ class TestAccountIdColumn:
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
             "account_id": account.id,
@@ -958,7 +959,7 @@ class TestAccountIdColumn:
         """POST /transactions/inline without account_id returns validation error."""
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
             "category_id": category.id,
@@ -976,7 +977,7 @@ class TestAccountIdColumn:
         other_account = second_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
             "account_id": other_account.id,
@@ -1000,7 +1001,7 @@ class TestAccountScopedGrid:
 
     def _create_savings_account(self, user, periods):
         """Helper: create a savings account with anchor balance and period."""
-        savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = Account(
             user_id=user.id,
             account_type_id=savings_type.id,
@@ -1013,7 +1014,7 @@ class TestAccountScopedGrid:
         return savings
 
     def _create_txn(self, account, period, scenario, name, amount,
-                    txn_type_name="expense", status_name="Projected", category=None):
+                    txn_type_name="Expense", status_name="Projected", category=None):
         """Helper: create a transaction on the given account."""
         status = db.session.query(Status).filter_by(name=status_name).one()
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
@@ -1043,7 +1044,7 @@ class TestAccountScopedGrid:
         self._create_txn(checking, seed_periods[0], scenario, "Rent", 1200,
                          category=seed_user["categories"]["Rent"])
         self._create_txn(savings, seed_periods[0], scenario, "Savings Interest", 50,
-                         txn_type_name="income", category=seed_user["categories"]["Salary"])
+                         txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
         resp = auth_client.get("/")
@@ -1072,7 +1073,7 @@ class TestAccountScopedGrid:
         self._create_txn(checking, current, scenario, "Checking Rent", 1234,
                          category=seed_user["categories"]["Rent"])
         self._create_txn(savings, current, scenario, "Savings Deposit", 567,
-                         txn_type_name="income", category=seed_user["categories"]["Salary"])
+                         txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
         # Savings grid: should show the $567 deposit, not the $1234 rent.
@@ -1189,11 +1190,11 @@ class TestAccountScopedGrid:
         current = pay_period_service.get_current_period(seed_user["user"].id)
 
         self._create_txn(checking, current, scenario, "Salary", 2000,
-                         txn_type_name="income", category=seed_user["categories"]["Salary"])
+                         txn_type_name="Income", category=seed_user["categories"]["Salary"])
         self._create_txn(checking, current, scenario, "Rent", 800,
                          category=seed_user["categories"]["Rent"])
         self._create_txn(savings, current, scenario, "Interest", 100,
-                         txn_type_name="income", category=seed_user["categories"]["Salary"])
+                         txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
         # Full grid page for checking account -- subtotals reflect checking only.
@@ -1261,7 +1262,7 @@ class TestAccountScopedGrid:
         self, app, auth_client, seed_user, seed_periods
     ):
         """An account with NULL anchor balance defaults to $0 for projections."""
-        savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = Account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
@@ -1281,7 +1282,7 @@ class TestAccountScopedGrid:
         self, app, auth_client, seed_user, seed_periods
     ):
         """An account with NULL anchor period uses current period as fallback."""
-        savings_type = db.session.query(AccountType).filter_by(name="savings").one()
+        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = Account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
@@ -1390,7 +1391,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods)
         category = seed_user["categories"]["Salary"]
         scenario = seed_user["scenario"]
-        income_type = db.session.query(TransactionType).filter_by(name="income").one()
+        income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         db.session.commit()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -1440,7 +1441,7 @@ class TestAccountScopedGrid:
         self._create_txn(checking, next_period, scenario, "Expense B", 300,
                          category=seed_user["categories"]["Car Payment"])
         self._create_txn(savings, current, scenario, "Deposit", 100,
-                         txn_type_name="income", category=seed_user["categories"]["Salary"])
+                         txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
         # Checking balance: anchor $1000 - $200 = $800, then $800 - $300 = $500.
@@ -1496,8 +1497,8 @@ class TestInlineSubtotalRows:
             # Create transactions so the sections render.
             from app.models.ref import TransactionType
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
@@ -1537,8 +1538,8 @@ class TestInlineSubtotalRows:
         with app.app_context():
             from app.models.ref import TransactionType
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
@@ -1577,7 +1578,7 @@ class TestInlineSubtotalRows:
             from app.models.ref import TransactionType
             projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
@@ -1635,8 +1636,8 @@ class TestNetCashFlowRow:
         from app.models.ref import TransactionType
         from app.services import pay_period_service
         projected = db.session.query(Status).filter_by(name="Projected").one()
-        income_type = db.session.query(TransactionType).filter_by(name="income").one()
-        expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
+        income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         current = pay_period_service.get_current_period(seed_user["user"].id)
         if not current:
             current = seed_periods[0]
@@ -1759,7 +1760,7 @@ class TestFooterCondensation:
             from app.models.ref import TransactionType
             from app.services import pay_period_service
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            income_type = db.session.query(TransactionType).filter_by(name="income").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
                 current = seed_periods[0]

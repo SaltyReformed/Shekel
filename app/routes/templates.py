@@ -22,7 +22,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, TransactionType
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.exceptions import RecurrenceConflict
@@ -107,19 +107,18 @@ def create_template():
 
     # Create the recurrence rule if a pattern was specified.
     rule = None
-    pattern_name = data.pop("recurrence_pattern", None)
-    if pattern_name:
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
+    pattern_id_str = data.pop("recurrence_pattern", None)
+    if pattern_id_str:
+        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
+        if pattern is None:
+            flash("Invalid recurrence pattern.", "danger")
+            return redirect(url_for("templates.new_template"))
 
         interval_n = data.pop("interval_n", 1)
         offset_periods = data.pop("offset_periods", 0)
 
         # Auto-derive offset from start period for every_n_periods.
-        if pattern_name == "every_n_periods" and start_period_id and interval_n:
+        if int(pattern_id_str) == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS) and start_period_id and interval_n:
             start_period = db.session.get(PayPeriod, start_period_id)
             if not start_period or start_period.user_id != current_user.id:
                 flash("Invalid start period.", "danger")
@@ -230,9 +229,12 @@ def update_template(template_id):
     end_date = data.pop("end_date", None)
 
     # Update recurrence rule if pattern changed.
-    pattern_name = data.pop("recurrence_pattern", None)
-    if pattern_name:
-        pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
+    pattern_id_str = data.pop("recurrence_pattern", None)
+    if pattern_id_str:
+        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
+        if pattern is None:
+            flash("Invalid recurrence pattern.", "danger")
+            return redirect(url_for("templates.edit_template", template_id=template_id))
         if template.recurrence_rule:
             template.recurrence_rule.pattern_id = pattern.id
             template.recurrence_rule.interval_n = data.pop("interval_n", 1)
@@ -380,8 +382,8 @@ def reactivate_template(template_id):
 @login_required
 def preview_recurrence():
     """HTMX partial: show next 5 occurrences for a recurrence pattern."""
-    pattern_name = request.args.get("recurrence_pattern")
-    if not pattern_name or pattern_name == "once":
+    pattern_id = request.args.get("recurrence_pattern", type=int)
+    if not pattern_id or pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
         return "<small class='text-muted'>No preview for this pattern</small>"
 
     interval_n = request.args.get("interval_n", type=int, default=1)
@@ -392,11 +394,7 @@ def preview_recurrence():
     end_date = date.fromisoformat(end_date_str) if end_date_str else None
 
     # Build a temporary rule object (not saved).
-    pattern = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name=pattern_name)
-        .first()
-    )
+    pattern = db.session.get(RecurrencePattern, pattern_id)
     if not pattern:
         return "<small class='text-muted'>Unknown pattern</small>"
 
@@ -425,13 +423,13 @@ def preview_recurrence():
         if start_period and start_period.user_id == current_user.id:
             effective_from = start_period.start_date
             # Auto-derive offset for every_n_periods.
-            if pattern_name == "every_n_periods" and interval_n:
+            if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS) and interval_n:
                 rule.offset_periods = start_period.period_index % interval_n
     if effective_from is None:
         current_period = pay_period_service.get_current_period(current_user.id)
         effective_from = current_period.start_date if current_period else periods[0].start_date
 
-    matching = recurrence_engine._match_periods(rule, pattern_name, periods, effective_from)
+    matching = recurrence_engine._match_periods(rule, pattern_id, periods, effective_from)
     preview_periods = matching[:5]
 
     if not preview_periods:
