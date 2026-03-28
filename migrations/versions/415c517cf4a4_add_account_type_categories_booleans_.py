@@ -123,8 +123,8 @@ def upgrade():
     ]
     for old, new in _account_type_renames:
         op.execute(
-            sa.text("UPDATE ref.account_types SET name = :new WHERE name = :old"),
-            {"old": old, "new": new},
+            sa.text("UPDATE ref.account_types SET name = :new WHERE name = :old")
+            .bindparams(old=old, new=new)
         )
 
     # ── 7. Capitalize RecurrencePattern names ────────────────────────
@@ -140,18 +140,18 @@ def upgrade():
     ]
     for old, new in _recurrence_renames:
         op.execute(
-            sa.text("UPDATE ref.recurrence_patterns SET name = :new WHERE name = :old"),
-            {"old": old, "new": new},
+            sa.text("UPDATE ref.recurrence_patterns SET name = :new WHERE name = :old")
+            .bindparams(old=old, new=new)
         )
 
     # ── 8. Capitalize TransactionType names ──────────────────────────
     op.execute(
-        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old"),
-        {"old": "income", "new": "Income"},
+        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old")
+        .bindparams(old="income", new="Income")
     )
     op.execute(
-        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old"),
-        {"old": "expense", "new": "Expense"},
+        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old")
+        .bindparams(old="expense", new="Expense")
     )
 
     # ── 9. Make category_id NOT NULL (all rows populated above) ──────
@@ -172,12 +172,12 @@ def downgrade():
     """
     # ── 1. Revert TransactionType names ──────────────────────────────
     op.execute(
-        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old"),
-        {"old": "Income", "new": "income"},
+        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old")
+        .bindparams(old="Income", new="income")
     )
     op.execute(
-        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old"),
-        {"old": "Expense", "new": "expense"},
+        sa.text("UPDATE ref.transaction_types SET name = :new WHERE name = :old")
+        .bindparams(old="Expense", new="expense")
     )
 
     # ── 2. Revert RecurrencePattern names ────────────────────────────
@@ -193,8 +193,8 @@ def downgrade():
     ]
     for old, new in _recurrence_reverts:
         op.execute(
-            sa.text("UPDATE ref.recurrence_patterns SET name = :new WHERE name = :old"),
-            {"old": old, "new": new},
+            sa.text("UPDATE ref.recurrence_patterns SET name = :new WHERE name = :old")
+            .bindparams(old=old, new=new)
         )
 
     # ── 3. Revert AccountType names ──────────────────────────────────
@@ -220,8 +220,8 @@ def downgrade():
     ]
     for old, new in _account_type_reverts:
         op.execute(
-            sa.text("UPDATE ref.account_types SET name = :new WHERE name = :old"),
-            {"old": old, "new": new},
+            sa.text("UPDATE ref.account_types SET name = :new WHERE name = :old")
+            .bindparams(old=old, new=new)
         )
 
     # ── 4. Restore the category string column ────────────────────────

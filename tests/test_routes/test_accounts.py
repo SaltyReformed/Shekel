@@ -5,14 +5,19 @@ Tests for account CRUD, anchor balance true-up, and account type
 management endpoints (§2.1 of the test plan).
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.hysa_params import HysaParams
+from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
-from app.models.ref import AccountType
+from app.models.ref import AccountType, Status, TransactionType
+from app.models.transaction import Transaction
+from app.services import balance_calculator, pay_period_service
 from app.services.auth_service import hash_password
 
 
@@ -751,3 +756,779 @@ class TestAccountNegativePaths:
             assert b"<script>alert(1)</script>" not in resp.data
             # Verify the escaped form is present (Jinja2 auto-escaping).
             assert b"&lt;script&gt;" in resp.data
+
+
+# ── Account Creation Redirect Tests ──────────────────────────────
+
+
+class TestAccountCreationRedirects:
+    """Tests for post-creation redirect routing.
+
+    Parameterized account types redirect to their configuration pages
+    with setup=1.  Non-parameterized types redirect to the accounts list.
+    """
+
+    def test_hysa_creation_redirects_to_detail(
+        self, app, auth_client, seed_user,
+    ):
+        """HYSA creation redirects to HYSA detail with setup=1 and auto-creates HysaParams."""
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My HYSA",
+                "account_type_id": hysa_type.id,
+                "anchor_balance": "5000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/hysa" in location
+            assert "setup=1" in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="My HYSA",
+            ).one()
+            assert db.session.query(HysaParams).filter_by(
+                account_id=acct.id
+            ).first() is not None
+
+    def test_mortgage_creation_redirects_to_dashboard(
+        self, app, auth_client, seed_user,
+    ):
+        """Mortgage creation redirects to mortgage dashboard with setup=1."""
+        with app.app_context():
+            mortgage_type = db.session.query(AccountType).filter_by(
+                name="Mortgage"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Home Mortgage",
+                "account_type_id": mortgage_type.id,
+                "anchor_balance": "250000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/mortgage" in location
+            assert "setup=1" in location
+
+    def test_auto_loan_creation_redirects_to_dashboard(
+        self, app, auth_client, seed_user,
+    ):
+        """Auto loan creation redirects to auto loan dashboard with setup=1."""
+        with app.app_context():
+            auto_loan_type = db.session.query(AccountType).filter_by(
+                name="Auto Loan"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Car Loan",
+                "account_type_id": auto_loan_type.id,
+                "anchor_balance": "20000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/auto-loan" in location
+            assert "setup=1" in location
+
+    def test_401k_creation_redirects_to_investment_dashboard(
+        self, app, auth_client, seed_user,
+    ):
+        """401(k) creation redirects to investment dashboard and auto-creates InvestmentParams."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Work 401k",
+                "account_type_id": k401_type.id,
+                "anchor_balance": "10000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/investment" in location
+            assert "setup=1" in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Work 401k",
+            ).one()
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id
+            ).first() is not None
+
+    def test_roth_ira_creation_redirects_to_investment_dashboard(
+        self, app, auth_client, seed_user,
+    ):
+        """Roth IRA creation routes to investment dashboard with InvestmentParams."""
+        with app.app_context():
+            roth_ira_type = db.session.query(AccountType).filter_by(
+                name="Roth IRA"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My Roth IRA",
+                "account_type_id": roth_ira_type.id,
+                "anchor_balance": "5000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/investment" in location
+            assert "setup=1" in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="My Roth IRA",
+            ).one()
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id
+            ).first() is not None
+
+    def test_brokerage_creation_redirects_to_investment_dashboard(
+        self, app, auth_client, seed_user,
+    ):
+        """Brokerage creation routes to investment dashboard with InvestmentParams."""
+        with app.app_context():
+            brokerage_type = db.session.query(AccountType).filter_by(
+                name="Brokerage"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My Brokerage",
+                "account_type_id": brokerage_type.id,
+                "anchor_balance": "1000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/investment" in location
+            assert "setup=1" in location
+
+    def test_checking_creation_redirects_to_accounts_list(
+        self, app, auth_client, seed_user,
+    ):
+        """Checking account creation redirects to accounts list without setup param."""
+        with app.app_context():
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Secondary Checking",
+                "account_type_id": checking_type.id,
+                "anchor_balance": "0",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert location.endswith("/accounts")
+            assert "setup" not in location
+
+    def test_savings_creation_redirects_to_accounts_list(
+        self, app, auth_client, seed_user,
+    ):
+        """Plain savings account creation redirects to accounts list."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Emergency Fund",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "0",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert location.endswith("/accounts")
+            assert "setup" not in location
+
+    def test_student_loan_creation_no_investment_params(
+        self, app, auth_client, seed_user,
+    ):
+        """Student loan creation does NOT create InvestmentParams or redirect to investment.
+
+        Student loans have has_parameters=True but no dedicated param model.
+        They must not be routed to the investment dashboard.
+        """
+        with app.app_context():
+            sl_type = db.session.query(AccountType).filter_by(
+                name="Student Loan"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Student Loan",
+                "account_type_id": sl_type.id,
+                "anchor_balance": "30000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "investment" not in location
+            assert "setup" not in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Student Loan",
+            ).one()
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id
+            ).first() is None
+
+    def test_personal_loan_creation_no_investment_params(
+        self, app, auth_client, seed_user,
+    ):
+        """Personal loan creation does NOT create InvestmentParams."""
+        with app.app_context():
+            pl_type = db.session.query(AccountType).filter_by(
+                name="Personal Loan"
+            ).one()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Personal Loan",
+                "account_type_id": pl_type.id,
+                "anchor_balance": "5000.00",
+            })
+
+            assert resp.status_code == 302
+            assert "investment" not in resp.headers["Location"]
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Personal Loan",
+            ).one()
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id
+            ).first() is None
+
+    def test_investment_params_not_duplicated(
+        self, app, auth_client, seed_user,
+    ):
+        """Auto-creation of InvestmentParams produces exactly one record."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+
+            auth_client.post("/accounts", data={
+                "name": "Dupe Test 401k",
+                "account_type_id": k401_type.id,
+                "anchor_balance": "10000.00",
+            })
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Dupe Test 401k",
+            ).one()
+
+            count = db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id
+            ).count()
+            assert count == 1
+
+    def test_investment_params_defaults_are_reasonable(
+        self, app, auth_client, seed_user,
+    ):
+        """Auto-created InvestmentParams have sensible default values."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+
+            auth_client.post("/accounts", data={
+                "name": "Default 401k",
+                "account_type_id": k401_type.id,
+                "anchor_balance": "0",
+            })
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Default 401k",
+            ).one()
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id,
+            ).one()
+
+            assert params.assumed_annual_return == Decimal("0.07000")
+            assert params.employer_contribution_type == "none"
+            assert params.assumed_annual_return >= 0
+
+
+# ── Wizard Banner Tests ──────────────────────────────────────────
+
+
+class TestWizardBanner:
+    """Tests for the setup wizard banner on parameter pages.
+
+    The banner appears when ?setup=1 is in the query string, indicating
+    the user just created the account and should review configuration.
+    """
+
+    def test_wizard_banner_shown_on_hysa_with_setup_param(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """HYSA detail page shows wizard banner when ?setup=1 is present."""
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="Banner HYSA",
+                current_anchor_balance=Decimal("5000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(HysaParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/hysa?setup=1")
+            assert resp.status_code == 200
+            assert b"Configure the settings below" in resp.data
+            assert b"alert-dismissible" in resp.data
+
+    def test_wizard_banner_hidden_on_hysa_without_setup_param(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """HYSA detail page does NOT show wizard banner without ?setup=1."""
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="No Banner HYSA",
+                current_anchor_balance=Decimal("5000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(HysaParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/hysa")
+            assert resp.status_code == 200
+            assert b"Configure the settings below" not in resp.data
+
+    def test_wizard_banner_shown_on_investment_with_setup_param(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Investment dashboard shows wizard banner when ?setup=1 is present."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=k401_type.id,
+                name="Banner 401k",
+                current_anchor_balance=Decimal("10000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/accounts/{acct.id}/investment?setup=1"
+            )
+            assert resp.status_code == 200
+            assert b"Configure the settings below" in resp.data
+            assert b"alert-dismissible" in resp.data
+
+    def test_wizard_banner_hidden_on_investment_without_setup_param(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Investment dashboard does NOT show wizard banner without ?setup=1."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=k401_type.id,
+                name="No Banner 401k",
+                current_anchor_balance=Decimal("10000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/investment")
+            assert resp.status_code == 200
+            assert b"Configure the settings below" not in resp.data
+
+
+# ── Checking Detail ──────────────────────────────────────────────
+
+
+class TestCheckingDetail:
+    """Tests for the checking account detail page with balance projections."""
+
+    def _create_checking_account(self, seed_user, periods, balance="5000.00"):
+        """Create a new checking account with anchor set to period 0.
+
+        Creates a fresh account (avoiding session identity map caching
+        from seed_user's account) with the specified anchor balance.
+        """
+        checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
+        acct = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=checking_type.id,
+            name="Detail Checking",
+            current_anchor_balance=Decimal(balance),
+            current_anchor_period_id=periods[0].id,
+        )
+        db.session.add(acct)
+        return acct
+
+    def test_checking_detail_page_renders(self, app, auth_client, seed_user):
+        """GET /accounts/<id>/checking renders the detail page with account name and balance."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+
+            assert resp.status_code == 200
+            assert b"Detail Checking" in resp.data
+            assert b"$5,000.00" in resp.data
+
+    def test_checking_detail_projection_values_are_correct(
+        self, app, auth_client, seed_user,
+    ):
+        """Checking detail projections match expected balance calculations.
+
+        With anchor $5,000 and net +$500 per period, projections are:
+        3 months (6 periods) = $8,000, 6 months (13) = $11,500, 1 year (26) = $18,000.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            category = seed_user["categories"]["Salary"]
+
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=27,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.flush()
+
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            # Create income and expense in all post-anchor periods.
+            for p in periods[1:]:
+                db.session.add(Transaction(
+                    pay_period_id=p.id,
+                    scenario_id=scenario.id,
+                    account_id=acct.id,
+                    status_id=projected_status.id,
+                    name="Paycheck",
+                    category_id=category.id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                ))
+                db.session.add(Transaction(
+                    pay_period_id=p.id,
+                    scenario_id=scenario.id,
+                    account_id=acct.id,
+                    status_id=projected_status.id,
+                    name="Expenses",
+                    category_id=category.id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("1500.00"),
+                ))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # 3 months (6 periods): 5000 + 6*500 = 8000
+            assert b"$8,000" in resp.data
+            # 6 months (13 periods): 5000 + 13*500 = 11500
+            assert b"$11,500" in resp.data
+            # 1 year (26 periods): 5000 + 26*500 = 18000
+            assert b"$18,000" in resp.data
+
+    def test_checking_detail_matches_grid_balance(
+        self, app, auth_client, seed_user,
+    ):
+        """Checking detail projections use the same balance calculator as the grid.
+
+        Calls calculate_balances() directly and verifies the detail page
+        displays the same value for the 3-month projection.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            category = seed_user["categories"]["Salary"]
+
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=27,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.flush()
+
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            for p in periods[1:]:
+                db.session.add(Transaction(
+                    pay_period_id=p.id,
+                    scenario_id=scenario.id,
+                    account_id=acct.id,
+                    status_id=projected_status.id,
+                    name="Paycheck",
+                    category_id=category.id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                ))
+                db.session.add(Transaction(
+                    pay_period_id=p.id,
+                    scenario_id=scenario.id,
+                    account_id=acct.id,
+                    status_id=projected_status.id,
+                    name="Bills",
+                    category_id=category.id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("1500.00"),
+                ))
+            db.session.commit()
+
+            # Call balance calculator directly (same function grid.py uses).
+            acct_transactions = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == acct.id,
+                    Transaction.pay_period_id.in_([p.id for p in periods]),
+                    Transaction.scenario_id == scenario.id,
+                    Transaction.is_deleted.is_(False),
+                )
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods,
+                transactions=acct_transactions,
+            )
+
+            # Get the 3-month balance from the calculator.
+            target_period = periods[6]
+            calc_balance = balances[target_period.id]
+
+            # Verify the detail page shows this exact value.
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # The projection summary uses {:,.0f} format.
+            expected_str = "${:,.0f}".format(float(calc_balance))
+            assert expected_str.encode() in resp.data
+
+    def test_checking_detail_rejects_non_checking_account(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/checking returns 404 for non-checking account types."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="My Savings",
+                current_anchor_balance=Decimal("1000.00"),
+            )
+            db.session.add(savings)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{savings.id}/checking")
+            assert resp.status_code == 404
+
+    def test_checking_detail_rejects_other_users_account(
+        self, app, auth_client, seed_user, second_user,
+    ):
+        """GET /accounts/<id>/checking returns 404 for another user's account (IDOR)."""
+        with app.app_context():
+            resp = auth_client.get(
+                f"/accounts/{second_user['account'].id}/checking"
+            )
+            assert resp.status_code == 404
+
+    def test_checking_detail_handles_no_transactions(
+        self, app, auth_client, seed_user,
+    ):
+        """Checking detail with no transactions shows flat balance at anchor amount."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=27,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # With no transactions, projections should show the anchor balance.
+            assert b"$5,000" in resp.data
+
+    def test_checking_detail_handles_short_horizon(
+        self, app, auth_client, seed_user,
+    ):
+        """Short horizon: 3-month projection available, 12-month projection missing."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # 3-month target (period index 6) is within range (10 periods).
+            assert b"3 months" in resp.data
+            # 6-month (index 13) and 12-month (index 26) are beyond our horizon.
+            assert b"6 months" not in resp.data
+            assert b"1 year" not in resp.data
+
+    def test_checking_detail_excludes_credit_transactions(
+        self, app, auth_client, seed_user,
+    ):
+        """Credit-status transactions are excluded from the projected balance.
+
+        A credit expense should not reduce the checking balance because
+        credit transactions are not paid from checking.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            category = seed_user["categories"]["Rent"]
+
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.flush()
+
+            credit_status = db.session.query(Status).filter_by(name="Credit").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            # Create a credit expense in the first post-anchor period.
+            db.session.add(Transaction(
+                pay_period_id=periods[1].id,
+                scenario_id=scenario.id,
+                account_id=acct.id,
+                status_id=credit_status.id,
+                name="Credit Card Groceries",
+                category_id=category.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1000.00"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # The credit expense should NOT reduce the balance.
+            # Projections should still show $5,000 (flat from anchor).
+            assert b"$5,000" in resp.data
+            # Verify the balance was NOT reduced by the credit expense.
+            assert b"$4,000" not in resp.data
+
+    def test_checking_detail_shows_anchor_date(self, app, auth_client, seed_user):
+        """Anchor period start date is displayed on the checking detail page."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            acct = self._create_checking_account(seed_user, periods)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            assert resp.status_code == 200
+
+            # The anchor period's start date should be displayed.
+            anchor_date_str = periods[0].start_date.strftime("%b %-d, %Y")
+            assert anchor_date_str.encode() in resp.data
+
+
+class TestCheckingDashboardLink:
+    """Tests for the checking detail link on the savings/accounts dashboard."""
+
+    def test_dashboard_has_checking_detail_link(self, app, auth_client, seed_user):
+        """GET /savings dashboard includes a link to the checking detail page."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            # Set anchor on the seed_user account so the dashboard
+            # can compute balances for it.
+            seed_user["account"].current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            # The dashboard should include a link to the checking detail page.
+            expected_url = f"/accounts/{seed_user['account'].id}/checking"
+            assert expected_url.encode() in resp.data
+
+    def test_dashboard_checking_link_not_shown_for_other_types(
+        self, app, auth_client, seed_user,
+    ):
+        """Dashboard does not show checking detail link for non-checking accounts."""
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+
+            # Create a savings account.
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="My Savings",
+                current_anchor_balance=Decimal("0"),
+                current_anchor_period_id=periods[0].id,
+            )
+            db.session.add(savings)
+
+            seed_user["account"].current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            # The savings account should NOT have a checking detail link.
+            savings_checking_url = f"/accounts/{savings.id}/checking"
+            assert savings_checking_url.encode() not in resp.data
+
+            # But the checking account should have one.
+            checking_url = f"/accounts/{seed_user['account'].id}/checking"
+            assert checking_url.encode() in resp.data

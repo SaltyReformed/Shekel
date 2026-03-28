@@ -35,11 +35,10 @@ from app.models.ref import (
     DeductionTiming,
     FilingStatus,
     RaiseType,
-    RecurrencePattern,
     TaxType,
 )
 from app import ref_cache
-from app.enums import AcctCategoryEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, RecurrencePatternEnum, TxnTypeEnum
 from app.schemas.validation import (
     CalibrationSchema,
     DeductionCreateSchema,
@@ -174,14 +173,11 @@ def create_profile():
 
     try:
         # Create every_period recurrence rule
-        every_period_pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name="Every Period")
-            .one()
-        )
         rule = RecurrenceRule(
             user_id=current_user.id,
-            pattern_id=every_period_pattern.id,
+            pattern_id=ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD
+            ),
         )
         db.session.add(rule)
         db.session.flush()

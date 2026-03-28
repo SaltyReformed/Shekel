@@ -10,17 +10,24 @@ Tests for the savings dashboard and goal CRUD endpoints:
 """
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
+from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
+from app.services import savings_goal_service
 from app.services.auth_service import hash_password
 
 
@@ -196,6 +203,85 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     db.session.add(deduction)
     db.session.commit()
     return acct, params, profile, deduction
+
+
+def _create_recurrence_rule(seed_user, pattern_enum, interval_n=1):
+    """Create a recurrence rule for the test user.
+
+    Args:
+        seed_user: The seed user fixture dict.
+        pattern_enum: RecurrencePatternEnum member.
+        interval_n: Interval for every_n_periods (default 1).
+
+    Returns:
+        RecurrenceRule: the new rule, flushed for id assignment.
+    """
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
+        interval_n=interval_n,
+    )
+    db.session.add(rule)
+    db.session.flush()
+    return rule
+
+
+def _create_expense_template(seed_user, rule, amount, name="Test Expense",
+                             is_active=True):
+    """Create an expense template on the seed user's checking account.
+
+    Args:
+        seed_user: The seed user fixture dict.
+        rule: RecurrenceRule object.
+        amount: Decimal default amount.
+        name: Template display name.
+        is_active: Whether the template is active (default True).
+
+    Returns:
+        TransactionTemplate: the new template, flushed for id assignment.
+    """
+    tmpl = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name=name,
+        default_amount=amount,
+        is_active=is_active,
+    )
+    db.session.add(tmpl)
+    db.session.flush()
+    return tmpl
+
+
+def _create_test_transfer_template(seed_user, to_account, rule, amount,
+                                   name="Test Transfer", is_active=True):
+    """Create a transfer template from checking to another account.
+
+    Args:
+        seed_user: The seed user fixture dict (checking is the source).
+        to_account: Destination Account object.
+        rule: RecurrenceRule object.
+        amount: Decimal default amount.
+        name: Template display name.
+        is_active: Whether the template is active (default True).
+
+    Returns:
+        TransferTemplate: the new template, flushed for id assignment.
+    """
+    tmpl = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=to_account.id,
+        recurrence_rule_id=rule.id,
+        name=name,
+        default_amount=amount,
+        is_active=is_active,
+    )
+    db.session.add(tmpl)
+    db.session.flush()
+    return tmpl
 
 
 # ── Dashboard Tests ──────────────────────────────────────────────────
@@ -1032,3 +1118,475 @@ class TestSavingsDashboardShadowTransactions:
             html = resp.data.decode()
             assert "Plain Savings" in html
             assert "2,000" in html
+
+
+# ── Emergency Fund Committed Baseline Tests ──────────────────────────
+
+
+class TestEmergencyFundCommittedBaseline:
+    """Tests for the committed monthly expense floor in emergency fund coverage.
+
+    The emergency fund calculation uses the higher of:
+    - Historical actual average expenses (from settled transactions)
+    - Committed baseline (from active recurring templates)
+
+    This ensures newly created recurring obligations are immediately
+    reflected without waiting for settlement history to accumulate.
+    """
+
+    def test_emergency_fund_includes_transfer_templates(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Transfer templates debiting checking are included in the
+        committed monthly baseline.  A $1,500 every-period transfer
+        produces committed = $1,500 * 26/12 = $3,250/month.
+        """
+        with app.app_context():
+            # Savings account so emergency fund section renders.
+            savings = _create_savings_account(seed_user, name="EF Savings")
+            savings.current_anchor_balance = Decimal("10000.00")
+
+            # Transfer template: checking -> savings, every period.
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            )
+            _create_test_transfer_template(
+                seed_user, savings, rule, Decimal("1500.00"),
+                name="Mortgage Payment",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # committed = 1500 * 26/12 = 3250
+            # Template shows "$3,250/mo avg expenses".
+            assert "$3,250/mo" in html, (
+                "Expected $3,250/mo from committed transfer baseline, "
+                f"but not found in HTML"
+            )
+
+    def test_emergency_fund_uses_higher_of_actual_or_committed(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When committed monthly exceeds historical average, the
+        committed value is used.  Small settled history ($10/period)
+        should be overridden by the $3,250/month committed baseline.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="EF Savings")
+            savings.current_anchor_balance = Decimal("10000.00")
+
+            # Create small settled expenses across 6 recent periods.
+            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            category_id = seed_user["categories"]["Rent"].id
+
+            for period in seed_periods[1:7]:
+                txn = Transaction(
+                    account_id=seed_user["account"].id,
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    status_id=settled_id,
+                    name="Small Expense",
+                    category_id=category_id,
+                    transaction_type_id=expense_type_id,
+                    estimated_amount=Decimal("10.00"),
+                )
+                db.session.add(txn)
+
+            # Transfer template with higher committed amount.
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            )
+            _create_test_transfer_template(
+                seed_user, savings, rule, Decimal("1500.00"),
+                name="Mortgage Payment",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # Historical avg ~= $21.67/mo, committed = $3,250/mo.
+            # max() picks $3,250.
+            assert "$3,250/mo" in html, (
+                "Expected committed baseline ($3,250) to override "
+                "small historical average"
+            )
+
+    def test_emergency_fund_with_no_history_uses_committed(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """With zero settled transactions, the committed baseline from
+        active templates is used instead of the historical $0 average.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="EF Savings")
+            savings.current_anchor_balance = Decimal("10000.00")
+
+            # Monthly expense template = $2,000/month.
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.MONTHLY,
+            )
+            _create_expense_template(
+                seed_user, rule, Decimal("2000.00"),
+                name="Monthly Bills",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # committed = $2,000 (monthly, no conversion needed).
+            assert "$2,000/mo" in html, (
+                "Expected $2,000/mo from committed monthly baseline"
+            )
+
+    def test_emergency_fund_no_templates_no_history(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """With no templates and no settled transactions, avg_monthly_expenses
+        stays at $0 and coverage metrics show zero.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="EF Savings")
+            savings.current_anchor_balance = Decimal("10000.00")
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # Section renders (savings > 0) but no expense info.
+            assert "Emergency Fund Coverage" in html
+            assert "avg expenses" not in html
+
+    def test_emergency_fund_monthly_template_contribution(
+        self, app, seed_user,
+    ):
+        """A monthly template contributes its exact default_amount as the
+        monthly equivalent -- NOT multiplied by 26/12.
+        """
+        with app.app_context():
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.MONTHLY,
+            )
+            tmpl = _create_expense_template(
+                seed_user, rule, Decimal("500.00"),
+                name="Monthly Subscription",
+            )
+            db.session.commit()
+
+            result = savings_goal_service.compute_committed_monthly(
+                [tmpl], [],
+            )
+            assert result == Decimal("500.00"), (
+                f"Monthly template should contribute exactly $500, got {result}"
+            )
+
+    def test_emergency_fund_excludes_once_templates(
+        self, app, seed_user,
+    ):
+        """One-time templates do not contribute to committed monthly.
+        Only the recurring every-period template should be counted.
+        """
+        with app.app_context():
+            once_rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.ONCE,
+            )
+            once_tmpl = _create_expense_template(
+                seed_user, once_rule, Decimal("5000.00"),
+                name="One-Time Purchase",
+            )
+
+            every_rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            )
+            recurring_tmpl = _create_expense_template(
+                seed_user, every_rule, Decimal("100.00"),
+                name="Recurring Bill",
+            )
+            db.session.commit()
+
+            result = savings_goal_service.compute_committed_monthly(
+                [once_tmpl, recurring_tmpl], [],
+            )
+            # Only recurring: 100 * 26/12 = 216.67
+            expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP,
+            )
+            assert result == expected, (
+                f"Expected {expected} (once excluded), got {result}"
+            )
+
+    def test_emergency_fund_excludes_inactive_templates(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Inactive templates are filtered out by the route and do not
+        contribute to the committed monthly baseline.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user, name="EF Savings")
+            savings.current_anchor_balance = Decimal("10000.00")
+
+            # Inactive template -- excluded by route query.
+            rule1 = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            )
+            _create_expense_template(
+                seed_user, rule1, Decimal("999.00"),
+                name="Inactive Bill", is_active=False,
+            )
+
+            # Active template -- included.
+            rule2 = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            )
+            _create_expense_template(
+                seed_user, rule2, Decimal("1500.00"),
+                name="Active Bill",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # Only active: 1500 * 26/12 = 3250.
+            # If inactive were included: (1500+999)*26/12 = 5415.
+            assert "$3,250/mo" in html, (
+                "Expected only active template in committed baseline"
+            )
+            assert "$5,415/mo" not in html, (
+                "Inactive template should not contribute"
+            )
+
+    def test_emergency_fund_handles_none_default_amount(
+        self, app, seed_user,
+    ):
+        """Templates with default_amount=None are skipped without error.
+        The column is NOT NULL in the schema, but the function handles
+        it defensively for robustness.
+        """
+        import types  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Mock template with None amount (cannot be persisted to DB).
+            mock_rule = types.SimpleNamespace(
+                pattern_id=ref_cache.recurrence_pattern_id(
+                    RecurrencePatternEnum.EVERY_PERIOD,
+                ),
+                interval_n=1,
+            )
+            mock_template = types.SimpleNamespace(
+                default_amount=None,
+                recurrence_rule=mock_rule,
+            )
+
+            result = savings_goal_service.compute_committed_monthly(
+                [mock_template], [],
+            )
+            assert result == Decimal("0.00"), (
+                f"Expected 0.00 when template has None amount, got {result}"
+            )
+
+    def test_emergency_fund_every_n_periods_template(
+        self, app, seed_user,
+    ):
+        """An every_n_periods template with n=2 and $600 contributes
+        $600 * (26/2) / 12 = $650.00 per month.
+        """
+        with app.app_context():
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.EVERY_N_PERIODS,
+                interval_n=2,
+            )
+            tmpl = _create_expense_template(
+                seed_user, rule, Decimal("600.00"),
+                name="Biweekly Alternating",
+            )
+            db.session.commit()
+
+            result = savings_goal_service.compute_committed_monthly(
+                [tmpl], [],
+            )
+            assert result == Decimal("650.00"), (
+                f"Expected 650.00 for every-2-periods template, got {result}"
+            )
+
+    def test_emergency_fund_annual_template(
+        self, app, seed_user,
+    ):
+        """An annual template with $1,200 contributes $100.00 per month."""
+        with app.app_context():
+            rule = _create_recurrence_rule(
+                seed_user, RecurrencePatternEnum.ANNUAL,
+            )
+            tmpl = _create_expense_template(
+                seed_user, rule, Decimal("1200.00"),
+                name="Annual Insurance",
+            )
+            db.session.commit()
+
+            result = savings_goal_service.compute_committed_monthly(
+                [tmpl], [],
+            )
+            assert result == Decimal("100.00"), (
+                f"Expected 100.00 for annual template, got {result}"
+            )
+
+    def test_compute_committed_monthly_empty_lists(
+        self, app,
+    ):
+        """compute_committed_monthly with empty lists returns zero."""
+        with app.app_context():
+            result = savings_goal_service.compute_committed_monthly([], [])
+            assert result == Decimal("0.00"), (
+                f"Expected 0.00 for empty lists, got {result}"
+            )
+
+
+# ── Setup Required Badge Tests ───────────────────────────────────
+
+
+class TestSetupRequiredBadge:
+    """Tests for the 'Setup Required' badge on the savings dashboard.
+
+    The badge appears when a parameterized account type is missing its
+    params record (e.g. account created before auto-creation was added).
+    """
+
+    def test_setup_badge_shown_for_hysa_without_params(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """HYSA without HysaParams shows 'Setup Required' badge on dashboard."""
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="Unconfigured HYSA",
+                current_anchor_balance=Decimal("5000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Setup Required" in resp.data
+
+    def test_setup_badge_hidden_for_hysa_with_params(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """HYSA with HysaParams does NOT show 'Setup Required' badge."""
+        with app.app_context():
+            from app.models.hysa_params import HysaParams
+
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="Configured HYSA",
+                current_anchor_balance=Decimal("5000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(HysaParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Setup Required" not in resp.data
+
+    def test_setup_badge_shown_for_investment_without_params(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """401(k) without InvestmentParams shows 'Setup Required' badge."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=k401_type.id,
+                name="Unconfigured 401k",
+                current_anchor_balance=Decimal("10000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Setup Required" in resp.data
+
+    def test_setup_badge_hidden_for_investment_with_params(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """401(k) with InvestmentParams does NOT show 'Setup Required' badge."""
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=k401_type.id,
+                name="Configured 401k",
+                current_anchor_balance=Decimal("10000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Setup Required" not in resp.data
+
+    def test_setup_badge_not_shown_for_checking(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Checking account does not show 'Setup Required' badge."""
+        with app.app_context():
+            # seed_user already has a checking account.
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Setup Required" not in resp.data
+
+    def test_needs_setup_with_no_params_record(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """401(k) with missing InvestmentParams renders without error and shows badge.
+
+        Verifies the dashboard handles missing params gracefully (no 500)
+        when an account was created before auto-creation was implemented.
+        """
+        with app.app_context():
+            k401_type = db.session.query(AccountType).filter_by(
+                name="401(k)"
+            ).one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=k401_type.id,
+                name="Legacy 401k",
+                current_anchor_balance=Decimal("50000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Legacy 401k" in resp.data
+            assert b"Setup Required" in resp.data

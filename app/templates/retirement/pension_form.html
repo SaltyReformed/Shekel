@@ -69,6 +69,9 @@
 {% endif %}
 
 {# --- Pension Form --- #}
+{% set fd = form_data|default(none) %}
+{% set errs = errors|default(none) %}
+{% set sel_sp = fd.get('salary_profile_id', '') if fd else (pension.salary_profile_id|string if pension and pension.salary_profile_id else '') %}
 <div class="card">
   <div class="card-header">
     <h6 class="mb-0">{{ 'Edit Pension' if pension else 'Add New Pension' }}</h6>
@@ -80,51 +83,77 @@
       <div class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Name</label>
-          <input type="text" name="name" class="form-control form-control-sm"
-                 value="{{ pension.name if pension else '' }}" required
+          <input type="text" name="name"
+                 class="form-control form-control-sm {% if errs and 'name' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('name', '') if fd else (pension.name if pension else '') }}" required
                  placeholder="e.g. State Pension">
+          {% if errs and 'name' in errs %}
+          <div class="invalid-feedback">{{ errs['name']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-4">
           <label class="form-label">Linked Salary Profile</label>
-          <select name="salary_profile_id" class="form-select form-select-sm">
-            <option value="">-- None --</option>
+          <select name="salary_profile_id"
+                  class="form-select form-select-sm {% if errs and 'salary_profile_id' in errs %}is-invalid{% endif %}">
+            <option value="" {{ 'selected' if sel_sp == '' else '' }}>-- None --</option>
             {% for sp in salary_profiles %}
             <option value="{{ sp.id }}"
-                    {{ 'selected' if pension and pension.salary_profile_id == sp.id }}>
+                    {{ 'selected' if sel_sp == sp.id|string else '' }}>
               {{ sp.name }}
             </option>
             {% endfor %}
           </select>
+          {% if errs and 'salary_profile_id' in errs %}
+          <div class="invalid-feedback">{{ errs['salary_profile_id']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-2">
           <label class="form-label">Benefit Multiplier (%)</label>
           <input type="number" step="0.001" name="benefit_multiplier"
-                 class="form-control form-control-sm"
-                 value="{{ "%.3f"|format(pension.benefit_multiplier|float * 100) if pension else '' }}"
+                 class="form-control form-control-sm {% if errs and 'benefit_multiplier' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('benefit_multiplier', '') if fd else ("%.3f"|format(pension.benefit_multiplier|float * 100) if pension else '') }}"
                  required placeholder="e.g. 1.850">
+          {% if errs and 'benefit_multiplier' in errs %}
+          <div class="invalid-feedback">{{ errs['benefit_multiplier']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-2">
           <label class="form-label">High Salary Years</label>
           <input type="number" min="1" max="10" name="consecutive_high_years"
-                 class="form-control form-control-sm"
-                 value="{{ pension.consecutive_high_years if pension else 4 }}">
+                 class="form-control form-control-sm {% if errs and 'consecutive_high_years' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('consecutive_high_years', '4') if fd else (pension.consecutive_high_years if pension else 4) }}">
+          {% if errs and 'consecutive_high_years' in errs %}
+          <div class="invalid-feedback">{{ errs['consecutive_high_years']|join('. ') }}</div>
+          {% endif %}
         </div>
       </div>
       <div class="row g-3 mt-1">
         <div class="col-md-3">
           <label class="form-label">Hire Date</label>
-          <input type="date" name="hire_date" class="form-control form-control-sm"
-                 value="{{ pension.hire_date.isoformat() if pension else '' }}" required>
+          <input type="date" name="hire_date"
+                 class="form-control form-control-sm {% if errs and 'hire_date' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('hire_date', '') if fd else (pension.hire_date.isoformat() if pension else '') }}" required>
+          {% if errs and 'hire_date' in errs %}
+          <div class="invalid-feedback">{{ errs['hire_date']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-3">
           <label class="form-label">Earliest Retirement Date</label>
-          <input type="date" name="earliest_retirement_date" class="form-control form-control-sm"
-                 value="{{ pension.earliest_retirement_date.isoformat() if pension and pension.earliest_retirement_date else '' }}">
+          <input type="date" name="earliest_retirement_date"
+                 class="form-control form-control-sm {% if errs and 'earliest_retirement_date' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('earliest_retirement_date', '') if fd else (pension.earliest_retirement_date.isoformat() if pension and pension.earliest_retirement_date else '') }}">
+          {% if errs and 'earliest_retirement_date' in errs %}
+          <div class="invalid-feedback">{{ errs['earliest_retirement_date']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-3">
           <label class="form-label">Planned Retirement Date</label>
-          <input type="date" name="planned_retirement_date" class="form-control form-control-sm"
-                 value="{{ pension.planned_retirement_date.isoformat() if pension and pension.planned_retirement_date else '' }}">
+          <input type="date" name="planned_retirement_date"
+                 class="form-control form-control-sm {% if errs and 'planned_retirement_date' in errs %}is-invalid{% endif %}"
+                 value="{{ fd.get('planned_retirement_date', '') if fd else (pension.planned_retirement_date.isoformat() if pension and pension.planned_retirement_date else '') }}">
+          {% if errs and 'planned_retirement_date' in errs %}
+          <div class="invalid-feedback">{{ errs['planned_retirement_date']|join('. ') }}</div>
+          {% endif %}
         </div>
         <div class="col-md-3 d-flex align-items-end">
           <button type="submit" class="btn btn-primary btn-sm">

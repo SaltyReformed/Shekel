@@ -162,7 +162,7 @@ def update_params(account_id):
         from decimal import Decimal as D
         data["interest_rate"] = D(str(data["interest_rate"])) / D("100")
 
-    _PARAM_FIELDS = {"current_principal", "interest_rate", "payment_day"}
+    _PARAM_FIELDS = {"current_principal", "interest_rate", "payment_day", "term_months"}
     for field, value in data.items():
         if field in _PARAM_FIELDS:
             setattr(params, field, value)

@@ -1,45 +1,71 @@
 <h5 class="mb-3"><i class="bi bi-sliders"></i> Tax Configuration</h5>
 
-{# ── Federal Tax Brackets ── #}
+{# ── State Tax Configuration ── #}
 <div class="card mb-4">
   <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-building"></i> Federal Tax Brackets</h6>
+    <h6 class="mb-0"><i class="bi bi-geo-alt"></i> State Tax Configuration</h6>
   </div>
   <div class="card-body">
-    {% if bracket_sets %}
-    {% for bs in bracket_sets %}
-    <div class="mb-3">
-      <h6>
-        {{ bs.tax_year }} -- {{ bs.filing_status.name|replace('_', ' ')|title }}
-        <small class="text-muted">(Std. Deduction: ${{ "%.2f"|format(bs.standard_deduction|float) }})</small>
-      </h6>
-      <div class="mb-2 small">
-        <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount|float) }}
-        <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount|float) }}
-      </div>
-      <table class="table table-sm table-bordered mb-2" style="max-width: 500px;">
-        <thead>
-          <tr>
-            <th>Min Income</th>
-            <th>Max Income</th>
-            <th>Rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for b in bs.brackets|sort(attribute='sort_order') %}
-          <tr>
-            <td>${{ "%.0f"|format(b.min_income|float) }}</td>
-            <td>{{ '$' ~ "%.0f"|format(b.max_income|float) if b.max_income else 'No limit' }}</td>
-            <td>{{ "%.1f"|format((b.rate * 100)|float) }}%</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endfor %}
-    {% else %}
-    <p class="text-muted">No federal brackets configured. Run the seed script to populate.</p>
+    {% if state_configs %}
+    <table class="table table-sm table-bordered mb-3" style="max-width: 600px;">
+      <thead>
+        <tr>
+          <th>Year</th>
+          <th>State</th>
+          <th>Type</th>
+          <th>Rate</th>
+          <th>Std. Deduction</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sc in state_configs %}
+        <tr>
+          <td>{{ sc.tax_year }}</td>
+          <td>{{ sc.state_code }}</td>
+          <td>{{ sc.tax_type.name|title if sc.tax_type else '--' }}</td>
+          <td>{{ "%.2f"|format((sc.flat_rate * 100)|float) if sc.flat_rate else '--' }}%</td>
+          <td>{{ '$' ~ "%.0f"|format(sc.standard_deduction|float) if sc.standard_deduction else '--' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     {% endif %}
+
+    <h6>{{ 'Update' if state_configs else 'Add' }} State Tax</h6>
+    <form method="POST" action="{{ url_for('salary.update_tax_config') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-2 align-items-end" style="max-width: 700px;">
+        <div class="col">
+          <label class="form-label">Year</label>
+          <input type="number" name="tax_year" class="form-control form-control-sm"
+                 required value="{{ state_configs[0].tax_year if state_configs else '' }}">
+        </div>
+        <div class="col">
+          <label class="form-label">State</label>
+          <input type="text" name="state_code" class="form-control form-control-sm"
+                 maxlength="2" required style="text-transform: uppercase"
+                 value="{{ state_configs[0].state_code if state_configs else '' }}"
+                 placeholder="NC">
+        </div>
+        <div class="col">
+          <label class="form-label">Flat Rate %</label>
+          <input type="number" step="0.01" name="flat_rate"
+                 class="form-control form-control-sm" required
+                 value="{{ "%.2f"|format((state_configs[0].flat_rate * 100)|float) if state_configs and state_configs[0].flat_rate else '' }}"
+                 placeholder="e.g. 3.99">
+        </div>
+        <div class="col">
+          <label class="form-label">Std. Deduction</label>
+          <input type="number" step="0.01" name="standard_deduction"
+                 class="form-control form-control-sm"
+                 value="{{ state_configs[0].standard_deduction if state_configs and state_configs[0].standard_deduction else '' }}"
+                 placeholder="e.g. 12750">
+        </div>
+        <div class="col">
+          <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        </div>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -121,71 +147,67 @@
   </div>
 </div>
 
-{# ── State Tax Configuration ── #}
+{# ── Federal Tax Brackets ── #}
 <div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-geo-alt"></i> State Tax Configuration</h6>
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-building"></i> Federal Tax Brackets</h6>
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#federal-brackets-collapse"
+            aria-expanded="false" aria-controls="federal-brackets-collapse">
+      <i class="bi bi-chevron-down"></i>
+    </button>
   </div>
-  <div class="card-body">
-    {% if state_configs %}
-    <table class="table table-sm table-bordered mb-3" style="max-width: 600px;">
-      <thead>
-        <tr>
-          <th>Year</th>
-          <th>State</th>
-          <th>Type</th>
-          <th>Rate</th>
-          <th>Std. Deduction</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for sc in state_configs %}
-        <tr>
-          <td>{{ sc.tax_year }}</td>
-          <td>{{ sc.state_code }}</td>
-          <td>{{ sc.tax_type.name|title if sc.tax_type else '--' }}</td>
-          <td>{{ "%.2f"|format((sc.flat_rate * 100)|float) if sc.flat_rate else '--' }}%</td>
-          <td>{{ '$' ~ "%.0f"|format(sc.standard_deduction|float) if sc.standard_deduction else '--' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-
-    <h6>{{ 'Update' if state_configs else 'Add' }} State Tax</h6>
-    <form method="POST" action="{{ url_for('salary.update_tax_config') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end" style="max-width: 700px;">
-        <div class="col">
-          <label class="form-label">Year</label>
-          <input type="number" name="tax_year" class="form-control form-control-sm"
-                 required value="{{ state_configs[0].tax_year if state_configs else '' }}">
-        </div>
-        <div class="col">
-          <label class="form-label">State</label>
-          <input type="text" name="state_code" class="form-control form-control-sm"
-                 maxlength="2" required style="text-transform: uppercase"
-                 value="{{ state_configs[0].state_code if state_configs else '' }}"
-                 placeholder="NC">
-        </div>
-        <div class="col">
-          <label class="form-label">Flat Rate %</label>
-          <input type="number" step="0.01" name="flat_rate"
-                 class="form-control form-control-sm" required
-                 value="{{ "%.2f"|format((state_configs[0].flat_rate * 100)|float) if state_configs and state_configs[0].flat_rate else '' }}"
-                 placeholder="e.g. 3.99">
-        </div>
-        <div class="col">
-          <label class="form-label">Std. Deduction</label>
-          <input type="number" step="0.01" name="standard_deduction"
-                 class="form-control form-control-sm"
-                 value="{{ state_configs[0].standard_deduction if state_configs and state_configs[0].standard_deduction else '' }}"
-                 placeholder="e.g. 12750">
-        </div>
-        <div class="col">
-          <button type="submit" class="btn btn-sm btn-primary">Save</button>
+  <div class="collapse" id="federal-brackets-collapse">
+    <div class="card-body">
+      {% if bracket_sets %}
+      {% for group in bracket_sets|groupby('tax_year')|reverse %}
+      <div class="{{ 'mb-4' if not loop.last else '' }}">
+        <h6 class="border-bottom pb-1 mb-2">
+          <button class="btn btn-sm btn-link text-decoration-none p-0" type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#federal-brackets-{{ group.grouper }}"
+                  aria-expanded="{{ 'true' if loop.first else 'false' }}"
+                  aria-controls="federal-brackets-{{ group.grouper }}">
+            <i class="bi bi-chevron-down me-1"></i>{{ group.grouper }}
+          </button>
+        </h6>
+        <div class="{{ 'collapse show' if loop.first else 'collapse' }}" id="federal-brackets-{{ group.grouper }}">
+          {% for bs in group.list %}
+          <div class="mb-3">
+            <h6>
+              {{ bs.filing_status.name|replace('_', ' ')|title }}
+              <small class="text-muted">(Std. Deduction: ${{ "%.2f"|format(bs.standard_deduction|float) }})</small>
+            </h6>
+            <div class="mb-2 small">
+              <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount|float) }}
+              <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount|float) }}
+            </div>
+            <table class="table table-sm table-bordered mb-2" style="max-width: 500px;">
+              <thead>
+                <tr>
+                  <th>Min Income</th>
+                  <th>Max Income</th>
+                  <th>Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for b in bs.brackets|sort(attribute='sort_order') %}
+                <tr>
+                  <td>${{ "%.0f"|format(b.min_income|float) }}</td>
+                  <td>{{ '$' ~ "%.0f"|format(b.max_income|float) if b.max_income else 'No limit' }}</td>
+                  <td>{{ "%.1f"|format((b.rate * 100)|float) }}%</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endfor %}
         </div>
       </div>
-    </form>
+      {% endfor %}
+      {% else %}
+      <p class="text-muted">No federal brackets configured. Run the seed script to populate.</p>
+      {% endif %}
+    </div>
   </div>
 </div>

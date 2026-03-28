@@ -1,0 +1,22 @@
+{# Partial: full retirement account projection table (thead + rows).
+   Used by both the dashboard card and the HTMX OOB swap on slider change. #}
+<table class="table table-hover table-sm mb-0">
+  <thead class="table-light">
+    <tr>
+      <th>Account</th>
+      <th>Type</th>
+      <th class="text-end">Current Balance
+        <i class="bi bi-info-circle text-muted" title="Current balance from your account records."></i>
+      </th>
+      <th class="text-end">Annual Return
+        <i class="bi bi-info-circle text-muted" title="The assumed annual growth rate used for this account's projection. Adjustable via the Assumed Annual Return slider above."></i>
+      </th>
+      <th class="text-end">Projected at Retirement
+        <i class="bi bi-info-circle text-muted" title="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    {% include "retirement/_retirement_account_rows.html" %}
+  </tbody>
+</table>

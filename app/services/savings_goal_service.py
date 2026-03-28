@@ -97,3 +97,110 @@ def count_periods_until(target_date, periods):
         if period.start_date >= today and period.start_date <= target_date:
             count += 1
     return count
+
+
+def compute_committed_monthly(expense_templates, transfer_templates):
+    """Calculate total committed monthly expenses from active templates.
+
+    Sums the monthly-equivalent cost from each template based on its
+    recurrence pattern.  Both expense templates (direct debits from
+    checking) and transfer templates (money leaving checking to other
+    accounts) count toward the committed baseline.
+
+    Conversion factors (biweekly-to-monthly: 26 pay periods / 12 months):
+
+      - every_period:    amount * 26 / 12
+      - every_n_periods: amount * (26 / n) / 12
+      - monthly:         amount  (already monthly)
+      - monthly_first:   amount  (already monthly)
+      - quarterly:       amount / 3
+      - semi_annual:     amount / 6
+      - annual:          amount / 12
+      - once:            excluded (not a recurring commitment)
+
+    Args:
+        expense_templates: List of TransactionTemplate objects (expenses
+            on checking).  Must already be filtered to is_active=True.
+        transfer_templates: List of TransferTemplate objects (debits from
+            checking).  Must already be filtered to is_active=True.
+
+    Returns:
+        Decimal -- total committed monthly expense, rounded to 2 decimal
+        places with ROUND_HALF_UP.  Returns Decimal("0.00") if both
+        lists are empty or all templates are skipped.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
+
+    # Resolve pattern IDs from the startup cache (no DB hit).
+    every_period_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_PERIOD
+    )
+    every_n_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_N_PERIODS
+    )
+    monthly_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.MONTHLY
+    )
+    monthly_first_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.MONTHLY_FIRST
+    )
+    quarterly_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.QUARTERLY
+    )
+    semi_annual_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.SEMI_ANNUAL
+    )
+    annual_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.ANNUAL
+    )
+    once_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.ONCE
+    )
+
+    total = Decimal("0")
+
+    for template in list(expense_templates) + list(transfer_templates):
+        amount = template.default_amount
+        # Skip templates with no amount or zero amount.
+        if amount is None or Decimal(str(amount)) == 0:
+            continue
+        amount = Decimal(str(amount))
+
+        rule = template.recurrence_rule
+        if rule is None:
+            # No recurrence rule -- cannot determine frequency.
+            continue
+
+        pattern_id = rule.pattern_id
+
+        if pattern_id == once_id:
+            # One-time templates are not recurring commitments.
+            continue
+
+        if pattern_id == every_period_id:
+            # Every biweekly period: 26 occurrences/year.
+            monthly = amount * Decimal("26") / Decimal("12")
+        elif pattern_id == every_n_id:
+            # Every N biweekly periods: 26/N occurrences/year.
+            n = Decimal(str(rule.interval_n or 1))
+            monthly = amount * Decimal("26") / n / Decimal("12")
+        elif pattern_id in (monthly_id, monthly_first_id):
+            # Already monthly -- 12 occurrences/year.
+            monthly = amount
+        elif pattern_id == quarterly_id:
+            # 4 occurrences/year: amount / 3 for monthly.
+            monthly = amount / Decimal("3")
+        elif pattern_id == semi_annual_id:
+            # 2 occurrences/year: amount / 6 for monthly.
+            monthly = amount / Decimal("6")
+        elif pattern_id == annual_id:
+            # 1 occurrence/year: amount / 12 for monthly.
+            monthly = amount / Decimal("12")
+        else:
+            # Unknown pattern -- skip to avoid incorrect calculation.
+            continue
+
+        total += monthly
+
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

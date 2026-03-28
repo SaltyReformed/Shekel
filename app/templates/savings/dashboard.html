@@ -63,6 +63,9 @@
                 <i class="bi bi-bank text-primary"></i>
               {% endif %}
               {{ ad.account.name }}
+              {% if ad.needs_setup %}
+              <span class="badge bg-warning text-dark ms-1">Setup Required</span>
+              {% endif %}
             </h6>
             <small class="text-muted">
               {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
@@ -90,7 +93,12 @@
              class="btn btn-sm btn-outline-secondary" title="New transfer from this account">
             <i class="bi bi-arrow-left-right"></i>
           </a>
-          {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
+          {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_CHECKING %}
+          <a href="{{ url_for('accounts.checking_detail', account_id=ad.account.id) }}"
+             class="btn btn-sm btn-outline-primary" title="Checking Detail">
+            <i class="bi bi-bank"></i>
+          </a>
+          {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
           <a href="{{ url_for('accounts.hysa_detail', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-info" title="HYSA Detail">
             <i class="bi bi-graph-up"></i>

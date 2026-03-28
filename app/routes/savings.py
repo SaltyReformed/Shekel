@@ -27,6 +27,8 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import amortization_engine, balance_calculator, growth_engine, pay_period_service, savings_goal_service
 from app.services.investment_projection import calculate_investment_inputs
@@ -313,10 +315,23 @@ def dashboard():
                             projected[offset_label] = balances[p.id]
                             break
 
+        # Determine whether this account needs parameter configuration.
+        # True when a parameterized account type is missing its params
+        # record (e.g. account created before auto-creation was added,
+        # or the auto-creation failed).
+        needs_setup = False
+        if acct.account_type_id == hysa_type_id:
+            needs_setup = acct_hysa_params is None
+        elif acct.account_type_id in retirement_type_ids:
+            needs_setup = acct_investment_params is None
+        elif acct.account_type_id in (mortgage_type_id, auto_loan_type_id):
+            needs_setup = acct_loan_params is None
+
         ad = {
             "account": acct,
             "current_balance": current_bal,
             "projected": projected,
+            "needs_setup": needs_setup,
         }
         if acct_hysa_params:
             ad["hysa_params"] = acct_hysa_params
@@ -402,6 +417,40 @@ def dashboard():
             if num_periods > 0:
                 per_period = total_expenses / num_periods
                 avg_monthly_expenses = per_period * Decimal("26") / Decimal("12")
+
+    # Committed monthly floor: include recurring obligations that may
+    # not have accumulated settlement history yet.  Use the higher of
+    # historical actual average or the committed baseline.
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    checking_ids = [
+        acct.id for acct in accounts
+        if acct.account_type_id == checking_type_id
+    ]
+    if checking_ids:
+        expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        active_expense_templates = (
+            db.session.query(TransactionTemplate)
+            .filter(
+                TransactionTemplate.user_id == user_id,
+                TransactionTemplate.account_id.in_(checking_ids),
+                TransactionTemplate.transaction_type_id == expense_type_id,
+                TransactionTemplate.is_active.is_(True),
+            )
+            .all()
+        )
+        active_transfer_templates = (
+            db.session.query(TransferTemplate)
+            .filter(
+                TransferTemplate.user_id == user_id,
+                TransferTemplate.from_account_id.in_(checking_ids),
+                TransferTemplate.is_active.is_(True),
+            )
+            .all()
+        )
+        committed_monthly = savings_goal_service.compute_committed_monthly(
+            active_expense_templates, active_transfer_templates,
+        )
+        avg_monthly_expenses = max(avg_monthly_expenses, committed_monthly)
 
     # Sum savings + HYSA balances for emergency fund calculation.
     savings_type_ids = {

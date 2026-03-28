@@ -23,9 +23,9 @@ function renderPayoffChart(canvasId) {
   var datasets = [{
     label: 'Standard Payments',
     data: standard,
-    borderColor: ShekelChart.getColor(7),
-    backgroundColor: ShekelChart.getColor(7) + '1A',
-    borderWidth: 2,
+    borderColor: ShekelChart.getColor(0),
+    backgroundColor: ShekelChart.getColor(0) + '1A',
+    borderWidth: 2.5,
     fill: true,
     tension: 0.3,
     pointRadius: 0,

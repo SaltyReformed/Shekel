@@ -49,7 +49,8 @@ function renderGapChart(canvasId) {
     options: {
       indexAxis: 'y',
       responsive: true,
-      maintainAspectRatio: false,
+      maintainAspectRatio: true,
+      aspectRatio: 8,
       plugins: {
         tooltip: {
           callbacks: {

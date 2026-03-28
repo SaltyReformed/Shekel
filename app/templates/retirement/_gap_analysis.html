@@ -82,10 +82,21 @@
           data-investment="{{ chart_data.investment_income }}"
           data-gap="{{ chart_data.gap }}"
           data-pre-retirement="{{ chart_data.pre_retirement }}"
-          style="max-height: 300px;">
+          >
   </canvas>
 </div>
 {% endif %}
 {% else %}
 <p class="text-muted mb-0">Configure your salary profile and retirement settings to see the gap analysis.</p>
+{% endif %}
+
+{# OOB swap: update the retirement accounts table when sliders change.
+   Uses a <div> wrapper (not bare <tbody>) because browsers strip table
+   elements that appear outside a <table>, preventing HTMX from seeing
+   the hx-swap-oob attribute.  Only rendered for HTMX fragment responses
+   -- on initial full-page load this block is skipped. #}
+{% if htmx_response is defined and htmx_response and retirement_account_projections is defined %}
+<div id="retirement-accounts-content" hx-swap-oob="innerHTML">
+  {% include "retirement/_retirement_account_table.html" %}
+</div>
 {% endif %}

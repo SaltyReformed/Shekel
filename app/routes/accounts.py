@@ -17,6 +17,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
+from app.models.investment_params import InvestmentParams
 from app.models.mortgage_params import MortgageParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
@@ -132,20 +133,57 @@ def create_account():
 
     # Auto-create type-specific params.
     account_type = db.session.get(AccountType, account.account_type_id)
-    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
-        params = HysaParams(account_id=account.id)
-        db.session.add(params)
+    acct_type_id = account_type.id if account_type else None
+
+    # HYSA: auto-create HysaParams with sensible defaults.
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+        if not db.session.query(HysaParams).filter_by(account_id=account.id).first():
+            db.session.add(HysaParams(account_id=account.id))
+
+    # Investment/retirement: auto-create InvestmentParams with sensible defaults.
+    investment_type_ids = {
+        ref_cache.acct_type_id(AcctTypeEnum.K401),
+        ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K),
+        ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA),
+        ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA),
+        ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE),
+    }
+    if acct_type_id in investment_type_ids:
+        if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
+            db.session.add(InvestmentParams(account_id=account.id))
 
     db.session.commit()
 
     logger.info("Created account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' created.", "success")
 
-    # Redirect to detail page for debt accounts (params need user input).
-    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
-        return redirect(url_for("mortgage.dashboard", account_id=account.id))
-    if account_type and account_type.id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
-        return redirect(url_for("auto_loan.dashboard", account_id=account.id))
+    # Redirect parameterized accounts to their configuration page.
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+        return redirect(url_for(
+            "accounts.hysa_detail", account_id=account.id, setup=1,
+        ))
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
+        return redirect(url_for(
+            "mortgage.dashboard", account_id=account.id, setup=1,
+        ))
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
+        return redirect(url_for(
+            "auto_loan.dashboard", account_id=account.id, setup=1,
+        ))
+    if acct_type_id in investment_type_ids:
+        return redirect(url_for(
+            "investment.dashboard", account_id=account.id, setup=1,
+        ))
+
+    # Student loan and personal loan have has_parameters=True but no
+    # dedicated param model or config page yet.  Any other future
+    # parameterized type also falls through here safely.
+    if account_type and account_type.has_parameters:
+        logger.warning(
+            "Account type '%s' (id=%d) has_parameters=True but no "
+            "dedicated config page; redirecting to accounts list.",
+            account_type.name, acct_type_id,
+        )
 
     return redirect(url_for("accounts.list_accounts"))
 
@@ -682,3 +720,104 @@ def update_hysa_params(account_id):
     logger.info("Updated HYSA params for account %d", account.id)
     flash("HYSA parameters updated.", "success")
     return redirect(url_for("accounts.hysa_detail", account_id=account_id))
+
+
+# ── Checking Detail ──────────────────────────────────────────────
+
+
+@accounts_bp.route("/accounts/<int:account_id>/checking")
+@login_required
+def checking_detail(account_id):
+    """Checking account detail page with balance projections.
+
+    Shows the current anchor balance and projected balances at
+    3, 6, and 12-month intervals, computed by the same balance
+    calculator the grid uses.  No interest calculations -- APY
+    on checking is negligible.
+    """
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        return "Not found", 404
+
+    # Verify this is a checking account.
+    if (not account.account_type
+            or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.CHECKING)):
+        return "Not found", 404
+
+    user_id = current_user.id
+    all_periods = pay_period_service.get_all_periods(user_id)
+    current_period = pay_period_service.get_current_period(user_id)
+
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=user_id, is_baseline=True)
+        .first()
+    )
+
+    period_ids = [p.id for p in all_periods]
+
+    # Load transactions scoped to this account.  Includes shadow
+    # transactions from transfers, following the pattern in grid.py
+    # and hysa_detail.
+    acct_transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    ) if scenario and period_ids else []
+
+    anchor_balance = account.current_anchor_balance or Decimal("0.00")
+    anchor_period_id = account.current_anchor_period_id or (
+        current_period.id if current_period else None
+    )
+
+    balances = {}
+    if anchor_period_id:
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=anchor_balance,
+            anchor_period_id=anchor_period_id,
+            periods=all_periods,
+            transactions=acct_transactions,
+        )
+
+    current_bal = balances.get(current_period.id) if current_period else anchor_balance
+
+    # Build period projection data for the template.
+    period_data = []
+    for p in all_periods:
+        if p.id in balances:
+            period_data.append({
+                "period": p,
+                "balance": balances[p.id],
+            })
+
+    # 3/6/12 month horizon projections (same offsets as HYSA detail).
+    projected = {}
+    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
+        if current_period:
+            target_idx = current_period.period_index + offset_count
+            for p in all_periods:
+                if p.period_index == target_idx and p.id in balances:
+                    projected[offset_label] = balances[p.id]
+                    break
+
+    # Find the anchor period for display in the template.
+    anchor_period = None
+    if anchor_period_id:
+        for p in all_periods:
+            if p.id == anchor_period_id:
+                anchor_period = p
+                break
+
+    return render_template(
+        "accounts/checking_detail.html",
+        account=account,
+        current_balance=current_bal,
+        projected=projected,
+        period_data=period_data,
+        anchor_period=anchor_period,
+    )

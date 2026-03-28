@@ -13,7 +13,7 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -46,8 +46,9 @@ _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
 
-# Account types considered "traditional" (pre-tax contributions).
-TRADITIONAL_TYPES = frozenset({"401(k)", "Traditional IRA"})
+# Account type IDs considered "traditional" (pre-tax contributions).
+# Resolved at request time via ref_cache so the set contains integer IDs.
+TRADITIONAL_TYPE_ENUMS = frozenset({AcctTypeEnum.K401, AcctTypeEnum.TRADITIONAL_IRA})
 
 
 def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
@@ -127,7 +128,9 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         .all()
     )
     retirement_type_ids = {rt.id for rt in retirement_types}
-    type_name_map = {rt.id: rt.name for rt in retirement_types}
+    traditional_type_ids = frozenset(
+        ref_cache.acct_type_id(m) for m in TRADITIONAL_TYPE_ENUMS
+    )
 
     accounts = (
         db.session.query(Account)
@@ -257,6 +260,7 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             acct.id, acct.current_anchor_balance or Decimal("0")
         )
         projected_balance = balance
+        effective_return = None
 
         # Determine projection periods.  Use synthetic periods (to
         # retirement date) if available; fall back to real future pay
@@ -307,6 +311,7 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                 if return_rate_override is not None
                 else params.assumed_annual_return
             )
+            effective_return = annual_return
 
             proj = growth_engine.project_balance(
                 current_balance=balance,
@@ -320,12 +325,12 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             if proj:
                 projected_balance = proj[-1].end_balance
 
-        type_name = type_name_map.get(acct.account_type_id, "")
         retirement_account_projections.append({
             "account": acct,
             "current_balance": balance,
             "projected_balance": projected_balance,
-            "is_traditional": type_name in TRADITIONAL_TYPES,
+            "is_traditional": acct.account_type_id in traditional_type_ids,
+            "annual_return_rate": effective_return,
         })
 
     # Projected salary for gap comparison.
@@ -470,8 +475,24 @@ def create_pension():
     """Create a new pension profile."""
     errors = _pension_create_schema.validate(request.form)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("retirement.pension_list"))
+        pensions = (
+            db.session.query(PensionProfile)
+            .filter_by(user_id=current_user.id, is_active=True)
+            .all()
+        )
+        salary_profiles = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=current_user.id, is_active=True)
+            .all()
+        )
+        return render_template(
+            "retirement/pension_form.html",
+            pension=None,
+            pensions=pensions,
+            salary_profiles=salary_profiles,
+            form_data=dict(request.form),
+            errors=errors,
+        ), 422
 
     data = _pension_create_schema.load(request.form)
 
@@ -519,10 +540,23 @@ def update_pension(pension_id):
         flash("Pension profile not found.", "danger")
         return redirect(url_for("retirement.dashboard"))
 
+    # Context needed for error re-render (same as edit_pension GET).
+    salary_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
+
     errors = _pension_update_schema.validate(request.form)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("retirement.edit_pension", pension_id=pension_id))
+        return render_template(
+            "retirement/pension_form.html",
+            pension=pension,
+            pensions=[],
+            salary_profiles=salary_profiles,
+            form_data=dict(request.form),
+            errors=errors,
+        ), 422
 
     data = _pension_update_schema.load(request.form)
 
@@ -536,28 +570,32 @@ def update_pension(pension_id):
     eff_earliest = data.get("earliest_retirement_date", pension.earliest_retirement_date)
     eff_planned = data.get("planned_retirement_date", pension.planned_retirement_date)
 
-    date_errors = []
+    date_errors = {}
     if eff_earliest and eff_hire and eff_earliest <= eff_hire:
-        date_errors.append(
-            "Earliest retirement date must be after hire date."
+        date_errors.setdefault("earliest_retirement_date", []).append(
+            "Must be after hire date."
         )
     if eff_planned and eff_hire and eff_planned <= eff_hire:
-        date_errors.append(
-            "Planned retirement date must be after hire date."
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be after hire date."
         )
     if eff_planned and eff_planned <= date.today():
-        date_errors.append(
-            "Planned retirement date must be in the future."
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be in the future."
         )
     if eff_planned and eff_earliest and eff_planned < eff_earliest:
-        date_errors.append(
-            "Planned retirement date must be on or after "
-            "earliest retirement date."
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be on or after earliest retirement date."
         )
     if date_errors:
-        for err in date_errors:
-            flash(err, "danger")
-        return redirect(url_for("retirement.edit_pension", pension_id=pension_id))
+        return render_template(
+            "retirement/pension_form.html",
+            pension=pension,
+            pensions=[],
+            salary_profiles=salary_profiles,
+            form_data=dict(request.form),
+            errors=date_errors,
+        ), 422
 
     _PENSION_FIELDS = {
         "salary_profile_id", "name", "benefit_multiplier",
@@ -621,6 +659,8 @@ def gap_analysis():
         "retirement/_gap_analysis.html",
         gap_analysis=data["gap_analysis"],
         chart_data=data["chart_data"],
+        retirement_account_projections=data["retirement_account_projections"],
+        htmx_response=True,
     )
 
 
@@ -631,6 +671,9 @@ def gap_analysis():
 @login_required
 def update_settings():
     """Update retirement planning settings."""
+    # Preserve original user input for form re-display on error.
+    raw_form_data = dict(request.form)
+
     # Convert percentage inputs from form.
     form_data = dict(request.form)
     for field in ("safe_withdrawal_rate", "estimated_retirement_tax_rate"):
@@ -642,8 +685,30 @@ def update_settings():
 
     errors = _settings_schema.validate(form_data)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("settings.show", section="retirement"))
+        settings = (
+            db.session.query(UserSettings)
+            .filter_by(user_id=current_user.id)
+            .first()
+        )
+        if not settings:
+            settings = UserSettings(user_id=current_user.id)
+        return render_template(
+            "settings/dashboard.html",
+            active_section="retirement",
+            settings=settings,
+            form_data=raw_form_data,
+            errors=errors,
+            accounts=[],
+            grouped={},
+            filing_statuses=[],
+            tax_types=[],
+            bracket_sets=[],
+            fica_configs=[],
+            state_configs=[],
+            account_types=[],
+            types_in_use=set(),
+            mfa_enabled=False,
+        ), 422
 
     data = _settings_schema.load(form_data)
 

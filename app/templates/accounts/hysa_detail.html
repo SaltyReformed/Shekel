@@ -18,6 +18,13 @@
   </a>
 </div>
 
+{% if request.args.get('setup') == '1' %}
+<div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-gear"></i> Account created. Configure the settings below to enable accurate projections.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
   {# --- Account Summary --- #}
   <div class="col-md-6">

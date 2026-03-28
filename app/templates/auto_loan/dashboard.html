@@ -97,10 +97,17 @@
               </div>
             </div>
           </div>
-          <div class="mb-3">
-            <label for="payment_day" class="form-label">Payment Day</label>
-            <input type="number" class="form-control" id="payment_day" name="payment_day"
-                   value="{{ params.payment_day }}" min="1" max="31">
+          <div class="row mb-3">
+            <div class="col-6">
+              <label for="term_months" class="form-label">Loan Term (months)</label>
+              <input type="number" class="form-control" id="term_months" name="term_months"
+                     value="{{ params.term_months }}" step="1" min="1" max="120">
+            </div>
+            <div class="col-6">
+              <label for="payment_day" class="form-label">Payment Day</label>
+              <input type="number" class="form-control" id="payment_day" name="payment_day"
+                     value="{{ params.payment_day }}" min="1" max="31">
+            </div>
           </div>
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-check-lg"></i> Update Parameters

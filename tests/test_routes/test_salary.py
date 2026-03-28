@@ -12,7 +12,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.models.calibration_override import CalibrationOverride
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -1001,6 +1001,279 @@ class TestDeductions:
             assert ded.amount == Decimal("0.06")
 
 
+# ── Deduction Frequency Display ──────────────────────────────────
+
+
+class TestDeductionFrequencyDisplay:
+    """Tests for descriptive frequency labels in the deductions table."""
+
+    def test_deduction_frequency_label_every_paycheck(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deduction with deductions_per_year=26 displays '26x/yr (every paycheck)'."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+                deductions_per_year=26,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "26x/yr" in html
+            assert "(every paycheck)" in html
+
+    def test_deduction_frequency_label_skip_third(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deduction with deductions_per_year=24 displays '24x/yr (skip 3rd paycheck)'."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Health Insurance",
+                amount=Decimal("150.00"),
+                deductions_per_year=24,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "24x/yr" in html
+            assert "(skip 3rd paycheck)" in html
+
+    def test_deduction_frequency_label_monthly(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deduction with deductions_per_year=12 displays '12x/yr (monthly)'."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Transit",
+                amount=Decimal("100.00"),
+                deductions_per_year=12,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "12x/yr" in html
+            assert "(monthly)" in html
+
+    def test_deduction_frequency_fallback_for_unusual_value(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deduction with an unusual deductions_per_year shows 'Nx/yr' without a label."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            # Bypass schema validation by inserting directly into the DB.
+            # The DB constraint only requires deductions_per_year > 0.
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Weekly Ded",
+                amount=Decimal("50.00"),
+                deductions_per_year=52,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "52x/yr" in html
+            # Fallback should NOT include a parenthetical label next to the value.
+            assert "52x/yr <small" not in html
+
+    def test_deduction_frequency_column_header(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Deduction table header reads 'Frequency', not 'Per Year'."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "<th>Frequency</th>" in html
+            assert "<th>Per Year</th>" not in html
+
+    def test_deduction_frequency_label_after_htmx_add(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """HTMX add deduction response shows descriptive frequency label."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "401k",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "26x/yr" in html
+            assert "(every paycheck)" in html
+
+    def test_deduction_frequency_label_after_htmx_edit(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """HTMX edit deduction response shows updated frequency label."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+                deductions_per_year=26,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "24",
+                },
+                headers={"HX-Request": "true"},
+            )
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "24x/yr" in html
+            assert "(skip 3rd paycheck)" in html
+
+    def test_deduction_frequency_labels_all_known_values(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """All three known frequency values display with correct labels."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            for name, per_year in [("D26", 26), ("D24", 24), ("D12", 12)]:
+                ded = PaycheckDeduction(
+                    salary_profile_id=profile.id,
+                    deduction_timing_id=pre_tax.id,
+                    calc_method_id=flat_method.id,
+                    name=name,
+                    amount=Decimal("100.00"),
+                    deductions_per_year=per_year,
+                )
+                db.session.add(ded)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "26x/yr" in html
+            assert "(every paycheck)" in html
+            assert "24x/yr" in html
+            assert "(skip 3rd paycheck)" in html
+            assert "12x/yr" in html
+            assert "(monthly)" in html
+
+    def test_deduction_display_matches_form_dropdown(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Frequency labels in the display table use the same terms as the form dropdown."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            for name, per_year in [("D26", 26), ("D24", 24), ("D12", 12)]:
+                ded = PaycheckDeduction(
+                    salary_profile_id=profile.id,
+                    deduction_timing_id=pre_tax.id,
+                    calc_method_id=flat_method.id,
+                    name=name,
+                    amount=Decimal("100.00"),
+                    deductions_per_year=per_year,
+                )
+                db.session.add(ded)
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+
+            # The form dropdown and table cell both use the same terms.
+            # Dropdown: "26 (every paycheck)" / Table: "26x/yr (every paycheck)"
+            assert "every paycheck" in html
+            # Dropdown: "24 (skip 3rd paycheck)" / Table: "24x/yr (skip 3rd paycheck)"
+            assert "skip 3rd paycheck" in html
+            # Dropdown: "12 (monthly)" / Table: "12x/yr (monthly)"
+            assert "(monthly)" in html
+
+
 # ── Breakdown & Projection ────────────────────────────────────────
 
 
@@ -1151,6 +1424,143 @@ class TestTaxConfig:
 
             assert response.status_code == 200
             assert b"Please correct the highlighted errors" in response.data
+
+
+class TestTaxConfigLayout:
+    """Tests for tax config page section ordering, collapse behavior, and form integrity.
+
+    Verifies the reorganized layout: State Tax first, FICA second, Federal
+    Tax Brackets third (collapsed by default with per-year grouping).
+    """
+
+    def test_tax_config_section_order(self, app, auth_client, seed_user):
+        """Sections appear in order: State Tax, FICA, Federal Tax Brackets."""
+        with app.app_context():
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            state_pos = html.index("State Tax Configuration")
+            fica_pos = html.index("FICA Configuration")
+            federal_pos = html.index("Federal Tax Brackets")
+
+            assert state_pos < fica_pos < federal_pos, (
+                f"Expected State Tax ({state_pos}) < FICA ({fica_pos}) "
+                f"< Federal ({federal_pos})"
+            )
+
+    def test_federal_brackets_collapsed_by_default(self, app, auth_client, seed_user):
+        """Federal brackets card body starts collapsed (no 'show' class)."""
+        with app.app_context():
+            _seed_brackets(seed_user["user"].id)
+            db.session.commit()
+
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            assert 'class="collapse" id="federal-brackets-collapse"' in html
+            assert 'class="collapse show" id="federal-brackets-collapse"' not in html
+
+    def test_federal_brackets_content_present_in_dom(self, app, auth_client, seed_user):
+        """Bracket data is in the DOM even though the section is collapsed."""
+        with app.app_context():
+            _seed_brackets(seed_user["user"].id)
+            db.session.commit()
+
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            # Bracket amounts from seeded data should be present in the HTML.
+            assert "$11600" in html
+            assert "10.0%" in html
+
+    def test_federal_brackets_toggle_button_exists(self, app, auth_client, seed_user):
+        """Toggle button for Federal Brackets has proper Bootstrap collapse attributes."""
+        with app.app_context():
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            assert 'data-bs-toggle="collapse"' in html
+            assert 'data-bs-target="#federal-brackets-collapse"' in html
+            assert 'aria-controls="federal-brackets-collapse"' in html
+            # Outer toggle starts collapsed.
+            assert 'aria-expanded="false" aria-controls="federal-brackets-collapse"' in html
+
+    def test_state_tax_form_action_intact(self, app, auth_client, seed_user):
+        """State Tax form POSTs to the correct endpoint after section reorder."""
+        with app.app_context():
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            assert 'action="/salary/tax-config"' in html
+            assert 'method="POST"' in html
+
+    def test_fica_form_action_intact(self, app, auth_client, seed_user):
+        """FICA form POSTs to the correct endpoint after section reorder."""
+        with app.app_context():
+            # FICA form only renders when fica_configs is non-empty.
+            _seed_fica(seed_user["user"].id)
+            db.session.commit()
+
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            assert 'action="/salary/fica-config"' in html
+
+    def test_tax_config_no_nested_forms(self, app, auth_client, seed_user):
+        """No form tags are nested inside other form tags after the reorder."""
+        with app.app_context():
+            _seed_state_tax(seed_user["user"].id, Decimal("0.0399"))
+            _seed_fica(seed_user["user"].id)
+            db.session.commit()
+
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            # Count form open and close tags.
+            open_count = html.count("<form")
+            close_count = html.count("</form>")
+            assert open_count == close_count, (
+                f"Unbalanced form tags: {open_count} opens, {close_count} closes"
+            )
+
+            # Track depth to verify no nesting.
+            depth = 0
+            i = 0
+            while i < len(html):
+                open_idx = html.find("<form", i)
+                close_idx = html.find("</form>", i)
+                if open_idx == -1 and close_idx == -1:
+                    break
+                if open_idx != -1 and (close_idx == -1 or open_idx < close_idx):
+                    depth += 1
+                    assert depth <= 1, "Nested <form> tags detected"
+                    i = open_idx + 1
+                else:
+                    depth -= 1
+                    i = close_idx + 1
+
+    def test_multiple_tax_years_most_recent_expanded(self, app, auth_client, seed_user):
+        """With multiple tax years, the most recent is expanded, older collapsed."""
+        with app.app_context():
+            _seed_brackets(seed_user["user"].id, tax_year=2025)
+            _seed_brackets(seed_user["user"].id, tax_year=2026)
+            db.session.commit()
+
+            response = auth_client.get("/settings?section=tax")
+            html = response.data.decode()
+
+            # Most recent year (2026) should be expanded.
+            assert 'class="collapse show" id="federal-brackets-2026"' in html
+            # Older year (2025) should be collapsed.
+            assert 'class="collapse" id="federal-brackets-2025"' in html
+            assert 'class="collapse show" id="federal-brackets-2025"' not in html
+
+    def test_tax_config_page_renders_without_errors(self, app, auth_client, seed_user):
+        """Tax config page renders 200 with no template errors."""
+        with app.app_context():
+            response = auth_client.get("/settings?section=tax")
+            assert response.status_code == 200
+            assert b"Tax Configuration" in response.data
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────
@@ -1467,6 +1877,52 @@ def _seed_fica(user_id, tax_year=2026):
     db.session.add(config)
     db.session.flush()
     return config
+
+
+def _seed_brackets(user_id, tax_year=2026):
+    """Create a bracket set with sample brackets for testing.
+
+    Seeds a 'single' filing status bracket set with two brackets so
+    that the federal brackets section renders with visible data.
+
+    Args:
+        user_id: The owning user's ID.
+        tax_year: Tax year for the bracket set.
+
+    Returns:
+        TaxBracketSet: The created bracket set with two brackets.
+    """
+    filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+    bracket_set = TaxBracketSet(
+        user_id=user_id,
+        filing_status_id=filing_status.id,
+        tax_year=tax_year,
+        standard_deduction=Decimal("14600.00"),
+        child_credit_amount=Decimal("2000.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+    )
+    db.session.add(bracket_set)
+    db.session.flush()
+
+    brackets = [
+        TaxBracket(
+            bracket_set_id=bracket_set.id,
+            min_income=Decimal("0.00"),
+            max_income=Decimal("11600.00"),
+            rate=Decimal("0.1000"),
+            sort_order=1,
+        ),
+        TaxBracket(
+            bracket_set_id=bracket_set.id,
+            min_income=Decimal("11600.00"),
+            max_income=Decimal("47150.00"),
+            rate=Decimal("0.1200"),
+            sort_order=2,
+        ),
+    ]
+    db.session.add_all(brackets)
+    db.session.flush()
+    return bracket_set
 
 
 class TestNetBiweeklyMismatchFixes:
@@ -2176,3 +2632,215 @@ class TestCalibration:
                 f"/salary/{other['profile'].id}/calibrate",
             )
             assert resp.status_code == 302
+
+
+# ── Button Placement ──────────────────────────────────────────────
+
+
+class TestButtonPlacement:
+    """Tests for prominent View Breakdown / View Projection buttons on salary pages."""
+
+    def test_salary_list_buttons_appear_before_actions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Labeled 'View Breakdown' buttons appear before the icon-only Actions buttons."""
+        with app.app_context():
+            _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # The labeled button text should appear before the icon-only title attr
+            labeled_pos = html.index("View Breakdown")
+            icon_pos = html.index('title="Breakdown"')
+            assert labeled_pos < icon_pos
+
+            labeled_proj_pos = html.index("View Projection")
+            icon_proj_pos = html.index('title="Projection"')
+            assert labeled_proj_pos < icon_proj_pos
+
+    def test_salary_list_buttons_link_to_correct_routes(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Labeled buttons on the list page link to the correct breakdown/projection URLs."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            assert f"/salary/{profile.id}/breakdown" in html
+            assert f"/salary/{profile.id}/projection" in html
+
+    def test_salary_list_buttons_per_profile(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Each profile on the list page has its own View Breakdown and View Projection buttons."""
+        with app.app_context():
+            profile1 = _create_profile(seed_user)
+
+            # Create a second profile for the same user.
+            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+            cat = (
+                db.session.query(Category)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    group_name="Income",
+                    item_name="Salary",
+                )
+                .first()
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id, pattern_id=every_period.id
+            )
+            db.session.add(rule)
+            db.session.flush()
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=cat.id,
+                recurrence_rule_id=rule.id,
+                transaction_type_id=income_type.id,
+                name="Side Gig",
+                default_amount=Decimal("30000.00") / 26,
+                is_active=True,
+            )
+            db.session.add(template)
+            db.session.flush()
+            profile2 = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                template_id=template.id,
+                filing_status_id=filing_status.id,
+                name="Side Gig",
+                annual_salary=Decimal("30000.00"),
+                state_code="NC",
+                pay_periods_per_year=26,
+            )
+            db.session.add(profile2)
+            db.session.commit()
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # Both profiles should have breakdown and projection URLs.
+            assert f"/salary/{profile1.id}/breakdown" in html
+            assert f"/salary/{profile1.id}/projection" in html
+            assert f"/salary/{profile2.id}/breakdown" in html
+            assert f"/salary/{profile2.id}/projection" in html
+
+    def test_salary_form_edit_buttons_appear_before_deductions(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """On the edit form, View Breakdown/Projection buttons appear before the Deductions section."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+            html = response.data.decode()
+
+            breakdown_pos = html.index("View Breakdown")
+            projection_pos = html.index("View Projection")
+            deductions_pos = html.index('id="deductions-section"')
+
+            assert breakdown_pos < deductions_pos
+            assert projection_pos < deductions_pos
+
+    def test_salary_form_edit_buttons_link_to_correct_routes(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Edit form buttons link to the correct breakdown/projection URLs for the profile."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+            html = response.data.decode()
+
+            assert f"/salary/{profile.id}/breakdown" in html
+            assert f"/salary/{profile.id}/projection" in html
+
+    def test_salary_form_create_hides_buttons(
+        self, app, auth_client, seed_user
+    ):
+        """The create-profile form does not show View Breakdown or View Projection buttons."""
+        with app.app_context():
+            response = auth_client.get("/salary/new")
+            html = response.data.decode()
+
+            assert "View Breakdown" not in html
+            assert "View Projection" not in html
+
+    def test_salary_list_existing_buttons_preserved(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The original icon-only buttons in the Actions column are still present on the list page."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # The breakdown URL should appear at least twice: once for the
+            # labeled button in the Name cell, once for the icon button in Actions.
+            breakdown_url = f"/salary/{profile.id}/breakdown"
+            assert html.count(breakdown_url) >= 2
+
+            projection_url = f"/salary/{profile.id}/projection"
+            assert html.count(projection_url) >= 2
+
+    def test_salary_form_buttons_inline_with_submit(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """View Breakdown/Projection buttons appear on the same row as Update Profile."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get(f"/salary/{profile.id}/edit")
+            html = response.data.decode()
+
+            # The buttons and the submit button share a flex container.
+            submit_pos = html.index("Update Profile")
+            breakdown_pos = html.index("View Breakdown")
+            projection_pos = html.index("View Projection")
+            deductions_pos = html.index('id="deductions-section"')
+
+            # Buttons are near the submit button, before the deductions section.
+            assert breakdown_pos > submit_pos
+            assert breakdown_pos < deductions_pos
+            assert projection_pos < deductions_pos
+
+            # Only one set of breakdown/projection links (old bottom ones removed).
+            breakdown_url = f"/salary/{profile.id}/breakdown"
+            assert html.count(breakdown_url) == 1
+            projection_url = f"/salary/{profile.id}/projection"
+            assert html.count(projection_url) == 1
+
+    def test_breakdown_route_accessible_from_button(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The breakdown URL that buttons link to returns a successful response."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get(
+                f"/salary/{profile.id}/breakdown", follow_redirects=True
+            )
+
+            assert response.status_code == 200
+            assert b"Paycheck Breakdown" in response.data
+
+    def test_projection_route_accessible_from_button(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The projection URL that buttons link to returns a successful response."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get(f"/salary/{profile.id}/projection")
+
+            assert response.status_code == 200
+            assert b"Salary Projection" in response.data

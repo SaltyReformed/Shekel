@@ -598,6 +598,7 @@ class AutoLoanParamsUpdateSchema(BaseSchema):
 
     current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     interest_rate = fields.Decimal(places=3, as_string=True, validate=validate.Range(min=0, max=100))
+    term_months = fields.Integer(validate=validate.Range(min=1, max=120))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
 
 

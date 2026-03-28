@@ -146,15 +146,30 @@
         </div>
       </div>
 
-      <div class="mb-3">
-        <button type="submit" class="btn btn-primary">
-          <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
-        </button>
-        <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
+          </button>
+          <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
+        </div>
+        {% if profile %}
+        <div class="d-flex gap-2">
+          <a href="{{ url_for('salary.breakdown_current', profile_id=profile.id) }}"
+             class="btn btn-outline-info btn-sm">
+            <i class="bi bi-receipt"></i> View Breakdown
+          </a>
+          <a href="{{ url_for('salary.projection', profile_id=profile.id) }}"
+             class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-graph-up"></i> View Projection
+          </a>
+        </div>
+        {% endif %}
       </div>
     </form>
 
     {% if profile %}
+
     {# ── Raises Section ── #}
     {% include "salary/_raises_section.html" %}
 
@@ -201,15 +216,6 @@
       </div>
     </div>
 
-    {# ── Quick Links ── #}
-    <div class="d-flex gap-2 mt-3 mb-4">
-      <a href="{{ url_for('salary.breakdown_current', profile_id=profile.id) }}" class="btn btn-outline-info">
-        <i class="bi bi-receipt"></i> View Breakdown
-      </a>
-      <a href="{{ url_for('salary.projection', profile_id=profile.id) }}" class="btn btn-outline-primary">
-        <i class="bi bi-graph-up"></i> View Projection
-      </a>
-    </div>
     {% endif %}
   </div>
 </div>

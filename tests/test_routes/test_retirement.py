@@ -369,10 +369,11 @@ class TestRetirementProjections:
         # Extract projected balances from the retirement accounts table.
         # The table has current balance then projected (fw-bold) on the same row.
         import re
-        # Match the projected balance cells that follow a current balance cell.
+        # Match the projected balance cells (fw-bold) that follow the
+        # current balance cell and the annual return rate cell.
         projected_values = re.findall(
-            r'\$10,000\.00</td>\s*<td class="text-end font-mono fw-bold">\$([0-9,]+\.\d{2})',
-            html,
+            r'\$10,000\.00</td>\s*<td[^>]*>.*?</td>\s*<td class="text-end font-mono fw-bold">\$([0-9,]+\.\d{2})',
+            html, re.DOTALL,
         )
         assert projected_values, "Expected projected balance for retirement account"
         projected = float(projected_values[0].replace(",", ""))
@@ -541,9 +542,8 @@ class TestRetirementNegativePaths:
             "consecutive_high_years": "4",
             "hire_date": "2020-01-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct the highlighted errors" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -559,9 +559,8 @@ class TestRetirementNegativePaths:
             "benefit_multiplier": "2.0",
             "consecutive_high_years": "4",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct the highlighted errors" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -578,9 +577,8 @@ class TestRetirementNegativePaths:
             "consecutive_high_years": "4",
             "hire_date": "2020-01-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct the highlighted errors" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -598,9 +596,8 @@ class TestRetirementNegativePaths:
             "hire_date": "2020-01-01",
             "planned_retirement_date": "2019-01-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -618,9 +615,8 @@ class TestRetirementNegativePaths:
             "hire_date": "2010-01-01",
             "planned_retirement_date": "2020-01-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -638,9 +634,8 @@ class TestRetirementNegativePaths:
             "hire_date": "2020-01-01",
             "earliest_retirement_date": "2019-06-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -659,9 +654,8 @@ class TestRetirementNegativePaths:
             "earliest_retirement_date": "2050-01-01",
             "planned_retirement_date": "2045-01-01",
         })
-        assert resp.status_code == 302
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Please correct" in resp2.data
+        assert resp.status_code == 422
+        assert b"is-invalid" in resp.data
 
         count = db.session.query(PensionProfile).filter_by(
             user_id=seed_user["user"].id,
@@ -703,13 +697,9 @@ class TestRetirementNegativePaths:
             "hire_date": "2018-07-01",
             "planned_retirement_date": "2017-01-01",
         })
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "edit" in location, (
-            f"Expected redirect to edit page, got {location}"
-        )
-        resp2 = auth_client.get(location)
-        assert b"must be after hire date" in resp2.data
+        assert resp.status_code == 422
+        assert b"Must be after hire date" in resp.data
+        assert b"is-invalid" in resp.data
 
         # Pension should be unchanged.
         db.session.expire_all()
@@ -783,7 +773,7 @@ class TestRetirementNegativePaths:
         resp = auth_client.post("/retirement/settings", data={
             "safe_withdrawal_rate": "abc",
         })
-        assert resp.status_code == 302
+        assert resp.status_code == 422
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(
@@ -803,7 +793,7 @@ class TestRetirementNegativePaths:
         resp = auth_client.post("/retirement/settings", data={
             "safe_withdrawal_rate": "-5",
         })
-        assert resp.status_code == 302
+        assert resp.status_code == 422
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(
@@ -841,7 +831,7 @@ class TestRetirementNegativePaths:
         resp = auth_client.post("/retirement/settings", data={
             "estimated_retirement_tax_rate": "abc",
         })
-        assert resp.status_code == 302
+        assert resp.status_code == 422
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(
@@ -861,7 +851,7 @@ class TestRetirementNegativePaths:
         resp = auth_client.post("/retirement/settings", data={
             "estimated_retirement_tax_rate": "150",
         })
-        assert resp.status_code == 302
+        assert resp.status_code == 422
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(
@@ -881,7 +871,7 @@ class TestRetirementNegativePaths:
         resp = auth_client.post("/retirement/settings", data={
             "planned_retirement_date": "not-a-date",
         })
-        assert resp.status_code == 302
+        assert resp.status_code == 422
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(
@@ -912,3 +902,408 @@ class TestRetirementNegativePaths:
         resp = client.get("/retirement/gap")
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
+
+
+class TestRetirementValidationUX:
+    """Tests for render-on-error validation UX with field highlights and data preservation."""
+
+    def test_pension_validation_error_preserves_all_fields(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """All submitted field values are preserved in the re-rendered form on error."""
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "My Updated Name",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "2.500",
+            "consecutive_high_years": "3",
+            "hire_date": "2018-07-01",
+            "earliest_retirement_date": "2040-01-01",
+            "planned_retirement_date": "2017-01-01",  # Before hire -> error
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        # Every submitted value must appear in the re-rendered form.
+        assert 'value="My Updated Name"' in html
+        assert 'value="2.500"' in html
+        assert 'value="3"' in html
+        assert 'value="2018-07-01"' in html
+        assert 'value="2040-01-01"' in html
+        assert 'value="2017-01-01"' in html
+
+    def test_pension_validation_error_highlights_invalid_field(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Invalid field gets is-invalid class and invalid-feedback message."""
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "is-invalid" in html
+        assert "invalid-feedback" in html
+        assert "Must be after hire date" in html
+
+    def test_pension_validation_error_does_not_highlight_valid_fields(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Only the invalid field gets is-invalid; valid fields do not."""
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "Must be after hire date" in html
+        # Only planned_retirement_date should have is-invalid.
+        assert html.count("is-invalid") == 1
+
+    def test_pension_validation_multiple_errors(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Multiple date fields with errors are all highlighted."""
+        pension = _create_pension(seed_user, db.session)
+        # Both earliest and planned are before hire date (2018-07-01).
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "earliest_retirement_date": "2017-06-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        # Both fields should have errors.
+        assert html.count("is-invalid") >= 2
+        assert html.count("invalid-feedback") >= 2
+
+    def test_pension_valid_submission_still_works(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Valid pension update still redirects and persists changes (regression)."""
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "Regression Test",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "2.000",
+            "consecutive_high_years": "3",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2050-01-01",
+        })
+        assert resp.status_code == 302
+        db.session.refresh(pension)
+        assert pension.name == "Regression Test"
+        assert pension.benefit_multiplier == Decimal("0.02000")
+
+    def test_pension_validation_returns_422_not_redirect(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Validation failure returns 422 HTML, not a 302 redirect."""
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "benefit_multiplier": "1.850",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 422
+        assert resp.content_type.startswith("text/html")
+        assert "Location" not in resp.headers
+
+    def test_pension_form_data_not_present_on_get(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET renders the form from the pension model with no error indicators."""
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "is-invalid" not in html
+        assert "invalid-feedback" not in html
+        assert "State Pension" in html
+
+    def test_settings_validation_error_preserves_form_data(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Settings validation error re-renders with submitted values preserved."""
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "-5",
+            "planned_retirement_date": "2055-01-01",
+            "estimated_retirement_tax_rate": "20",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        # The submitted SWR should be in the form (original user input).
+        assert 'value="-5"' in html
+        assert "is-invalid" in html
+
+    def test_settings_validation_error_highlights_field(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Settings error highlights the invalid field with error message."""
+        resp = auth_client.post("/retirement/settings", data={
+            "estimated_retirement_tax_rate": "150",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "is-invalid" in html
+        assert "invalid-feedback" in html
+
+    def test_settings_valid_submission_still_works(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Valid settings POST still redirects and persists (regression)."""
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "3.5",
+            "planned_retirement_date": "2055-01-01",
+            "estimated_retirement_tax_rate": "22",
+        })
+        assert resp.status_code == 302
+        db.session.expire_all()
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.safe_withdrawal_rate == Decimal("0.0350")
+        assert settings.planned_retirement_date == date(2055, 1, 1)
+
+    def test_pension_error_then_success(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A failed submission does not poison subsequent successful submissions."""
+        pension = _create_pension(seed_user, db.session)
+        # First: invalid submission.
+        resp1 = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "Attempt 1",
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp1.status_code == 422
+
+        # Second: corrected submission.
+        resp2 = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "Attempt 2",
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2050-01-01",
+        })
+        assert resp2.status_code == 302
+        db.session.refresh(pension)
+        assert pension.name == "Attempt 2"
+        assert pension.planned_retirement_date == date(2050, 1, 1)
+
+    def test_pension_select_fields_preserve_selection(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Select dropdown preserves the selected salary profile on error re-render."""
+        import re
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "Select Test",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2017-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        # The salary profile option should be selected.
+        pattern = rf'value="{profile.id}"\s+selected'
+        assert re.search(pattern, html), (
+            f"Salary profile {profile.id} option not selected in re-rendered form"
+        )
+
+    def test_pension_empty_date_handled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Empty planned_retirement_date does not crash -- treated as omitted."""
+        pension = _create_pension(seed_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": "No Date",
+            "benefit_multiplier": "1.850",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "",
+        })
+        # Empty optional date is stripped by pre_load and omitted from update.
+        assert resp.status_code == 302
+
+
+class TestReturnRateClarity:
+    """Tests for return rate slider tooltip and per-account rate display."""
+
+    def test_return_slider_tooltip_present(self, auth_client, seed_user, db, seed_periods):
+        """Dashboard shows info-circle tooltip on the Assumed Annual Return label."""
+        profile = _create_salary_profile(seed_user, db.session)
+        _create_pension(seed_user, db.session, salary_profile=profile)
+        _create_retirement_account(seed_user, db.session)
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Recalculates the gap analysis and account projections below" in html
+        assert "overriding each account&#" in html or "overriding each account" in html
+
+    def test_per_account_rate_displayed_on_dashboard(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Each retirement account row shows its configured annual return rate."""
+        account, params = _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # params.assumed_annual_return is 0.07 -> displayed as "7.0%" in its own column.
+        assert "7.0%" in html
+        assert "Annual Return" in html
+
+    def test_per_account_rate_accuracy_multiple_accounts(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Multiple accounts with different rates each show their own rate."""
+        acct1, params1 = _create_retirement_account(
+            seed_user, db.session, type_name="401(k)",
+        )
+        # Create a second account with a different rate.
+        acct_type = db.session.query(AccountType).filter_by(name="Roth IRA").one()
+        acct2 = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name="Test Roth IRA",
+            current_anchor_balance=Decimal("5000.00"),
+        )
+        db.session.add(acct2)
+        db.session.flush()
+        params2 = InvestmentParams(
+            account_id=acct2.id,
+            assumed_annual_return=Decimal("0.09500"),
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        db.session.add(params2)
+
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # 401(k) at 7.0%, Roth IRA at 9.5% -- each in its own column cell.
+        assert ">7.0%<" in html
+        assert ">9.5%<" in html
+
+    def test_htmx_gap_response_includes_account_rows_oob(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """HTMX gap analysis response includes OOB swap for account table rows."""
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?return_rate=10.0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # OOB swap div must be present.
+        assert 'id="retirement-accounts-content"' in html
+        assert 'hx-swap-oob="innerHTML"' in html
+
+    def test_htmx_gap_oob_uses_slider_rate(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """When slider overrides return rate, OOB account rows show the override rate."""
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?return_rate=10.0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The OOB rows should show 10.0% (slider override), not 7.0% (account default).
+        assert ">10.0%<" in html
+        assert ">7.0%<" not in html
+
+    def test_initial_dashboard_no_oob_in_gap_section(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Full page load does not render OOB swap inside the gap analysis card."""
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The OOB attribute should NOT appear on the full page render.
+        assert 'hx-swap-oob="innerHTML"' not in html
+        # But the wrapper div with the id should exist (for the actual table).
+        assert 'id="retirement-accounts-content"' in html
+
+    def test_slider_default_value_present(self, auth_client, seed_user, db, seed_periods):
+        """Slider element is present with its default value attribute."""
+        _create_retirement_account(seed_user, db.session)
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="return_slider"' in html
+        assert 'id="swr_slider"' in html
+
+    def test_htmx_gap_still_returns_gap_analysis(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """HTMX gap endpoint with return_rate still returns the gap analysis table (regression)."""
+        profile = _create_salary_profile(seed_user, db.session)
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?return_rate=8.0&swr=3.5",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Core gap analysis content must still be present.
+        assert "Monthly Income Gap" in html
+        assert "Projected Retirement Savings" in html
+        assert "3.5% rule" in html

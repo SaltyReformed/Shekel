@@ -41,7 +41,19 @@
     {% for item in profile_data %}
     {% set p = item.profile %}
     <tr class="{{ 'text-muted' if not p.is_active }}">
-      <td>{{ p.name }}</td>
+      <td>
+        {{ p.name }}
+        <div class="d-flex gap-2 mt-1">
+          <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
+             class="btn btn-sm btn-outline-info">
+            <i class="bi bi-receipt"></i> View Breakdown
+          </a>
+          <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
+             class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-graph-up"></i> View Projection
+          </a>
+        </div>
+      </td>
       <td>{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
       <td>{{ p.state_code }}</td>
       <td class="text-end">${{ "%.2f"|format(p.annual_salary|float) }}</td>

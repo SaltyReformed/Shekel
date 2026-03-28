@@ -44,7 +44,9 @@
         </div>
       </div>
       <div class="col-md-6">
-        <label for="return_slider" class="form-label">Assumed Annual Return</label>
+        <label for="return_slider" class="form-label">Assumed Annual Return
+          <i class="bi bi-info-circle text-muted" title="Recalculates the gap analysis and account projections below using this rate for all accounts, overriding each account's configured rate as a what-if scenario. The default is the balance-weighted average of each account's configured rate."></i>
+        </label>
         <div class="d-flex align-items-center gap-2">
           <input type="range" class="form-range flex-grow-1" id="return_slider"
                  min="3.0" max="12.0" step="0.5" value="{{ "%.1f"|format(current_return) }}"
@@ -142,39 +144,8 @@
   <div class="card-header">
     <h6 class="mb-0"><i class="bi bi-graph-up"></i> Retirement & Investment Accounts</h6>
   </div>
-  <div class="card-body">
-    <table class="table table-hover table-sm mb-0">
-      <thead class="table-light">
-        <tr>
-          <th>Account</th>
-          <th>Type</th>
-          <th class="text-end">Current Balance
-            <i class="bi bi-info-circle text-muted" title="Current balance from your account records."></i>
-          </th>
-          <th class="text-end">Projected at Retirement
-            <i class="bi bi-info-circle text-muted" title="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for proj in retirement_account_projections %}
-        <tr>
-          <td>
-            <a href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">
-              {{ proj.account.name }}
-            </a>
-          </td>
-          <td>
-            <span class="badge {{ 'bg-info' if proj.is_traditional else 'bg-success' }}">
-              {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
-            </span>
-          </td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(proj.account.current_anchor_balance|float if proj.account.current_anchor_balance else 0) }}</td>
-          <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance|float) }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="card-body" id="retirement-accounts-content">
+    {% include "retirement/_retirement_account_table.html" %}
   </div>
 </div>
 {% endif %}

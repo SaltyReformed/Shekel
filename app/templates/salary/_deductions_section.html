@@ -16,7 +16,7 @@
           <th>Timing</th>
           <th>Method</th>
           <th class="text-end">Amount</th>
-          <th>Per Year</th>
+          <th>Frequency</th>
           <th class="text-end">Cap</th>
           <th>Target Account</th>
           <th></th>
@@ -39,7 +39,17 @@
               ${{ "%.2f"|format(d.amount|float) }}
             {% endif %}
           </td>
-          <td>{{ d.deductions_per_year }}</td>
+          <td>
+            {% if d.deductions_per_year == 26 %}
+              26x/yr <small class="text-muted">(every paycheck)</small>
+            {% elif d.deductions_per_year == 24 %}
+              24x/yr <small class="text-muted">(skip 3rd paycheck)</small>
+            {% elif d.deductions_per_year == 12 %}
+              12x/yr <small class="text-muted">(monthly)</small>
+            {% else %}
+              {{ d.deductions_per_year }}x/yr
+            {% endif %}
+          </td>
           <td class="text-end">
             {{ '$' ~ "%.2f"|format(d.annual_cap|float) if d.annual_cap else '--' }}
           </td>
@@ -146,7 +156,7 @@
                    placeholder="e.g. 500">
           </div>
           <div class="col-md-4">
-            <label class="form-label">Per Year</label>
+            <label class="form-label">Frequency</label>
             <select name="deductions_per_year" class="form-select form-select-sm">
               <option value="26">26 (every paycheck)</option>
               <option value="24">24 (skip 3rd paycheck)</option>

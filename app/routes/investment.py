@@ -36,9 +36,6 @@ investment_bp = Blueprint("investment", __name__)
 _create_schema = InvestmentParamsCreateSchema()
 _update_schema = InvestmentParamsUpdateSchema()
 
-# Account types that are "traditional" (pre-tax, taxed on withdrawal).
-TRADITIONAL_TYPES = frozenset({"401(k)", "Traditional IRA"})
-
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
 @login_required
