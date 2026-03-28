@@ -100,6 +100,25 @@ def setup_database(app):
         _seed_ref_tables()
         _db.session.commit()
 
+        # Re-initialize ref_cache now that ref tables are seeded.
+        # create_app() tries to init the cache, but the ref tables may
+        # not exist yet at that point (the broad except in create_app
+        # silently swallows the failure).  Re-init here so that
+        # services using ref_cache work correctly in tests.
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        ref_cache.init(_db.session)
+
+        # Re-register Jinja globals that depend on ref_cache.  The
+        # initial registration in create_app() was skipped because
+        # the cache wasn't available yet.
+        app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
+        app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
+        app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
+        app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
+        app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
+        app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
+
     yield
 
     # Teardown: drop all tables after the session.
@@ -525,7 +544,7 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
         db.session.query(TransactionType).filter_by(name="expense").one()
     )
     projected_status = (
-        db.session.query(Status).filter_by(name="projected").one()
+        db.session.query(Status).filter_by(name="Projected").one()
     )
     savings_acct_type = (
         db.session.query(AccountType).filter_by(name="savings").one()
@@ -649,7 +668,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         db.session.query(TransactionType).filter_by(name="expense").one()
     )
     projected_status = (
-        db.session.query(Status).filter_by(name="projected").one()
+        db.session.query(Status).filter_by(name="Projected").one()
     )
     savings_acct_type = (
         db.session.query(AccountType).filter_by(name="savings").one()
@@ -907,7 +926,14 @@ def _seed_ref_tables():
             "brokerage", "529",
         ]),
         (TransactionType, ["income", "expense"]),
-        (Status, ["projected", "done", "received", "credit", "cancelled", "settled"]),
+        (Status, [
+            {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
+            {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+            {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+            {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+            {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+            {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+        ]),
         (RecurrencePattern, [
             "every_period", "every_n_periods", "monthly",
             "monthly_first", "quarterly", "semi_annual",
@@ -922,13 +948,23 @@ def _seed_ref_tables():
         (TaxType, ["flat", "none", "bracket"]),
         (RaiseType, ["merit", "cola", "custom"]),
     ]
-    for model_class, names in ref_data:
-        for name in names:
-            existing = (
-                _db.session.query(model_class).filter_by(name=name).first()
-            )
-            if existing is None:
-                _db.session.add(model_class(name=name))
+    for model_class, entries in ref_data:
+        for entry in entries:
+            # Entries are either plain strings (name only) or dicts
+            # with name + additional columns (e.g. Status booleans).
+            if isinstance(entry, dict):
+                name = entry["name"]
+                existing = (
+                    _db.session.query(model_class).filter_by(name=name).first()
+                )
+                if existing is None:
+                    _db.session.add(model_class(**entry))
+            else:
+                existing = (
+                    _db.session.query(model_class).filter_by(name=entry).first()
+                )
+                if existing is None:
+                    _db.session.add(model_class(name=entry))
 
     # Backfill category on account types.
     _db.session.flush()

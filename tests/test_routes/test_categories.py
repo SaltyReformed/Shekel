@@ -198,7 +198,7 @@ class TestCategoryDelete:
         with app.app_context():
             category = seed_user["categories"]["Groceries"]
             txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
                 template_id=None,
@@ -310,7 +310,7 @@ class TestCategoryDelete:
                 name="expense"
             ).one()
             projected = db.session.query(Status).filter_by(
-                name="projected"
+                name="Projected"
             ).one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -351,7 +351,7 @@ class TestCategoryDelete:
                 name="expense"
             ).one()
             projected = db.session.query(Status).filter_by(
-                name="projected"
+                name="Projected"
             ).one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,

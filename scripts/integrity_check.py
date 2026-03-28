@@ -377,7 +377,7 @@ def check_data_consistency(session):
         SELECT t.id, t.name, s.name AS status
         FROM budget.transactions t
         JOIN ref.statuses s ON t.status_id = s.id
-        WHERE s.name IN ('done', 'received')
+        WHERE s.name IN ('Paid', 'Received')
           AND t.actual_amount IS NULL
         """,
     ))

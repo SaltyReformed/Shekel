@@ -29,15 +29,13 @@ from app.extensions import db
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
-from app.models.ref import Status
+from app import ref_cache
+from app.enums import StatusEnum
 from app.exceptions import RecurrenceConflict
 from app.models.salary_profile import SalaryProfile
 from app.utils.log_events import log_event, BUSINESS
 
 logger = logging.getLogger(__name__)
-
-# Statuses that are historical -- never modified by the recurrence engine.
-IMMUTABLE_STATUSES = frozenset({"done", "received", "credit", "cancelled"})
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):
@@ -87,7 +85,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         effective_from = periods[0].start_date
 
     # Get the projected status for new transactions.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Determine which periods match the recurrence pattern.
     matching_periods = _match_periods(rule, pattern_name, periods, effective_from)
@@ -105,10 +103,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # Skip this period if any existing entry matches a skip condition.
         should_skip = False
         for existing_txn in existing_txns:
-            status_name = existing_txn.status.name if existing_txn.status else "projected"
-
             # Never touch immutable (historical) transactions.
-            if status_name in IMMUTABLE_STATUSES:
+            if existing_txn.status and existing_txn.status.is_immutable:
                 should_skip = True
                 break
 
@@ -140,7 +136,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             template_id=template.id,
             pay_period_id=period.id,
             scenario_id=scenario_id,
-            status_id=projected_status.id,
+            status_id=projected_id,
             name=template.name,
             category_id=template.category_id,
             transaction_type_id=template.transaction_type_id,
@@ -212,10 +208,8 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     to_delete = []
 
     for txn in existing:
-        status_name = txn.status.name if txn.status else "projected"
-
         # Immutable -- never touch.
-        if status_name in IMMUTABLE_STATUSES:
+        if txn.status and txn.status.is_immutable:
             continue
 
         # Overridden -- flag as conflict for user prompt.

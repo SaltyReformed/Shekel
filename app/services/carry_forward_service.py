@@ -10,7 +10,8 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.ref import Status
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services import transfer_service
 from app.exceptions import NotFoundError
 from app.utils.log_events import log_event, BUSINESS
@@ -61,8 +62,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     if source_period_id == target_period_id:
         return 0
 
-    # Get the 'projected' status ID.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Find all non-deleted projected transactions in the source period
     # for the specified scenario only.  Without the scenario_id filter,
@@ -73,7 +73,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         .filter(
             Transaction.pay_period_id == source_period_id,
             Transaction.scenario_id == scenario_id,
-            Transaction.status_id == projected_status.id,
+            Transaction.status_id == projected_id,
             Transaction.is_deleted.is_(False),
         )
         .all()

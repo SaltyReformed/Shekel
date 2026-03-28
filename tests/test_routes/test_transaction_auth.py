@@ -75,7 +75,7 @@ def _create_other_user_with_txn(seed_user, seed_periods):
     )
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
     txn = Transaction(
@@ -156,7 +156,7 @@ class TestTransactionOwnership:
 
             # Verify status unchanged.
             db.session.refresh(other["transaction"])
-            assert other["transaction"].status.name == "projected"
+            assert other["transaction"].status.name == "Projected"
 
     def test_mark_credit_blocked(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/mark-credit returns 404 for another
@@ -170,7 +170,7 @@ class TestTransactionOwnership:
             # Verify status unchanged and no payback transaction created.
             db.session.expire_all()
             txn_after = db.session.get(Transaction, txn_id)
-            assert txn_after.status.name == "projected", (
+            assert txn_after.status.name == "Projected", (
                 "IDOR attack changed transaction status!"
             )
             # Credit workflow creates a payback txn; verify none exist.
@@ -194,7 +194,7 @@ class TestTransactionOwnership:
             assert resp.status_code == 404
 
             db.session.refresh(other["transaction"])
-            assert other["transaction"].status.name == "projected"
+            assert other["transaction"].status.name == "Projected"
 
     def test_delete_blocked(self, app, auth_client, seed_user, seed_periods):
         """DELETE /transactions/<id> returns 404 for another user's txn."""

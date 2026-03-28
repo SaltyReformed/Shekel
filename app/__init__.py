@@ -137,6 +137,33 @@ def create_app(config_name=None):
             _ensure_schemas()
             _seed_ref_tables()
 
+    # --- Reference Cache & Jinja Globals ---------------------------------
+    # Initialize the ref_cache after seeding so enum members resolve to
+    # database IDs.  Then expose cached status IDs as Jinja globals so
+    # templates can compare status_id without querying the database.
+    #
+    # The init may fail during migrations (columns not yet added) or on
+    # a fresh database before the first migration.  In that case, log a
+    # warning and skip -- the cache will initialize on the next startup
+    # after the migration completes.
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+    try:
+        with app.app_context():
+            ref_cache.init(db.session)
+
+        app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
+        app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
+        app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
+        app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
+        app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
+        app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
+    except Exception:  # pylint: disable=broad-except
+        app.logger.warning(
+            "ref_cache initialization skipped (migration pending or DB unavailable). "
+            "Status ID Jinja globals will not be available until next restart."
+        )
+
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
 
@@ -364,7 +391,14 @@ def _seed_ref_tables():
             "brokerage", "529",
         ],
         TransactionType: ["income", "expense"],
-        Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
+        Status: [
+            {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
+            {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+            {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+            {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+            {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+            {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+        ],
         RecurrencePattern: [
             "every_period", "every_n_periods", "monthly", "monthly_first",
             "quarterly", "semi_annual", "annual", "once",
@@ -377,10 +411,17 @@ def _seed_ref_tables():
     }
 
     try:
-        for model, names in ref_data.items():
-            for name in names:
-                if not db.session.query(model).filter_by(name=name).first():
-                    db.session.add(model(name=name))
+        for model, entries in ref_data.items():
+            for entry in entries:
+                # Entries are either plain strings (name only) or dicts
+                # with name + additional columns (e.g. Status booleans).
+                if isinstance(entry, dict):
+                    name = entry["name"]
+                    if not db.session.query(model).filter_by(name=name).first():
+                        db.session.add(model(**entry))
+                else:
+                    if not db.session.query(model).filter_by(name=entry).first():
+                        db.session.add(model(name=entry))
         db.session.flush()
 
         # Backfill category on account types.

@@ -9,6 +9,8 @@ actual amounts plus a status workflow.
 from decimal import Decimal
 
 from app.extensions import db
+from app import ref_cache
+from app.enums import TxnTypeEnum
 
 
 class Transaction(db.Model):
@@ -109,25 +111,25 @@ class Transaction(db.Model):
     def effective_amount(self):
         """Return the amount used in balance calculations.
 
-        - done / received: actual_amount if set, else estimated_amount
-        - projected: estimated_amount
-        - credit: 0 (excluded from checking balance)
+        - excludes_from_balance (Credit, Cancelled): 0
+        - is_settled (Paid, Received, Settled): actual_amount if set, else estimated_amount
+        - Projected: estimated_amount
         """
-        if self.status and self.status.name in ("credit", "cancelled"):
+        if self.status and self.status.excludes_from_balance:
             return Decimal("0")
-        if self.status and self.status.name in ("done", "received"):
+        if self.status and self.status.is_settled:
             return self.actual_amount if self.actual_amount is not None else self.estimated_amount
         return self.estimated_amount
 
     @property
     def is_income(self):
         """True if this transaction is income."""
-        return self.transaction_type and self.transaction_type.name == "income"
+        return self.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     @property
     def is_expense(self):
         """True if this transaction is an expense."""
-        return self.transaction_type and self.transaction_type.name == "expense"
+        return self.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

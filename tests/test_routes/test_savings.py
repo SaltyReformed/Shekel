@@ -934,7 +934,7 @@ class TestSavingsDashboardShadowTransactions:
             db.session.flush()
 
             # Create a $500 transfer from checking to HYSA.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             transfer_service.create_transfer(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
@@ -993,7 +993,7 @@ class TestSavingsDashboardShadowTransactions:
             db.session.add_all([incoming, outgoing])
             db.session.flush()
 
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             transfer_service.create_transfer(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,

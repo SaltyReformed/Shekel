@@ -42,7 +42,7 @@
       <select name="status_id" class="form-select form-select-sm">
         {% for s in statuses %}
         <option value="{{ s.id }}" {{ 'selected' if txn.status_id == s.id else '' }}>
-          {{ s.name|capitalize }}
+          {{ s.name }}
         </option>
         {% endfor %}
       </select>
@@ -71,17 +71,17 @@
 
   {# Quick status actions -- these also target the cell by ID #}
   <div class="d-flex gap-1 flex-wrap">
-    {% if txn.is_expense and txn.status.name != 'done' %}
+    {% if txn.is_expense and txn.status_id != STATUS_DONE %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
-            aria-label="Mark as done">
-      <i class="bi bi-check-circle"></i> Done
+            aria-label="Mark as paid">
+      <i class="bi bi-check-circle"></i> Paid
     </button>
     {% endif %}
 
-    {% if not txn.transfer_id and txn.is_expense and txn.status.name == 'projected' %}
+    {% if not txn.transfer_id and txn.is_expense and txn.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-warning flex-grow-1"
             hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -89,7 +89,7 @@
             aria-label="Mark as credit card">
       <i class="bi bi-credit-card"></i> Credit
     </button>
-    {% elif not txn.transfer_id and txn.status.name == 'credit' %}
+    {% elif not txn.transfer_id and txn.status_id == STATUS_CREDIT %}
     <button type="button" class="btn btn-xs btn-outline-warning flex-grow-1"
             hx-delete="{{ url_for('transactions.unmark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -99,7 +99,7 @@
     </button>
     {% endif %}
 
-    {% if txn.status.name == 'projected' %}
+    {% if txn.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
             hx-post="{{ url_for('transactions.cancel_transaction', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -109,7 +109,7 @@
     </button>
     {% endif %}
 
-    {% if txn.is_income and txn.status.name == 'projected' %}
+    {% if txn.is_income and txn.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"

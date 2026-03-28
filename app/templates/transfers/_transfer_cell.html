@@ -31,8 +31,8 @@
 
   {# Status badge #}
   {% if xfer.status %}
-    {% if xfer.status.name in ('done', 'received') %}
-      <span class="badge-done ms-1" title="{{ xfer.status.name|capitalize }}">&#10003;</span>
+    {% if xfer.status.is_settled %}
+      <span class="badge-done ms-1" title="{{ xfer.status.name }}">&#10003;</span>
     {% endif %}
   {% endif %}
 

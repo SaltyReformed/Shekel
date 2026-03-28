@@ -34,7 +34,7 @@ def transfer_data(app, db, seed_full_user_data):
     data = seed_full_user_data
     user = data["user"]
 
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
 
     # Add the default transfer categories the service needs.
     incoming_cat = Category(
@@ -411,7 +411,7 @@ class TestUpdateTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=done_status.id
             )
@@ -768,7 +768,7 @@ class TestInvariants:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=done.id
             )
@@ -800,7 +800,7 @@ class TestInvariants:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
                 amount=Decimal("999.99"),
@@ -1058,7 +1058,7 @@ class TestRestoreTransfer:
             db.session.flush()
 
             # Simulate drift: change one shadow's status.
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             shadow = db.session.query(Transaction).filter_by(
                 transfer_id=xfer_id
             ).first()

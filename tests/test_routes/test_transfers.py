@@ -61,7 +61,7 @@ def _create_template(seed_user, savings_acct, with_rule=True):
 
 def _create_transfer(seed_user, seed_periods, savings_acct, template=None):
     """Helper: create a transfer with shadow transactions via the service."""
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
@@ -133,7 +133,7 @@ def _create_other_user_with_template():
     )
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=other_user.id,
         from_account_id=checking.id,
@@ -551,7 +551,7 @@ class TestTransferInstance:
             assert response.headers.get("HX-Trigger") == "balanceChanged"
 
             db.session.refresh(xfer)
-            assert xfer.status.name == "done"
+            assert xfer.status.name == "Paid"
 
     def test_cancel_transfer(self, app, auth_client, seed_user, seed_periods):
         """POST /transfers/instance/<id>/cancel sets status to cancelled."""
@@ -564,7 +564,7 @@ class TestTransferInstance:
             assert response.status_code == 200
 
             db.session.refresh(xfer)
-            assert xfer.status.name == "cancelled"
+            assert xfer.status.name == "Cancelled"
 
     def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""
@@ -808,7 +808,7 @@ def _create_second_user_transfer(second_user_data):
     )
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = Transfer(
         user_id=second_user_data["user"].id,
         from_account_id=second_user_data["account"].id,
@@ -849,7 +849,7 @@ class TestTransferNegativePaths:
             xfer = _create_transfer(seed_user, seed_periods, savings)
 
             # Set to done first.
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             xfer.status_id = done_status.id
             db.session.commit()
 
@@ -862,7 +862,7 @@ class TestTransferNegativePaths:
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
 
             db.session.refresh(xfer)
-            assert xfer.status.name == "done"
+            assert xfer.status.name == "Paid"
 
     def test_cancel_already_cancelled_transfer(
         self, app, auth_client, seed_user, seed_periods
@@ -873,7 +873,7 @@ class TestTransferNegativePaths:
             xfer = _create_transfer(seed_user, seed_periods, savings)
 
             # Cancel first.
-            cancelled_status = db.session.query(Status).filter_by(name="cancelled").one()
+            cancelled_status = db.session.query(Status).filter_by(name="Cancelled").one()
             xfer.status_id = cancelled_status.id
             db.session.commit()
 
@@ -885,7 +885,7 @@ class TestTransferNegativePaths:
             assert resp.status_code == 200
 
             db.session.refresh(xfer)
-            assert xfer.status.name == "cancelled"
+            assert xfer.status.name == "Cancelled"
 
     def test_quick_edit_other_users_transfer_idor(
         self, app, auth_client, seed_user, second_user
@@ -1113,13 +1113,13 @@ class TestShadowContextResponse:
 
             # Verify the transfer and both shadows are done.
             db.session.refresh(xfer)
-            assert xfer.status.name == "done"
+            assert xfer.status.name == "Paid"
             shadows = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id)
                 .all()
             )
-            assert all(s.status.name == "done" for s in shadows)
+            assert all(s.status.name == "Paid" for s in shadows)
 
     def test_cancel_from_shadow_renders_transaction_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods
@@ -1144,7 +1144,7 @@ class TestShadowContextResponse:
             assert resp.headers.get("HX-Trigger") == "gridRefresh"
 
             db.session.refresh(xfer)
-            assert xfer.status.name == "cancelled"
+            assert xfer.status.name == "Cancelled"
 
     def test_update_without_source_txn_id_renders_transfer_cell(
         self, app, auth_client, seed_user, seed_periods

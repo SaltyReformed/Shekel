@@ -38,7 +38,21 @@ class TransactionType(db.Model):
 class Status(db.Model):
     """Transaction status reference.
 
-    Values: projected, done, received, credit, cancelled, settled.
+    Values: Projected, Paid, Received, Credit, Cancelled, Settled.
+
+    Boolean columns capture logical groupings so that application code
+    can branch on a single column instead of comparing against sets of
+    status names:
+
+        is_settled          -- The real-world transaction has completed
+                               (Paid, Received, Settled).  The balance
+                               calculator uses actual_amount for these.
+        is_immutable        -- The recurrence engine must not overwrite
+                               this transaction (Paid, Received, Credit,
+                               Cancelled, Settled).
+        excludes_from_balance -- This status contributes zero to the
+                               projected checking balance (Credit,
+                               Cancelled).
     """
 
     __tablename__ = "statuses"
@@ -46,6 +60,9 @@ class Status(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(15), unique=True, nullable=False)
+    is_settled = db.Column(db.Boolean, nullable=False, default=False)
+    is_immutable = db.Column(db.Boolean, nullable=False, default=False)
+    excludes_from_balance = db.Column(db.Boolean, nullable=False, default=False)
 
     def __repr__(self):
         return f"<Status {self.name}>"

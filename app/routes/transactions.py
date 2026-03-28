@@ -19,6 +19,8 @@ from app.models.scenario import Scenario
 from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
+from app import ref_cache
+from app.enums import StatusEnum
 from app.schemas.validation import (
     TransactionUpdateSchema,
     TransactionCreateSchema,
@@ -201,17 +203,16 @@ def mark_done(txn_id):
 
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
-        status = db.session.query(Status).filter_by(name="received").one()
+        status_id = ref_cache.status_id(StatusEnum.RECEIVED)
     else:
-        status = db.session.query(Status).filter_by(name="done").one()
+        status_id = ref_cache.status_id(StatusEnum.DONE)
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
         # Use 'done' for the transfer service -- it sets the same status
         # on both shadows.  The 'done'/'received' distinction is a
         # display convention for regular transactions.
-        done_status = db.session.query(Status).filter_by(name="done").one()
-        svc_kwargs = {"status_id": done_status.id}
+        svc_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
 
         actual = request.form.get("actual_amount")
         if actual:
@@ -229,7 +230,7 @@ def mark_done(txn_id):
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    txn.status_id = status.id
+    txn.status_id = status_id
 
     # Accept an actual amount from the form.
     actual = request.form.get("actual_amount")
@@ -240,7 +241,7 @@ def mark_done(txn_id):
             return "Invalid actual amount", 400
 
     db.session.commit()
-    logger.info("user_id=%d marked transaction %d as %s", current_user.id, txn_id, status.name)
+    logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -302,9 +303,9 @@ def cancel_transaction(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        cancelled = db.session.query(Status).filter_by(name="cancelled").one()
         transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, status_id=cancelled.id
+            txn.transfer_id, current_user.id,
+            status_id=ref_cache.status_id(StatusEnum.CANCELLED),
         )
         db.session.commit()
         db.session.refresh(txn)
@@ -312,8 +313,7 @@ def cancel_transaction(txn_id):
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    status = db.session.query(Status).filter_by(name="cancelled").one()
-    txn.status_id = status.id
+    txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
 
     db.session.commit()
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
@@ -478,8 +478,7 @@ def create_inline():
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
-        projected = db.session.query(Status).filter_by(name="projected").one()
-        data["status_id"] = projected.id
+        data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Set the name from the category display name.
     data["name"] = category.display_name
@@ -521,8 +520,7 @@ def create_transaction():
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
-        projected = db.session.query(Status).filter_by(name="projected").one()
-        data["status_id"] = projected.id
+        data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
     txn = Transaction(**data)
     db.session.add(txn)

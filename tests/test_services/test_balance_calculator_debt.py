@@ -7,6 +7,8 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services.balance_calculator import (
     calculate_balances,
     calculate_balances_with_amortization,
@@ -23,12 +25,31 @@ def _period(id, index, start, end):
     )
 
 
-def _shadow_income(pay_period_id, amount, transfer_id=1, status="projected"):
+def _shadow_income(pay_period_id, amount, transfer_id=1, status="Projected"):
     """Create a mock shadow income transaction (loan payment)."""
+    # Resolve the integer status_id from the ref_cache based on status name.
+    _status_enum_map = {
+        "Projected": StatusEnum.PROJECTED,
+        "Paid": StatusEnum.DONE,
+        "Received": StatusEnum.RECEIVED,
+        "Credit": StatusEnum.CREDIT,
+        "Cancelled": StatusEnum.CANCELLED,
+        "Settled": StatusEnum.SETTLED,
+    }
+    enum_member = _status_enum_map[status]
+    sid = ref_cache.status_id(enum_member)
+    is_settled = status == "Settled"
+    excludes = status in ("Cancelled", "Settled", "Credit")
     return SimpleNamespace(
         pay_period_id=pay_period_id,
         estimated_amount=Decimal(str(amount)),
-        status=SimpleNamespace(name=status),
+        status=SimpleNamespace(
+            name=status,
+            is_settled=is_settled,
+            is_immutable=False,
+            excludes_from_balance=excludes,
+        ),
+        status_id=sid,
         transaction_type=SimpleNamespace(name="income"),
         transfer_id=transfer_id,
         is_income=True,
@@ -557,7 +578,7 @@ class TestDebtBalanceCalculator:
         txns = [
             # Cancelled: should be ignored.
             _shadow_income(
-                2, "599.55", transfer_id=1, status="cancelled",
+                2, "599.55", transfer_id=1, status="Cancelled",
             ),
             # Projected: should apply normally.
             _shadow_income(3, "599.55", transfer_id=2),

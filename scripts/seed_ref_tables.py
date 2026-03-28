@@ -39,7 +39,14 @@ REF_DATA = {
         "brokerage", "529",
     ],
     TransactionType: ["income", "expense"],
-    Status: ["projected", "done", "received", "credit", "cancelled", "settled"],
+    Status: [
+        {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
+        {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+        {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+        {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+        {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
+        {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
+    ],
     RecurrencePattern: [
         "every_period", "every_n_periods", "monthly", "monthly_first",
         "quarterly", "semi_annual", "annual", "once",
@@ -54,13 +61,23 @@ REF_DATA = {
 
 def seed_ref_tables():
     """Insert reference table rows if they don't already exist."""
-    for model, names in REF_DATA.items():
-        for name in names:
-            existing = db.session.query(model).filter_by(name=name).first()
-            if existing:
-                continue
-            db.session.add(model(name=name))
-            print(f"  + {model.__tablename__}: {name}")
+    for model, entries in REF_DATA.items():
+        for entry in entries:
+            # Entries are either plain strings (name only) or dicts
+            # with name + additional columns (e.g. Status booleans).
+            if isinstance(entry, dict):
+                name = entry["name"]
+                existing = db.session.query(model).filter_by(name=name).first()
+                if existing:
+                    continue
+                db.session.add(model(**entry))
+                print(f"  + {model.__tablename__}: {name}")
+            else:
+                existing = db.session.query(model).filter_by(name=entry).first()
+                if existing:
+                    continue
+                db.session.add(model(name=entry))
+                print(f"  + {model.__tablename__}: {entry}")
 
     # Backfill category on account types.
     category_map = {

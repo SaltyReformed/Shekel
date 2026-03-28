@@ -20,7 +20,9 @@ from app.models.category import Category
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import RecurrencePattern, TransactionType
+from app import ref_cache
+from app.enums import StatusEnum
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.exceptions import RecurrenceConflict
@@ -315,10 +317,10 @@ def delete_template(template_id):
     template.is_active = False
 
     # Soft-delete projected transactions for this template.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     deleted_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_status.id,
+        Transaction.status_id == projected_id,
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
@@ -344,10 +346,10 @@ def reactivate_template(template_id):
     template.is_active = True
 
     # Restore soft-deleted projected transactions.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     restored_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_status.id,
+        Transaction.status_id == projected_id,
         Transaction.is_deleted.is_(True),
     ).update({"is_deleted": False}, synchronize_session="fetch")
 

@@ -31,9 +31,9 @@
 
   {# Status badge #}
   {% if t.status %}
-    {% if t.status.name in ('done', 'received') %}
-      <span class="badge-done ms-1" title="{{ t.status.name|capitalize }}" aria-label="{{ t.status.name|capitalize }}">✓</span>
-    {% elif t.status.name == 'credit' %}
+    {% if t.status.is_settled %}
+      <span class="badge-done ms-1" title="{{ t.status.name }}" aria-label="{{ t.status.name }}">✓</span>
+    {% elif t.status_id == STATUS_CREDIT %}
       <span class="badge-credit ms-1" title="Credit card" aria-label="Credit card">CC</span>
     {% endif %}
   {% endif %}

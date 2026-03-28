@@ -36,7 +36,7 @@ def _create_savings(seed_user):
 def _create_test_transfer(seed_user, seed_periods):
     """Create a transfer with shadows via the service.  Returns (transfer, expense_shadow, income_shadow)."""
     savings = _create_savings(seed_user)
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
@@ -59,7 +59,7 @@ def _create_test_transfer(seed_user, seed_periods):
 
 def _create_regular_txn(seed_user, seed_periods):
     """Create a regular transaction (no transfer_id)."""
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
     txn = Transaction(
         account_id=seed_user["account"].id,
@@ -130,7 +130,7 @@ class TestUpdateShadowGuard:
         """Status change on shadow propagates to transfer and both shadows."""
         with app.app_context():
             xfer, expense, income = _create_test_transfer(seed_user, seed_periods)
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
 
             resp = auth_client.patch(
                 f"/transactions/{expense.id}",
@@ -166,7 +166,7 @@ class TestMarkDoneShadowGuard:
             assert "gridRefresh" in resp.headers.get("HX-Trigger", "")
 
             db.session.expire_all()
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             xfer = db.session.get(Transfer, xfer.id)
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
@@ -240,7 +240,7 @@ class TestCancelShadowGuard:
             assert "gridRefresh" in resp.headers.get("HX-Trigger", "")
 
             db.session.expire_all()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             xfer = db.session.get(Transfer, xfer.id)
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
@@ -364,7 +364,7 @@ class TestRegularTransactionUnaffected:
 
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
     def test_mark_credit_regular_transaction(
         self, app, db, auth_client, seed_user, seed_periods
@@ -377,7 +377,7 @@ class TestRegularTransactionUnaffected:
 
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
 
     def test_cancel_regular_transaction(
         self, app, db, auth_client, seed_user, seed_periods
@@ -390,7 +390,7 @@ class TestRegularTransactionUnaffected:
 
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
 
     def test_delete_regular_ad_hoc_transaction(
         self, app, db, auth_client, seed_user, seed_periods

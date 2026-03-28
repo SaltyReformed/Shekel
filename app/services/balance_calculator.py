@@ -28,8 +28,8 @@ from app.services.interest_projection import calculate_interest
 
 logger = logging.getLogger(__name__)
 
-# Status names that indicate "already settled" -- amounts baked into anchor.
-SETTLED_STATUSES = frozenset({"done", "received"})
+from app import ref_cache
+from app.enums import StatusEnum
 
 
 def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
@@ -98,8 +98,9 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
         if not past_anchor:
             continue
         for txn in txn_by_period.get(period.id, []):
-            status_name = txn.status.name if txn.status else "projected"
-            if status_name in SETTLED_STATUSES:
+            # Settled transactions in post-anchor periods suggest the
+            # anchor balance may be stale (not yet true-up'd).
+            if txn.status and txn.status.is_settled:
                 stale_anchor_warning = True
                 break
         if stale_anchor_warning:
@@ -243,8 +244,8 @@ def calculate_balances_with_amortization(
         period_txns = txn_by_period.get(period.id, [])
         total_payment_in = Decimal("0.00")
         for txn in period_txns:
-            status_name = txn.status.name if txn.status else "projected"
-            if status_name in ("cancelled",):
+            # Cancelled transactions do not represent loan payments.
+            if txn.status and txn.status.excludes_from_balance:
                 continue
             # Shadow income transactions in this account are loan payments.
             if (txn.transfer_id is not None
@@ -283,15 +284,12 @@ def _sum_remaining(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
     for txn in transactions:
-        status_name = txn.status.name if txn.status else "projected"
-
-        # Credit transactions never affect checking balance.
-        if status_name in ("credit", "cancelled"):
-            continue
-
-        # Settled items are already in the anchor -- skip.
-        if status_name in SETTLED_STATUSES:
+        # Only projected items remain to be settled -- everything else
+        # is either already in the anchor or excluded from balance.
+        if txn.status_id != projected_id:
             continue
 
         # Remaining projected items.
@@ -307,9 +305,8 @@ def _sum_remaining(transactions):
 def _sum_all(transactions):
     """Sum remaining (projected) transactions for a non-anchor period.
 
-    Done/received and credit items are excluded -- they are either already
-    reflected in the anchor balance or represent settled items that should
-    not change the projected balance.  Only projected items contribute.
+    Only projected items contribute to the projected balance.  Settled,
+    credit, and cancelled transactions are excluded.
 
     Returns:
         (total_income, total_expenses) as Decimal tuple.
@@ -317,11 +314,11 @@ def _sum_all(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
-    for txn in transactions:
-        status_name = txn.status.name if txn.status else "projected"
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
-        # Credit and settled transactions excluded from projected balance.
-        if status_name in ("credit", "cancelled", "done", "received"):
+    for txn in transactions:
+        # Only projected items affect the projected balance.
+        if txn.status_id != projected_id:
             continue
 
         amount = Decimal(str(txn.estimated_amount))

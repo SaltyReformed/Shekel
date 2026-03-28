@@ -31,7 +31,7 @@ class TestTransactionTransferId:
 
     def _make_transfer(self, seed_full_user_data):
         """Helper: create a Transfer linked to the seeded user's accounts."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         data = seed_full_user_data
         xfer = Transfer(
             user_id=data["user"].id,
@@ -49,7 +49,7 @@ class TestTransactionTransferId:
 
     def _make_shadow(self, seed_full_user_data, transfer, txn_type_name):
         """Helper: create a shadow transaction linked to a transfer."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
         data = seed_full_user_data
         account_id = (
@@ -84,7 +84,7 @@ class TestTransactionTransferId:
     def test_transaction_transfer_id_nullable(self, app, db, seed_full_user_data):
         """Regular transaction with transfer_id=None saves without error."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             data = seed_full_user_data
             txn = Transaction(
@@ -146,7 +146,7 @@ class TestTransferCategoryId:
     def test_transfer_model_has_category_id(self, app, db, seed_full_user_data):
         """Transfer with category_id saves and resolves the relationship."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             data = seed_full_user_data
             category = data["categories"]["Rent"]
 
@@ -171,7 +171,7 @@ class TestTransferCategoryId:
     def test_transfer_category_id_nullable(self, app, db, seed_full_user_data):
         """Transfer with category_id=None saves without error."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             data = seed_full_user_data
 
             xfer = Transfer(

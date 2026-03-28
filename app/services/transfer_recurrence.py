@@ -20,15 +20,13 @@ from app.extensions import db
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
-from app.models.ref import Status
 from app.services.recurrence_engine import _match_periods
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
+from app import ref_cache
+from app.enums import StatusEnum
 
 logger = logging.getLogger(__name__)
-
-# Statuses that are historical -- never modified by the recurrence engine.
-IMMUTABLE_STATUSES = frozenset({"done", "received", "credit", "cancelled"})
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):
@@ -68,7 +66,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     matching_periods = _match_periods(rule, pattern_name, periods, effective_from)
     existing = _get_existing_map(template.id, scenario_id, matching_periods)
@@ -79,8 +77,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
         should_skip = False
         for xfer in existing_xfers:
-            status_name = xfer.status.name if xfer.status else "projected"
-            if status_name in IMMUTABLE_STATUSES:
+            if xfer.status and xfer.status.is_immutable:
                 should_skip = True
                 break
             if xfer.is_override:
@@ -105,7 +102,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             pay_period_id=period.id,
             scenario_id=scenario_id,
             amount=template.default_amount,
-            status_id=projected_status.id,
+            status_id=projected_id,
             category_id=template.category_id,
             name=template.name,
             transfer_template_id=template.id,
@@ -163,9 +160,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     to_delete = []
 
     for xfer in existing:
-        status_name = xfer.status.name if xfer.status else "projected"
-
-        if status_name in IMMUTABLE_STATUSES:
+        if xfer.status and xfer.status.is_immutable:
             continue
 
         if xfer.is_override:

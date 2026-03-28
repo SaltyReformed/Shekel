@@ -397,7 +397,7 @@ def dashboard():
 
             total_expenses = Decimal("0.00")
             for txn in recent_txns:
-                if txn.is_expense and txn.status and txn.status.name in ("done", "received"):
+                if txn.is_expense and txn.status and txn.status.is_settled:
                     total_expenses += Decimal(str(txn.effective_amount))
 
             # Convert from biweekly to monthly: total / periods * 26/12

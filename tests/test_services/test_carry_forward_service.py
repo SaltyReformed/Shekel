@@ -24,7 +24,7 @@ from app.services import carry_forward_service, transfer_service
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
-                        status_name="projected", template_id=None,
+                        status_name="Projected", template_id=None,
                         is_deleted=False, name="Test Expense",
                         amount="100.00", actual_amount=None):
     """Create a test transaction in the given period.
@@ -100,7 +100,7 @@ class TestCarryForwardUnpaid:
         """
         with app.app_context():
             txn = _create_transaction(
-                seed_user, seed_periods, status_name="settled",
+                seed_user, seed_periods, status_name="Settled",
                 name="Settled Bill",
             )
             original_period_id = txn.pay_period_id
@@ -172,7 +172,7 @@ class TestCarryForwardUnpaid:
         exactly 1 transaction moves and 6 remain in the source period.
         """
         with app.app_context():
-            statuses = ["projected", "done", "received", "credit", "cancelled", "settled"]
+            statuses = ["Projected", "Paid", "Received", "Credit", "Cancelled", "Settled"]
             original_ids = {}
 
             for status_name in statuses:
@@ -186,7 +186,7 @@ class TestCarryForwardUnpaid:
             # Also create a projected+deleted transaction (should NOT move).
             deleted_txn = _create_transaction(
                 seed_user, seed_periods,
-                status_name="projected",
+                status_name="Projected",
                 is_deleted=True,
                 name="Deleted-projected",
             )
@@ -208,7 +208,7 @@ class TestCarryForwardUnpaid:
                 .all()
             )
             assert len(target_txns) == 1
-            assert target_txns[0].name == "Status-projected"
+            assert target_txns[0].name == "Status-Projected"
 
             # Source period retains 6 transactions (5 non-projected + 1 deleted).
             source_txns = (
@@ -219,7 +219,7 @@ class TestCarryForwardUnpaid:
             assert len(source_txns) == 6
 
             # Verify each non-moved transaction is still in the source.
-            for status_name in ["done", "received", "credit", "cancelled", "settled"]:
+            for status_name in ["Paid", "Received", "Credit", "Cancelled", "Settled"]:
                 txn = db.session.get(Transaction, original_ids[status_name])
                 assert txn.pay_period_id == seed_periods[0].id, (
                     f"{status_name} transaction should stay in source period"
@@ -250,7 +250,7 @@ class TestCarryForwardUnpaid:
             db.session.add(alt_scenario)
             db.session.flush()
 
-            status = db.session.query(Status).filter_by(name="projected").one()
+            status = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(
                 name="expense"
             ).one()
@@ -320,7 +320,7 @@ def _create_savings(seed_user):
 def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
     """Create a transfer with shadows in the given period."""
     savings = _create_savings(seed_user)
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
@@ -418,7 +418,7 @@ class TestCarryForwardShadowTransactions:
         """Done transfer and shadows are not carried forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, status_id=done.id
             )
@@ -439,7 +439,7 @@ class TestCarryForwardShadowTransactions:
         """Cancelled transfer and shadows are not carried forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, status_id=cancelled.id
             )
@@ -481,7 +481,7 @@ class TestCarryForwardShadowTransactions:
             reg2 = _create_transaction(seed_user, seed_periods, name="Reg 2")
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             done_txn = _create_transaction(
-                seed_user, seed_periods, status_name="done", name="Done"
+                seed_user, seed_periods, status_name="Paid", name="Done"
             )
             db.session.flush()
 
@@ -519,7 +519,7 @@ class TestCarryForwardShadowTransactions:
             db.session.add(savings2)
             db.session.flush()
 
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             xfer1 = _create_transfer_in_period(seed_user, seed_periods, 0)
             xfer2 = transfer_service.create_transfer(

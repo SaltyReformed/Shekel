@@ -97,7 +97,7 @@ class TestTransactionCRUD:
 
     def _create_test_txn(self, seed_user, seed_periods):
         """Helper: create and return a projected expense."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -138,7 +138,7 @@ class TestTransactionCRUD:
             assert txn.estimated_amount == Decimal("99.99")
             assert txn.pay_period_id == seed_periods[0].id
             assert txn.category_id == seed_user["categories"]["Groceries"].id
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
     def test_update_transaction(self, app, auth_client, seed_user, seed_periods):
         """PATCH /transactions/<id> updates fields."""
@@ -164,13 +164,13 @@ class TestTransactionCRUD:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("120.00")
 
     def test_mark_income_received(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/mark-done sets status to received for income."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
 
             txn = Transaction(
@@ -193,7 +193,7 @@ class TestTransactionCRUD:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "received"
+            assert txn.status.name == "Received"
 
     def test_soft_delete_template_transaction(self, app, auth_client, seed_user, seed_periods):
         """DELETE /transactions/<id> soft-deletes template-linked items."""
@@ -242,7 +242,7 @@ class TestTransactionCRUD:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             assert txn.actual_amount is None
 
     def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods):
@@ -254,7 +254,7 @@ class TestTransactionCRUD:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
             assert txn.effective_amount == Decimal("0")
 
     def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods):
@@ -266,7 +266,7 @@ class TestTransactionCRUD:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
 
             # A payback transaction should exist in the next period.
             payback = db.session.query(Transaction).filter(
@@ -276,7 +276,7 @@ class TestTransactionCRUD:
             assert payback is not None, "Payback transaction was not created"
             assert payback.name == "CC Payback: Test Expense"
             assert payback.estimated_amount == Decimal("123.45")
-            assert payback.status.name == "projected"
+            assert payback.status.name == "Projected"
             assert payback.pay_period_id == seed_periods[1].id
             assert payback.credit_payback_for_id == txn.id
 
@@ -288,14 +288,14 @@ class TestTransactionCRUD:
             # First mark as credit.
             auth_client.post(f"/transactions/{txn.id}/mark-credit")
             db.session.refresh(txn)
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
 
             # Now unmark.
             response = auth_client.delete(f"/transactions/{txn.id}/unmark-credit")
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
             # Payback should be deleted.
             payback = db.session.query(Transaction).filter(
@@ -308,7 +308,7 @@ class TestTransactionCRUD:
         """POST /transactions with all fields creates a complete transaction."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             response = auth_client.post("/transactions", data={
                 "name": "Full Form Expense",
@@ -360,7 +360,7 @@ class TestTransactionNegativePaths:
 
     def _create_test_txn(self, seed_user, seed_periods):
         """Helper: create and return a projected expense."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -614,7 +614,7 @@ class TestTransactionNegativePaths:
             assert resp2.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
     def test_cancel_already_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods
@@ -632,7 +632,7 @@ class TestTransactionNegativePaths:
             assert resp2.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
 
     def test_mark_done_cancelled_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/mark-done on a cancelled transaction succeeds."""
@@ -642,7 +642,7 @@ class TestTransactionNegativePaths:
             # Cancel first.
             auth_client.post(f"/transactions/{txn.id}/cancel")
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
 
             # NOTE: No state machine guard -- cancelled transactions can be marked
             # done. This is a potential behavioral issue: the UI hides the "Done"
@@ -652,7 +652,7 @@ class TestTransactionNegativePaths:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
     def test_cancel_done_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST /transactions/<id>/cancel on a done transaction succeeds."""
@@ -662,7 +662,7 @@ class TestTransactionNegativePaths:
             # Mark done first.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
             # NOTE: No state machine guard -- done transactions can be cancelled
             # via direct API call. UI hides the Cancel button for done status.
@@ -670,7 +670,7 @@ class TestTransactionNegativePaths:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
 
     def test_mark_done_with_invalid_actual_amount(
         self, app, auth_client, seed_user, seed_periods
@@ -691,7 +691,7 @@ class TestTransactionNegativePaths:
             # The early return skips commit, so rollback to discard dirty state.
             db.session.rollback()
             txn_after = db.session.get(Transaction, txn_id)
-            assert txn_after.status.name == "projected"
+            assert txn_after.status.name == "Projected"
             assert txn_after.actual_amount is None
 
     def test_mark_done_with_negative_actual_amount(
@@ -712,7 +712,7 @@ class TestTransactionNegativePaths:
 
             db.session.refresh(txn)
             assert txn.actual_amount == Decimal("-50.00")
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
     # ── XSS protection test ──────────────────────────────────────
 
@@ -842,7 +842,7 @@ class TestAccountIdColumn:
 
     def test_transaction_model_has_account_id(self, app, db, seed_user, seed_periods):
         """Create a Transaction with account_id. Verify it saves and the relationship resolves."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
         account = seed_user["account"]
 
@@ -870,7 +870,7 @@ class TestAccountIdColumn:
         """Attempting to create a Transaction without account_id raises IntegrityError."""
         from sqlalchemy.exc import IntegrityError
 
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -908,7 +908,7 @@ class TestAccountIdColumn:
         """The payback transaction created by mark_as_credit inherits account_id."""
         from app.services import credit_workflow
 
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
         account = seed_user["account"]
 
@@ -935,7 +935,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -1013,7 +1013,7 @@ class TestAccountScopedGrid:
         return savings
 
     def _create_txn(self, account, period, scenario, name, amount,
-                    txn_type_name="expense", status_name="projected", category=None):
+                    txn_type_name="expense", status_name="Projected", category=None):
         """Helper: create a transaction on the given account."""
         status = db.session.query(Status).filter_by(name=status_name).one()
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
@@ -1313,7 +1313,7 @@ class TestAccountScopedGrid:
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
                                   category=seed_user["categories"]["Rent"])
         cancelled = self._create_txn(checking, current, scenario, "Cancelled Expense", 200,
-                                     status_name="cancelled",
+                                     status_name="Cancelled",
                                      category=seed_user["categories"]["Car Payment"])
         db.session.commit()
 
@@ -1495,7 +1495,7 @@ class TestInlineSubtotalRows:
         with app.app_context():
             # Create transactions so the sections render.
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             from app.services import pay_period_service
@@ -1536,7 +1536,7 @@ class TestInlineSubtotalRows:
         """Subtotal rows show correct per-period totals."""
         with app.app_context():
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             from app.services import pay_period_service
@@ -1575,8 +1575,8 @@ class TestInlineSubtotalRows:
         """Cancelled transactions are excluded from subtotals."""
         with app.app_context():
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -1634,7 +1634,7 @@ class TestNetCashFlowRow:
         """Helper: create income + expense in the current/first visible period."""
         from app.models.ref import TransactionType
         from app.services import pay_period_service
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = db.session.query(TransactionType).filter_by(name="income").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -1758,7 +1758,7 @@ class TestFooterCondensation:
         with app.app_context():
             from app.models.ref import TransactionType
             from app.services import pay_period_service
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:

@@ -111,7 +111,7 @@ class TestEffectiveAmountDecimal:
 
     def test_transaction_credit_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled/credit Transaction.effective_amount must be Decimal."""
-        credit_status = db.session.query(Status).filter_by(name="credit").one()
+        credit_status = db.session.query(Status).filter_by(name="Credit").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
         txn = Transaction(
             template_id=None,
@@ -132,7 +132,7 @@ class TestEffectiveAmountDecimal:
 
     def test_transaction_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled Transaction.effective_amount must be Decimal."""
-        cancelled_status = db.session.query(Status).filter_by(name="cancelled").one()
+        cancelled_status = db.session.query(Status).filter_by(name="Cancelled").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
         txn = Transaction(
             template_id=None,
@@ -153,7 +153,7 @@ class TestEffectiveAmountDecimal:
 
     def test_transfer_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled Transfer.effective_amount must be Decimal."""
-        cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+        cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
 
         xfer = Transfer(
@@ -174,7 +174,7 @@ class TestEffectiveAmountDecimal:
 
     def test_transfer_active_returns_decimal(self, app, db, seed_user, seed_periods):
         """Active Transfer.effective_amount returns the amount as Decimal."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
 
         xfer = Transfer(
@@ -458,7 +458,7 @@ class TestBalanceWithTransfers:
         """A shadow expense from a transfer reduces the source account's balance."""
         from app.services import transfer_service
 
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 
@@ -496,7 +496,7 @@ class TestBalanceWithTransfers:
         """A shadow income from a transfer increases the destination account's balance."""
         from app.services import transfer_service
 
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 
@@ -532,8 +532,8 @@ class TestBalanceWithTransfers:
         """A cancelled transfer's shadows should not affect the balance."""
         from app.services import transfer_service
 
-        projected = db.session.query(Status).filter_by(name="projected").one()
-        cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
         account = seed_user["account"]
 

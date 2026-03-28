@@ -16,7 +16,9 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, AccountType, Status, TransactionType
+from app.models.ref import RecurrencePattern, AccountType, TransactionType
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services import transfer_recurrence
 from app.exceptions import RecurrenceConflict
 
@@ -335,9 +337,9 @@ class TestTransferRegeneration:
             )
             db.session.flush()
 
-            # Mark the first one as done.
-            done_status = db.session.query(Status).filter_by(name="done").one()
-            created[0].status_id = done_status.id
+            # Mark the first one as done (Paid).
+            done_id_val = ref_cache.status_id(StatusEnum.DONE)
+            created[0].status_id = done_id_val
             original_amount = created[0].amount
             done_id = created[0].id
             db.session.flush()
@@ -764,14 +766,12 @@ class TestNegativePaths:
             db.session.flush()
             assert len(created) == len(seed_periods)
 
-            # Mark one as done.
-            done_status = (
-                db.session.query(Status).filter_by(name="done").one()
-            )
+            # Mark one as done (Paid).
+            done_id_val = ref_cache.status_id(StatusEnum.DONE)
             target_xfer = created[3]
             target_id = target_xfer.id
             original_amount = target_xfer.amount
-            target_xfer.status_id = done_status.id
+            target_xfer.status_id = done_id_val
             db.session.flush()
 
             # Change template amount and regenerate.
@@ -788,7 +788,7 @@ class TestNegativePaths:
             assert preserved is not None, (
                 f"Done transfer {target_id} was deleted during regeneration"
             )
-            assert preserved.status.name == "done"
+            assert preserved.status_id == done_id_val
             assert preserved.id == target_id
             assert preserved.amount == original_amount
 

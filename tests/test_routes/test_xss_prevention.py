@@ -145,7 +145,7 @@ def _create_transaction(seed_user, seed_periods):
         db.session.query(TransactionType).filter_by(name="expense").one()
     )
     projected = (
-        db.session.query(Status).filter_by(name="projected").one()
+        db.session.query(Status).filter_by(name="Projected").one()
     )
     txn = Transaction(
         pay_period_id=seed_periods[0].id,
@@ -165,7 +165,7 @@ def _create_transaction(seed_user, seed_periods):
 def _create_transfer(seed_user, seed_periods, savings_acct):
     """Create a transfer with shadow transactions via the service."""
     projected = (
-        db.session.query(Status).filter_by(name="projected").one()
+        db.session.query(Status).filter_by(name="Projected").one()
     )
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,

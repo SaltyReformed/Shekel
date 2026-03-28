@@ -49,14 +49,14 @@ class TestTransactionEffectiveAmount:
     def test_projected_returns_estimated(self, app, db, seed_user, seed_periods):
         """Projected transaction returns estimated_amount."""
         with app.app_context():
-            txn = self._make_txn(seed_user, seed_periods, "projected", Decimal("150.00"))
+            txn = self._make_txn(seed_user, seed_periods, "Projected", Decimal("150.00"))
             assert txn.effective_amount == Decimal("150.00")
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
         """Done transaction with actual_amount returns actual_amount."""
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "done",
+                seed_user, seed_periods, "Paid",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
             assert txn.effective_amount == Decimal("145.00")
@@ -64,7 +64,7 @@ class TestTransactionEffectiveAmount:
     def test_done_without_actual_returns_estimated(self, app, db, seed_user, seed_periods):
         """Done transaction without actual_amount falls back to estimated."""
         with app.app_context():
-            txn = self._make_txn(seed_user, seed_periods, "done", Decimal("150.00"))
+            txn = self._make_txn(seed_user, seed_periods, "Paid", Decimal("150.00"))
             assert txn.effective_amount == Decimal("150.00")
 
     def test_credit_status_returns_zero(self, app, db, seed_user, seed_periods):
@@ -76,7 +76,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "credit", Decimal("250.00"),
+                seed_user, seed_periods, "Credit", Decimal("250.00"),
             )
             assert txn.effective_amount == Decimal("0")
 
@@ -88,7 +88,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "cancelled", Decimal("500.00"),
+                seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
             assert txn.effective_amount == Decimal("0")
 
@@ -101,7 +101,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "received", Decimal("150.00"),
+                seed_user, seed_periods, "Received", Decimal("150.00"),
             )
             assert txn.effective_amount == Decimal("150.00")
 
@@ -114,7 +114,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "received",
+                seed_user, seed_periods, "Received",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
             assert txn.effective_amount == Decimal("145.00")
@@ -128,7 +128,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "done",
+                seed_user, seed_periods, "Paid",
                 Decimal("100.00"), actual=Decimal("0.00"),
             )
             assert txn.effective_amount == Decimal("0.00")
@@ -143,7 +143,7 @@ class TestTransactionTypeProperties:
     def test_is_income(self, app, db, seed_user, seed_periods):
         """is_income returns True for income-type transactions."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -164,7 +164,7 @@ class TestTransactionTypeProperties:
     def test_is_expense(self, app, db, seed_user, seed_periods):
         """is_expense returns True for expense-type transactions."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -222,25 +222,25 @@ class TestTransferEffectiveAmount:
     def test_projected_returns_amount(self, app, db, seed_user, seed_periods):
         """Projected transfer returns its amount."""
         with app.app_context():
-            xfer = self._make_transfer(seed_user, seed_periods, "projected", Decimal("500.00"))
+            xfer = self._make_transfer(seed_user, seed_periods, "Projected", Decimal("500.00"))
             assert xfer.effective_amount == Decimal("500.00")
 
     def test_done_returns_amount(self, app, db, seed_user, seed_periods):
         """Done transfer returns its amount."""
         with app.app_context():
-            xfer = self._make_transfer(seed_user, seed_periods, "done", Decimal("500.00"))
+            xfer = self._make_transfer(seed_user, seed_periods, "Paid", Decimal("500.00"))
             assert xfer.effective_amount == Decimal("500.00")
 
     def test_cancelled_returns_zero(self, app, db, seed_user, seed_periods):
         """Cancelled transfer returns Decimal('0') for effective_amount.
 
         Cancelled transfers should not affect account balance calculations.
-        The source checks `self.status.name == 'cancelled'` and returns 0.
+        The source checks `self.status.name == 'Cancelled'` and returns 0.
         Expected: effective_amount == Decimal('0').
         """
         with app.app_context():
             xfer = self._make_transfer(
-                seed_user, seed_periods, "cancelled", Decimal("500.00"),
+                seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
             assert xfer.effective_amount == Decimal("0")
 

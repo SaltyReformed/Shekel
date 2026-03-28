@@ -210,7 +210,7 @@ class TestRecurrenceEngineOverhead:
 
         Direct ORM inserts to isolate trigger overhead from recurrence logic.
         """
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
@@ -284,7 +284,7 @@ class TestRecurrenceEngineOverhead:
         UPDATEs are the most common write operation in a budgeting app
         (editing amounts, marking done, changing statuses).
         """
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id
@@ -361,7 +361,7 @@ class TestRecurrenceEngineOverhead:
 
     def test_bulk_delete_trigger_overhead(self, app, db, perf_user, perf_periods):
         """Bulk DELETE of transactions: overhead with triggers under 20%."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense = db.session.query(TransactionType).filter_by(name="expense").one()
         scenario_id = perf_user["scenario"].id
         category_id = perf_user["category"].id

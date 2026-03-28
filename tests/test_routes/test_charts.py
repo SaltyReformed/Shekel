@@ -177,7 +177,7 @@ class TestSpendingFragment:
                 .one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
             # Use a period that falls within the last_12 range.
             txn = Transaction(
@@ -240,7 +240,7 @@ class TestBudgetFragment:
                 .one()
             )
             projected_status = (
-                db.session.query(Status).filter_by(name="projected").one()
+                db.session.query(Status).filter_by(name="Projected").one()
             )
             txn = Transaction(
                 template_id=None,

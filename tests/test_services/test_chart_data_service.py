@@ -175,7 +175,7 @@ class TestSpendingByCategory:
                 .one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
 
             # Create two expenses in the same group.
@@ -215,7 +215,7 @@ class TestSpendingByCategory:
                 .one()
             )
             cancelled_status = (
-                db.session.query(Status).filter_by(name="cancelled").one()
+                db.session.query(Status).filter_by(name="Cancelled").one()
             )
 
             txn = Transaction(
@@ -252,10 +252,10 @@ class TestSpendingByCategory:
                 .filter_by(name="expense")
                 .one()
             )
-            done = db.session.query(Status).filter_by(name="done").one()
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
-            credit = db.session.query(Status).filter_by(name="credit").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
+            credit = db.session.query(Status).filter_by(name="Credit").one()
 
             # Use a period we know is in "last_12" range (period 0).
             period = seed_periods[0]
@@ -342,7 +342,7 @@ class TestBudgetVsActuals:
                 .one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
 
             txn = Transaction(
@@ -645,10 +645,10 @@ class TestSpendingChartRealisticData:
                 .filter_by(name="income").one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
             cancelled_status = (
-                db.session.query(Status).filter_by(name="cancelled").one()
+                db.session.query(Status).filter_by(name="Cancelled").one()
             )
 
             # seed_user provides 5 categories with groups:
@@ -795,7 +795,7 @@ class TestSpendingChartRealisticData:
                 .filter_by(name="expense").one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
 
             categories_ordered = [
@@ -880,10 +880,10 @@ class TestSpendingChartRealisticData:
                 .filter_by(name="expense").one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
             projected_status = (
-                db.session.query(Status).filter_by(name="projected").one()
+                db.session.query(Status).filter_by(name="Projected").one()
             )
 
             cat = seed_user["categories"]["Rent"]  # group_name="Home"
@@ -961,13 +961,13 @@ class TestBalanceChart52Periods:
                 .filter_by(name="income").one()
             )
             projected_status = (
-                db.session.query(Status).filter_by(name="projected").one()
+                db.session.query(Status).filter_by(name="Projected").one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
             cancelled_status = (
-                db.session.query(Status).filter_by(name="cancelled").one()
+                db.session.query(Status).filter_by(name="Cancelled").one()
             )
 
             account = seed_user["account"]
@@ -1275,7 +1275,7 @@ class TestNetWorthRealisticData:
                 .filter_by(name="income").one()
             )
             projected_status = (
-                db.session.query(Status).filter_by(name="projected").one()
+                db.session.query(Status).filter_by(name="Projected").one()
             )
             mortgage_type = (
                 db.session.query(AccountType)
@@ -1381,7 +1381,7 @@ class TestBudgetVsActualsRealisticData:
                 .filter_by(name="expense").one()
             )
             done_status = (
-                db.session.query(Status).filter_by(name="done").one()
+                db.session.query(Status).filter_by(name="Paid").one()
             )
 
             cat_utilities = Category(
@@ -1475,7 +1475,7 @@ class TestBudgetVsActualsRealisticData:
                 .filter_by(name="expense").one()
             )
             projected_status = (
-                db.session.query(Status).filter_by(name="projected").one()
+                db.session.query(Status).filter_by(name="Projected").one()
             )
 
             cat = seed_user["categories"]["Rent"]  # group_name="Home"
@@ -1726,7 +1726,7 @@ class TestBalanceOverTimeWithTransfers:
             db.session.flush()
 
             # Create a $1000 transfer from checking to savings.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             transfer_service.create_transfer(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,

@@ -103,7 +103,7 @@ class TestReferentialIntegrity:
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
-        status = db.session.query(Status).filter_by(name="projected").one()
+        status = db.session.query(Status).filter_by(name="Projected").one()
         txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transactions
@@ -455,7 +455,7 @@ class TestDataConsistency:
         self, app, db, seed_user, seed_periods
     ):
         """DC-01 flags a transaction with status 'done' but no actual_amount."""
-        status_done = db.session.query(Status).filter_by(name="done").one()
+        status_done = db.session.query(Status).filter_by(name="Paid").one()
         txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -484,7 +484,7 @@ class TestDataConsistency:
         insert the anomaly, run the check, then restore it.
         """
         account = seed_user["account"]
-        status_projected = db.session.query(Status).filter_by(name="projected").one()
+        status_projected = db.session.query(Status).filter_by(name="Projected").one()
 
         # Drop the CHECK constraint so we can insert a self-transfer.
         db.session.execute(db.text(

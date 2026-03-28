@@ -237,7 +237,7 @@ class TestRecurrenceGeneration:
             db.session.flush()
 
             # Mark the first one as done.
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             created[0].status_id = done_status.id
             created[0].actual_amount = Decimal("95.00")
             db.session.flush()
@@ -1498,7 +1498,7 @@ class TestNegativePaths:
 
             # Mark the 3rd transaction as received.
             received_status = (
-                db.session.query(Status).filter_by(name="received").one()
+                db.session.query(Status).filter_by(name="Received").one()
             )
             target_txn = created[2]
             target_id = target_txn.id
@@ -1516,7 +1516,7 @@ class TestNegativePaths:
             assert preserved is not None, (
                 f"Received transaction {target_id} was deleted during regeneration"
             )
-            assert preserved.status.name == "received"
+            assert preserved.status.name == "Received"
             assert preserved.id == target_id
 
     def test_generate_with_empty_periods_list(
@@ -1562,7 +1562,7 @@ class TestNegativePaths:
 
             # Cancel one transaction.
             cancelled_status = (
-                db.session.query(Status).filter_by(name="cancelled").one()
+                db.session.query(Status).filter_by(name="Cancelled").one()
             )
             target_txn = created[4]
             target_id = target_txn.id
@@ -1581,7 +1581,7 @@ class TestNegativePaths:
                 f"Cancelled transaction {target_id} was deleted "
                 f"during regeneration"
             )
-            assert preserved.status.name == "cancelled"
+            assert preserved.status.name == "Cancelled"
             assert preserved.id == target_id
 
     def test_credit_status_in_existing_is_immutable(
@@ -1607,7 +1607,7 @@ class TestNegativePaths:
 
             # Mark one as credit.
             credit_status = (
-                db.session.query(Status).filter_by(name="credit").one()
+                db.session.query(Status).filter_by(name="Credit").one()
             )
             target_txn = created[6]
             target_id = target_txn.id
@@ -1626,7 +1626,7 @@ class TestNegativePaths:
                 f"Credit transaction {target_id} was deleted "
                 f"during regeneration"
             )
-            assert preserved.status.name == "credit"
+            assert preserved.status.name == "Credit"
             assert preserved.id == target_id
 
 

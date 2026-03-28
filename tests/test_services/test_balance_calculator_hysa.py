@@ -10,6 +10,8 @@ from collections import namedtuple
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services.balance_calculator import (
     calculate_balances,
     calculate_balances_with_interest,
@@ -26,10 +28,12 @@ HysaParams = namedtuple(
 # Shadow transaction stub -- represents a transfer's effect as an
 # income or expense transaction.  The balance calculator sees these
 # identically to regular transactions.
-StatusStub = namedtuple("StatusStub", ["name"])
+StatusStub = namedtuple("StatusStub", [
+    "name", "is_settled", "is_immutable", "excludes_from_balance",
+])
 TxnTypeStub = namedtuple("TxnTypeStub", ["name"])
 ShadowTxn = namedtuple("ShadowTxn", [
-    "pay_period_id", "estimated_amount", "status",
+    "pay_period_id", "estimated_amount", "status", "status_id",
     "transaction_type", "transfer_id", "is_income", "is_expense",
 ])
 
@@ -48,12 +52,31 @@ def _make_periods(count=4):
     return periods
 
 
-def _shadow_income(pay_period_id, amount, status_name="projected"):
+def _shadow_income(pay_period_id, amount, status_name="Projected"):
     """Create a shadow income transaction representing a transfer deposit."""
+    # Resolve the integer status_id from the ref_cache based on status name.
+    _status_enum_map = {
+        "Projected": StatusEnum.PROJECTED,
+        "Paid": StatusEnum.DONE,
+        "Received": StatusEnum.RECEIVED,
+        "Credit": StatusEnum.CREDIT,
+        "Cancelled": StatusEnum.CANCELLED,
+        "Settled": StatusEnum.SETTLED,
+    }
+    enum_member = _status_enum_map[status_name]
+    sid = ref_cache.status_id(enum_member)
+    is_settled = status_name == "Settled"
+    excludes = status_name in ("Cancelled", "Settled", "Credit")
     return ShadowTxn(
         pay_period_id=pay_period_id,
         estimated_amount=amount,
-        status=StatusStub(name=status_name),
+        status=StatusStub(
+            name=status_name,
+            is_settled=is_settled,
+            is_immutable=False,
+            excludes_from_balance=excludes,
+        ),
+        status_id=sid,
         transaction_type=TxnTypeStub(name="income"),
         transfer_id=1,
         is_income=True,

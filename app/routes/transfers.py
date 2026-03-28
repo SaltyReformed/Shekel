@@ -23,6 +23,8 @@ from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.ref import RecurrencePattern, Status
+from app import ref_cache
+from app.enums import StatusEnum
 from app.schemas.validation import (
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -331,12 +333,12 @@ def delete_transfer_template(template_id):
     template.is_active = False
 
     # Find projected, non-deleted transfers to soft-delete.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     transfers_to_delete = (
         db.session.query(Transfer)
         .filter(
             Transfer.transfer_template_id == template.id,
-            Transfer.status_id == projected_status.id,
+            Transfer.status_id == projected_id,
             Transfer.is_deleted.is_(False),
         )
         .all()
@@ -371,12 +373,12 @@ def reactivate_transfer_template(template_id):
     template.is_active = True
 
     # Find soft-deleted projected transfers to restore.
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     transfers_to_restore = (
         db.session.query(Transfer)
         .filter(
             Transfer.transfer_template_id == template.id,
-            Transfer.status_id == projected_status.id,
+            Transfer.status_id == projected_id,
             Transfer.is_deleted.is_(True),
         )
         .all()
@@ -510,7 +512,7 @@ def create_ad_hoc():
 
     data = _xfer_create_schema.load(request.form)
 
-    projected = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     try:
         xfer = transfer_service.create_transfer(
@@ -520,7 +522,7 @@ def create_ad_hoc():
             pay_period_id=data["pay_period_id"],
             scenario_id=data["scenario_id"],
             amount=data["amount"],
-            status_id=projected.id,
+            status_id=projected_id,
             category_id=data.get("category_id"),
             name=data.get("name"),
             notes=data.get("notes"),
@@ -571,8 +573,8 @@ def mark_done(xfer_id):
     if xfer is None:
         return "Not found", 404
 
-    done_status = db.session.query(Status).filter_by(name="done").one()
-    transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_status.id)
+    done_id = ref_cache.status_id(StatusEnum.DONE)
+    transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
 
     db.session.commit()
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
@@ -600,9 +602,9 @@ def cancel_transfer(xfer_id):
     if xfer is None:
         return "Not found", 404
 
-    cancelled_status = db.session.query(Status).filter_by(name="cancelled").one()
+    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
     transfer_service.update_transfer(
-        xfer.id, current_user.id, status_id=cancelled_status.id
+        xfer.id, current_user.id, status_id=cancelled_id
     )
 
     db.session.commit()

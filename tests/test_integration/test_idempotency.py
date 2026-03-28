@@ -494,7 +494,7 @@ class TestMarkDoneDoubleSubmit:
         no state change, no corruption of actual_amount.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -528,7 +528,7 @@ class TestMarkDoneDoubleSubmit:
             # Verify DB state: transaction is done with correct actual_amount.
             db.session.expire_all()
             txn = db.session.get(Transaction, txn_id)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("115.50")
             assert txn.estimated_amount == Decimal("120.00")
 
@@ -549,7 +549,7 @@ class TestCarryForwardDoubleSubmit:
         from app.services import carry_forward_service
 
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create 3 projected transactions in period 0.

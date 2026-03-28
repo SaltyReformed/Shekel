@@ -11,7 +11,9 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services import pay_period_service
 from app.exceptions import NotFoundError, ValidationError
 
@@ -56,8 +58,11 @@ def mark_as_credit(transaction_id, user_id):
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
 
+    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
     # Idempotency: if already credited with existing payback, return it.
-    if txn.status and txn.status.name == "credit":
+    if txn.status_id == credit_id:
         existing_payback = (
             db.session.query(Transaction)
             .filter_by(credit_payback_for_id=txn.id)
@@ -67,20 +72,17 @@ def mark_as_credit(transaction_id, user_id):
             return existing_payback
 
     # Only projected transactions can be newly marked as credit.
-    if txn.status.name != "projected":
+    if txn.status_id != projected_id:
         raise ValidationError(
             f"Cannot mark a '{txn.status.name}' transaction as credit. "
             "Only projected transactions can be marked as credit."
         )
 
-    # Get the 'credit' status.
-    credit_status = db.session.query(Status).filter_by(name="credit").one()
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    # TransactionType lookup -- still name-based (Commit #2 will replace).
     expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
     # Update the original transaction's status.
-    txn.status_id = credit_status.id
-    txn.status = credit_status
+    txn.status_id = credit_id
 
     # Find or create the CC Payback category for this user.
     from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
@@ -104,7 +106,7 @@ def mark_as_credit(transaction_id, user_id):
         template_id=None,  # Ad-hoc, not from a template.
         pay_period_id=next_period.id,
         scenario_id=txn.scenario_id,
-        status_id=projected_status.id,
+        status_id=projected_id,
         name=f"CC Payback: {txn.name}",
         category_id=category.id,
         transaction_type_id=expense_type.id,
@@ -141,11 +143,10 @@ def unmark_credit(transaction_id, user_id):
     if txn.pay_period.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
-    projected_status = db.session.query(Status).filter_by(name="projected").one()
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Revert the original transaction's status.
-    txn.status_id = projected_status.id
-    txn.status = projected_status
+    txn.status_id = projected_id
 
     # Delete the auto-generated payback transaction.
     payback = (

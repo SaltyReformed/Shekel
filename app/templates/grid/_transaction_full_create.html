@@ -51,8 +51,8 @@
       <label class="form-label mb-0 small">Status</label>
       <select name="status_id" class="form-select form-select-sm">
         {% for s in statuses %}
-        <option value="{{ s.id }}" {{ 'selected' if s.name == 'projected' else '' }}>
-          {{ s.name|capitalize }}
+        <option value="{{ s.id }}" {{ 'selected' if s.id == STATUS_PROJECTED else '' }}>
+          {{ s.name }}
         </option>
         {% endfor %}
       </select>

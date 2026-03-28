@@ -22,7 +22,9 @@ from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.ref import AccountType, Status
+from app.models.ref import AccountType
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services import (
     amortization_engine,
     balance_calculator,
@@ -382,14 +384,12 @@ def get_spending_by_category(user_id, period_range="current"):
     if not scenario:
         return empty
 
-    done = db.session.query(Status).filter_by(name="done").first()
-    projected = db.session.query(Status).filter_by(name="projected").first()
-    if not done or not projected:
-        return empty
+    done_id = ref_cache.status_id(StatusEnum.DONE)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     transactions = _get_expense_transactions(
         scenario.id, [p.id for p in periods],
-        status_filter=[done.id, projected.id],
+        status_filter=[done_id, projected_id],
     )
 
     # Group by category group_name and sum.

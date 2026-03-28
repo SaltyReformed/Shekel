@@ -90,9 +90,9 @@ class Transfer(db.Model):
     def effective_amount(self):
         """Return the amount used in balance calculations.
 
-        Cancelled transfers contribute 0.
+        Transfers with an excluded status (Cancelled) contribute 0.
         """
-        if self.status and self.status.name == "cancelled":
+        if self.status and self.status.excludes_from_balance:
             return Decimal("0")
         return self.amount
 

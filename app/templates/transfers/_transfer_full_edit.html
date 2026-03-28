@@ -42,7 +42,7 @@
       <select name="status_id" class="form-select form-select-sm">
         {% for s in statuses %}
         <option value="{{ s.id }}" {{ 'selected' if xfer.status_id == s.id else '' }}>
-          {{ s.name|capitalize }}
+          {{ s.name }}
         </option>
         {% endfor %}
       </select>
@@ -84,14 +84,14 @@
 
   {# Quick status actions #}
   <div class="d-flex gap-1 flex-wrap">
-    {% if xfer.status.name == 'projected' %}
+    {% if xfer.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transfers.mark_done', xfer_id=xfer.id) }}"
             hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}" hx-swap="innerHTML"
             {% if source_txn_id %}hx-vals='{"source_txn_id": "{{ source_txn_id }}"}'{% endif %}
             hx-disabled-elt="this"
-            aria-label="Mark as done">
-      <i class="bi bi-check-circle"></i> Done
+            aria-label="Mark as paid">
+      <i class="bi bi-check-circle"></i> Paid
     </button>
     <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
             hx-post="{{ url_for('transfers.cancel_transfer', xfer_id=xfer.id) }}"

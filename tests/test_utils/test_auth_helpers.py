@@ -69,7 +69,7 @@ class TestGetOwnedViaParent:
 
     def _create_transaction(self, seed_user, period):
         """Helper: create a projected expense in the given period."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -118,7 +118,7 @@ class TestGetOwnedViaParent:
             db.session.flush()
 
             # Create a transaction owned by the second user.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             txn2 = Transaction(
                 pay_period_id=periods2[0].id,

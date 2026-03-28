@@ -72,7 +72,7 @@ class TestSalaryToGrid:
             for txn in txns:
                 assert txn.transaction_type.name == "income"
                 assert txn.estimated_amount == Decimal("2884.62")
-                assert txn.status.name == "projected"
+                assert txn.status.name == "Projected"
 
 
 class TestTemplateRecurrenceToGrid:
@@ -137,7 +137,7 @@ class TestTransferToBalance:
             db.session.add(savings)
             db.session.flush()
 
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             # Create a transfer via the service (creates shadow transactions).
             xfer = transfer_service.create_transfer(
@@ -180,7 +180,7 @@ class TestCreditPaybackBalance:
     def test_credit_creates_payback_and_zeroes_effective(self, app, db, seed_user, seed_periods):
         """Marking as credit creates payback and makes original effective_amount 0."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -203,7 +203,7 @@ class TestCreditPaybackBalance:
             db.session.refresh(txn)
 
             # Original transaction is credit status → effective_amount is 0.
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
             assert txn.effective_amount == Decimal("0")
 
             # Payback exists in next period with matching amount.
@@ -234,7 +234,7 @@ class TestAnchorTrueUpBalance:
     def test_anchor_change_shifts_all_balances(self, app, db, seed_user, seed_periods):
         """Changing anchor balance shifts all downstream period balances by the same delta."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create an expense in period 1.
@@ -283,7 +283,7 @@ class TestCarryForwardWorkflow:
         status, name, category_id, and transaction_type_id exactly.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
 
@@ -316,7 +316,7 @@ class TestCarryForwardWorkflow:
             remaining = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id,
             ).filter(
-                Transaction.status.has(name="projected"),
+                Transaction.status.has(name="Projected"),
                 Transaction.is_deleted.is_(False),
             ).count()
             assert remaining == 0
@@ -331,13 +331,13 @@ class TestCarryForwardWorkflow:
             by_name = {t.name: t for t in moved}
             assert by_name["Groceries"].estimated_amount == Decimal("85.00")
             assert by_name["Groceries"].pay_period_id == seed_periods[1].id
-            assert by_name["Groceries"].status.name == "projected"
+            assert by_name["Groceries"].status.name == "Projected"
             assert by_name["Groceries"].category_id == groceries_cat_id
             assert by_name["Groceries"].transaction_type_id == expense_type.id
 
             assert by_name["Gas"].estimated_amount == Decimal("45.00")
             assert by_name["Gas"].pay_period_id == seed_periods[1].id
-            assert by_name["Gas"].status.name == "projected"
+            assert by_name["Gas"].status.name == "Projected"
             assert by_name["Gas"].category_id == groceries_cat_id
             assert by_name["Gas"].transaction_type_id == expense_type.id
 
@@ -355,7 +355,7 @@ class TestCarryForwardEdgeCases:
         estimated_amount, name, category_id, or transaction_type_id.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
             rent_cat_id = seed_user["categories"]["Rent"].id
@@ -396,7 +396,7 @@ class TestCarryForwardEdgeCases:
             for name, amount, cat_id in items:
                 assert by_name[name].estimated_amount == amount
                 assert by_name[name].pay_period_id == seed_periods[1].id
-                assert by_name[name].status.name == "projected"
+                assert by_name[name].status.name == "Projected"
                 assert by_name[name].category_id == cat_id
                 assert by_name[name].transaction_type_id == expense_type.id
 
@@ -404,7 +404,7 @@ class TestCarryForwardEdgeCases:
             source_count = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id,
             ).filter(
-                Transaction.status.has(name="projected"),
+                Transaction.status.has(name="Projected"),
                 Transaction.is_deleted.is_(False),
             ).count()
             assert source_count == 0
@@ -418,8 +418,8 @@ class TestCarryForwardEdgeCases:
         Carried-forward 'projected' transactions are appended, not merged.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            done = db.session.query(Status).filter_by(name="done").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create 2 existing 'done' transactions in the TARGET period.
@@ -476,11 +476,11 @@ class TestCarryForwardEdgeCases:
             # Original 'done' transactions are unmodified.
             for eid in existing_ids:
                 orig = db.session.get(Transaction, eid)
-                assert orig.status.name == "done"
+                assert orig.status.name == "Paid"
                 assert orig.pay_period_id == seed_periods[1].id
 
             # Verify carried-forward items have correct amounts.
-            carried = [t for t in target_txns if t.status.name == "projected"]
+            carried = [t for t in target_txns if t.status.name == "Projected"]
             assert len(carried) == 3
             carried_amounts = sorted(t.estimated_amount for t in carried)
             assert carried_amounts == sorted([
@@ -496,10 +496,10 @@ class TestCarryForwardEdgeCases:
         that only projected items are carried forward.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            done = db.session.query(Status).filter_by(name="done").one()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
-            credit = db.session.query(Status).filter_by(name="credit").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
+            credit = db.session.query(Status).filter_by(name="Credit").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # 2 projected (should move), 1 done, 1 cancelled, 1 credit (should stay).
@@ -553,8 +553,8 @@ class TestCarryForwardEdgeCases:
         Source has 1 done and 1 cancelled -- nothing to move. Target is unchanged.
         """
         with app.app_context():
-            done = db.session.query(Status).filter_by(name="done").one()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Source has only non-projected transactions.
@@ -602,7 +602,7 @@ class TestCarryForwardEdgeCases:
         and returns 0 immediately. No transactions are duplicated.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -631,7 +631,7 @@ class TestCarryForwardEdgeCases:
                 pay_period_id=seed_periods[0].id, name="SelfCarry",
             ).filter(Transaction.is_deleted.is_(False)).one()
             assert txn_check.estimated_amount == Decimal("99.00")
-            assert txn_check.status.name == "projected"
+            assert txn_check.status.name == "Projected"
 
 
 # ── Credit Workflow Tests ────────────────────────────────────────────
@@ -649,7 +649,7 @@ class TestCreditWorkflowEdgeCases:
         credit_payback_for_id link back to the original.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -673,13 +673,13 @@ class TestCreditWorkflowEdgeCases:
             txn = db.session.get(Transaction, txn_id)
 
             # Original transaction status changed to credit.
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
             assert txn.effective_amount == Decimal("0")
 
             # Payback transaction created in next period.
             assert payback.pay_period_id == seed_periods[1].id
             assert payback.estimated_amount == Decimal("75.43")
-            assert payback.status.name == "projected"
+            assert payback.status.name == "Projected"
             assert payback.credit_payback_for_id == txn_id
             assert payback.name == "CC Payback: Grocery Run"
 
@@ -693,7 +693,7 @@ class TestCreditWorkflowEdgeCases:
         a second one.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -735,7 +735,7 @@ class TestCreditWorkflowEdgeCases:
         source code raises ValidationError for any non-projected status.
         """
         with app.app_context():
-            done = db.session.query(Status).filter_by(name="done").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -752,16 +752,16 @@ class TestCreditWorkflowEdgeCases:
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
-            with pytest.raises(ShekelValidationError, match="Cannot mark a 'done' transaction"):
+            with pytest.raises(ShekelValidationError, match="Cannot mark a 'Paid' transaction"):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_mark_as_credit_on_cancelled_transaction(self, app, db, seed_user, seed_periods):
-        """Cannot mark a 'cancelled' transaction as credit -- raises ValidationError.
+        """Cannot mark a 'Cancelled' transaction as credit -- raises ValidationError.
 
         Cancelled transactions should not generate payback entries.
         """
         with app.app_context():
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -778,7 +778,7 @@ class TestCreditWorkflowEdgeCases:
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
-            with pytest.raises(ShekelValidationError, match="Cannot mark a 'cancelled' transaction"):
+            with pytest.raises(ShekelValidationError, match="Cannot mark a 'Cancelled' transaction"):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
     def test_mark_as_credit_last_period_no_next_period(
@@ -790,7 +790,7 @@ class TestCreditWorkflowEdgeCases:
         None for the last period. The source then raises ValidationError.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             last_period = seed_periods[-1]
@@ -818,7 +818,7 @@ class TestCreditWorkflowEdgeCases:
         the auto-generated payback transaction no longer exists.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -851,7 +851,7 @@ class TestCreditWorkflowEdgeCases:
             # Verify original reverted to projected.
             db.session.expire_all()
             txn = db.session.get(Transaction, txn_id)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
             # Verify payback is deleted.
             payback_check = db.session.get(Transaction, payback_id)
@@ -865,7 +865,7 @@ class TestCreditWorkflowEdgeCases:
         Marking a paycheck as 'credit' makes no financial sense.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
 
             txn = Transaction(
@@ -908,8 +908,8 @@ class TestFullBudgetWorkflow:
           6. Assert final state of both periods.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            done = db.session.query(Status).filter_by(name="done").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Step 1: Create 3 projected expenses in period 0.
@@ -976,15 +976,15 @@ class TestFullBudgetWorkflow:
             assert len(period0_txns) == 2
 
             by_name_p0 = {t.name: t for t in period0_txns}
-            assert by_name_p0["Rent"].status.name == "done"
+            assert by_name_p0["Rent"].status.name == "Paid"
             assert by_name_p0["Rent"].estimated_amount == Decimal("1200.00")
             assert by_name_p0["Rent"].actual_amount == Decimal("1195.00")
-            assert by_name_p0["Dining Out"].status.name == "credit"
+            assert by_name_p0["Dining Out"].status.name == "Credit"
             assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
             assert by_name_p0["Dining Out"].effective_amount == Decimal("0")
 
             # Period 0 has no projected transactions remaining.
-            p0_projected = [t for t in period0_txns if t.status.name == "projected"]
+            p0_projected = [t for t in period0_txns if t.status.name == "Projected"]
             assert len(p0_projected) == 0
 
             # Period 1: 2 transactions -- payback + carried-forward Gas Station.
@@ -995,9 +995,9 @@ class TestFullBudgetWorkflow:
 
             by_name_p1 = {t.name: t for t in period1_txns}
             assert by_name_p1["CC Payback: Dining Out"].estimated_amount == Decimal("75.00")
-            assert by_name_p1["CC Payback: Dining Out"].status.name == "projected"
+            assert by_name_p1["CC Payback: Dining Out"].status.name == "Projected"
             assert by_name_p1["CC Payback: Dining Out"].credit_payback_for_id == txn2_id
 
             assert by_name_p1["Gas Station"].estimated_amount == Decimal("45.50")
-            assert by_name_p1["Gas Station"].status.name == "projected"
+            assert by_name_p1["Gas Station"].status.name == "Projected"
             assert by_name_p1["Gas Station"].pay_period_id == seed_periods[1].id

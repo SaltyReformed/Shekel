@@ -30,7 +30,7 @@ from app.services import balance_calculator, carry_forward_service, credit_workf
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="projected",
+def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="Projected",
                       txn_type_name="expense", amount="100.00", name="Test Item",
                       category_key="Rent"):
     """Create and flush a transaction with sensible defaults."""
@@ -102,10 +102,10 @@ class TestStateMachineViolations:
         A 'done' transaction can be freely reverted to 'projected'.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
             db.session.commit()
 
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
@@ -114,7 +114,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
     def test_mark_done_negative_actual_amount(self, app, auth_client, seed_user, seed_periods):
         """POST mark_done with actual_amount=-500 -- no range check.
@@ -144,7 +144,7 @@ class TestStateMachineViolations:
         the actual_amount could be overwritten if a new value is posted.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
             txn.actual_amount = Decimal("75.00")
             db.session.commit()
 
@@ -179,11 +179,11 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
             assert txn.effective_amount == Decimal("0")
 
             # Step 2: PATCH back to projected.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
@@ -194,7 +194,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
             assert txn.effective_amount == original_amount
 
     def test_done_to_cancelled_transition(
@@ -207,7 +207,7 @@ class TestStateMachineViolations:
         effective_amount drops to zero (excluded from balance calcs).
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
             txn.actual_amount = Decimal("85.00")
             db.session.commit()
 
@@ -219,7 +219,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
             assert txn.effective_amount == Decimal("0")
 
             # Current behavior: actual_amount is preserved in the DB.
@@ -240,7 +240,7 @@ class TestStateMachineViolations:
             txn = _make_transaction(
                 seed_user, seed_periods, txn_type_name="income",
                 name="Paycheck", category_key="Salary", amount="3000.00",
-                status_name="received",
+                status_name="Received",
             )
             txn.actual_amount = Decimal("2800.00")
             db.session.commit()
@@ -249,7 +249,7 @@ class TestStateMachineViolations:
             assert txn.effective_amount == Decimal("2800.00")
 
             # PATCH back to projected.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
@@ -260,7 +260,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
             # effective_amount now uses estimated_amount (projected path).
             assert txn.effective_amount == Decimal("3000.00")
             # actual_amount is NOT cleared by the PATCH.
@@ -285,7 +285,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
             assert txn.effective_amount == Decimal("0")
 
             # Find the payback transaction.
@@ -295,7 +295,7 @@ class TestStateMachineViolations:
             payback_id = payback.id
 
             # PATCH the original back to projected.
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
@@ -306,7 +306,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
             assert txn.effective_amount == Decimal("100.00")
 
             # BUG: the payback transaction is now orphaned.
@@ -324,10 +324,10 @@ class TestStateMachineViolations:
         effective_amount falls through to estimated_amount.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
             db.session.commit()
 
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(done_status.id)},
@@ -337,7 +337,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             # effective_amount for done without actual_amount uses estimated_amount.
             assert txn.effective_amount == txn.estimated_amount
 
@@ -350,7 +350,7 @@ class TestStateMachineViolations:
         Verifies the status remains cancelled with no side effects.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
             db.session.commit()
 
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -358,7 +358,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
             assert txn.effective_amount == Decimal("0")
 
     def test_mark_done_on_cancelled_transaction(
@@ -371,7 +371,7 @@ class TestStateMachineViolations:
         projections if the cancellation was intentional.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="cancelled")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
             db.session.commit()
 
             resp = auth_client.post(
@@ -383,7 +383,7 @@ class TestStateMachineViolations:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("95.00")
             assert txn.effective_amount == Decimal("95.00")
 
@@ -396,7 +396,7 @@ class TestStateMachineViolations:
         Attempting to mark a done transaction as credit returns 400.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="done")
+            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
             txn.actual_amount = Decimal("100.00")
             db.session.commit()
 
@@ -407,7 +407,7 @@ class TestStateMachineViolations:
             assert b"Only projected" in resp.data
 
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
             assert txn.effective_amount == Decimal("100.00")
 
 
@@ -569,7 +569,7 @@ class TestCreditWorkflowEdgeCases:
             payback_id = payback.id
 
             # Simulate: payback was paid.
-            done_status = db.session.query(Status).filter_by(name="done").one()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             payback.status_id = done_status.id
             payback.actual_amount = Decimal("100.00")
             db.session.commit()
@@ -884,7 +884,7 @@ class TestNumericEdgeCases:
         with app.app_context():
             from sqlalchemy.exc import DataError
 
-            status = db.session.query(Status).filter_by(name="projected").one()
+            status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
             txn = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -914,7 +914,7 @@ class TestNumericEdgeCases:
             schema = TransactionCreateSchema()
 
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             errors = schema.validate({
                 "name": "Bad Item",
@@ -956,7 +956,7 @@ class TestAuthEdgeCases:
             db.session.flush()
 
             # Create a transaction for user 2.
-            status = db.session.query(Status).filter_by(name="projected").one()
+            status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn2 = Transaction(
@@ -986,7 +986,7 @@ class TestAuthEdgeCases:
             db.session.refresh(txn2)
             assert txn2.estimated_amount == Decimal("99.99"), \
                 "IDOR PATCH should not have modified the victim's amount"
-            assert txn2.status.name == "projected", \
+            assert txn2.status.name == "Projected", \
                 "IDOR PATCH should not have modified the victim's status"
 
     def test_access_other_users_account(

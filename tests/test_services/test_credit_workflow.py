@@ -23,7 +23,7 @@ class TestCreditWorkflow:
 
     def _create_expense(self, seed_user, seed_periods, amount="100.00"):
         """Helper: create a projected expense in the first period."""
-        projected = db.session.query(Status).filter_by(name="projected").one()
+        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
         txn = Transaction(
@@ -49,7 +49,7 @@ class TestCreditWorkflow:
             db.session.flush()
 
             # Original is now 'credit' status.
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
 
             # Payback exists in the next period.
             assert payback.pay_period_id == seed_periods[1].id
@@ -69,7 +69,7 @@ class TestCreditWorkflow:
             db.session.flush()
 
             # Original reverted to projected.
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
             # Payback is deleted.
             assert db.session.get(Transaction, payback_id) is None
@@ -77,7 +77,7 @@ class TestCreditWorkflow:
     def test_cannot_credit_income(self, app, db, seed_user, seed_periods):
         """Marking income as credit raises ValidationError."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
 
             txn = Transaction(
@@ -146,7 +146,7 @@ class TestCreditWorkflow:
         """mark_as_credit raises ValidationError when no next period exists."""
         with app.app_context():
             # Create expense in the last period (no period follows it).
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             txn = Transaction(
@@ -178,7 +178,7 @@ class TestCreditWorkflow:
 
             # Transaction status must be unchanged -- no partial modification.
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
 
     def test_unmark_credit_wrong_user_raises_not_found(
         self, app, db, seed_user, seed_periods
@@ -195,7 +195,7 @@ class TestCreditWorkflow:
 
             # Transaction status must be unchanged -- still 'credit'.
             db.session.refresh(txn)
-            assert txn.status.name == "credit"
+            assert txn.status.name == "Credit"
 
             # Payback transaction must still exist.
             assert db.session.get(Transaction, payback_id) is not None
@@ -223,7 +223,7 @@ class TestCarryForward:
     def test_carry_forward_moves_projected_items(self, app, db, seed_user, seed_periods):
         """Carry forward moves projected items to the target period."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create two projected expenses in the first period.
@@ -267,8 +267,8 @@ class TestCarryForward:
     def test_carry_forward_skips_done_items(self, app, db, seed_user, seed_periods):
         """Carry forward does NOT move done/received items."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            done = db.session.query(Status).filter_by(name="done").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # One projected, one done.
@@ -319,7 +319,7 @@ class TestCarryForward:
     ):
         """Template-linked items are flagged is_override when carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create a template (without full recurrence for simplicity).
@@ -363,8 +363,8 @@ class TestCarryForward:
     def test_carry_forward_skips_cancelled_items(self, app, db, seed_user, seed_periods):
         """Cancelled items stay in the source period and are not carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            cancelled = db.session.query(Status).filter_by(name="cancelled").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # One projected (should move), one cancelled (should stay).
@@ -411,8 +411,8 @@ class TestCarryForward:
     def test_carry_forward_skips_received_items(self, app, db, seed_user, seed_periods):
         """Received income items stay in the source period and are not carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
-            received = db.session.query(Status).filter_by(name="received").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            received = db.session.query(Status).filter_by(name="Received").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
             income_type = db.session.query(TransactionType).filter_by(name="income").one()
 
@@ -461,7 +461,7 @@ class TestCarryForward:
     def test_carry_forward_skips_soft_deleted_items(self, app, db, seed_user, seed_periods):
         """Soft-deleted projected items are excluded from carry forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Soft-deleted projected expense -- should NOT be moved.
@@ -605,7 +605,7 @@ class TestNegativePaths:
     """
 
     def _create_expense(self, seed_user, seed_periods, amount="100.00",
-                        status_name="projected"):
+                        status_name="Projected"):
         """Helper: create an expense in the first period with the given status."""
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
@@ -643,7 +643,7 @@ class TestNegativePaths:
 
             # Status unchanged (was projected, still projected).
             db.session.refresh(txn)
-            assert txn.status.name == "projected"
+            assert txn.status.name == "Projected"
             assert txn.status_id == original_status_id
 
             # No payback transaction exists for this transaction.
@@ -696,7 +696,7 @@ class TestNegativePaths:
         actually carried forward.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="projected").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="expense").one()
 
             # Create a template for a template-linked transaction.
@@ -766,7 +766,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             txn = self._create_expense(
-                seed_user, seed_periods, status_name="done",
+                seed_user, seed_periods, status_name="Paid",
             )
 
             with pytest.raises(ValidationError, match="Only projected transactions"):
@@ -774,7 +774,7 @@ class TestNegativePaths:
 
             # Status unchanged -- still 'done'.
             db.session.refresh(txn)
-            assert txn.status.name == "done"
+            assert txn.status.name == "Paid"
 
             # No payback was created.
             payback_count = (
@@ -792,7 +792,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             txn = self._create_expense(
-                seed_user, seed_periods, status_name="cancelled",
+                seed_user, seed_periods, status_name="Cancelled",
             )
 
             with pytest.raises(ValidationError, match="Only projected transactions"):
@@ -800,4 +800,4 @@ class TestNegativePaths:
 
             # Status unchanged -- still 'cancelled'.
             db.session.refresh(txn)
-            assert txn.status.name == "cancelled"
+            assert txn.status.name == "Cancelled"
