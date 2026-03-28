@@ -34,6 +34,8 @@ These rules apply to every task, every file, every commit. No exceptions. They a
 
 10. **Finish what you start.** Do not leave partial implementations, placeholder logic, or "temporary" solutions that become permanent. Every piece of code you write should be production-ready when you commit it. If a task is too large to complete properly in one pass, break it into smaller tasks that are each individually complete and correct.
 
+11. **Offer to commit and push after every task.** When a task is complete (code written, tests passing), always ask the developer if they would like the changes committed and pushed. Do not commit or push without confirmation, but always prompt so changes are not left uncommitted.
+
 ## Common Commands
 
 ```bash
