@@ -2804,3 +2804,420 @@ class TestTransactionNameRows:
                 html,
             )
             assert "Cancelled Item" not in th_labels
+
+
+class TestTooltipContent:
+    """Tests for Commit #16: enhanced transaction cell tooltips.
+
+    The tooltip now shows full dollar amounts with cents, actual-vs-estimated
+    comparison, status labels, and notes.  The transaction name is no longer
+    in the tooltip (it moved to the row header in Commit #15).
+    """
+
+    def _get_current_period(self, seed_user):
+        """Return the current period for the seed user."""
+        return pay_period_service.get_current_period(seed_user["user"].id)
+
+    @staticmethod
+    def _extract_txn_titles(html):
+        """Extract title attribute values from txn-cell divs."""
+        import re
+        return re.findall(
+            r'<div class="txn-cell"[^>]*title="([^"]*)"', html,
+        )
+
+    def test_tooltip_contains_full_amount_with_cents(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip shows the full dollar amount with two decimal places,
+        including comma-separated thousands (e.g. $1,234.56).
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Tooltip Amount",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1234.56"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$1,234.56" in t]
+            assert matching, f"Expected tooltip with $1,234.56, got: {titles}"
+            # Should NOT show the rounded amount as the primary tooltip content.
+            assert not any(
+                t.startswith("$1,235 ") or t == "$1,235" for t in titles
+            ), "Tooltip should show cents, not rounded amount"
+
+    def test_tooltip_shows_actual_vs_estimated_when_different(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When actual_amount differs from estimated_amount, the tooltip shows
+        both: '$487.32 (est: $500.00)'.
+        """
+        with app.app_context():
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=paid.id,
+                name="Test Est Comparison",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+                actual_amount=Decimal("487.32"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$487.32" in t and "(est: $500.00)" in t]
+            assert matching, f"Expected '$487.32 (est: $500.00)', got: {titles}"
+
+    def test_tooltip_hides_estimate_when_amounts_equal(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When actual_amount equals estimated_amount, the tooltip shows only
+        the amount without the '(est: ...)' comparison.
+        """
+        with app.app_context():
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=paid.id,
+                name="Test Equal Amounts",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+                actual_amount=Decimal("500.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$500.00" in t]
+            assert matching, f"Expected tooltip with $500.00, got: {titles}"
+            assert not any("(est:" in t for t in matching), (
+                "Tooltip should not show '(est:' when amounts are equal"
+            )
+
+    def test_tooltip_includes_paid_status(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip includes '-- Paid' for transactions with Paid status."""
+        with app.app_context():
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=paid.id,
+                name="Test Paid Status",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=Decimal("100.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "-- Paid" in t]
+            assert matching, f"Expected tooltip with '-- Paid', got: {titles}"
+
+    def test_tooltip_includes_projected_status(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip includes '-- Projected' for projected transactions."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Projected Status",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("75.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "-- Projected" in t]
+            assert matching, f"Expected tooltip with '-- Projected', got: {titles}"
+
+    def test_tooltip_includes_notes(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip includes notes when present on the transaction."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Notes Tooltip",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+                notes="Auto-pay on the 15th",
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "-- Auto-pay on the 15th" in t]
+            assert matching, f"Expected notes in tooltip, got: {titles}"
+
+    def test_tooltip_no_trailing_separator_when_no_notes(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When notes are empty/None, the tooltip does not have a trailing
+        '-- ' separator with nothing after it.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test No Trailing Sep",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("200.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$200.00" in t]
+            assert matching, f"Expected tooltip with $200.00, got: {titles}"
+            for title in matching:
+                assert not title.endswith("-- "), (
+                    f"Tooltip has trailing separator: '{title}'"
+                )
+                assert not title.endswith("--"), (
+                    f"Tooltip has trailing separator: '{title}'"
+                )
+
+    def test_tooltip_handles_zero_amount(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip renders $0.00 correctly for a zero-amount transaction."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Zero Amount",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("0.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$0.00" in t]
+            assert matching, f"Expected tooltip with $0.00, got: {titles}"
+
+    def test_tooltip_handles_large_amount(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Tooltip formats large amounts with comma-separated thousands."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Large Amount",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("12345.67"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$12,345.67" in t]
+            assert matching, f"Expected tooltip with $12,345.67, got: {titles}"
+
+    def test_tooltip_credit_transaction_shows_charged_amount(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Credit transactions show the estimated (charged) amount in the
+        tooltip, not $0.00 from effective_amount.  Also includes '-- Credit'.
+        """
+        with app.app_context():
+            credit = db.session.query(Status).filter_by(name="Credit").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=credit.id,
+                name="Test Credit Tooltip",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("200.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$200.00" in t and "-- Credit" in t]
+            assert matching, (
+                f"Expected tooltip with $200.00 and '-- Credit', got: {titles}"
+            )
+            # Must NOT show $0.00 (which is what effective_amount returns).
+            assert not any("$0.00" in t and "-- Credit" in t for t in titles), (
+                "Credit tooltip should show charged amount, not $0.00"
+            )
+
+    def test_tooltip_survives_htmx_cell_update(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """After a PATCH update via quick edit, the re-rendered cell includes
+        a title attribute with the updated amount (server-side rendering).
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test HTMX Update",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("80.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            # PATCH the amount.
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"estimated_amount": "95.50"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # The re-rendered cell should have the updated amount in the title.
+            assert "$95.50" in html, (
+                f"Expected $95.50 in PATCH response title, got: {html[:500]}"
+            )
+
+    def test_tooltip_no_redundant_name(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The tooltip does NOT contain the transaction name (it moved to
+        the row header in Commit #15).
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="State Farm",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("150.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            titles = self._extract_txn_titles(html)
+            matching = [t for t in titles if "$150.00" in t]
+            assert matching, f"Expected tooltip with $150.00, got: {titles}"
+            for title in matching:
+                assert "State Farm" not in title, (
+                    f"Tooltip should not contain transaction name, got: '{title}'"
+                )

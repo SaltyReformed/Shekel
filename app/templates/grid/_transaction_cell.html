@@ -6,6 +6,7 @@
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
+{% set display_amount = t.actual_amount if t.actual_amount is not none else t.estimated_amount %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
 <div class="txn-cell"
      hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
@@ -14,8 +15,8 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{{ t.name }}: ${{ '{:,.0f}'.format(t.effective_amount) }}{% if t.status %} ({{ t.status.name }}){% endif %}"
-     title="{{ t.name }}{% if t.notes %} -- {{ t.notes }}{% endif %}">
+     aria-label="{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}"
+     title="${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}">
 
   {# Show crossed-out estimate + actual when they differ #}
   {% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
