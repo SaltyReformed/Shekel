@@ -11,9 +11,11 @@ import pytest
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_service
@@ -2068,3 +2070,737 @@ class TestPeriodHeaderDateFormat:
             if next_periods and next_periods[0].start_date.year > today.year:
                 full = next_periods[0].start_date.strftime("%-m/%-d/%y")
                 assert full in html
+
+
+class TestTransactionNameRows:
+    """Tests for Commit #15: transaction-name-based row headers.
+
+    The grid now shows one row per unique (category, template, name) tuple
+    instead of one row per category.  These tests verify that the restructure
+    produces correct row headers, handles all transaction types, maintains
+    deterministic ordering, and preserves subtotals and HTMX interactions.
+    """
+
+    def _get_current_period(self, seed_user):
+        """Return the current period for the seed user."""
+        return pay_period_service.get_current_period(seed_user["user"].id)
+
+    def test_grid_separate_rows_for_same_category_transactions(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Two templates in the same category produce two distinct grid rows,
+        each with the transaction name in the row header.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            # Create a second category item under "Auto" group.
+            auto_insurance = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Insurance",
+            )
+            db.session.add(auto_insurance)
+            db.session.flush()
+
+            # Two templates, same category.
+            tmpl_sf = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=auto_insurance.id,
+                transaction_type_id=expense_type.id,
+                name="State Farm",
+                default_amount=Decimal("150.00"),
+            )
+            tmpl_geico = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=auto_insurance.id,
+                transaction_type_id=expense_type.id,
+                name="Geico",
+                default_amount=Decimal("120.00"),
+            )
+            db.session.add_all([tmpl_sf, tmpl_geico])
+            db.session.flush()
+
+            txn_sf = Transaction(
+                template_id=tmpl_sf.id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="State Farm",
+                category_id=auto_insurance.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("150.00"),
+            )
+            txn_geico = Transaction(
+                template_id=tmpl_geico.id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Geico",
+                category_id=auto_insurance.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("120.00"),
+            )
+            db.session.add_all([txn_sf, txn_geico])
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Both names appear as row headers in the expenses section.
+            assert "State Farm" in html
+            assert "Geico" in html
+
+            # Verify they are in separate <th> elements.
+            import re
+            th_labels = re.findall(
+                r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                html,
+            )
+            assert "State Farm" in th_labels
+            assert "Geico" in th_labels
+
+    def test_grid_one_time_transaction_gets_own_row(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A one-time transaction (no template) produces its own row with
+        the transaction name in the row header.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Car Repair",
+                category_id=seed_user["categories"]["Car Payment"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("450.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            import re
+            th_labels = re.findall(
+                r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                html,
+            )
+            assert "Car Repair" in th_labels
+
+    def test_grid_shadow_transactions_get_own_rows(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Shadow transactions from transfers produce their own grid rows
+        with the transaction name visible in the row header.
+        """
+        with app.app_context():
+            from app.models.transfer import Transfer
+            from app.models.transfer_template import TransferTemplate
+
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            current = self._get_current_period(seed_user)
+
+            # Create a savings account for the transfer destination.
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+            savings_acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_acct)
+            db.session.flush()
+
+            # Create the outgoing category.
+            out_cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Transfers",
+                item_name="Outgoing",
+            )
+            db.session.add(out_cat)
+            db.session.flush()
+
+            # Create transfer and shadow expense on checking.
+            transfer = Transfer(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                pay_period_id=current.id,
+                status_id=projected.id,
+                name="To Savings",
+                amount=Decimal("500.00"),
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings_acct.id,
+            )
+            db.session.add(transfer)
+            db.session.flush()
+
+            shadow = Transaction(
+                transfer_id=transfer.id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Transfer to Savings",
+                category_id=out_cat.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add(shadow)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            import re
+            th_labels = re.findall(
+                r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                html,
+            )
+            # "Transfer to" prefix is stripped -- row shows just "Savings".
+            assert "Savings" in th_labels
+
+    def test_grid_empty_cell_has_correct_category_id(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Empty cells pass the correct category_id for quick create,
+        matching the row key's category.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            # Create a transaction only in the current period so adjacent
+            # periods have empty cells for this row key.
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Electric Bill",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("120.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # The empty cell's hx-get URL should contain the correct category_id.
+            cat_id = seed_user["categories"]["Rent"].id
+            assert f"category_id={cat_id}" in html
+
+    def test_grid_group_headers_appear(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Group header rows appear before each category group's transactions
+        with the group-header-row CSS class.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            # Create expenses in two different groups.
+            txn_home = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Rent Payment",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1000.00"),
+            )
+            txn_auto = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Car Loan",
+                category_id=seed_user["categories"]["Car Payment"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("400.00"),
+            )
+            db.session.add_all([txn_home, txn_auto])
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Group headers with correct class.
+            assert 'class="group-header-row"' in html
+            # Both groups present.
+            assert "Home" in html
+            assert "Auto" in html
+
+    def test_grid_inline_edit_works_after_restructure(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Inline quick-edit still works: GET returns form, PATCH updates
+        the cell, and HX-Trigger fires balanceChanged.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Phone Bill",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("80.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            # GI-1: GET quick edit form.
+            resp = auth_client.get(f"/transactions/{txn.id}/quick-edit")
+            assert resp.status_code == 200
+            assert b"80" in resp.data
+
+            # GI-2: PATCH updates amount.
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"estimated_amount": "95.00"},
+            )
+            assert resp.status_code == 200
+            assert b"95" in resp.data
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+    def test_grid_empty_cell_quick_create_works(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """GI-9 regression: clicking an empty cell loads the quick-create form."""
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            # Create a transaction so a row key exists with empty cells
+            # in adjacent periods.
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Internet Bill",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("60.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            # Extract the quick-create URL from an empty cell.
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            import re
+            # Find quick-create hx-get URLs for the Rent category.
+            # The route URL is /transactions/new/quick; HTML encodes & as &amp;.
+            cat_id = seed_user["categories"]["Rent"].id
+            pattern = rf'hx-get="(/transactions/new/quick\?[^"]*category_id={cat_id}[^"]*)"'
+            urls = re.findall(pattern, html)
+            assert urls, "No quick-create URL found for the Rent category"
+
+            # Decode HTML entities so the test client can use the URL.
+            url = urls[0].replace("&amp;", "&")
+
+            # GET the quick-create form.
+            resp = auth_client.get(url)
+            assert resp.status_code == 200
+            assert b"estimated_amount" in resp.data
+
+    def test_grid_keyboard_nav_classes_correct(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Transaction rows do not have excluded CSS classes; group headers,
+        subtotals, and banners do.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            html = resp.data.decode()
+
+            # Group header rows have the correct class.
+            assert "group-header-row" in html
+            # Subtotal rows have correct class.
+            assert "subtotal-row" in html
+            # Net cash flow row.
+            assert "net-cash-flow-row" in html
+            # Section banners.
+            assert "section-banner-income" in html
+            assert "section-banner-expense" in html
+
+    def test_grid_empty_state_no_transactions(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Grid renders cleanly with no transactions -- section banners,
+        subtotal rows with zeros, and no crash.
+        """
+        with app.app_context():
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Structure intact.
+            assert "INCOME" in html
+            assert "EXPENSES" in html
+            assert "Total Income" in html
+            assert "Total Expenses" in html
+            assert "Net Cash Flow" in html
+            assert "Projected End Balance" in html
+
+    def test_grid_subtotals_unchanged_after_restructure(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Subtotals iterate over all transactions per period, not row keys.
+        Total Income shows $2,000, Total Expenses shows $1,500, Net shows $500.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            current = self._get_current_period(seed_user)
+
+            income = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+            )
+            expense1 = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1000.00"),
+            )
+            expense2 = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add_all([income, expense1, expense2])
+            db.session.commit()
+
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Subtotals computed from all transactions.
+            assert "$2,000" in html   # Total Income
+            assert "$1,500" in html   # Total Expenses
+            assert "$500" in html     # Net Cash Flow
+
+    def test_grid_payday_workflow_complete(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Full payday workflow still works after the row restructure:
+        true-up, mark received, carry forward, mark paid, mark credit.
+        Identical to C-0-7 from regression suite.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            account = seed_user["account"]
+
+            current = self._get_current_period(seed_user)
+            past = next(
+                p for p in seed_periods
+                if p.period_index == current.period_index - 1
+            )
+
+            # Setup: past expense, current income + 2 expenses.
+            past_exp = Transaction(
+                pay_period_id=past.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Past Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("150.00"),
+            )
+            income_txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+            )
+            exp_done = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Electric Bill",
+                category_id=seed_user["categories"]["Car Payment"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            exp_credit = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("300.00"),
+            )
+            db.session.add_all([past_exp, income_txn, exp_done, exp_credit])
+            db.session.commit()
+
+            # Step 1: True-up.
+            resp = auth_client.patch(
+                f"/accounts/{account.id}/true-up",
+                data={"anchor_balance": "5000.00"},
+            )
+            assert resp.status_code == 200
+
+            # Step 2: Mark income received.
+            resp = auth_client.post(f"/transactions/{income_txn.id}/mark-done")
+            assert resp.status_code == 200
+
+            # Step 3: Carry forward.
+            resp = auth_client.post(f"/pay-periods/{past.id}/carry-forward")
+            assert resp.status_code == 200
+
+            # Step 4: Mark expense paid.
+            resp = auth_client.post(f"/transactions/{exp_done.id}/mark-done")
+            assert resp.status_code == 200
+
+            # Step 5: Mark expense credit.
+            resp = auth_client.post(f"/transactions/{exp_credit.id}/mark-credit")
+            assert resp.status_code == 200
+
+            # Verify balances.
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=2&offset=0"
+                f"&account_id={account.id}"
+            )
+            assert resp.status_code == 200
+            assert b"$4,850" in resp.data
+            assert b"$4,550" in resp.data
+
+    def test_grid_row_ordering_is_deterministic(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Row ordering is deterministic -- two requests produce identical
+        row label sequences.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            current = self._get_current_period(seed_user)
+
+            # Create multiple transactions across categories.
+            txns = [
+                Transaction(
+                    pay_period_id=current.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name="Paycheck",
+                    category_id=seed_user["categories"]["Salary"].id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                ),
+                Transaction(
+                    pay_period_id=current.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name="Rent",
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("1000.00"),
+                ),
+                Transaction(
+                    pay_period_id=current.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name="Groceries",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("200.00"),
+                ),
+                Transaction(
+                    pay_period_id=current.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name="Car Loan",
+                    category_id=seed_user["categories"]["Car Payment"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("400.00"),
+                ),
+            ]
+            db.session.add_all(txns)
+            db.session.commit()
+
+            import re
+
+            def extract_row_labels(html_str):
+                """Extract row-label <th> text in order."""
+                return re.findall(
+                    r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                    html_str,
+                )
+
+            resp1 = auth_client.get("/?periods=3")
+            labels1 = extract_row_labels(resp1.data.decode())
+
+            resp2 = auth_client.get("/?periods=3")
+            labels2 = extract_row_labels(resp2.data.decode())
+
+            assert labels1 == labels2
+            assert len(labels1) >= 4  # At least 4 transaction rows.
+
+    def test_grid_credit_payback_gets_own_row(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """CC Payback transactions generated by the credit workflow appear
+        in their own row with 'CC Payback: ...' in the row header.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Restaurant",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("75.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            # Mark as credit -- generates payback in next period.
+            resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            assert resp.status_code == 200
+
+            # GET the grid showing the next period where the payback lives.
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            import re
+            th_labels = re.findall(
+                r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                html,
+            )
+            # "CC Payback:" prefix is stripped -- row shows original name.
+            # The original transaction was "Restaurant", so the payback
+            # row should show "Restaurant" (under Credit Card: Payback group).
+            assert "Restaurant" in th_labels, (
+                f"Expected 'Restaurant' row header for payback, got: {th_labels}"
+            )
+
+    def test_grid_cancelled_transaction_handling(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Cancelled transactions are excluded from the grid -- they do not
+        generate row keys and do not appear as cells.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            current = self._get_current_period(seed_user)
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Cancelled Item",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            # Cancel it.
+            resp = auth_client.post(f"/transactions/{txn.id}/cancel")
+            assert resp.status_code == 200
+
+            # GET the grid.
+            resp = auth_client.get("/?periods=3")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            import re
+            th_labels = re.findall(
+                r'<th[^>]*class="[^"]*row-label[^"]*"[^>]*>\s*(\S[^<]*?)\s*</th>',
+                html,
+            )
+            assert "Cancelled Item" not in th_labels

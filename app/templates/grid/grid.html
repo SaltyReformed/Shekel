@@ -106,61 +106,59 @@
           INCOME
         </td>
       </tr>
-      {% set income_type_name = "income" %}
-      {% for period in periods %}{% endfor %}{# Preload #}
 
-      {# Render income rows grouped by category #}
+      {# Render income rows -- one row per unique (category, template, name) #}
       {% set ns = namespace(current_group='') %}
-      {% for category in categories %}
-        {# Check if any transaction in visible periods uses this category as income #}
-        {% set has_income = [] %}
-        {% for period in periods %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.category_id == category.id and txn.is_income %}
-              {% if has_income.append(1) %}{% endif %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-
-        {% if has_income %}
-          {% if category.group_name != ns.current_group %}
-            {% set ns.current_group = category.group_name %}
-            <tr class="group-header-row">
-              <td class="sticky-col text-muted small fw-semibold"
-                  colspan="{{ periods|length + 1 }}">
-                {{ category.group_name }}
-              </td>
-            </tr>
-          {% endif %}
-
-          <tr>
-            <th scope="row" class="sticky-col row-label" title="{{ category.display_name }}">
-              {{ category.item_name }}
-            </th>
-            {% for period in periods %}
-              {% set period_txns = txn_by_period.get(period.id, []) %}
-              {% set matched = [] %}
-              {% for txn in period_txns %}
-                {% if txn.category_id == category.id and txn.is_income and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                  {% if matched.append(txn) %}{% endif %}
-                {% endif %}
-              {% endfor %}
-              <td class="text-end cell">
-                {% if matched %}
-                  {% for txn in matched %}
-                    <div id="txn-cell-{{ txn.id }}">
-                      {% set found = namespace(txn=txn) %}
-                      {% include "grid/_transaction_cell.html" with context %}
-                    </div>
-                  {% endfor %}
-                {% else %}
-                  {% set txn_type_id = TXN_TYPE_INCOME %}
-                  {% include "grid/_transaction_empty_cell.html" with context %}
-                {% endif %}
-              </td>
-            {% endfor %}
+      {% for rk in income_row_keys %}
+        {% if rk.group_name != ns.current_group %}
+          {% set ns.current_group = rk.group_name %}
+          <tr class="group-header-row">
+            <td class="sticky-col text-muted small fw-semibold"
+                colspan="{{ periods|length + 1 }}">
+              {{ rk.group_name }}
+            </td>
           </tr>
         {% endif %}
+
+        <tr>
+          <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
+            {{ rk.display_name }}
+          </th>
+          {% for period in periods %}
+            {% set period_txns = txn_by_period.get(period.id, []) %}
+            {% set matched = [] %}
+            {% for txn in period_txns %}
+              {# Match transaction to this row key: category must match,
+                 then prefer template_id match; fall back to name match
+                 only when the row key or transaction has no template. #}
+              {% if txn.category_id == rk.category_id and txn.is_income and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
+                {% if rk.template_id is not none and txn.template_id is not none %}
+                  {% if txn.template_id == rk.template_id %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% else %}
+                  {% if txn.name == rk.txn_name %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            <td class="text-end cell">
+              {% if matched %}
+                {% for txn in matched %}
+                  <div id="txn-cell-{{ txn.id }}">
+                    {% set found = namespace(txn=txn) %}
+                    {% include "grid/_transaction_cell.html" with context %}
+                  </div>
+                {% endfor %}
+              {% else %}
+                {% set category = rk.category %}
+                {% set txn_type_id = TXN_TYPE_INCOME %}
+                {% include "grid/_transaction_empty_cell.html" with context %}
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
       {% endfor %}
 
       {# --- Total Income Subtotal --- #}
@@ -192,55 +190,53 @@
       </tr>
 
       {% set ns2 = namespace(current_group='') %}
-      {% for category in categories %}
-        {% set has_expense = [] %}
-        {% for period in periods %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.category_id == category.id and txn.is_expense %}
-              {% if has_expense.append(1) %}{% endif %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-
-        {% if has_expense %}
-          {% if category.group_name != ns2.current_group %}
-            {% set ns2.current_group = category.group_name %}
-            <tr class="group-header-row">
-              <td class="sticky-col text-muted small fw-semibold"
-                  colspan="{{ periods|length + 1 }}">
-                {{ category.group_name }}
-              </td>
-            </tr>
-          {% endif %}
-
-          <tr>
-            <th scope="row" class="sticky-col row-label" title="{{ category.display_name }}">
-              {{ category.item_name }}
-            </th>
-            {% for period in periods %}
-              {% set period_txns = txn_by_period.get(period.id, []) %}
-              {% set matched = [] %}
-              {% for txn in period_txns %}
-                {% if txn.category_id == category.id and txn.is_expense and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                  {% if matched.append(txn) %}{% endif %}
-                {% endif %}
-              {% endfor %}
-              <td class="text-end cell">
-                {% if matched %}
-                  {% for txn in matched %}
-                    <div id="txn-cell-{{ txn.id }}">
-                      {% set found = namespace(txn=txn) %}
-                      {% include "grid/_transaction_cell.html" with context %}
-                    </div>
-                  {% endfor %}
-                {% else %}
-                  {% set txn_type_id = TXN_TYPE_EXPENSE %}
-                  {% include "grid/_transaction_empty_cell.html" with context %}
-                {% endif %}
-              </td>
-            {% endfor %}
+      {% for rk in expense_row_keys %}
+        {% if rk.group_name != ns2.current_group %}
+          {% set ns2.current_group = rk.group_name %}
+          <tr class="group-header-row">
+            <td class="sticky-col text-muted small fw-semibold"
+                colspan="{{ periods|length + 1 }}">
+              {{ rk.group_name }}
+            </td>
           </tr>
         {% endif %}
+
+        <tr>
+          <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
+            {{ rk.display_name }}
+          </th>
+          {% for period in periods %}
+            {% set period_txns = txn_by_period.get(period.id, []) %}
+            {% set matched = [] %}
+            {% for txn in period_txns %}
+              {% if txn.category_id == rk.category_id and txn.is_expense and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
+                {% if rk.template_id is not none and txn.template_id is not none %}
+                  {% if txn.template_id == rk.template_id %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% else %}
+                  {% if txn.name == rk.txn_name %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            <td class="text-end cell">
+              {% if matched %}
+                {% for txn in matched %}
+                  <div id="txn-cell-{{ txn.id }}">
+                    {% set found = namespace(txn=txn) %}
+                    {% include "grid/_transaction_cell.html" with context %}
+                  </div>
+                {% endfor %}
+              {% else %}
+                {% set category = rk.category %}
+                {% set txn_type_id = TXN_TYPE_EXPENSE %}
+                {% include "grid/_transaction_empty_cell.html" with context %}
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
       {% endfor %}
 
       {# --- Total Expenses Subtotal --- #}
