@@ -152,6 +152,56 @@ class TestBalanceFragment:
             assert b"chart-balance-over-time" in resp.data
 
 
+class TestBalanceChartSizing:
+    """Tests for Balance Over Time chart sizing -- canvas fills card body."""
+
+    def test_balance_chart_canvas_no_wrapper_div(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Canvas must sit directly in the card-body (no intermediate wrapper
+        div) so Chart.js responsive mode reads the card-body's min-height
+        for sizing. A wrapper div with no defined height breaks Chart.js
+        parent-height detection."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/charts/balance-over-time",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert 'id="chart-balance-over-time"' in html
+            # The wrapper div that previously broke sizing must not be present.
+            assert "balance-chart-container" not in html
+
+    def test_balance_chart_canvas_has_max_height(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Canvas must have a max-height inline style to prevent Chart.js
+        resize feedback loops during HTMX swaps. Without this cap, each
+        resize event grows the canvas which grows the container endlessly."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/charts/balance-over-time",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"max-height" in resp.data
+
+    def test_balance_chart_renders_after_account_toggle(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Chart partial renders correctly when filtered to a specific
+        account_id, simulating an HTMX checkbox toggle."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+            resp = auth_client.get(
+                f"/charts/balance-over-time?account_id={account_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"chart-balance-over-time" in resp.data
+
+
 class TestSpendingFragment:
     """Tests for GET /charts/spending-by-category with HX-Request."""
 
