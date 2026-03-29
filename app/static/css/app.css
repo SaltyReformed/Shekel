@@ -177,14 +177,34 @@
 .grid-table {
   font-size: 0.85rem;
   table-layout: fixed;
+  /* border-collapse:collapse (Bootstrap default) breaks position:sticky
+     on <tfoot> in Chrome/Firefox.  Switching to separate + zero spacing
+     fixes sticky bottom while preserving the same visual grid lines. */
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
+/* With border-collapse:separate, <tr>/<thead>/<tbody>/<tfoot> borders
+   are not rendered -- only cell borders count.  Each cell gets bottom +
+   right; first-child cells add left; thead first row adds top. */
 .grid-table th,
 .grid-table td {
   vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  border: 0;
+  border-bottom: 1px solid var(--bs-border-color);
+  border-right: 1px solid var(--bs-border-color);
+}
+
+.grid-table thead tr:first-child th {
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.grid-table th:first-child,
+.grid-table td:first-child {
+  border-left: 1px solid var(--bs-border-color);
 }
 
 /* Tabular numerals for digit alignment */
@@ -221,7 +241,7 @@
 .grid-table thead {
   position: sticky;
   top: 0;
-  z-index: 3;
+  z-index: 5;
 }
 
 .grid-table thead th {
@@ -229,7 +249,7 @@
 }
 
 thead .sticky-col {
-  z-index: 4;
+  z-index: 6;
   background-color: var(--shekel-header-bg);
   color: #fff;
 }
@@ -315,7 +335,7 @@ thead .sticky-col {
 .grid-table tfoot {
   position: sticky;
   bottom: 0;
-  z-index: 2;
+  z-index: 4;
 }
 
 /* Inline subtotal rows (Total Income, Total Expenses) in tbody */

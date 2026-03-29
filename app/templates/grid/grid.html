@@ -75,11 +75,15 @@
     <thead class="table-dark">
       <tr>
         <th scope="col" class="row-label-col sticky-col">Item</th>
+        {% set current_year = today.year %}
         {% for period in periods %}
         <th scope="col" class="text-center period-header
             {{ 'current-period' if period.id == current_period.id else '' }}">
-          <div class="fw-bold">{{ period.start_date.strftime('%m/%d') }}</div>
-          <div class="small text-light-emphasis">{{ period.end_date.strftime('%m/%d/%y') }}</div>
+          {% if period.start_date.year == current_year %}
+          <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d') }}</div>
+          {% else %}
+          <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d/%y') }}</div>
+          {% endif %}
           {% if period.start_date < today and period.id != current_period.id %}
           <form hx-post="{{ url_for('transactions.carry_forward', period_id=period.id) }}"
                 hx-swap="none" class="mt-1"

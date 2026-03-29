@@ -4,7 +4,7 @@ Shekel Budget App -- Grid & Transaction Route Tests
 Tests the main budget grid view and transaction CRUD endpoints.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -1783,3 +1783,288 @@ class TestFooterCondensation:
             assert "subtotal-row-income" in html
             assert "subtotal-row-expense" in html
             assert "net-cash-flow-row" in html
+
+
+class TestPeriodHeaderDateFormat:
+    """Tests for pay period date headers -- Commit #14.
+
+    Headers show only the paycheck date (start_date), not the period range.
+    Current-year periods omit the year suffix (e.g., '3/26').
+    Non-current-year periods include 2-digit year (e.g., '3/26/27').
+    """
+
+    def _make_periods(self, db, seed_user, start_date, num_periods=6):
+        """Helper: generate pay periods and set anchor to the first one."""
+        periods = pay_period_service.generate_pay_periods(
+            user_id=seed_user["user"].id,
+            start_date=start_date,
+            num_periods=num_periods,
+            cadence_days=14,
+        )
+        db.session.flush()
+        seed_user["account"].current_anchor_period_id = periods[0].id
+        db.session.commit()
+        return periods
+
+    def test_period_header_compact_for_current_year(self, app, auth_client, seed_user):
+        """Current-year periods display paycheck date without year suffix."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=28)
+            periods = self._make_periods(db, seed_user, start)
+
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Only the start date (paycheck date), no range, no year.
+            expected = start.strftime("%-m/%-d")
+            assert expected in html
+            # Should NOT contain a range separator for this period.
+            end = start + timedelta(days=13)
+            range_str = f"{start.strftime('%-m/%-d')} - {end.strftime('%-m/%-d')}"
+            assert range_str not in html
+
+    def test_period_header_full_format_for_cross_year(self, app, auth_client, seed_user):
+        """A period starting in a non-current year shows the year suffix."""
+        with app.app_context():
+            today = date.today()
+            # Generate enough periods to extend into next year.
+            start = today - timedelta(days=28)
+            periods = self._make_periods(db, seed_user, start, num_periods=28)
+
+            # Find a period whose start_date is in the next year.
+            next_year_period = None
+            for p in periods:
+                if p.start_date.year > today.year:
+                    next_year_period = p
+                    break
+
+            assert next_year_period is not None, "Test requires a next-year period"
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = next_year_period.period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Expect paycheck date with year suffix.
+            expected = next_year_period.start_date.strftime("%-m/%-d/%y")
+            assert expected in html
+
+    def test_period_header_full_format_for_past_year(self, app, auth_client, seed_user):
+        """Periods in the previous year show the year suffix."""
+        with app.app_context():
+            today = date.today()
+            past_start = date(today.year - 1, 6, 1)
+            days_to_today = (today - past_start).days
+            num = (days_to_today // 14) + 4
+            periods = self._make_periods(db, seed_user, past_start, num_periods=num)
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            first_offset = periods[0].period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=3&offset={first_offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            expected = past_start.strftime("%-m/%-d/%y")
+            assert expected in html
+
+    def test_period_header_full_format_for_future_year(self, app, auth_client, seed_user):
+        """Periods in the next year show the year suffix."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=28)
+            days_to_next_year = (date(today.year + 1, 2, 1) - start).days
+            num = (days_to_next_year // 14) + 2
+            periods = self._make_periods(db, seed_user, start, num_periods=num)
+
+            future_period = None
+            for p in periods:
+                if p.start_date.year > today.year:
+                    future_period = p
+                    break
+
+            assert future_period is not None, "Test requires a next-year period"
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = future_period.period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            expected = future_period.start_date.strftime("%-m/%-d/%y")
+            assert expected in html
+
+    def test_period_header_mixed_formats_same_page(self, app, auth_client, seed_user):
+        """Current-year and non-current-year headers coexist on the same page."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=28)
+            days_to_next_year = (date(today.year + 1, 2, 1) - start).days
+            num = (days_to_next_year // 14) + 2
+            periods = self._make_periods(db, seed_user, start, num_periods=num)
+
+            # Find the last current-year period and first next-year period.
+            last_current = None
+            first_next = None
+            for p in periods:
+                if p.start_date.year == today.year:
+                    last_current = p
+                if first_next is None and p.start_date.year > today.year:
+                    first_next = p
+
+            assert last_current is not None
+            assert first_next is not None
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = last_current.period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Current-year: paycheck date without year.
+            compact = last_current.start_date.strftime("%-m/%-d")
+            assert compact in html
+
+            # Next-year: paycheck date with year suffix.
+            full = first_next.start_date.strftime("%-m/%-d/%y")
+            assert full in html
+
+    def test_carry_forward_button_still_present_after_format_change(
+        self, app, auth_client, seed_user
+    ):
+        """Carry forward button renders correctly alongside the new date format."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=56)
+            periods = self._make_periods(db, seed_user, start)
+
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            first_cat = list(seed_user["categories"].values())[0]
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Test Bill",
+                category_id=first_cat.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = periods[0].period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Carry forward button present.
+            assert "carry-forward" in html
+            # Paycheck date without year (current year period).
+            expected = periods[0].start_date.strftime("%-m/%-d")
+            assert expected in html
+
+    def test_grid_renders_without_error_after_format_change(
+        self, app, auth_client, seed_user
+    ):
+        """Smoke test: grid renders with correct table structure after date format change."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=14)
+            self._make_periods(db, seed_user, start)
+
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "<thead" in html
+            assert "<tbody>" in html
+            assert "Projected End Balance" in html
+
+    def test_balance_row_still_works_after_format_change(
+        self, app, auth_client, seed_user
+    ):
+        """Balance row HTMX partial still renders after the thead date change."""
+        with app.app_context():
+            today = date.today()
+            start = today - timedelta(days=14)
+            self._make_periods(db, seed_user, start)
+
+            resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
+            assert resp.status_code == 200
+            assert b'id="grid-summary"' in resp.data
+
+    def test_period_header_handles_january_1st(self, app, auth_client, seed_user):
+        """A period starting January 1 of the current year uses compact format."""
+        with app.app_context():
+            today = date.today()
+            jan1 = date(today.year, 1, 1)
+            days_to_today = (today - jan1).days
+            num = max((days_to_today // 14) + 4, 6)
+            periods = self._make_periods(db, seed_user, jan1, num_periods=num)
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = periods[0].period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Jan 1 in current year -- no year suffix.
+            assert "1/1" in html
+
+    def test_period_header_handles_december_31st(self, app, auth_client, seed_user):
+        """A late-December period in the current year uses compact format."""
+        with app.app_context():
+            today = date.today()
+            dec18 = date(today.year, 12, 18)
+            start = today - timedelta(days=14)
+            days_to_dec18 = (dec18 - start).days
+            num = (days_to_dec18 // 14) + 4
+            periods = self._make_periods(db, seed_user, start, num_periods=num)
+
+            # Find the last period starting in the current year.
+            dec_period = None
+            for p in periods:
+                if p.start_date.year == today.year:
+                    dec_period = p
+
+            if dec_period is None:
+                pytest.skip("No period starting in late current year generated")
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            offset = dec_period.period_index - current_period.period_index
+            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Current-year start date -- no year suffix.
+            expected = dec_period.start_date.strftime("%-m/%-d")
+            assert expected in html
+
+            # The next period (if it exists and starts next year) shows year.
+            next_periods = [
+                p for p in periods
+                if p.period_index == dec_period.period_index + 1
+            ]
+            if next_periods and next_periods[0].start_date.year > today.year:
+                full = next_periods[0].start_date.strftime("%-m/%-d/%y")
+                assert full in html
