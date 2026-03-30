@@ -1410,10 +1410,11 @@ class TestTaxConfig:
             response = auth_client.post("/salary/tax-config", data={
                 "state_code": "X",
                 "flat_rate": "5",
+                "tax_year": "2026",
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Invalid state code." in response.data
+            assert b"Please correct the highlighted errors" in response.data
 
     def test_update_fica_validation_error(self, app, auth_client, seed_user):
         """POST /salary/fica-config with missing fields shows a validation error."""

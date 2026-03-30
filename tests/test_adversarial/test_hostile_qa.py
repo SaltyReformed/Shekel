@@ -703,17 +703,14 @@ class TestInputValidationBypass:
     """Probe for unvalidated query params and schema gaps."""
 
     def test_grid_non_numeric_periods_param(self, app, auth_client, seed_user, seed_periods):
-        """?periods=abc → unhandled ValueError from int().
+        """?periods=abc gracefully falls back to default periods.
 
-        Bug: Grid route does bare int(request.args.get("periods", ...))
-        with no try/except.  Non-numeric input causes an unhandled ValueError.
-        In TESTING mode, the exception propagates directly.
+        Flask's request.args.get(..., type=int) returns the default
+        when the value cannot be converted, instead of raising ValueError.
         """
         with app.app_context():
-            # Current behavior: bare int() raises ValueError.
-            # Ideal: should return 400 with a message.
-            with pytest.raises(ValueError, match="invalid literal"):
-                auth_client.get("/?periods=abc")
+            resp = auth_client.get("/?periods=abc")
+            assert resp.status_code == 200
 
     def test_grid_negative_periods_param(self, app, auth_client, seed_user, seed_periods):
         """?periods=-1 → negative period count.
@@ -1027,14 +1024,16 @@ class TestSQLInjectionPrevention:
     def test_grid_period_param_sql_injection(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """SQL injection in ?periods param is rejected by int() parsing.
+        """SQL injection in ?periods param is safely ignored.
 
-        The grid route calls int() on the periods param, which raises
-        ValueError for non-numeric SQL injection strings.
+        Flask's request.args.get(..., type=int) returns the default
+        when the value cannot be converted, rejecting the injection.
         """
         with app.app_context():
-            with pytest.raises(ValueError):
-                auth_client.get("/?periods=1;DROP%20TABLE%20budget.transactions--")
+            resp = auth_client.get(
+                "/?periods=1;DROP%20TABLE%20budget.transactions--"
+            )
+            assert resp.status_code == 200
 
             # Verify the transactions table still exists.
             count = db.session.execute(

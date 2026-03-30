@@ -155,11 +155,13 @@ def index():
     )
 
     # Determine the visible period range.
-    num_periods = int(request.args.get(
+    num_periods = request.args.get(
         "periods",
-        current_user.settings.grid_default_periods if current_user.settings else 6,
-    ))
-    start_offset = int(request.args.get("offset", 0))
+        default=(current_user.settings.grid_default_periods
+                 if current_user.settings else 6),
+        type=int,
+    )
+    start_offset = request.args.get("offset", default=0, type=int)
 
     # Find the current period as the baseline starting point.
     current_period = pay_period_service.get_current_period(user_id)
@@ -318,8 +320,8 @@ def balance_row():
         request.args.get("account_id", type=int),
     )
 
-    num_periods = int(request.args.get("periods", 6))
-    start_offset = int(request.args.get("offset", 0))
+    num_periods = request.args.get("periods", default=6, type=int)
+    start_offset = request.args.get("offset", default=0, type=int)
 
     current_period = pay_period_service.get_current_period(user_id)
     if not current_period:
