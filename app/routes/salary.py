@@ -390,14 +390,11 @@ def add_raise(profile_id):
 def delete_raise(raise_id):
     """Remove a raise from a salary profile."""
     salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None:
+    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
         flash("Raise not found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
     profile = salary_raise.salary_profile
-    if profile.user_id != current_user.id:
-        flash("Not authorized.", "danger")
-        return redirect(url_for("salary.list_profiles"))
 
     try:
         db.session.delete(salary_raise)
@@ -422,14 +419,11 @@ def delete_raise(raise_id):
 def update_raise(raise_id):
     """Update an existing raise on a salary profile."""
     salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None:
+    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
         flash("Raise not found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
     profile = salary_raise.salary_profile
-    if profile.user_id != current_user.id:
-        flash("Not authorized.", "danger")
-        return redirect(url_for("salary.list_profiles"))
 
     errors = _raise_schema.validate(request.form)
     if errors:
@@ -525,14 +519,11 @@ def add_deduction(profile_id):
 def delete_deduction(ded_id):
     """Remove a deduction from a salary profile."""
     deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None:
+    if deduction is None or deduction.salary_profile.user_id != current_user.id:
         flash("Deduction not found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
     profile = deduction.salary_profile
-    if profile.user_id != current_user.id:
-        flash("Not authorized.", "danger")
-        return redirect(url_for("salary.list_profiles"))
 
     try:
         db.session.delete(deduction)
@@ -557,14 +548,11 @@ def delete_deduction(ded_id):
 def update_deduction(ded_id):
     """Update an existing deduction on a salary profile."""
     deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None:
+    if deduction is None or deduction.salary_profile.user_id != current_user.id:
         flash("Deduction not found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
     profile = deduction.salary_profile
-    if profile.user_id != current_user.id:
-        flash("Not authorized.", "danger")
-        return redirect(url_for("salary.list_profiles"))
 
     errors = _deduction_schema.validate(request.form)
     if errors:

@@ -712,7 +712,7 @@ class TestRaises:
     def test_delete_other_users_raise_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/raises/<id>/delete for another user's raise shows 'Not authorized'."""
+        """POST /salary/raises/<id>/delete for another user's raise shows 'Raise not found.'."""
         with app.app_context():
             other = _create_other_user_profile()
             raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
@@ -733,7 +733,7 @@ class TestRaises:
             )
 
             assert response.status_code == 200
-            assert b"Not authorized." in response.data
+            assert b"Raise not found." in response.data
 
 
 # ── Deductions ─────────────────────────────────────────────────────
@@ -806,7 +806,7 @@ class TestDeductions:
     def test_delete_other_users_deduction_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/deductions/<id>/delete for another user's deduction shows 'Not authorized'."""
+        """POST /salary/deductions/<id>/delete for another user's deduction shows 'Deduction not found.'."""
         with app.app_context():
             other = _create_other_user_profile()
             pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
@@ -828,7 +828,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
-            assert b"Not authorized." in response.data
+            assert b"Deduction not found." in response.data
 
     def test_add_deduction_htmx_returns_partial(
         self, app, auth_client, seed_user, seed_periods
@@ -1757,7 +1757,7 @@ class TestSalaryNegativePaths:
             )
 
             assert resp.status_code == 200
-            assert b"Not authorized." in resp.data
+            assert b"Raise not found." in resp.data
 
             # Verify raise still exists in DB.
             db.session.expire_all()
@@ -1790,7 +1790,7 @@ class TestSalaryNegativePaths:
             )
 
             assert resp.status_code == 200
-            assert b"Not authorized." in resp.data
+            assert b"Deduction not found." in resp.data
 
             # Verify deduction still exists in DB.
             db.session.expire_all()
