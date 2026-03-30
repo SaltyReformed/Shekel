@@ -6,11 +6,14 @@ exhausted and the TOTP device is lost.  Requires direct database access.
 
 Usage:
     python scripts/reset_mfa.py <user_email>
+    python scripts/reset_mfa.py --force <user_email>
 
 Example:
     python scripts/reset_mfa.py admin@shekel.local
 """
 
+import argparse
+import logging
 import os
 import sys
 
@@ -47,16 +50,51 @@ def reset_mfa(email):
     mfa_config.confirmed_at = None
     db.session.commit()
 
+    # Audit trail for the reset action.
+    from app.utils.log_events import log_event, AUTH  # pylint: disable=import-outside-toplevel
+
+    logger = logging.getLogger(__name__)
+    log_event(
+        logger, logging.WARNING, "mfa_reset", AUTH,
+        "MFA reset for %s via admin script", user_email=email,
+    )
+
     print(f"MFA has been disabled for {email}.")
 
 
+def parse_args(argv=None):
+    """Parse command-line arguments.
+
+    Args:
+        argv: Argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        argparse.Namespace with ``email`` (str) and ``force`` (bool).
+    """
+    parser = argparse.ArgumentParser(
+        description="Disable MFA for a user (emergency recovery)."
+    )
+    parser.add_argument("email", help="Email address of the user to reset.")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Skip confirmation prompt (for scripted use).",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python scripts/reset_mfa.py <user_email>")
-        sys.exit(1)
+    args = parse_args()
+
+    if not args.force:
+        confirm = input(
+            f"Reset MFA for {args.email}? This cannot be undone. [y/N] "
+        )
+        if confirm.lower() != "y":
+            print("Aborted.")
+            sys.exit(0)
 
     from app import create_app  # pylint: disable=import-outside-toplevel
 
     app = create_app()
     with app.app_context():
-        reset_mfa(sys.argv[1])
+        reset_mfa(args.email)

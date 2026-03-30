@@ -1,11 +1,12 @@
 """Tests for the MFA reset CLI script."""
 
+import logging
 import pytest
 
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
-from scripts.reset_mfa import reset_mfa
+from scripts.reset_mfa import parse_args, reset_mfa
 
 
 class TestResetMfa:
@@ -159,3 +160,50 @@ class TestResetMfa:
             assert config.totp_secret_encrypted is None
             assert config.backup_codes is None
             assert config.confirmed_at is None
+
+
+class TestParseArgs:
+    """Tests for parse_args CLI argument validation."""
+
+    def test_parse_args_accepts_email(self):
+        """parse_args accepts a positional email argument."""
+        args = parse_args(["admin@shekel.local"])
+        assert args.email == "admin@shekel.local"
+        assert args.force is False
+
+    def test_parse_args_force_flag(self):
+        """parse_args accepts --force to skip confirmation."""
+        args = parse_args(["--force", "admin@shekel.local"])
+        assert args.force is True
+
+    def test_parse_args_missing_email_exits(self):
+        """parse_args exits when no email is provided."""
+        with pytest.raises(SystemExit):
+            parse_args([])
+
+
+class TestResetMfaAuditLog:
+    """Tests for audit logging on MFA reset."""
+
+    def _enable_mfa(self, user_id):
+        """Helper to enable MFA for a user."""
+        mfa_config = MfaConfig(
+            user_id=user_id,
+            is_enabled=True,
+            totp_secret_encrypted=mfa_service.encrypt_secret("JBSWY3DPEHPK3PXP"),
+            backup_codes=mfa_service.hash_backup_codes(["aaaaaaaa", "bbbbbbbb"]),
+        )
+        db.session.add(mfa_config)
+        db.session.commit()
+
+    def test_reset_mfa_logs_audit_event(self, app, db, seed_user, caplog):
+        """reset_mfa() emits a WARNING-level audit log entry on success."""
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            with caplog.at_level(logging.WARNING, logger="scripts.reset_mfa"):
+                reset_mfa(seed_user["user"].email)
+
+            assert any("mfa_reset" in r.message or
+                       getattr(r, "event", None) == "mfa_reset"
+                       for r in caplog.records)
