@@ -319,6 +319,29 @@ class FicaConfigSchema(BaseSchema):
     )
 
 
+class StateTaxConfigSchema(BaseSchema):
+    """Validates POST data for updating state tax configuration."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    state_code = fields.String(
+        required=True, validate=validate.Length(min=2, max=2),
+    )
+    flat_rate = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=0, max=100),
+    )
+    standard_deduction = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(min=0),
+    )
+    tax_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
+    )
+
+
 # ── Transfer Schemas (Phase 4) ────────────────────────────────────
 
 

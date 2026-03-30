@@ -47,6 +47,7 @@ from app.schemas.validation import (
     RaiseCreateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
+    StateTaxConfigSchema,
 )
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
@@ -64,6 +65,7 @@ _deduction_schema = DeductionCreateSchema()
 _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
+_state_tax_schema = StateTaxConfigSchema()
 
 
 
@@ -879,29 +881,23 @@ def tax_config():
 @login_required
 def update_tax_config():
     """Update state tax flat rate."""
-    state_code = request.form.get("state_code", "").strip().upper()
-    flat_rate_raw = request.form.get("flat_rate", "").strip()
-    standard_deduction = request.form.get("standard_deduction", "").strip() or None
-    tax_year = request.form.get("tax_year", "").strip()
-
-    # Convert percentage input (e.g. 3.99 → 0.0399) for storage.
-    from decimal import Decimal as D, InvalidOperation
-    flat_rate = None
-    if flat_rate_raw:
-        try:
-            flat_rate = D(flat_rate_raw) / D("100")
-        except (InvalidOperation, ValueError):
-            flash("Invalid flat rate.", "danger")
-            return redirect(url_for("settings.show", section="tax"))
-
-    if not state_code or len(state_code) != 2:
-        flash("Invalid state code.", "danger")
+    errors = _state_tax_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("settings.show", section="tax"))
 
-    if not tax_year or not tax_year.isdigit():
-        tax_year = date.today().year
-    else:
-        tax_year = int(tax_year)
+    data = _state_tax_schema.load(request.form)
+
+    state_code = data["state_code"].upper()
+    tax_year = data["tax_year"]
+
+    # Convert percentage input (e.g. 3.99 → 0.0399) for storage.
+    from decimal import Decimal as D
+    flat_rate = None
+    if data.get("flat_rate") is not None:
+        flat_rate = D(str(data["flat_rate"])) / D("100")
+
+    standard_deduction = data.get("standard_deduction")
 
     state_config = (
         db.session.query(StateTaxConfig)
@@ -910,13 +906,13 @@ def update_tax_config():
     )
 
     if state_config:
-        if flat_rate:
+        if flat_rate is not None:
             state_config.flat_rate = flat_rate
         state_config.standard_deduction = standard_deduction
         flash(f"State tax config for {state_code} {tax_year} updated.", "success")
     else:
         flat_type = db.session.query(TaxType).filter_by(name="flat").first()
-        if flat_type and flat_rate:
+        if flat_type and flat_rate is not None:
             new_config = StateTaxConfig(
                 user_id=current_user.id,
                 tax_type_id=flat_type.id,
