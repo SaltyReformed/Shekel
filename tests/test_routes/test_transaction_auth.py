@@ -285,7 +285,7 @@ class TestCreateOwnership:
     def test_create_with_other_users_scenario_id(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transactions with another user's scenario_id is accepted (missing check)."""
+        """POST /transactions with another user's scenario_id returns 404."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             expense_type = db.session.query(TransactionType).filter_by(
@@ -301,21 +301,18 @@ class TestCreateOwnership:
                 "transaction_type_id": expense_type.id,
                 "account_id": str(seed_user["account"].id),
             })
-            # BUG: create_transaction does not verify scenario_id belongs to
-            # current_user. The transaction is created under the other user's
-            # scenario, making it invisible in the creator's baseline grid
-            # and polluting the victim's scenario data.
-            assert resp.status_code == 201
+            assert resp.status_code == 404
 
+            # No transaction should have been created.
             txn = db.session.query(Transaction).filter_by(
                 name="Sneaky Scenario"
-            ).one()
-            assert txn.scenario_id == other["scenario"].id
+            ).first()
+            assert txn is None
 
     def test_inline_create_with_other_users_scenario_id(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transactions/inline with another user's scenario_id is accepted (missing check)."""
+        """POST /transactions/inline with another user's scenario_id returns 404."""
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods)
             expense_type = db.session.query(TransactionType).filter_by(
@@ -330,15 +327,35 @@ class TestCreateOwnership:
                 "scenario_id": other["scenario"].id,  # Other user's scenario
                 "account_id": str(seed_user["account"].id),
             })
-            # BUG: create_inline does not verify scenario_id belongs to
-            # current_user. Same ownership gap as create_transaction.
-            assert resp.status_code == 201
+            assert resp.status_code == 404
 
+            # No transaction should have been created under the other
+            # user's scenario.
             txn = db.session.query(Transaction).filter_by(
                 scenario_id=other["scenario"].id,
                 estimated_amount=Decimal("75.00"),
+            ).first()
+            assert txn is None
+
+    def test_create_with_nonexistent_scenario_id(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions with nonexistent scenario_id returns 404."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
             ).one()
-            assert txn.scenario_id == other["scenario"].id
+
+            resp = auth_client.post("/transactions", data={
+                "name": "Ghost Scenario",
+                "estimated_amount": "50.00",
+                "pay_period_id": seed_periods[0].id,
+                "scenario_id": 999999,  # Nonexistent
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
+            })
+            assert resp.status_code == 404
 
     def test_create_with_nonexistent_pay_period_id(
         self, app, auth_client, seed_user, seed_periods

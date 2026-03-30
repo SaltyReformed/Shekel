@@ -483,6 +483,11 @@ def create_inline():
     if not period or period.user_id != current_user.id:
         return "Pay period not found", 404
 
+    # Verify the scenario belongs to the current user.
+    scenario = db.session.get(Scenario, data["scenario_id"])
+    if not scenario or scenario.user_id != current_user.id:
+        return "Not found", 404
+
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
         data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
@@ -524,6 +529,11 @@ def create_transaction():
     period = db.session.get(PayPeriod, data["pay_period_id"])
     if not period or period.user_id != current_user.id:
         return "Pay period not found", 404
+
+    # Verify the scenario belongs to the current user.
+    scenario = db.session.get(Scenario, data["scenario_id"])
+    if not scenario or scenario.user_id != current_user.id:
+        return "Not found", 404
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
