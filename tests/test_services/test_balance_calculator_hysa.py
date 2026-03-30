@@ -571,10 +571,18 @@ class TestHysaBalanceWithInterest:
                 (period.end_date - period.start_date).days
             ))
             running = base_bal + interest_cumulative
-            # quarterly: balance * (apy/4) * (days/91)
+            # Actual quarter length from the period start date.
+            q_start_month = ((period.start_date.month - 1) // 3) * 3 + 1
+            q_start = date(period.start_date.year, q_start_month, 1)
+            nqm = q_start_month + 3
+            if nqm > 12:
+                q_end = date(period.start_date.year + 1, nqm - 12, 1)
+            else:
+                q_end = date(period.start_date.year, nqm, 1)
+            actual_quarter_days = Decimal(str((q_end - q_start).days))
             interest = (
                 running * quarterly_rate
-                * (days / Decimal("91"))
+                * (days / actual_quarter_days)
             ).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )

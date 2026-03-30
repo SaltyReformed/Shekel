@@ -141,7 +141,7 @@ class TestQuarterlyCompounding:
     """Quarterly compounding: interest = balance * (apy/4) * (days/91)."""
 
     def test_basic_14_day_period(self):
-        """$10,000 at 4.5% APY, 14-day period."""
+        """$10,000 at 4.5% APY, 14-day period in Q1 (90 actual days)."""
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
@@ -150,8 +150,9 @@ class TestQuarterlyCompounding:
             period_end=date(2026, 1, 15),
         )
         # quarterly_rate = 0.045 / 4 = 0.01125
-        # interest = 10000 * 0.01125 * (14/91) ≈ $17.31
-        assert result == Decimal("17.31")
+        # Q1 2026: Jan(31) + Feb(28) + Mar(31) = 90 actual days
+        # interest = 10000 * 0.01125 * (14/90) ≈ $17.50
+        assert result == Decimal("17.50")
 
 
 class TestEdgeCases:
