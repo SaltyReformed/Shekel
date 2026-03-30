@@ -968,11 +968,15 @@ def _seed_ref_tables():
 
     # ── Seed AccountType with FK, booleans, metadata ──────────────
     from app.ref_seeds import ACCT_TYPE_SEEDS  # pylint: disable=import-outside-toplevel
-    for name, cat_name, has_params, has_amort, icon, max_term in ACCT_TYPE_SEEDS:
+    for (name, cat_name, has_params, has_amort,
+         has_int, is_pre, is_liq, icon, max_term) in ACCT_TYPE_SEEDS:
         existing = _db.session.query(AccountType).filter_by(name=name).first()
         if existing:
             existing.has_parameters = has_params
             existing.has_amortization = has_amort
+            existing.has_interest = has_int
+            existing.is_pretax = is_pre
+            existing.is_liquid = is_liq
             existing.icon_class = icon
             existing.max_term_months = max_term
         else:
@@ -981,6 +985,9 @@ def _seed_ref_tables():
                 category_id=cat_lookup[cat_name],
                 has_parameters=has_params,
                 has_amortization=has_amort,
+                has_interest=has_int,
+                is_pretax=is_pre,
+                is_liquid=is_liq,
                 icon_class=icon,
                 max_term_months=max_term,
             ))

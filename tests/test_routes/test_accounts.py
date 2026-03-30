@@ -599,6 +599,94 @@ class TestAccountTypes:
             assert db.session.get(AccountType, checking_type.id) is not None
 
 
+# ── Account Type Metadata Columns ────────────────────────────────
+
+
+class TestAccountTypeMetadataColumns:
+    """Verify the has_interest, is_pretax, and is_liquid metadata columns
+    are seeded correctly on ref.account_types."""
+
+    def test_account_type_has_interest_column(self, app, seed_user):
+        """HYSA and HSA have has_interest=True; other types do not."""
+        with app.app_context():
+            hysa = db.session.query(AccountType).filter_by(name="HYSA").one()
+            hsa = db.session.query(AccountType).filter_by(name="HSA").one()
+            checking = db.session.query(AccountType).filter_by(name="Checking").one()
+            mortgage = db.session.query(AccountType).filter_by(name="Mortgage").one()
+
+            assert hysa.has_interest is True
+            assert hsa.has_interest is True
+            assert checking.has_interest is False
+            assert mortgage.has_interest is False
+
+            # Column is non-nullable.
+            col = AccountType.__table__.columns["has_interest"]
+            assert col.nullable is False
+
+    def test_account_type_is_pretax_column(self, app, seed_user):
+        """401(k) and Traditional IRA have is_pretax=True; Roth types do not."""
+        with app.app_context():
+            k401 = db.session.query(AccountType).filter_by(name="401(k)").one()
+            trad_ira = db.session.query(AccountType).filter_by(
+                name="Traditional IRA",
+            ).one()
+            roth_401k = db.session.query(AccountType).filter_by(
+                name="Roth 401(k)",
+            ).one()
+            roth_ira = db.session.query(AccountType).filter_by(name="Roth IRA").one()
+            brokerage = db.session.query(AccountType).filter_by(
+                name="Brokerage",
+            ).one()
+
+            assert k401.is_pretax is True
+            assert trad_ira.is_pretax is True
+            assert roth_401k.is_pretax is False
+            assert roth_ira.is_pretax is False
+            assert brokerage.is_pretax is False
+
+            # Column is non-nullable.
+            col = AccountType.__table__.columns["is_pretax"]
+            assert col.nullable is False
+
+    def test_account_type_is_liquid_column(self, app, seed_user):
+        """Checking, Savings, HYSA, Money Market have is_liquid=True."""
+        with app.app_context():
+            checking = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            savings = db.session.query(AccountType).filter_by(name="Savings").one()
+            hysa = db.session.query(AccountType).filter_by(name="HYSA").one()
+            money_market = db.session.query(AccountType).filter_by(
+                name="Money Market",
+            ).one()
+            cd = db.session.query(AccountType).filter_by(name="CD").one()
+            hsa = db.session.query(AccountType).filter_by(name="HSA").one()
+            credit_card = db.session.query(AccountType).filter_by(
+                name="Credit Card",
+            ).one()
+            k401 = db.session.query(AccountType).filter_by(name="401(k)").one()
+
+            assert checking.is_liquid is True
+            assert savings.is_liquid is True
+            assert hysa.is_liquid is True
+            assert money_market.is_liquid is True
+            assert cd.is_liquid is False
+            assert hsa.is_liquid is False
+            assert credit_card.is_liquid is False
+            assert k401.is_liquid is False
+
+            # Column is non-nullable.
+            col = AccountType.__table__.columns["is_liquid"]
+            assert col.nullable is False
+
+    def test_hsa_has_parameters_true(self, app, seed_user):
+        """HSA now has has_parameters=True (changed from False)."""
+        with app.app_context():
+            hsa = db.session.query(AccountType).filter_by(name="HSA").one()
+            assert hsa.has_parameters is True
+            assert hsa.has_interest is True
+
+
 # ── Negative Paths ────────────────────────────────────────────────
 
 

@@ -37,6 +37,19 @@ class AccountType(db.Model):
         has_amortization  -- This type uses the amortization engine
                              for balance projections instead of the
                              generic balance calculator.
+        has_interest      -- This type uses the interest projection
+                             engine (InterestParams: APY, compounding).
+                             Applies to Asset-category types like
+                             HYSA, Money Market, CD, HSA.
+        is_pretax         -- Contributions to this type are pre-tax
+                             (relevant for retirement gap analysis).
+                             Applies to Retirement-category types
+                             like 401(k), Traditional IRA.
+        is_liquid         -- This type holds liquid funds that count
+                             toward emergency fund calculations and
+                             savings goal eligibility.  Applies to
+                             Asset-category types like Checking,
+                             Savings, HYSA, Money Market.
 
     Display / validation metadata:
 
@@ -59,6 +72,9 @@ class AccountType(db.Model):
     )
     has_parameters = db.Column(db.Boolean, nullable=False, default=False)
     has_amortization = db.Column(db.Boolean, nullable=False, default=False)
+    has_interest = db.Column(db.Boolean, nullable=False, default=False)
+    is_pretax = db.Column(db.Boolean, nullable=False, default=False)
+    is_liquid = db.Column(db.Boolean, nullable=False, default=False)
     icon_class = db.Column(db.String(30), nullable=True)
     max_term_months = db.Column(db.Integer, nullable=True)
 
