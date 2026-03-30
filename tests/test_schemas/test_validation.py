@@ -1037,3 +1037,91 @@ class TestCategoryCreateSchemaBoundary:
             "item_name": "Test",
         })
         assert data["group_name"] == "<img src=x onerror=alert(1)>"
+
+
+# ── Audit Remediation Range Validation Tests (H-06, M-14) ──────────
+
+
+class TestAnnualSalaryRange:
+    """SalaryProfileCreateSchema rejects zero and negative annual_salary (H-06)."""
+
+    def _base(self, **overrides):
+        data = {
+            "name": "Test", "annual_salary": "75000.00",
+            "filing_status_id": "1", "state_code": "NC",
+        }
+        data.update(overrides)
+        return data
+
+    def test_zero_salary_rejected(self):
+        """annual_salary=0 is rejected (min_inclusive=False)."""
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(self._base(annual_salary="0"))
+        assert "annual_salary" in exc.value.messages
+
+    def test_negative_salary_rejected(self):
+        """Negative annual_salary is rejected."""
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(self._base(annual_salary="-50000"))
+        assert "annual_salary" in exc.value.messages
+
+    def test_positive_salary_accepted(self):
+        """Valid positive annual_salary passes."""
+        data = SalaryProfileCreateSchema().load(self._base(annual_salary="1.00"))
+        assert data["annual_salary"] == Decimal("1.00")
+
+
+class TestRaiseRangeValidation:
+    """RaiseCreateSchema rejects out-of-range years and amounts (M-14)."""
+
+    def _base(self, **overrides):
+        data = {
+            "raise_type_id": "1", "effective_month": "7",
+            "effective_year": "2026", "percentage": "3.00",
+        }
+        data.update(overrides)
+        return data
+
+    def test_year_zero_rejected(self):
+        """effective_year=0 is rejected (min=2000)."""
+        with pytest.raises(ValidationError) as exc:
+            RaiseCreateSchema().load(self._base(effective_year="0"))
+        assert "effective_year" in exc.value.messages
+
+    def test_year_far_future_rejected(self):
+        """effective_year=999999 is rejected (max=2100)."""
+        with pytest.raises(ValidationError) as exc:
+            RaiseCreateSchema().load(self._base(effective_year="999999"))
+        assert "effective_year" in exc.value.messages
+
+    def test_valid_year_accepted(self):
+        """effective_year=2026 passes."""
+        data = RaiseCreateSchema().load(self._base())
+        assert data["effective_year"] == 2026
+
+
+class TestContributionPerPeriodRange:
+    """SavingsGoalCreateSchema rejects negative contributions (M-14)."""
+
+    def _base(self, **overrides):
+        data = {
+            "account_id": "1", "name": "Emergency Fund",
+            "target_amount": "10000.00",
+        }
+        data.update(overrides)
+        return data
+
+    def test_negative_contribution_rejected(self):
+        """contribution_per_period=-100 is rejected (min=0)."""
+        with pytest.raises(ValidationError) as exc:
+            SavingsGoalCreateSchema().load(
+                self._base(contribution_per_period="-100.00")
+            )
+        assert "contribution_per_period" in exc.value.messages
+
+    def test_zero_contribution_accepted(self):
+        """contribution_per_period=0 is accepted."""
+        data = SavingsGoalCreateSchema().load(
+            self._base(contribution_per_period="0.00")
+        )
+        assert data["contribution_per_period"] == Decimal("0.00")

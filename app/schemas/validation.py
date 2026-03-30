@@ -157,7 +157,10 @@ class SalaryProfileCreateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    annual_salary = fields.Decimal(required=True, places=2, as_string=True)
+    annual_salary = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
     filing_status_id = fields.Integer(required=True)
     state_code = fields.String(
         required=True, validate=validate.Length(min=2, max=2)
@@ -192,7 +195,10 @@ class SalaryProfileUpdateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(validate=validate.Length(min=1, max=200))
-    annual_salary = fields.Decimal(places=2, as_string=True)
+    annual_salary = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
     filing_status_id = fields.Integer()
     state_code = fields.String(validate=validate.Length(min=2, max=2))
     pay_periods_per_year = fields.Integer(
@@ -218,9 +224,17 @@ class RaiseCreateSchema(BaseSchema):
     effective_month = fields.Integer(
         required=True, validate=validate.Range(min=1, max=12)
     )
-    effective_year = fields.Integer(required=True)
-    percentage = fields.Decimal(places=2, as_string=True)
-    flat_amount = fields.Decimal(places=2, as_string=True)
+    effective_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
+    )
+    percentage = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=-100, max=1000),
+    )
+    flat_amount = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=-10000000, max=10000000),
+    )
     is_recurring = fields.Boolean(load_default=False)
     notes = fields.String(allow_none=True)
 
@@ -415,7 +429,10 @@ class SavingsGoalCreateSchema(BaseSchema):
         required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
     target_date = fields.Date()
-    contribution_per_period = fields.Decimal(places=2, as_string=True)
+    contribution_per_period = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
 
 
 class SavingsGoalUpdateSchema(BaseSchema):
@@ -431,7 +448,10 @@ class SavingsGoalUpdateSchema(BaseSchema):
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
     target_date = fields.Date(allow_none=True)
-    contribution_per_period = fields.Decimal(places=2, as_string=True, allow_none=True)
+    contribution_per_period = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(min=0),
+    )
     is_active = fields.Boolean()
 
 
