@@ -1758,3 +1758,83 @@ class TestBalanceOverTimeWithTransfers:
                 f"Savings balance {savings_dataset['data'][0]} should "
                 f"be >= $6000 (anchor $5000 + $1000 transfer deposit)"
             )
+
+
+# ── Net Pay Trajectory Exception Handling Tests (H-11) ──────────────
+
+
+class TestNetPayTrajectoryExceptions:
+    """Tests for narrowed exception handling in get_net_pay_trajectory.
+
+    Verifies that recoverable exceptions return an error key in the
+    result dict, and unexpected exceptions propagate.
+    """
+
+    @staticmethod
+    def _seed_profile_and_period(seed_user):
+        """Create minimal salary profile + pay period for tests."""
+        from app.models.salary_profile import SalaryProfile
+        from app.models.ref import FilingStatus
+
+        filing = db.session.query(FilingStatus).first()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            name="Test Profile",
+            annual_salary=Decimal("100000"),
+            pay_periods_per_year=26,
+            filing_status_id=filing.id,
+            state_code="TX",
+            is_active=True,
+        )
+        db.session.add(profile)
+
+        period = PayPeriod(
+            user_id=seed_user["user"].id,
+            start_date=date(2026, 1, 2),
+            end_date=date(2026, 1, 15),
+            period_index=0,
+        )
+        db.session.add(period)
+        db.session.flush()
+
+    def test_recoverable_error_returns_error_key(
+        self, app, seed_user, monkeypatch
+    ):
+        """ZeroDivisionError returns dict with 'error' key, not empty data."""
+        monkeypatch.setattr(
+            "app.services.paycheck_calculator.project_salary",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                ZeroDivisionError("division by zero")),
+        )
+
+        with app.app_context():
+            self._seed_profile_and_period(seed_user)
+
+            result = chart_data_service.get_net_pay_trajectory(
+                user_id=seed_user["user"].id,
+            )
+            assert "error" in result
+            assert "ZeroDivisionError" in result["error"]
+            assert result["labels"] == []
+            assert result["data"] == []
+
+    def test_unexpected_error_propagates(
+        self, app, seed_user, monkeypatch
+    ):
+        """RuntimeError (unexpected) is NOT caught -- it propagates."""
+        import pytest
+
+        monkeypatch.setattr(
+            "app.services.paycheck_calculator.project_salary",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                RuntimeError("unexpected internal failure")),
+        )
+
+        with app.app_context():
+            self._seed_profile_and_period(seed_user)
+
+            with pytest.raises(RuntimeError, match="unexpected"):
+                chart_data_service.get_net_pay_trajectory(
+                    user_id=seed_user["user"].id,
+                )

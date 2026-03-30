@@ -11,7 +11,7 @@ All methods return plain Python dicts suitable for Jinja2 ``tojson``.
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
 from app.models.account import Account
@@ -710,8 +710,12 @@ def get_net_pay_trajectory(user_id, profile_id=None):
         breakdowns = paycheck_calculator.project_salary(
             profile, periods, tax_configs,
         )
-    except Exception:  # pylint: disable=broad-except
-        logger.exception("Failed to project salary for profile %d", profile.id)
+    except (ValueError, KeyError, InvalidOperation, ZeroDivisionError,
+            TypeError) as exc:
+        logger.error(
+            "Salary projection failed for profile %d: %s", profile.id, exc,
+        )
+        empty["error"] = f"Salary projection failed: {type(exc).__name__}"
         return empty
 
     labels, data, gross_data = _build_step_data(breakdowns, periods)
