@@ -811,6 +811,32 @@ class RetirementSettingsSchema(BaseSchema):
 # ── Calibration Schema (Phase 3.10) ──────────────────────────────
 
 
+class UserSettingsSchema(BaseSchema):
+    """Validates POST data for updating user settings."""
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        cleaned = {}
+        for k, v in data.items():
+            if k == "default_grid_account_id" and v == "":
+                cleaned[k] = None  # Empty string means "clear".
+            elif v != "":
+                cleaned[k] = v
+        return cleaned
+
+    grid_default_periods = fields.Integer(
+        validate=validate.Range(min=1, max=52),
+    )
+    default_inflation_rate = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=0, max=100),
+    )
+    low_balance_threshold = fields.Integer(
+        validate=validate.Range(min=0),
+    )
+    default_grid_account_id = fields.Integer(allow_none=True)
+
+
 class CalibrationSchema(BaseSchema):
     """Validates POST data for paycheck calibration from a real pay stub."""
 

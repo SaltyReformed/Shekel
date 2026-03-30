@@ -77,7 +77,7 @@ class TestSettingsUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Invalid number for grid periods" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_invalid_inflation_rate(self, app, auth_client, seed_user):
         """POST /settings with invalid Decimal for inflation flashes error."""
@@ -87,7 +87,7 @@ class TestSettingsUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Invalid inflation rate" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_invalid_threshold(self, app, auth_client, seed_user):
         """POST /settings with non-numeric threshold flashes error."""
@@ -97,7 +97,7 @@ class TestSettingsUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Invalid number for low balance threshold" in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_blank_fields_skipped(self, app, auth_client, seed_user):
         """POST /settings with blank fields preserves existing values."""
@@ -317,10 +317,10 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Invalid grid account." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
     def test_negative_grid_periods(self, app, auth_client, seed_user):
-        """Negative grid periods rejected by server-side range check."""
+        """Negative grid periods rejected by schema range check."""
         with app.app_context():
             original = seed_user["settings"].grid_default_periods
 
@@ -329,7 +329,7 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Grid periods must be between 1 and 52." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(
@@ -347,7 +347,7 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Grid periods must be between 1 and 52." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(
@@ -356,7 +356,7 @@ class TestSettingsNegativePaths:
             assert settings.grid_default_periods == original
 
     def test_extreme_grid_periods(self, app, auth_client, seed_user):
-        """Extreme grid periods rejected by server-side range check."""
+        """Extreme grid periods rejected by schema range check."""
         with app.app_context():
             original = seed_user["settings"].grid_default_periods
 
@@ -365,7 +365,7 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Grid periods must be between 1 and 52." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(
@@ -383,7 +383,7 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Inflation rate must be between 0 and 100." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(
@@ -401,7 +401,7 @@ class TestSettingsNegativePaths:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Low balance threshold cannot be negative." in resp.data
+            assert b"Please correct the highlighted errors" in resp.data
 
             db.session.expire_all()
             settings = db.session.query(UserSettings).filter_by(

@@ -6,13 +6,14 @@ Settings dashboard consolidating all configuration sections.
 """
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.account import Account
+from app.schemas.validation import UserSettingsSchema
 from app.models.category import Category
 from app.models.ref import AccountType, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
@@ -136,66 +137,43 @@ def show():
 @login_required
 def update():
     """Update user settings."""
+    schema = UserSettingsSchema()
+    errors = schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="general"))
+
+    data = schema.load(request.form)
+
     settings = current_user.settings
     if settings is None:
         settings = UserSettings(user_id=current_user.id)
         db.session.add(settings)
 
-    # Update grid default periods.
-    grid_periods = request.form.get("grid_default_periods")
-    if grid_periods:
-        try:
-            val = int(grid_periods)
-        except (ValueError, TypeError):
-            flash("Invalid number for grid periods.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        if val < 1 or val > 52:
-            flash("Grid periods must be between 1 and 52.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        settings.grid_default_periods = val
+    if "grid_default_periods" in data and data["grid_default_periods"] is not None:
+        settings.grid_default_periods = data["grid_default_periods"]
 
-    # Update default inflation rate (user enters percentage, e.g. 3 for 3%).
-    inflation = request.form.get("default_inflation_rate")
-    if inflation:
-        try:
-            val = Decimal(inflation) / Decimal("100")
-        except (InvalidOperation, ValueError, ArithmeticError):
-            flash("Invalid inflation rate.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        if val < 0 or val > 1:
-            flash("Inflation rate must be between 0 and 100.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        settings.default_inflation_rate = val
+    if "default_inflation_rate" in data and data["default_inflation_rate"] is not None:
+        # User enters percentage (e.g. 3 for 3%); store as decimal fraction.
+        settings.default_inflation_rate = (
+            Decimal(str(data["default_inflation_rate"])) / Decimal("100")
+        )
 
-    # Update low balance threshold.
-    low_bal = request.form.get("low_balance_threshold")
-    if low_bal:
-        try:
-            val = int(low_bal)
-        except (ValueError, TypeError):
-            flash("Invalid number for low balance threshold.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        if val < 0:
-            flash("Low balance threshold cannot be negative.", "danger")
-            return redirect(url_for("settings.show", section="general"))
-        settings.low_balance_threshold = val
+    if "low_balance_threshold" in data and data["low_balance_threshold"] is not None:
+        settings.low_balance_threshold = data["low_balance_threshold"]
 
-    # Update default grid account.
-    grid_acct_raw = request.form.get("default_grid_account_id", "")
-    if grid_acct_raw == "":
-        settings.default_grid_account_id = None
-    else:
-        try:
-            acct_id = int(grid_acct_raw)
+    # Account ownership check stays in the route (can't be in schema).
+    if "default_grid_account_id" in data:
+        acct_id = data["default_grid_account_id"]
+        if acct_id is None:
+            settings.default_grid_account_id = None
+        else:
             acct = db.session.get(Account, acct_id)
             if acct and acct.user_id == current_user.id and acct.is_active:
                 settings.default_grid_account_id = acct_id
             else:
                 flash("Invalid grid account.", "danger")
                 return redirect(url_for("settings.show", section="general"))
-        except (ValueError, TypeError):
-            flash("Invalid grid account.", "danger")
-            return redirect(url_for("settings.show", section="general"))
 
     db.session.commit()
     flash("Settings updated.", "success")
