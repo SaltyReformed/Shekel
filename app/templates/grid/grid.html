@@ -161,18 +161,13 @@
         </tr>
       {% endfor %}
 
-      {# --- Total Income Subtotal --- #}
+      {# --- Total Income Subtotal (server-side Decimal) --- #}
       <tr class="subtotal-row subtotal-row-income">
         <th class="sticky-col row-label fw-bold">Total Income</th>
         {% for period in periods %}
-          {% set total = namespace(val=0) %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.is_income and not txn.is_deleted and txn.status_id == STATUS_PROJECTED %}
-              {% set total.val = total.val + (txn.effective_amount|float) %}
-            {% endif %}
-          {% endfor %}
+          {% set val = subtotals[period.id].income %}
           <td class="text-end font-mono fw-bold">
-            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
+            {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
           </td>
         {% endfor %}
       </tr>
@@ -239,39 +234,24 @@
         </tr>
       {% endfor %}
 
-      {# --- Total Expenses Subtotal --- #}
+      {# --- Total Expenses Subtotal (server-side Decimal) --- #}
       <tr class="subtotal-row subtotal-row-expense">
         <th class="sticky-col row-label fw-bold">Total Expenses</th>
         {% for period in periods %}
-          {% set total = namespace(val=0) %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if txn.is_expense and not txn.is_deleted and txn.status_id == STATUS_PROJECTED %}
-              {% set total.val = total.val + (txn.effective_amount|float) %}
-            {% endif %}
-          {% endfor %}
+          {% set val = subtotals[period.id].expense %}
           <td class="text-end font-mono fw-bold">
-            {% if total.val != 0 %}${{ "{:,.0f}".format(total.val) }}{% endif %}
+            {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
           </td>
         {% endfor %}
       </tr>
 
-      {# --- Net Cash Flow --- #}
+      {# --- Net Cash Flow (server-side Decimal) --- #}
       <tr class="net-cash-flow-row">
         <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
         {% for period in periods %}
-          {% set ns = namespace(income=0, expense=0) %}
-          {% for txn in txn_by_period.get(period.id, []) %}
-            {% if not txn.is_deleted and txn.status_id == STATUS_PROJECTED %}
-              {% if txn.is_income %}
-                {% set ns.income = ns.income + (txn.effective_amount|float) %}
-              {% elif txn.is_expense %}
-                {% set ns.expense = ns.expense + (txn.effective_amount|float) %}
-              {% endif %}
-            {% endif %}
-          {% endfor %}
-          {% set net = ns.income - ns.expense %}
+          {% set net = subtotals[period.id].net %}
           <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}">
-            {% if net != 0 %}
+            {% if net %}
               {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
               ${{ "{:,.0f}".format(net) }}
             {% endif %}

@@ -218,6 +218,27 @@ def index():
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
+    # Pre-compute subtotals per period using Decimal arithmetic (H-05).
+    # Only projected transactions are included in subtotals -- settled
+    # and excluded statuses are omitted (matching the grid display rules).
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    subtotals = {}
+    for period in periods:
+        income = Decimal("0")
+        expense = Decimal("0")
+        for txn in txn_by_period.get(period.id, []):
+            if txn.is_deleted or txn.status_id != projected_id:
+                continue
+            if txn.is_income:
+                income += txn.effective_amount
+            elif txn.is_expense:
+                expense += txn.effective_amount
+        subtotals[period.id] = {
+            "income": income,
+            "expense": expense,
+            "net": income - expense,
+        }
+
     # Load categories for grouping rows and for the Add Transaction modal.
     categories = (
         db.session.query(Category)
@@ -256,6 +277,7 @@ def index():
         current_period=current_period,
         balances=balances,
         txn_by_period=txn_by_period,
+        subtotals=subtotals,
         categories=categories,
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,

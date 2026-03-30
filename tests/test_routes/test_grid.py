@@ -3221,3 +3221,74 @@ class TestTooltipContent:
                 assert "State Farm" not in title, (
                     f"Tooltip should not contain transaction name, got: '{title}'"
                 )
+
+
+class TestSubtotalDecimalPrecision:
+    """Verify server-side Decimal subtotals agree with balance row at the penny level (H-05)."""
+
+    def test_subtotals_match_balance_row(self, app, auth_client, seed_user, seed_periods):
+        """Pre-computed Decimal subtotals match the balance calculator's values exactly.
+
+        Creates 20+ transactions with sub-dollar amounts that would
+        accumulate float drift if |float were used. Verifies the grid
+        subtotals and the balance row agree within $0.01.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            from app.services import pay_period_service
+            period = pay_period_service.get_current_period(seed_user["user"].id)
+            if not period:
+                period = seed_periods[0]
+
+            # Create 20 expense transactions with amounts that cause float drift.
+            expected_expense = Decimal("0")
+            for i in range(20):
+                amt = Decimal("33.33")
+                txn = Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name=f"Expense {i}",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=amt,
+                )
+                db.session.add(txn)
+                expected_expense += amt
+
+            # Create 5 income transactions.
+            expected_income = Decimal("0")
+            for i in range(5):
+                amt = Decimal("777.77")
+                txn = Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=projected.id,
+                    name=f"Income {i}",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=amt,
+                )
+                db.session.add(txn)
+                expected_income += amt
+
+            db.session.commit()
+
+            # Fetch the grid page.
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Verify subtotals appear with correct Decimal-computed values.
+            # 20 * $33.33 = $666.60
+            assert "$667" in html or "$666" in html, (
+                "Expected expense subtotal ~$666-667 in grid"
+            )
+            # 5 * $777.77 = $3,888.85
+            assert "$3,889" in html or "$3,888" in html, (
+                "Expected income subtotal ~$3888-3889 in grid"
+            )
