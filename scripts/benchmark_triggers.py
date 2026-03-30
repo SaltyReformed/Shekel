@@ -55,7 +55,7 @@ def run_benchmark():
         settings = UserSettings(user_id=user.id)
         db.session.add(settings)
 
-        checking = db.session.query(AccountType).filter_by(name="checking").one()
+        checking = db.session.query(AccountType).filter_by(name="Checking").one()
         account = Account(
             user_id=user.id,
             account_type_id=checking.id,
@@ -84,8 +84,8 @@ def run_benchmark():
         account.current_anchor_period_id = periods[0].id
         db.session.commit()
 
-        expense = db.session.query(TransactionType).filter_by(name="expense").one()
-        pattern = db.session.query(RecurrencePattern).filter_by(name="every_period").one()
+        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
+        pattern = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
         rule = RecurrenceRule(user_id=user.id, pattern_id=pattern.id)
         db.session.add(rule)

@@ -106,7 +106,7 @@ def seed_user():
     print("  + User settings created.")
 
     # Create checking account.
-    checking_type = db.session.query(AccountType).filter_by(name="checking").one()
+    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = Account(
         user_id=user.id,
         account_type_id=checking_type.id,
