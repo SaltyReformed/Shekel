@@ -817,3 +817,54 @@ class CalibrationSchema(BaseSchema):
     )
     pay_stub_date = fields.Date(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+
+class CalibrationConfirmSchema(BaseSchema):
+    """Validates POST data for the calibration confirm step.
+
+    Includes the original pay stub fields plus the derived effective
+    rates passed via hidden form fields from the preview page.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        return {k: v for k, v in data.items() if v != ""}
+
+    actual_gross_pay = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
+    actual_federal_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_state_tax = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_social_security = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    actual_medicare = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    effective_federal_rate = fields.Decimal(
+        required=True, places=10, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    effective_state_rate = fields.Decimal(
+        required=True, places=10, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    effective_ss_rate = fields.Decimal(
+        required=True, places=10, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    effective_medicare_rate = fields.Decimal(
+        required=True, places=10, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    pay_stub_date = fields.Date(required=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))

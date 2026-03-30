@@ -40,6 +40,7 @@ from app.models.ref import (
 from app import ref_cache
 from app.enums import AcctCategoryEnum, RecurrencePatternEnum, TxnTypeEnum
 from app.schemas.validation import (
+    CalibrationConfirmSchema,
     CalibrationSchema,
     DeductionCreateSchema,
     FicaConfigSchema,
@@ -62,6 +63,7 @@ _raise_schema = RaiseCreateSchema()
 _deduction_schema = DeductionCreateSchema()
 _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
+_calibration_confirm_schema = CalibrationConfirmSchema()
 
 
 
@@ -767,7 +769,12 @@ def calibrate_confirm(profile_id):
         flash("Salary profile not found.", "danger")
         return redirect(url_for("salary.list_profiles"))
 
-    from decimal import Decimal as D
+    errors = _calibration_confirm_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    data = _calibration_confirm_schema.load(request.form)
 
     try:
         # Delete any existing calibration for this profile.
@@ -782,17 +789,17 @@ def calibrate_confirm(profile_id):
 
         cal = CalibrationOverride(
             salary_profile_id=profile.id,
-            actual_gross_pay=D(request.form["actual_gross_pay"]),
-            actual_federal_tax=D(request.form["actual_federal_tax"]),
-            actual_state_tax=D(request.form["actual_state_tax"]),
-            actual_social_security=D(request.form["actual_social_security"]),
-            actual_medicare=D(request.form["actual_medicare"]),
-            effective_federal_rate=D(request.form["effective_federal_rate"]),
-            effective_state_rate=D(request.form["effective_state_rate"]),
-            effective_ss_rate=D(request.form["effective_ss_rate"]),
-            effective_medicare_rate=D(request.form["effective_medicare_rate"]),
-            pay_stub_date=date.fromisoformat(request.form["pay_stub_date"]),
-            notes=request.form.get("notes") or None,
+            actual_gross_pay=data["actual_gross_pay"],
+            actual_federal_tax=data["actual_federal_tax"],
+            actual_state_tax=data["actual_state_tax"],
+            actual_social_security=data["actual_social_security"],
+            actual_medicare=data["actual_medicare"],
+            effective_federal_rate=data["effective_federal_rate"],
+            effective_state_rate=data["effective_state_rate"],
+            effective_ss_rate=data["effective_ss_rate"],
+            effective_medicare_rate=data["effective_medicare_rate"],
+            pay_stub_date=data["pay_stub_date"],
+            notes=data.get("notes"),
             is_active=True,
         )
         db.session.add(cal)
