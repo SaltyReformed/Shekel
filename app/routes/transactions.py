@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -178,7 +179,11 @@ def update_transaction(txn_id):
     if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
         txn.is_override = True
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # Return the updated cell with a trigger to refresh balances.
@@ -497,7 +502,11 @@ def create_inline():
 
     txn = Transaction(**data)
     db.session.add(txn)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created inline transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
     # Return the cell wrapped in a div with a unique ID, matching
@@ -541,7 +550,11 @@ def create_transaction():
 
     txn = Transaction(**data)
     db.session.add(txn)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)

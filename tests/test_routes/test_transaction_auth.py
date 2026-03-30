@@ -387,28 +387,22 @@ class TestCreateOwnership:
     def test_create_with_nonexistent_category_id(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transactions with nonexistent category_id raises unhandled DB error."""
+        """POST /transactions with nonexistent category_id returns 400."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
             ).one()
 
-            # BUG: create_transaction does not validate category_id existence
-            # or ownership. The DB FK constraint catches the invalid reference.
-            # With TESTING=True, the IntegrityError propagates as an exception
-            # (in production this would be a 500 Internal Server Error).
-            with pytest.raises(SAIntegrityError):
-                auth_client.post("/transactions", data={
-                    "name": "Ghost Category",
-                    "estimated_amount": "100.00",
-                    "pay_period_id": seed_periods[0].id,
-                    "scenario_id": seed_user["scenario"].id,
-                    "category_id": 999999,
-                    "transaction_type_id": expense_type.id,
-                    "account_id": str(seed_user["account"].id),
-                })
-
-            db.session.rollback()  # Clear the failed DB transaction
+            resp = auth_client.post("/transactions", data={
+                "name": "Ghost Category",
+                "estimated_amount": "100.00",
+                "pay_period_id": seed_periods[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": 999999,
+                "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
+            })
+            assert resp.status_code == 400
 
             count = db.session.query(Transaction).filter_by(
                 name="Ghost Category"

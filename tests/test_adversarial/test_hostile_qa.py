@@ -75,25 +75,20 @@ class TestStateMachineViolations:
     status_id and the mark_done endpoint for missing guards."""
 
     def test_update_status_to_nonexistent_id(self, app, auth_client, seed_user, seed_periods):
-        """PATCH with status_id=9999 -- no FK validation in schema.
+        """PATCH with status_id=9999 returns 400 (FK constraint caught).
 
-        Bug: TransactionUpdateSchema.status_id is fields.Integer() with no
-        OneOf constraint.  The DB FK to ref.statuses catches it, but the
-        error surfaces as an unhandled IntegrityError instead of a clean 400.
-        In TESTING mode, the exception propagates directly.
+        The DB FK to ref.statuses catches invalid references and the
+        IntegrityError handler returns a clean 400 response.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
             db.session.commit()
 
-            # Current behavior: DB FK constraint raises IntegrityError.
-            # Ideal: schema-level OneOf would return 400 cleanly.
-            with pytest.raises(IntegrityError):
-                auth_client.patch(
-                    f"/transactions/{txn.id}",
-                    data={"status_id": "9999"},
-                )
-            db.session.rollback()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": "9999"},
+            )
+            assert resp.status_code == 400
 
     def test_update_done_back_to_projected(self, app, auth_client, seed_user, seed_periods):
         """Mark done then PATCH back to projected -- no transition guard.

@@ -29,7 +29,7 @@ class TransactionUpdateSchema(BaseSchema):
     status_id = fields.Integer()
     pay_period_id = fields.Integer()
     category_id = fields.Integer()
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 
 class TransactionCreateSchema(BaseSchema):
@@ -44,7 +44,7 @@ class TransactionCreateSchema(BaseSchema):
     category_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
     status_id = fields.Integer()
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 
 class InlineTransactionCreateSchema(BaseSchema):
@@ -62,7 +62,7 @@ class InlineTransactionCreateSchema(BaseSchema):
     transaction_type_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
     status_id = fields.Integer()
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -236,7 +236,7 @@ class RaiseCreateSchema(BaseSchema):
         validate=validate.Range(min=-10000000, max=10000000),
     )
     is_recurring = fields.Boolean(load_default=False)
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
     @validates_schema
     def validate_one_method(self, data, **kwargs):
@@ -411,7 +411,7 @@ class TransferCreateSchema(BaseSchema):
     scenario_id = fields.Integer(required=True)
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(load_default=None, allow_none=True)
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
@@ -433,7 +433,7 @@ class TransferUpdateSchema(BaseSchema):
     status_id = fields.Integer()
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(allow_none=True)
-    notes = fields.String(allow_none=True)
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 
 # ── Savings Goal Schemas (Phase 4) ────────────────────────────────
