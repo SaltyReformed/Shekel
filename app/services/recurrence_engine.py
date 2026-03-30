@@ -24,6 +24,7 @@ Supported patterns (§4.7):
 
 import logging
 from datetime import date
+from decimal import InvalidOperation
 
 from app.extensions import db
 from app.models.scenario import Scenario
@@ -540,10 +541,12 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         )
         return breakdown.net_pay
 
-    except Exception:
-        logger.exception(
-            "Failed to calculate paycheck for salary profile %d, "
-            "falling back to template default_amount",
+    except (InvalidOperation, ZeroDivisionError, TypeError, KeyError) as exc:
+        logger.error(
+            "Paycheck calculation failed for salary profile %d in "
+            "period %s: %s. Using template default_amount.",
             salary_profile.id,
+            period.start_date,
+            exc,
         )
         return template.default_amount

@@ -1644,6 +1644,130 @@ class TestNegativePaths:
             assert preserved.id == target_id
 
 
+class TestPaycheckAmountFallback:
+    """Tests for _get_transaction_amount exception narrowing (C-01).
+
+    Verifies that the recurrence engine only catches specific recoverable
+    exceptions from the paycheck calculator, and lets unexpected errors
+    propagate instead of silently falling back to template.default_amount.
+    """
+
+    @staticmethod
+    def _fake_tax_configs(*args, **kwargs):
+        """Stub load_tax_configs to avoid DB hits in unit tests."""
+        return {
+            "bracket_set": "fake", "state_config": "fake",
+            "fica_config": "fake",
+        }
+
+    def test_returns_default_on_zero_division(
+        self, app, db, seed_user, monkeypatch
+    ):
+        """ZeroDivisionError from paycheck calc falls back to default_amount."""
+        monkeypatch.setattr(
+            "app.services.paycheck_calculator.calculate_paycheck",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                ZeroDivisionError("division by zero")),
+        )
+        monkeypatch.setattr(
+            "app.services.tax_config_service.load_tax_configs",
+            self._fake_tax_configs,
+        )
+        from app.services.recurrence_engine import _get_transaction_amount
+
+        class FakeTemplate:
+            default_amount = Decimal("1500.00")
+
+        class FakeProfile:
+            id = 1
+            user_id = seed_user["user"].id
+            calibration = None
+
+        class FakePeriod:
+            start_date = date(2026, 1, 2)
+
+        result = _get_transaction_amount(
+            FakeTemplate(), FakeProfile(), FakePeriod(), []
+        )
+        assert result == Decimal("1500.00")
+
+    def test_returns_default_on_invalid_operation(
+        self, app, db, seed_user, monkeypatch
+    ):
+        """InvalidOperation from bad Decimal data falls back to default_amount."""
+        from decimal import InvalidOperation
+
+        def _boom(*args, **kwargs):
+            raise InvalidOperation("bad decimal")
+
+        monkeypatch.setattr(
+            "app.services.paycheck_calculator.calculate_paycheck", _boom,
+        )
+        monkeypatch.setattr(
+            "app.services.tax_config_service.load_tax_configs",
+            self._fake_tax_configs,
+        )
+        from app.services.recurrence_engine import _get_transaction_amount
+
+        class FakeTemplate:
+            default_amount = Decimal("2000.00")
+
+        class FakeProfile:
+            id = 1
+            user_id = seed_user["user"].id
+            calibration = None
+
+        class FakePeriod:
+            start_date = date(2026, 1, 2)
+
+        result = _get_transaction_amount(
+            FakeTemplate(), FakeProfile(), FakePeriod(), []
+        )
+        assert result == Decimal("2000.00")
+
+    def test_propagates_unexpected_exception(
+        self, app, db, seed_user, monkeypatch
+    ):
+        """Unexpected exceptions (e.g., AttributeError) are NOT caught."""
+        def _boom(*args, **kwargs):
+            raise AttributeError("profile has no attribute 'raises'")
+
+        monkeypatch.setattr(
+            "app.services.paycheck_calculator.calculate_paycheck", _boom,
+        )
+        monkeypatch.setattr(
+            "app.services.tax_config_service.load_tax_configs",
+            self._fake_tax_configs,
+        )
+        from app.services.recurrence_engine import _get_transaction_amount
+
+        class FakeTemplate:
+            default_amount = Decimal("1500.00")
+
+        class FakeProfile:
+            id = 1
+            user_id = seed_user["user"].id
+            calibration = None
+
+        class FakePeriod:
+            start_date = date(2026, 1, 2)
+
+        with pytest.raises(AttributeError, match="raises"):
+            _get_transaction_amount(
+                FakeTemplate(), FakeProfile(), FakePeriod(), []
+            )
+
+    def test_returns_default_amount_when_no_salary_profile(self, app, db):
+        """When salary_profile is None, returns template.default_amount directly."""
+        from app.services.recurrence_engine import _get_transaction_amount
+
+        class FakeTemplate:
+            default_amount = Decimal("500.00")
+
+        result = _get_transaction_amount(FakeTemplate(), None, None, [])
+        assert result == Decimal("500.00")
+
+
 class TestEndDate:
     """Tests for the optional end_date on recurrence rules."""
 
