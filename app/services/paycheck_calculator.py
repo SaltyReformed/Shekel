@@ -232,7 +232,12 @@ def project_salary(profile, periods, tax_configs, *, calibration=None):
 def _apply_raises(profile, period):
     """Return the effective annual salary for the given period, after raises.
 
-    Raises are applied in chronological order. A raise applies if:
+    Raises are sorted by (effective_year, effective_month) before
+    application so that flat raises apply before percentage raises
+    within the same effective date.  This ensures deterministic
+    results regardless of database query order (M-01).
+
+    A raise applies if:
     - Its effective_year matches the period's year (or is None for recurring)
     - Its effective_month is on or before the period's month (for that year)
     """
@@ -244,7 +249,12 @@ def _apply_raises(profile, period):
     period_year = period.start_date.year
     period_month = period.start_date.month
 
-    for raise_obj in profile.raises:
+    sorted_raises = sorted(
+        profile.raises,
+        key=lambda r: (r.effective_year or 0, r.effective_month or 0),
+    )
+
+    for raise_obj in sorted_raises:
         eff_year = raise_obj.effective_year
         eff_month = raise_obj.effective_month
 
@@ -428,13 +438,16 @@ def _inflation_years(period, profile, effective_month):
 def _get_cumulative_wages(profile, period, all_periods):
     """Calculate cumulative gross wages for the year up to (but not including) this period.
 
+    Periods are sorted by start_date before iteration so the break
+    condition works correctly regardless of input order (M-02).
+
     Used for FICA SS wage base cap tracking.
     """
     period_year = period.start_date.year
     pay_periods_per_year = profile.pay_periods_per_year or 26
     cumulative = ZERO
 
-    for p in all_periods:
+    for p in sorted(all_periods, key=lambda p: p.start_date):
         if p.start_date.year != period_year:
             continue
         if p.start_date >= period.start_date:
