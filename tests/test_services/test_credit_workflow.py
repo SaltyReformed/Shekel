@@ -11,9 +11,11 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.category import Category
+from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.models.ref import Status, TransactionType
+from app.models.transfer import Transfer
 from app.services import credit_workflow, carry_forward_service
 from app.exceptions import NotFoundError, ValidationError
 
@@ -801,3 +803,53 @@ class TestNegativePaths:
             # Status unchanged -- still 'cancelled'.
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
+
+    def test_mark_credit_rejects_shadow_transaction(
+        self, app, db, seed_user, seed_periods
+    ):
+        """mark_as_credit raises ValidationError for shadow (transfer) transactions.
+
+        Defense-in-depth: the route layer already blocks this, but the
+        service must enforce its own invariants independently (M-03).
+        """
+        with app.app_context():
+            # Create a second account so we can build a real Transfer.
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Test Savings",
+                current_anchor_balance=Decimal("0"),
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            transfer = Transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                amount=Decimal("200.00"),
+                name="Test Transfer",
+            )
+            db.session.add(transfer)
+            db.session.flush()
+
+            # Create a shadow transaction linked to the transfer.
+            txn = self._create_expense(seed_user, seed_periods)
+            txn.transfer_id = transfer.id
+            db.session.flush()
+
+            with pytest.raises(ValidationError, match="transfer"):
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+
+            # Status unchanged -- still projected.
+            db.session.refresh(txn)
+            assert txn.status.name == "Projected"

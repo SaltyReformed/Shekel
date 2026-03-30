@@ -56,6 +56,8 @@ def mark_as_credit(transaction_id, user_id):
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
+    if txn.transfer_id is not None:
+        raise ValidationError("Cannot mark transfer transactions as credit.")
 
     credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
