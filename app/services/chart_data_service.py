@@ -15,9 +15,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.category import Category
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
@@ -228,10 +227,7 @@ def _calculate_account_balances(account, scenario, periods):
         )
         return balances
 
-    if acct_type_id in (
-        ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
-        ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
-    ):
+    if account.account_type and account.account_type.has_amortization:
         loan_params = _get_loan_params(account)
         if loan_params:
             balances, _ = balance_calculator.calculate_balances_with_amortization(
@@ -244,24 +240,18 @@ def _calculate_account_balances(account, scenario, periods):
 
 
 def _get_loan_params(account):
-    """Load loan parameters for a mortgage or auto loan account.
+    """Load loan parameters for any amortizing account.
 
     Args:
         account (Account): The loan account.
 
     Returns:
-        MortgageParams or AutoLoanParams, or None.
+        LoanParams or None.
     """
-    acct_type_id = account.account_type_id if account.account_type else None
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
+    acct_type = account.account_type
+    if acct_type and acct_type.has_amortization:
         return (
-            db.session.query(MortgageParams)
-            .filter_by(account_id=account.id)
-            .first()
-        )
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
-        return (
-            db.session.query(AutoLoanParams)
+            db.session.query(LoanParams)
             .filter_by(account_id=account.id)
             .first()
         )
@@ -477,7 +467,7 @@ def get_budget_vs_actuals(user_id, period_range="current"):
 
 
 def get_loan_accounts(user_id):
-    """Get all mortgage and auto loan accounts for a user.
+    """Get all amortizing loan accounts for a user.
 
     Args:
         user_id (int): The user's ID.
@@ -491,10 +481,7 @@ def get_loan_accounts(user_id):
         .filter(
             Account.user_id == user_id,
             Account.is_active.is_(True),
-            AccountType.id.in_([
-                ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
-                ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
-            ]),
+            AccountType.has_amortization.is_(True),
         )
         .order_by(Account.name)
         .all()
@@ -524,10 +511,7 @@ def _find_loan_account(user_id, account_id=None):
         .filter(
             Account.user_id == user_id,
             Account.is_active.is_(True),
-            AccountType.id.in_([
-                ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE),
-                ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN),
-            ]),
+            AccountType.has_amortization.is_(True),
         )
         .order_by(Account.name)
         .first()
@@ -554,23 +538,14 @@ def get_amortization_breakdown(user_id, account_id=None):
     if not params:
         return empty
 
-    remaining_months = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-    if remaining_months <= 0:
+    proj = amortization_engine.get_loan_projection(params)
+    if proj.remaining_months <= 0:
         return empty
 
-    schedule = amortization_engine.generate_schedule(
-        Decimal(str(params.current_principal)),
-        Decimal(str(params.interest_rate)),
-        remaining_months,
-        payment_day=params.payment_day,
-    )
-
     return {
-        "labels": [row.payment_date.strftime("%b %Y") for row in schedule],
-        "principal": [_to_chart_float(row.principal) for row in schedule],
-        "interest": [_to_chart_float(row.interest) for row in schedule],
+        "labels": [row.payment_date.strftime("%b %Y") for row in proj.schedule],
+        "principal": [_to_chart_float(row.principal) for row in proj.schedule],
+        "interest": [_to_chart_float(row.interest) for row in proj.schedule],
         "account_name": account.name,
     }
 

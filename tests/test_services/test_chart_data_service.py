@@ -12,9 +12,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.category import Category
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
@@ -393,7 +392,7 @@ class TestAmortizationBreakdown:
             db.session.add(account)
             db.session.flush()
 
-            params = MortgageParams(
+            params = LoanParams(
                 account_id=account.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
@@ -409,13 +408,12 @@ class TestAmortizationBreakdown:
                 user_id=seed_user["user"].id,
                 account_id=account.id,
             )
-            # Remaining months = term_months - elapsed months since origination.
-            # origination_date=2022-06-01, term=360. Labels = remaining months.
-            from app.services import amortization_engine
-            expected_months = amortization_engine.calculate_remaining_months(
-                date(2022, 6, 1), 360,
-            )
-            assert len(result["labels"]) == expected_months
+            # The schedule uses the contractual payment (from original
+            # $250k at 6%/360mo = ~$1,499/mo) applied against the $200k
+            # current balance.  The higher payment pays off the remaining
+            # balance faster than remaining_months, so the schedule is
+            # shorter than remaining_months.
+            assert len(result["labels"]) > 0
             assert len(result["principal"]) == len(result["labels"])
             assert len(result["interest"]) == len(result["labels"])
             assert result["account_name"] == "Test Mortgage"
@@ -1175,7 +1173,7 @@ class TestNetWorthRealisticData:
     ):
         """Net worth equals checking (asset) minus mortgage (liability).
 
-        Creates a mortgage account ($200k) with MortgageParams alongside
+        Creates a mortgage account ($200k) with LoanParams alongside
         the checking account ($1k).  Verifies every period's net worth
         by cross-referencing balance_over_time datasets.
 
@@ -1199,7 +1197,7 @@ class TestNetWorthRealisticData:
             db.session.add(mortgage)
             db.session.flush()
 
-            params = MortgageParams(
+            params = LoanParams(
                 account_id=mortgage.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
@@ -1293,7 +1291,7 @@ class TestNetWorthRealisticData:
             db.session.add(mortgage)
             db.session.flush()
 
-            params = MortgageParams(
+            params = LoanParams(
                 account_id=mortgage.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
@@ -1540,7 +1538,7 @@ class TestAmortizationBreakdownExact:
             db.session.add(account)
             db.session.flush()
 
-            params = MortgageParams(
+            params = LoanParams(
                 account_id=account.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
@@ -1559,6 +1557,9 @@ class TestAmortizationBreakdownExact:
             )
 
             # Direct engine result for cross-verification.
+            # Use the contractual payment override (from original
+            # principal and full term) to match what the chart service
+            # now does via get_loan_projection().
             remaining_months = amortization_engine.calculate_remaining_months(
                 date(2022, 6, 1), 360,
             )
@@ -1567,6 +1568,8 @@ class TestAmortizationBreakdownExact:
                 Decimal("0.06000"),
                 remaining_months,
                 payment_day=1,
+                original_principal=Decimal("250000.00"),
+                term_months=360,
             )
 
             # Exact count assertions.
@@ -1624,7 +1627,7 @@ class TestAmortizationBreakdownExact:
             db.session.add(account)
             db.session.flush()
 
-            params = AutoLoanParams(
+            params = LoanParams(
                 account_id=account.id,
                 original_principal=Decimal("30000.00"),
                 current_principal=Decimal("25000.00"),
@@ -1643,6 +1646,8 @@ class TestAmortizationBreakdownExact:
             )
 
             # Direct engine result for cross-verification.
+            # Use the contractual payment override (from original
+            # principal and full term) to match the chart service.
             remaining_months = amortization_engine.calculate_remaining_months(
                 date(2024, 1, 15), 60,
             )
@@ -1651,6 +1656,8 @@ class TestAmortizationBreakdownExact:
                 Decimal("0.05000"),
                 remaining_months,
                 payment_day=15,
+                original_principal=Decimal("30000.00"),
+                term_months=60,
             )
 
             # Exact count assertions.

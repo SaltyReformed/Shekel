@@ -269,8 +269,7 @@ def _register_blueprints(app):
     from app.routes.salary import salary_bp
     from app.routes.transfers import transfers_bp
     from app.routes.savings import savings_bp
-    from app.routes.mortgage import mortgage_bp
-    from app.routes.auto_loan import auto_loan_bp
+    from app.routes.loan import loan_bp
     from app.routes.investment import investment_bp
     from app.routes.retirement import retirement_bp
     from app.routes.charts import charts_bp
@@ -287,8 +286,7 @@ def _register_blueprints(app):
     app.register_blueprint(salary_bp)
     app.register_blueprint(transfers_bp)
     app.register_blueprint(savings_bp)
-    app.register_blueprint(mortgage_bp)
-    app.register_blueprint(auto_loan_bp)
+    app.register_blueprint(loan_bp)
     app.register_blueprint(investment_bp)
     app.register_blueprint(retirement_bp)
     app.register_blueprint(charts_bp)
@@ -421,35 +419,23 @@ def _seed_ref_tables():
             for c in db.session.query(AccountTypeCategory).all()
         }
 
-        # ── Seed AccountType with FK, booleans ───────────────────────
-        # Each entry: (name, category_name, has_parameters, has_amortization)
-        acct_type_seeds = [
-            ("Checking",        "Asset",      False, False),
-            ("Savings",         "Asset",      False, False),
-            ("HYSA",            "Asset",      True,  False),
-            ("Money Market",    "Asset",      False, False),
-            ("CD",              "Asset",      False, False),
-            ("HSA",             "Asset",      False, False),
-            ("Credit Card",     "Liability",  False, False),
-            ("Mortgage",        "Liability",  True,  True),
-            ("Auto Loan",       "Liability",  True,  True),
-            ("Student Loan",    "Liability",  True,  True),
-            ("Personal Loan",   "Liability",  True,  True),
-            ("HELOC",           "Liability",  False, True),
-            ("401(k)",          "Retirement", True,  False),
-            ("Roth 401(k)",     "Retirement", True,  False),
-            ("Traditional IRA", "Retirement", True,  False),
-            ("Roth IRA",        "Retirement", True,  False),
-            ("Brokerage",       "Investment", True,  False),
-            ("529 Plan",        "Investment", False, False),
-        ]
-        for name, cat_name, has_params, has_amort in acct_type_seeds:
-            if not db.session.query(AccountType).filter_by(name=name).first():
+        # ── Seed AccountType with FK, booleans, metadata ──────────────
+        from app.ref_seeds import ACCT_TYPE_SEEDS as acct_type_seeds  # pylint: disable=import-outside-toplevel
+        for name, cat_name, has_params, has_amort, icon, max_term in acct_type_seeds:
+            existing = db.session.query(AccountType).filter_by(name=name).first()
+            if existing:
+                existing.has_parameters = has_params
+                existing.has_amortization = has_amort
+                existing.icon_class = icon
+                existing.max_term_months = max_term
+            else:
                 db.session.add(AccountType(
                     name=name,
                     category_id=cat_lookup[cat_name],
                     has_parameters=has_params,
                     has_amortization=has_amort,
+                    icon_class=icon,
+                    max_term_months=max_term,
                 ))
 
         # ── Seed remaining ref tables ────────────────────────────────

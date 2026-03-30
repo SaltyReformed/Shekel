@@ -796,7 +796,7 @@ class TestAccountCreationRedirects:
     def test_mortgage_creation_redirects_to_dashboard(
         self, app, auth_client, seed_user,
     ):
-        """Mortgage creation redirects to mortgage dashboard with setup=1."""
+        """Mortgage creation redirects to loan dashboard with setup=1."""
         with app.app_context():
             mortgage_type = db.session.query(AccountType).filter_by(
                 name="Mortgage"
@@ -810,13 +810,13 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/mortgage" in location
+            assert "/loan" in location
             assert "setup=1" in location
 
     def test_auto_loan_creation_redirects_to_dashboard(
         self, app, auth_client, seed_user,
     ):
-        """Auto loan creation redirects to auto loan dashboard with setup=1."""
+        """Auto loan creation redirects to loan dashboard with setup=1."""
         with app.app_context():
             auto_loan_type = db.session.query(AccountType).filter_by(
                 name="Auto Loan"
@@ -830,7 +830,7 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/auto-loan" in location
+            assert "/loan" in location
             assert "setup=1" in location
 
     def test_401k_creation_redirects_to_investment_dashboard(
@@ -947,13 +947,14 @@ class TestAccountCreationRedirects:
             assert location.endswith("/accounts")
             assert "setup" not in location
 
-    def test_student_loan_creation_no_investment_params(
+    def test_student_loan_creation_redirects_to_loan(
         self, app, auth_client, seed_user,
     ):
-        """Student loan creation does NOT create InvestmentParams or redirect to investment.
+        """Student loan creation redirects to loan dashboard for setup.
 
-        Student loans have has_parameters=True but no dedicated param model.
-        They must not be routed to the investment dashboard.
+        Student loans have has_amortization=True and are now served by
+        the unified loan routes.  They must not be routed to the
+        investment dashboard.
         """
         with app.app_context():
             sl_type = db.session.query(AccountType).filter_by(
@@ -969,7 +970,7 @@ class TestAccountCreationRedirects:
             assert resp.status_code == 302
             location = resp.headers["Location"]
             assert "investment" not in location
-            assert "setup" not in location
+            assert "/loan" in location
 
             acct = db.session.query(Account).filter_by(
                 user_id=seed_user["user"].id, name="Student Loan",

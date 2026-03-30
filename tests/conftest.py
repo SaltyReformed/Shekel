@@ -195,9 +195,8 @@ def db(app, setup_database):
             "salary.tax_brackets, "
             "salary.tax_bracket_sets, "
             "budget.escrow_components, "
-            "budget.mortgage_rate_history, "
-            "budget.mortgage_params, "
-            "budget.auto_loan_params, "
+            "budget.rate_history, "
+            "budget.loan_params, "
             "budget.investment_params, "
             "budget.hysa_params, "
             "budget.savings_goals, "
@@ -920,10 +919,9 @@ def _create_audit_infrastructure():
         ("budget", "pay_periods"),
         ("budget", "account_anchor_history"),
         ("budget", "hysa_params"),
-        ("budget", "mortgage_params"),
-        ("budget", "mortgage_rate_history"),
+        ("budget", "loan_params"),
+        ("budget", "rate_history"),
         ("budget", "escrow_components"),
-        ("budget", "auto_loan_params"),
         ("budget", "investment_params"),
         ("salary", "salary_profiles"),
         ("salary", "salary_raises"),
@@ -968,35 +966,23 @@ def _seed_ref_tables():
         for c in _db.session.query(AccountTypeCategory).all()
     }
 
-    # ── Seed AccountType with FK, booleans ───────────────────────
-    # Each entry: (name, category_name, has_parameters, has_amortization)
-    acct_type_seeds = [
-        ("Checking",        "Asset",      False, False),
-        ("Savings",         "Asset",      False, False),
-        ("HYSA",            "Asset",      True,  False),
-        ("Money Market",    "Asset",      False, False),
-        ("CD",              "Asset",      False, False),
-        ("HSA",             "Asset",      False, False),
-        ("Credit Card",     "Liability",  False, False),
-        ("Mortgage",        "Liability",  True,  True),
-        ("Auto Loan",       "Liability",  True,  True),
-        ("Student Loan",    "Liability",  True,  True),
-        ("Personal Loan",   "Liability",  True,  True),
-        ("HELOC",           "Liability",  False, True),
-        ("401(k)",          "Retirement", True,  False),
-        ("Roth 401(k)",     "Retirement", True,  False),
-        ("Traditional IRA", "Retirement", True,  False),
-        ("Roth IRA",        "Retirement", True,  False),
-        ("Brokerage",       "Investment", True,  False),
-        ("529 Plan",        "Investment", False, False),
-    ]
-    for name, cat_name, has_params, has_amort in acct_type_seeds:
-        if not _db.session.query(AccountType).filter_by(name=name).first():
+    # ── Seed AccountType with FK, booleans, metadata ──────────────
+    from app.ref_seeds import ACCT_TYPE_SEEDS  # pylint: disable=import-outside-toplevel
+    for name, cat_name, has_params, has_amort, icon, max_term in ACCT_TYPE_SEEDS:
+        existing = _db.session.query(AccountType).filter_by(name=name).first()
+        if existing:
+            existing.has_parameters = has_params
+            existing.has_amortization = has_amort
+            existing.icon_class = icon
+            existing.max_term_months = max_term
+        else:
             _db.session.add(AccountType(
                 name=name,
                 category_id=cat_lookup[cat_name],
                 has_parameters=has_params,
                 has_amortization=has_amort,
+                icon_class=icon,
+                max_term_months=max_term,
             ))
 
     # ── Seed remaining ref tables ────────────────────────────────

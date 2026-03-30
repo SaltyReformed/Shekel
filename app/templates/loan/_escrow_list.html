@@ -43,7 +43,7 @@
             {% endif %}
           </td>
           <td class="text-end">
-            <form hx-post="{{ url_for('mortgage.delete_escrow', account_id=account.id, component_id=comp.id) }}"
+            <form hx-post="{{ url_for('loan.delete_escrow', account_id=account.id, component_id=comp.id) }}"
                   hx-target="#escrow-list" hx-swap="innerHTML"
                   class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -62,7 +62,7 @@
   {% endif %}
 </div>
 <div class="card-footer">
-  <form hx-post="{{ url_for('mortgage.add_escrow', account_id=account.id) }}"
+  <form hx-post="{{ url_for('loan.add_escrow', account_id=account.id) }}"
         hx-target="#escrow-list" hx-swap="innerHTML"
         class="row g-2 align-items-end">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

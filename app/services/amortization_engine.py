@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Amortization Engine
 
-Pure-function service for mortgage and auto loan calculations.
+Pure-function service for loan amortization calculations.
 Generates amortization schedules, summary metrics, and payoff analysis.
 No database access -- operates only on values passed in.
 """
@@ -94,6 +94,8 @@ def generate_schedule(
     extra_monthly: Decimal = Decimal("0.00"),
     origination_date: date | None = None,
     payment_day: int = 1,
+    original_principal: Decimal | None = None,
+    term_months: int | None = None,
 ) -> list[AmortizationRow]:
     """Generate month-by-month amortization schedule.
 
@@ -104,6 +106,12 @@ def generate_schedule(
         extra_monthly: Additional principal payment per month.
         origination_date: Loan origination date (used for payment date calc).
         payment_day: Day of month payments are due.
+        original_principal: Original loan amount at origination.  When
+            provided with *term_months*, the contractual monthly payment
+            is computed from the original terms instead of re-amortizing
+            from current_principal.
+        term_months: Original loan term in months.  Used with
+            *original_principal* to derive the contractual payment.
 
     Returns:
         List of AmortizationRow objects.
@@ -111,10 +119,32 @@ def generate_schedule(
     if current_principal <= 0 or remaining_months <= 0:
         return []
 
-    monthly_payment = calculate_monthly_payment(
-        current_principal, annual_rate, remaining_months,
+    # Compute the monthly payment.  When original loan terms are provided,
+    # use them for the contractual payment (what the borrower actually pays).
+    # Otherwise re-amortize from current_principal (backward compat).
+    using_contractual = (
+        original_principal is not None and term_months is not None
     )
+    if using_contractual:
+        monthly_payment = calculate_monthly_payment(
+            original_principal, annual_rate, term_months,
+        )
+    else:
+        monthly_payment = calculate_monthly_payment(
+            current_principal, annual_rate, remaining_months,
+        )
     monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
+
+    # When using the contractual payment, the number of months needed to
+    # pay off current_principal may differ from remaining_months (e.g. a
+    # partially paid loan where current < original needs fewer months,
+    # while remaining_months is based on the calendar).  Use a generous
+    # upper bound and let the balance-reaches-zero break handle
+    # termination.  For re-amortized schedules, remaining_months is exact.
+    if using_contractual:
+        max_months = remaining_months + term_months
+    else:
+        max_months = remaining_months
 
     # Determine starting payment date.
     if origination_date:
@@ -132,7 +162,7 @@ def generate_schedule(
     balance = Decimal(str(current_principal))
     rows = []
 
-    for month_num in range(1, remaining_months + 1):
+    for month_num in range(1, max_months + 1):
         if balance <= 0:
             break
 
@@ -147,9 +177,9 @@ def generate_schedule(
         principal_portion = monthly_payment - interest
 
         # Cap payment at remaining balance + interest.
-        # On the last scheduled month or when principal would exceed balance,
+        # When principal would exceed balance or we've hit the loop cap,
         # absorb the remaining balance exactly to avoid rounding residue.
-        is_final = (principal_portion >= balance) or (month_num == remaining_months)
+        is_final = (principal_portion >= balance) or (month_num == max_months)
         if is_final:
             principal_portion = balance
             actual_payment = principal_portion + interest
@@ -200,11 +230,24 @@ def calculate_summary(
     payment_day: int,
     term_months: int,
     extra_monthly: Decimal = Decimal("0.00"),
+    original_principal: Decimal | None = None,
 ) -> AmortizationSummary:
-    """Compute summary metrics: payoff date, interest saved, etc."""
-    monthly_payment = calculate_monthly_payment(
-        current_principal, annual_rate, remaining_months,
-    )
+    """Compute summary metrics: payoff date, interest saved, etc.
+
+    Args:
+        original_principal: Original loan amount at origination.  When
+            provided, the contractual monthly payment is computed from
+            (original_principal, annual_rate, term_months) instead of
+            re-amortizing from current_principal.
+    """
+    if original_principal is not None:
+        monthly_payment = calculate_monthly_payment(
+            original_principal, annual_rate, term_months,
+        )
+    else:
+        monthly_payment = calculate_monthly_payment(
+            current_principal, annual_rate, remaining_months,
+        )
 
     # Standard schedule (no extra payments).
     standard = generate_schedule(
@@ -212,9 +255,11 @@ def calculate_summary(
         extra_monthly=Decimal("0.00"),
         origination_date=origination_date,
         payment_day=payment_day,
+        original_principal=original_principal,
+        term_months=term_months,
     )
 
-    total_interest_standard = sum(r.interest for r in standard)
+    total_interest_standard = sum((r.interest for r in standard), Decimal("0.00"))
     payoff_date_standard = standard[-1].payment_date if standard else origination_date
 
     # Accelerated schedule (with extra payments).
@@ -224,8 +269,10 @@ def calculate_summary(
             extra_monthly=extra_monthly,
             origination_date=origination_date,
             payment_day=payment_day,
+            original_principal=original_principal,
+            term_months=term_months,
         )
-        total_interest_extra = sum(r.interest for r in accelerated)
+        total_interest_extra = sum((r.interest for r in accelerated), Decimal("0.00"))
         payoff_date_extra = accelerated[-1].payment_date if accelerated else origination_date
     else:
         total_interest_extra = total_interest_standard
@@ -253,8 +300,14 @@ def calculate_payoff_by_date(
     target_date: date,
     origination_date: date,
     payment_day: int,
+    original_principal: Decimal | None = None,
+    term_months: int | None = None,
 ) -> Decimal | None:
     """Calculate required extra monthly payment to pay off by target_date.
+
+    Args:
+        original_principal: Original loan amount for contractual payment.
+        term_months: Original loan term for contractual payment.
 
     Returns None if target_date is not achievable (already past or too soon).
     Returns Decimal("0.00") if standard payoff is already before target.
@@ -267,6 +320,8 @@ def calculate_payoff_by_date(
         current_principal, annual_rate, remaining_months,
         origination_date=origination_date,
         payment_day=payment_day,
+        original_principal=original_principal,
+        term_months=term_months,
     )
     if not standard:
         return Decimal("0.00")
@@ -300,10 +355,6 @@ def calculate_payoff_by_date(
         return Decimal("0.00")
 
     # Binary search for the required extra payment.
-    monthly_payment = calculate_monthly_payment(
-        current_principal, annual_rate, remaining_months,
-    )
-
     lo = Decimal("0.01")
     hi = current_principal  # Upper bound: pay it all off immediately.
 
@@ -314,6 +365,8 @@ def calculate_payoff_by_date(
             extra_monthly=mid,
             origination_date=origination_date,
             payment_day=payment_day,
+            original_principal=original_principal,
+            term_months=term_months,
         )
         if not schedule:
             return mid
@@ -328,3 +381,65 @@ def calculate_payoff_by_date(
             break
 
     return hi
+
+
+@dataclass
+class LoanProjection:
+    """Bundled projection output for a loan: summary, schedule, and chart data."""
+    remaining_months: int
+    summary: AmortizationSummary
+    schedule: list  # list[AmortizationRow]
+
+
+def get_loan_projection(params, schedule_start=None):
+    """Compute remaining months, summary, and schedule for a loan in one call.
+
+    The contractual monthly payment is computed from ``original_principal``
+    and ``term_months`` (what the borrower actually pays each month), then
+    applied against ``current_principal`` over ``remaining_months`` to
+    project the payoff trajectory.
+
+    Args:
+        params: An object with ``origination_date``, ``term_months``,
+                ``original_principal``, ``current_principal``,
+                ``interest_rate``, and ``payment_day`` attributes
+                (e.g. a LoanParams model instance).
+        schedule_start: Date to use as schedule start.  Defaults to the
+                        first day of the current month.
+
+    Returns:
+        LoanProjection with remaining_months, summary, and schedule.
+    """
+    if schedule_start is None:
+        schedule_start = date.today().replace(day=1)
+
+    remaining = calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+
+    principal = Decimal(str(params.current_principal))
+    original = Decimal(str(params.original_principal))
+    rate = Decimal(str(params.interest_rate))
+
+    summary = calculate_summary(
+        current_principal=principal,
+        annual_rate=rate,
+        remaining_months=remaining,
+        origination_date=schedule_start,
+        payment_day=params.payment_day,
+        term_months=params.term_months,
+        original_principal=original,
+    )
+
+    schedule = generate_schedule(
+        principal, rate, remaining,
+        payment_day=params.payment_day,
+        original_principal=original,
+        term_months=params.term_months,
+    )
+
+    return LoanProjection(
+        remaining_months=remaining,
+        summary=summary,
+        schedule=schedule,
+    )

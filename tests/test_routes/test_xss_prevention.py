@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RecurrencePattern, Status, TransactionType,
@@ -94,7 +94,7 @@ def _create_savings_account(seed_user):
 
 
 def _create_mortgage_account_with_params(seed_user):
-    """Create a mortgage account with MortgageParams for escrow tests."""
+    """Create a mortgage account with LoanParams for escrow tests."""
     mortgage_type = (
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
@@ -107,7 +107,7 @@ def _create_mortgage_account_with_params(seed_user):
     db.session.add(acct)
     db.session.flush()
 
-    params = MortgageParams(
+    params = LoanParams(
         account_id=acct.id,
         original_principal=Decimal("200000"),
         current_principal=Decimal("195000"),
@@ -429,7 +429,7 @@ class TestXSSPrevention:
 
             # POST returns the _escrow_list.html partial.
             resp = auth_client.post(
-                f"/accounts/{acct.id}/mortgage/escrow",
+                f"/accounts/{acct.id}/loan/escrow",
                 data={
                     "name": payload,
                     "annual_amount": "1200.00",

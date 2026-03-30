@@ -1,20 +1,27 @@
 """
-Shekel Budget App -- Auto Loan Parameters Model (budget schema)
+Shekel Budget App -- Loan Parameters Model (budget schema)
 
-Stores auto loan configuration: principal, rate, term, and payment day.
+Stores loan configuration for all installment loan types: principal,
+rate, term, payment day, and optional ARM fields.  One row per
+amortizing account, linked one-to-one via account_id.
 """
 
 from app.extensions import db
 
 
-class AutoLoanParams(db.Model):
-    """Auto loan parameters linked one-to-one with an Account."""
+class LoanParams(db.Model):
+    """Loan parameters linked one-to-one with an Account.
 
-    __tablename__ = "auto_loan_params"
+    Serves the amortization engine for all installment loan types
+    (mortgage, auto loan, student loan, personal loan, HELOC, etc.).
+    ARM-specific columns are nullable and cost nothing when unused.
+    """
+
+    __tablename__ = "loan_params"
     __table_args__ = (
         db.CheckConstraint(
             "payment_day >= 1 AND payment_day <= 31",
-            name="ck_auto_loan_payment_day",
+            name="ck_loan_params_payment_day",
         ),
         {"schema": "budget"},
     )
@@ -32,6 +39,9 @@ class AutoLoanParams(db.Model):
     term_months = db.Column(db.Integer, nullable=False)
     origination_date = db.Column(db.Date, nullable=False)
     payment_day = db.Column(db.Integer, nullable=False)
+    is_arm = db.Column(db.Boolean, nullable=False, server_default=db.text("false"))
+    arm_first_adjustment_months = db.Column(db.Integer, nullable=True)
+    arm_adjustment_interval_months = db.Column(db.Integer, nullable=True)
     created_at = db.Column(
         db.DateTime(timezone=True), server_default=db.func.now()
     )
@@ -44,11 +54,11 @@ class AutoLoanParams(db.Model):
     # Relationships
     account = db.relationship(
         "Account",
-        backref=db.backref("auto_loan_params", uselist=False, lazy="joined"),
+        backref=db.backref("loan_params", uselist=False, lazy="joined"),
     )
 
     def __repr__(self):
         return (
-            f"<AutoLoanParams account_id={self.account_id} "
+            f"<LoanParams account_id={self.account_id} "
             f"rate={self.interest_rate} term={self.term_months}>"
         )

@@ -32,27 +32,7 @@ from app.models.ref import (
 )
 
 
-# Each entry: (name, category_name, has_parameters, has_amortization)
-ACCT_TYPE_SEEDS = [
-    ("Checking",        "Asset",      False, False),
-    ("Savings",         "Asset",      False, False),
-    ("HYSA",            "Asset",      True,  False),
-    ("Money Market",    "Asset",      False, False),
-    ("CD",              "Asset",      False, False),
-    ("HSA",             "Asset",      False, False),
-    ("Credit Card",     "Liability",  False, False),
-    ("Mortgage",        "Liability",  True,  True),
-    ("Auto Loan",       "Liability",  True,  True),
-    ("Student Loan",    "Liability",  True,  True),
-    ("Personal Loan",   "Liability",  True,  True),
-    ("HELOC",           "Liability",  False, True),
-    ("401(k)",          "Retirement", True,  False),
-    ("Roth 401(k)",     "Retirement", True,  False),
-    ("Traditional IRA", "Retirement", True,  False),
-    ("Roth IRA",        "Retirement", True,  False),
-    ("Brokerage",       "Investment", True,  False),
-    ("529 Plan",        "Investment", False, False),
-]
+from app.ref_seeds import ACCT_TYPE_SEEDS
 
 REF_DATA = [
     (TransactionType, ["Income", "Expense"]),
@@ -92,14 +72,24 @@ def seed_ref_tables():
         for c in db.session.query(AccountTypeCategory).all()
     }
 
-    # ── Seed AccountType with FK, booleans ───────────────────────
-    for name, cat_name, has_params, has_amort in ACCT_TYPE_SEEDS:
-        if not db.session.query(AccountType).filter_by(name=name).first():
+    # ── Seed AccountType with FK, booleans, metadata ──────────────
+    for entry in ACCT_TYPE_SEEDS:
+        name, cat_name, has_params, has_amort, icon, max_term = entry
+        existing = db.session.query(AccountType).filter_by(name=name).first()
+        if existing:
+            # Update reference metadata on re-run.
+            existing.has_parameters = has_params
+            existing.has_amortization = has_amort
+            existing.icon_class = icon
+            existing.max_term_months = max_term
+        else:
             db.session.add(AccountType(
                 name=name,
                 category_id=cat_lookup[cat_name],
                 has_parameters=has_params,
                 has_amortization=has_amort,
+                icon_class=icon,
+                max_term_months=max_term,
             ))
             print(f"  + account_types: {name}")
 

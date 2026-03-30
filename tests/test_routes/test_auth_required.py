@@ -198,29 +198,21 @@ PROTECTED_ENDPOINTS = [
     # savings.delete_goal
     ("POST", "/savings/goals/99999/delete"),
 
-    # -- mortgage blueprint --
-    # mortgage.dashboard
-    ("GET", "/accounts/99999/mortgage"),
-    # mortgage.create_params
-    ("POST", "/accounts/99999/mortgage/setup"),
-    # mortgage.update_params
-    ("POST", "/accounts/99999/mortgage/params"),
-    # mortgage.add_rate_change
-    ("POST", "/accounts/99999/mortgage/rate"),
-    # mortgage.add_escrow
-    ("POST", "/accounts/99999/mortgage/escrow"),
-    # mortgage.delete_escrow
-    ("POST", "/accounts/99999/mortgage/escrow/99999/delete"),
-    # mortgage.payoff_calculate
-    ("POST", "/accounts/99999/mortgage/payoff"),
-
-    # -- auto_loan blueprint --
-    # auto_loan.dashboard
-    ("GET", "/accounts/99999/auto-loan"),
-    # auto_loan.create_params
-    ("POST", "/accounts/99999/auto-loan/setup"),
-    # auto_loan.update_params
-    ("POST", "/accounts/99999/auto-loan/params"),
+    # -- loan blueprint --
+    # loan.dashboard
+    ("GET", "/accounts/99999/loan"),
+    # loan.create_params
+    ("POST", "/accounts/99999/loan/setup"),
+    # loan.update_params
+    ("POST", "/accounts/99999/loan/params"),
+    # loan.add_rate_change
+    ("POST", "/accounts/99999/loan/rate"),
+    # loan.add_escrow
+    ("POST", "/accounts/99999/loan/escrow"),
+    # loan.delete_escrow
+    ("POST", "/accounts/99999/loan/escrow/99999/delete"),
+    # loan.payoff_calculate
+    ("POST", "/accounts/99999/loan/payoff"),
 
     # -- investment blueprint --
     # investment.dashboard

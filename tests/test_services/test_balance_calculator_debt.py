@@ -57,9 +57,14 @@ def _shadow_income(pay_period_id, amount, transfer_id=1, status="Projected"):
     )
 
 
-def _loan_params(principal="200000", rate="0.06", term=360, orig=date(2025, 1, 1), day=1):
-    """Create mock loan params."""
+def _loan_params(principal="200000", rate="0.06", term=360, orig=date(2025, 1, 1), day=1,
+                  original_principal=None):
+    """Create mock loan params.
+
+    For brand-new loans, original_principal defaults to current principal.
+    """
     return SimpleNamespace(
+        original_principal=Decimal(original_principal or principal),
         current_principal=Decimal(principal),
         interest_rate=Decimal(rate),
         term_months=term,

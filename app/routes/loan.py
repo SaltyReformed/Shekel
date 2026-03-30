@@ -1,8 +1,8 @@
 """
-Shekel Budget App -- Mortgage Routes
+Shekel Budget App -- Loan Routes
 
-Dashboard, parameter updates, escrow management, rate history,
-and payoff calculator for mortgage accounts.
+Unified dashboard, parameter updates, escrow management, rate history,
+and payoff calculator for all installment loan account types.
 """
 
 import logging
@@ -13,48 +13,54 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.mortgage_params import MortgageParams, MortgageRateHistory, EscrowComponent
+from app.models.loan_params import LoanParams
+from app.models.loan_features import RateHistory, EscrowComponent
+from app.models.ref import AccountType
 from app.schemas.validation import (
     EscrowComponentSchema,
-    MortgageParamsCreateSchema,
-    MortgageParamsUpdateSchema,
-    MortgageRateChangeSchema,
+    LoanParamsCreateSchema,
+    LoanParamsUpdateSchema,
     PayoffCalculatorSchema,
+    RateChangeSchema,
 )
 from app.services import amortization_engine, escrow_calculator
+from app.utils.formatting import pct_to_decimal
 
 logger = logging.getLogger(__name__)
 
-mortgage_bp = Blueprint("mortgage", __name__)
+loan_bp = Blueprint("loan", __name__)
 
-_create_schema = MortgageParamsCreateSchema()
-_params_schema = MortgageParamsUpdateSchema()
-_rate_schema = MortgageRateChangeSchema()
+_create_schema = LoanParamsCreateSchema()
+_update_schema = LoanParamsUpdateSchema()
+_rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
 _payoff_schema = PayoffCalculatorSchema()
 
 
-def _load_mortgage_account(account_id):
-    """Load and validate a mortgage account for the current user.
+def _load_loan_account(account_id):
+    """Load and validate a loan account for the current user.
 
-    Returns (account, params) or (None, None) if invalid.
+    Verifies ownership and that the account type has has_amortization=True.
+
+    Returns:
+        (account, params, account_type) or (None, None, None) if invalid.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
-        return None, None
+        return None, None, None
 
-    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
-        return None, None
+    account_type = db.session.get(AccountType, account.account_type_id)
+    if account_type is None or not account_type.has_amortization:
+        return None, None, None
 
     params = (
-        db.session.query(MortgageParams)
+        db.session.query(LoanParams)
         .filter_by(account_id=account.id)
         .first()
     )
-    return account, params
+    return account, params, account_type
 
 
 def _build_chart_data(schedule):
@@ -75,48 +81,31 @@ def _compute_total_payment(params, escrow_components):
     """
     if params is None:
         return None
-    remaining_months = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-    summary = amortization_engine.calculate_summary(
-        current_principal=Decimal(str(params.current_principal)),
-        annual_rate=Decimal(str(params.interest_rate)),
-        remaining_months=remaining_months,
-        origination_date=date.today().replace(day=1),
-        payment_day=params.payment_day,
-        term_months=params.term_months,
-    )
+    proj = amortization_engine.get_loan_projection(params)
     return escrow_calculator.calculate_total_payment(
-        summary.monthly_payment, escrow_components,
+        proj.summary.monthly_payment, escrow_components,
     )
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage")
+@loan_bp.route("/accounts/<int:account_id>/loan")
 @login_required
 def dashboard(account_id):
-    """Mortgage detail page with summary, escrow, and payoff calculator."""
-    account, params = _load_mortgage_account(account_id)
+    """Loan detail page with summary, escrow, rate history, and payoff calculator."""
+    account, params, account_type = _load_loan_account(account_id)
     if account is None:
-        flash("Mortgage account not found.", "danger")
+        flash("Loan account not found.", "danger")
         return redirect(url_for("savings.dashboard"))
 
     if params is None:
-        return render_template("mortgage/setup.html", account=account)
+        return render_template(
+            "loan/setup.html",
+            account=account,
+            account_type=account_type,
+        )
 
-    # Calculate summary.
-    remaining_months = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-    # Use today as schedule start so payoff dates are forward-looking.
-    schedule_start = date.today().replace(day=1)
-    summary = amortization_engine.calculate_summary(
-        current_principal=Decimal(str(params.current_principal)),
-        annual_rate=Decimal(str(params.interest_rate)),
-        remaining_months=remaining_months,
-        origination_date=schedule_start,
-        payment_day=params.payment_day,
-        term_months=params.term_months,
-    )
+    # Calculate projection (summary + schedule) in one call.
+    proj = amortization_engine.get_loan_projection(params)
+    summary = proj.summary
 
     # Load escrow components.
     escrow_components = (
@@ -134,24 +123,19 @@ def dashboard(account_id):
     rate_history = []
     if params.is_arm:
         rate_history = (
-            db.session.query(MortgageRateHistory)
+            db.session.query(RateHistory)
             .filter_by(account_id=account.id)
-            .order_by(MortgageRateHistory.effective_date.desc())
+            .order_by(RateHistory.effective_date.desc())
             .all()
         )
 
-    # Chart data -- schedule starts from now, not origination.
-    schedule = amortization_engine.generate_schedule(
-        Decimal(str(params.current_principal)),
-        Decimal(str(params.interest_rate)),
-        remaining_months,
-        payment_day=params.payment_day,
-    )
-    chart_labels, chart_standard = _build_chart_data(schedule)
+    # Chart data.
+    chart_labels, chart_standard = _build_chart_data(proj.schedule)
 
     return render_template(
-        "mortgage/dashboard.html",
+        "loan/dashboard.html",
         account=account,
+        account_type=account_type,
         params=params,
         summary=summary,
         escrow_components=escrow_components,
@@ -163,64 +147,90 @@ def dashboard(account_id):
     )
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage/setup", methods=["POST"])
+@loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
 @login_required
 def create_params(account_id):
-    """Create initial mortgage parameters."""
+    """Create initial loan parameters."""
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
         return redirect(url_for("savings.dashboard"))
-    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
-        flash("This account is not a mortgage.", "warning")
+
+    account_type = db.session.get(AccountType, account.account_type_id)
+    if account_type is None or not account_type.has_amortization:
+        flash("This account type does not support loan parameters.", "warning")
         return redirect(url_for("savings.dashboard"))
 
     # Check if params already exist.
-    existing = db.session.query(MortgageParams).filter_by(account_id=account.id).first()
+    existing = db.session.query(LoanParams).filter_by(account_id=account.id).first()
     if existing:
-        flash("Mortgage parameters already configured.", "info")
-        return redirect(url_for("mortgage.dashboard", account_id=account_id))
+        flash("Loan parameters already configured.", "info")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     errors = _create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return render_template("mortgage/setup.html", account=account)
+        return render_template(
+            "loan/setup.html", account=account, account_type=account_type,
+        )
 
     data = _create_schema.load(request.form)
+
+    # Type-specific term validation.
+    max_term = account_type.max_term_months
+    if max_term and data.get("term_months", 0) > max_term:
+        flash(
+            f"Term cannot exceed {max_term} months for {account_type.name}.",
+            "danger",
+        )
+        return render_template(
+            "loan/setup.html", account=account, account_type=account_type,
+        )
+
     # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
     if "interest_rate" in data:
-        data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
-    params = MortgageParams(account_id=account.id, **data)
+        data["interest_rate"] = pct_to_decimal(data["interest_rate"])
+
+    params = LoanParams(account_id=account.id, **data)
     db.session.add(params)
     db.session.commit()
 
-    logger.info("Created mortgage params for account %d", account.id)
-    flash("Mortgage parameters configured.", "success")
-    return redirect(url_for("mortgage.dashboard", account_id=account_id))
+    logger.info("Created loan params for account %d", account.id)
+    flash("Loan parameters configured.", "success")
+    return redirect(url_for("loan.dashboard", account_id=account_id))
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage/params", methods=["POST"])
+@loan_bp.route("/accounts/<int:account_id>/loan/params", methods=["POST"])
 @login_required
 def update_params(account_id):
-    """Update mortgage parameters."""
-    account, params = _load_mortgage_account(account_id)
+    """Update loan parameters."""
+    account, params, account_type = _load_loan_account(account_id)
     if account is None or params is None:
-        flash("Mortgage account not found.", "danger")
+        flash("Loan account not found.", "danger")
         return redirect(url_for("savings.dashboard"))
 
-    errors = _params_schema.validate(request.form)
+    errors = _update_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("mortgage.dashboard", account_id=account_id))
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    data = _params_schema.load(request.form)
+    data = _update_schema.load(request.form)
+
+    # Type-specific term validation.
+    max_term = account_type.max_term_months
+    if max_term and data.get("term_months", 0) > max_term:
+        flash(
+            f"Term cannot exceed {max_term} months for {account_type.name}.",
+            "danger",
+        )
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
     if "interest_rate" in data:
-        data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
+        data["interest_rate"] = pct_to_decimal(data["interest_rate"])
 
     _PARAM_FIELDS = {
-        "current_principal", "interest_rate", "payment_day",
+        "current_principal", "interest_rate", "payment_day", "term_months",
         "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
     }
     for field, value in data.items():
@@ -228,16 +238,16 @@ def update_params(account_id):
             setattr(params, field, value)
 
     db.session.commit()
-    logger.info("Updated mortgage params for account %d", account.id)
-    flash("Mortgage parameters updated.", "success")
-    return redirect(url_for("mortgage.dashboard", account_id=account_id))
+    logger.info("Updated loan params for account %d", account.id)
+    flash("Loan parameters updated.", "success")
+    return redirect(url_for("loan.dashboard", account_id=account_id))
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage/rate", methods=["POST"])
+@loan_bp.route("/accounts/<int:account_id>/loan/rate", methods=["POST"])
 @login_required
 def add_rate_change(account_id):
-    """Record an ARM rate change (HTMX)."""
-    account, params = _load_mortgage_account(account_id)
+    """Record a variable-rate change (HTMX)."""
+    account, params, account_type = _load_loan_account(account_id)
     if account is None or params is None:
         return "Account not found", 404
 
@@ -248,9 +258,9 @@ def add_rate_change(account_id):
     data = _rate_schema.load(request.form)
 
     # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
-    data["interest_rate"] = Decimal(str(data["interest_rate"])) / 100
+    data["interest_rate"] = pct_to_decimal(data["interest_rate"])
 
-    entry = MortgageRateHistory(
+    entry = RateHistory(
         account_id=account.id,
         effective_date=data["effective_date"],
         interest_rate=data["interest_rate"],
@@ -262,26 +272,27 @@ def add_rate_change(account_id):
     params.interest_rate = data["interest_rate"]
     db.session.commit()
 
-    logger.info("Recorded rate change for mortgage %d: %s", account.id, data["interest_rate"])
+    logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
 
     rate_history = (
-        db.session.query(MortgageRateHistory)
+        db.session.query(RateHistory)
         .filter_by(account_id=account.id)
-        .order_by(MortgageRateHistory.effective_date.desc())
+        .order_by(RateHistory.effective_date.desc())
         .all()
     )
     return render_template(
-        "mortgage/_rate_history.html",
+        "loan/_rate_history.html",
         account=account,
+        params=params,
         rate_history=rate_history,
     )
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage/escrow", methods=["POST"])
+@loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
 def add_escrow(account_id):
     """Add an escrow component (HTMX)."""
-    account, params = _load_mortgage_account(account_id)
+    account, params, account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
@@ -291,10 +302,9 @@ def add_escrow(account_id):
 
     data = _escrow_schema.load(request.form)
 
-    # Convert percentage input (e.g. 3 → 0.03) for storage.
+    # Convert percentage input (e.g. 3 -> 0.03) for storage.
     if data.get("inflation_rate") is not None:
-        from decimal import Decimal as D
-        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+        data["inflation_rate"] = pct_to_decimal(data["inflation_rate"])
 
     # Check for duplicate name.
     existing = (
@@ -309,7 +319,7 @@ def add_escrow(account_id):
     db.session.add(comp)
     db.session.commit()
 
-    logger.info("Added escrow component '%s' to mortgage %d", data["name"], account.id)
+    logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
 
     escrow_components = (
         db.session.query(EscrowComponent)
@@ -323,7 +333,7 @@ def add_escrow(account_id):
     total_payment = _compute_total_payment(params, escrow_components)
 
     return render_template(
-        "mortgage/_escrow_list.html",
+        "loan/_escrow_list.html",
         account=account,
         escrow_components=escrow_components,
         monthly_escrow=monthly_escrow,
@@ -331,14 +341,14 @@ def add_escrow(account_id):
     )
 
 
-@mortgage_bp.route(
-    "/accounts/<int:account_id>/mortgage/escrow/<int:component_id>/delete",
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/<int:component_id>/delete",
     methods=["POST"],
 )
 @login_required
 def delete_escrow(account_id, component_id):
     """Remove an escrow component (HTMX)."""
-    account, _ = _load_mortgage_account(account_id)
+    account, _, account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
@@ -348,7 +358,7 @@ def delete_escrow(account_id, component_id):
 
     comp.is_active = False
     db.session.commit()
-    logger.info("Deactivated escrow component %d from mortgage %d", component_id, account.id)
+    logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
 
     escrow_components = (
         db.session.query(EscrowComponent)
@@ -359,7 +369,7 @@ def delete_escrow(account_id, component_id):
 
     # Compute updated payment summary for OOB swap.
     params = (
-        db.session.query(MortgageParams)
+        db.session.query(LoanParams)
         .filter_by(account_id=account.id)
         .first()
     )
@@ -367,7 +377,7 @@ def delete_escrow(account_id, component_id):
     total_payment = _compute_total_payment(params, escrow_components)
 
     return render_template(
-        "mortgage/_escrow_list.html",
+        "loan/_escrow_list.html",
         account=account,
         escrow_components=escrow_components,
         monthly_escrow=monthly_escrow,
@@ -375,18 +385,18 @@ def delete_escrow(account_id, component_id):
     )
 
 
-@mortgage_bp.route("/accounts/<int:account_id>/mortgage/payoff", methods=["POST"])
+@loan_bp.route("/accounts/<int:account_id>/loan/payoff", methods=["POST"])
 @login_required
 def payoff_calculate(account_id):
     """Calculate payoff scenario (HTMX)."""
-    account, params = _load_mortgage_account(account_id)
+    account, params, account_type = _load_loan_account(account_id)
     if account is None or params is None:
         return "Account not found", 404
 
     errors = _payoff_schema.validate(request.form)
     if errors:
         return render_template(
-            "mortgage/_payoff_results.html",
+            "loan/_payoff_results.html",
             error="Please correct the highlighted errors and try again.",
         )
 
@@ -397,38 +407,43 @@ def payoff_calculate(account_id):
     )
     schedule_start = date.today().replace(day=1)
 
+    principal = Decimal(str(params.current_principal))
+    original = Decimal(str(params.original_principal))
+    rate = Decimal(str(params.interest_rate))
+
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
         payoff_summary = amortization_engine.calculate_summary(
-            current_principal=Decimal(str(params.current_principal)),
-            annual_rate=Decimal(str(params.interest_rate)),
+            current_principal=principal,
+            annual_rate=rate,
             remaining_months=remaining_months,
             origination_date=schedule_start,
             payment_day=params.payment_day,
             term_months=params.term_months,
             extra_monthly=extra,
+            original_principal=original,
         )
 
         # Generate chart data for comparison.
         standard_schedule = amortization_engine.generate_schedule(
-            Decimal(str(params.current_principal)),
-            Decimal(str(params.interest_rate)),
-            remaining_months,
+            principal, rate, remaining_months,
             payment_day=params.payment_day,
+            original_principal=original,
+            term_months=params.term_months,
         )
         accelerated_schedule = amortization_engine.generate_schedule(
-            Decimal(str(params.current_principal)),
-            Decimal(str(params.interest_rate)),
-            remaining_months,
+            principal, rate, remaining_months,
             extra_monthly=extra,
             payment_day=params.payment_day,
+            original_principal=original,
+            term_months=params.term_months,
         )
 
         chart_labels, chart_standard = _build_chart_data(standard_schedule)
         _, chart_accelerated = _build_chart_data(accelerated_schedule)
 
         return render_template(
-            "mortgage/_payoff_results.html",
+            "loan/_payoff_results.html",
             mode=mode,
             payoff_summary=payoff_summary,
             chart_labels=chart_labels,
@@ -440,33 +455,33 @@ def payoff_calculate(account_id):
         target_date = data.get("target_date")
         if not target_date:
             return render_template(
-                "mortgage/_payoff_results.html",
+                "loan/_payoff_results.html",
                 error="Target date is required.",
             )
 
         required_extra = amortization_engine.calculate_payoff_by_date(
-            current_principal=Decimal(str(params.current_principal)),
-            annual_rate=Decimal(str(params.interest_rate)),
+            current_principal=principal,
+            annual_rate=rate,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=schedule_start,
             payment_day=params.payment_day,
+            original_principal=original,
+            term_months=params.term_months,
         )
 
         monthly_payment = amortization_engine.calculate_monthly_payment(
-            Decimal(str(params.current_principal)),
-            Decimal(str(params.interest_rate)),
-            remaining_months,
+            original, rate, params.term_months,
         )
 
         return render_template(
-            "mortgage/_payoff_results.html",
+            "loan/_payoff_results.html",
             mode=mode,
             required_extra=required_extra,
             monthly_payment=monthly_payment,
         )
 
     return render_template(
-        "mortgage/_payoff_results.html",
+        "loan/_payoff_results.html",
         error="Invalid mode.",
     )

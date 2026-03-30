@@ -211,11 +211,12 @@ def calculate_balances_with_amortization(
         return base_balances, principal_by_period
 
     annual_rate = Decimal(str(loan_params.interest_rate))
-    remaining_months = loan_params.term_months
+    # Contractual payment: computed from original loan amount and full term,
+    # not from current balance.  This is what the borrower actually pays.
     monthly_payment = calculate_monthly_payment(
-        Decimal(str(loan_params.current_principal)),
+        Decimal(str(loan_params.original_principal)),
         annual_rate,
-        remaining_months,
+        loan_params.term_months,
     )
 
     monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")

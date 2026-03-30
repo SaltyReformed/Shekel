@@ -37,6 +37,7 @@ _txn_type_map = {}             # TxnTypeEnum member -> int (database PK)
 _acct_type_map = {}            # AcctTypeEnum member -> int (database PK)
 _acct_category_map = {}        # AcctCategoryEnum member -> int (database PK)
 _recurrence_pattern_map = {}   # RecurrencePatternEnum member -> int (database PK)
+_acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
 _initialized = False
 
 
@@ -66,7 +67,8 @@ def init(db_session):
     )
 
     global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
-    global _acct_category_map, _recurrence_pattern_map, _initialized  # pylint: disable=global-statement
+    global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
+    global _acct_type_meta, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
     _status_map = {}
@@ -74,6 +76,7 @@ def init(db_session):
     _acct_type_map = {}
     _acct_category_map = {}
     _recurrence_pattern_map = {}
+    _acct_type_meta = {}
 
     # Build name -> id lookup from the database.
     status_rows = {row.name: row.id for row in db_session.query(Status).all()}
@@ -125,6 +128,13 @@ def init(db_session):
             "ref_cache.init() failed -- the following enum members have no "
             "matching database row:\n  " + "\n  ".join(missing)
         )
+
+    # Build account type metadata cache for icon/term-limit lookups.
+    for row in db_session.query(AccountType).all():
+        _acct_type_meta[row.id] = {
+            "icon_class": row.icon_class,
+            "max_term_months": row.max_term_months,
+        }
 
     _initialized = True
 
@@ -218,3 +228,39 @@ def recurrence_pattern_id(member):
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     return _recurrence_pattern_map[member]
+
+
+def acct_type_icon(acct_type_id):
+    """Return the Bootstrap icon class for an account type, or a default.
+
+    Args:
+        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+
+    Returns:
+        str -- the ``icon_class`` value, or ``'bi-bank'`` if unset.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    meta = _acct_type_meta.get(acct_type_id, {})
+    return meta.get("icon_class") or "bi-bank"
+
+
+def acct_type_max_term(acct_type_id):
+    """Return the max term months for an account type, or None if no limit.
+
+    Args:
+        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+
+    Returns:
+        int or None -- the ``max_term_months`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    meta = _acct_type_meta.get(acct_type_id, {})
+    return meta.get("max_term_months")

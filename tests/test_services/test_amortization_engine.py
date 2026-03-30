@@ -10,11 +10,13 @@ import pytest
 from app.services.amortization_engine import (
     AmortizationRow,
     AmortizationSummary,
+    LoanProjection,
     calculate_monthly_payment,
     calculate_payoff_by_date,
     calculate_remaining_months,
     calculate_summary,
     generate_schedule,
+    get_loan_projection,
 )
 
 
@@ -214,6 +216,40 @@ class TestGenerateSchedule:
         assert len(schedule) < 50
 
 
+    def test_contractual_payment_from_original_terms(self):
+        """When original_principal and term_months are provided, the schedule
+        uses the contractual payment instead of re-amortizing current balance.
+
+        A $200k balance with a contractual payment from a $250k/360mo/6% loan
+        (~$1,499/mo) should pay off faster than 315 remaining months because
+        the payment exceeds what $200k/315mo would require.
+        """
+        # Without original terms: re-amortizes $200k over 315 months.
+        schedule_reamort = generate_schedule(
+            Decimal("200000"), Decimal("0.06"), 315,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        # With original terms: uses contractual payment from $250k/360mo.
+        schedule_contract = generate_schedule(
+            Decimal("200000"), Decimal("0.06"), 315,
+            origination_date=date(2026, 1, 1), payment_day=1,
+            original_principal=Decimal("250000"), term_months=360,
+        )
+        # Contractual payment is higher, so loan pays off sooner.
+        assert len(schedule_contract) < len(schedule_reamort)
+        # Both end at zero balance.
+        assert schedule_reamort[-1].remaining_balance == Decimal("0.00")
+        assert schedule_contract[-1].remaining_balance == Decimal("0.00")
+        # Contractual schedule should NOT have any balance increases
+        # (no negative amortization).
+        for i in range(1, len(schedule_contract)):
+            assert schedule_contract[i].remaining_balance <= schedule_contract[i - 1].remaining_balance, (
+                f"Month {i}: balance increased from "
+                f"{schedule_contract[i - 1].remaining_balance} to "
+                f"{schedule_contract[i].remaining_balance}"
+            )
+
+
 class TestCalculateSummary:
     """Tests for the summary calculation."""
 
@@ -325,6 +361,28 @@ class TestCalculateSummary:
         )
         assert summary.months_saved == 0
         assert summary.interest_saved == Decimal("0.00")
+
+
+    def test_summary_zero_remaining_months(self):
+        """Summary with 0 remaining months does not raise.
+
+        When a loan's term has fully elapsed, remaining_months is 0.
+        generate_schedule returns [] and sum() must still produce a
+        Decimal, not int 0.  Regression test for AttributeError:
+        'int' object has no attribute 'quantize'.
+        """
+        summary = calculate_summary(
+            current_principal=Decimal("25000"),
+            annual_rate=Decimal("0.05"),
+            remaining_months=0,
+            origination_date=date(2020, 1, 1),
+            payment_day=15,
+            term_months=60,
+        )
+        assert summary.monthly_payment == Decimal("0.00")
+        assert summary.total_interest == Decimal("0.00")
+        assert summary.interest_saved == Decimal("0.00")
+        assert summary.months_saved == 0
 
 
 class TestPayoffByDate:
@@ -462,3 +520,76 @@ class TestCalculateRemainingMonths:
         assert result >= 0, (
             f"Expected >= 0, got {result}"
         )
+
+
+class TestGetLoanProjection:
+    """Tests for the get_loan_projection convenience function."""
+
+    def test_returns_projection_dataclass(self):
+        """get_loan_projection returns a LoanProjection with all fields."""
+        params = type("P", (), {
+            "origination_date": date(2025, 1, 1),
+            "term_months": 60,
+            "original_principal": Decimal("25000.00"),
+            "current_principal": Decimal("25000.00"),
+            "interest_rate": Decimal("0.05000"),
+            "payment_day": 15,
+        })()
+
+        proj = get_loan_projection(params)
+        assert isinstance(proj, LoanProjection)
+        assert proj.remaining_months >= 0
+        assert isinstance(proj.summary, AmortizationSummary)
+        assert isinstance(proj.schedule, list)
+        assert proj.summary.monthly_payment > 0
+
+    def test_zero_remaining_months(self):
+        """Projection for fully elapsed loan does not raise.
+
+        Regression test for the int-vs-Decimal sum() bug.  The monthly
+        payment still reflects the contractual amount (from original
+        principal and term), but the schedule is empty and total interest
+        is zero since there are no remaining months.
+        """
+        params = type("P", (), {
+            "origination_date": date(2015, 1, 1),
+            "term_months": 60,
+            "original_principal": Decimal("25000.00"),
+            "current_principal": Decimal("25000.00"),
+            "interest_rate": Decimal("0.05000"),
+            "payment_day": 15,
+        })()
+
+        proj = get_loan_projection(params)
+        assert proj.remaining_months == 0
+        assert proj.schedule == []
+        # Contractual payment is still computed from original terms.
+        assert proj.summary.monthly_payment > Decimal("0.00")
+        assert proj.summary.total_interest == Decimal("0.00")
+
+    def test_contractual_payment_uses_original_principal(self):
+        """Monthly payment reflects original loan terms, not current balance.
+
+        Regression test: a $35,000 auto loan at 3.25%/72mo with $18,000
+        remaining should show ~$536.87/mo (the contractual payment), not
+        ~$1,663 (re-amortizing $18k over 11 remaining months).
+        """
+        params = type("P", (), {
+            "origination_date": date(2021, 2, 1),
+            "term_months": 72,
+            "original_principal": Decimal("35000.00"),
+            "current_principal": Decimal("18000.00"),
+            "interest_rate": Decimal("0.03250"),
+            "payment_day": 1,
+        })()
+
+        # Contractual payment: amortize(35000, 0.0325, 72).
+        expected = calculate_monthly_payment(
+            Decimal("35000.00"), Decimal("0.03250"), 72,
+        )
+
+        proj = get_loan_projection(params)
+        assert proj.summary.monthly_payment == expected
+        # Must be around $537, definitely not $1,663.
+        assert proj.summary.monthly_payment < Decimal("600")
+        assert proj.summary.monthly_payment > Decimal("500")

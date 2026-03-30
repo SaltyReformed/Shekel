@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}{{ account.name }} -- Mortgage -- Shekel{% endblock %}
+{% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }} Mortgage</li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }} {{ account_type.name }}</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-house"></i> {{ account.name }}</h4>
+  <h4><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }}</h4>
   <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
     <i class="bi bi-arrow-left"></i> Back to Accounts
   </a>
@@ -60,7 +60,7 @@
                 ${{ "{:,.2f}".format(params.current_principal|float) }}
               </span>
             </div>
-            <div class="d-flex justify-content-between mb-2">
+            <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
               <span class="text-muted">Interest Rate</span>
               <span class="fw-bold" style="color: var(--shekel-accent);">
                 {{ "%.3f"|format(params.interest_rate|float * 100) }}%
@@ -110,7 +110,7 @@
             <h6 class="mb-0"><i class="bi bi-gear"></i> Loan Parameters</h6>
           </div>
           <div class="card-body">
-            <form method="POST" action="{{ url_for('mortgage.update_params', account_id=account.id) }}">
+            <form method="POST" action="{{ url_for('loan.update_params', account_id=account.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <div class="row mb-3">
                 <div class="col-6">
@@ -129,16 +129,22 @@
               </div>
               <div class="row mb-3">
                 <div class="col-6">
+                  <label for="term_months" class="form-label">Loan Term (months)</label>
+                  <input type="number" class="form-control" id="term_months" name="term_months"
+                         value="{{ params.term_months }}" step="1" min="1"
+                         max="{{ account_type.max_term_months or 600 }}">
+                </div>
+                <div class="col-6">
                   <label for="payment_day" class="form-label">Payment Day</label>
                   <input type="number" class="form-control" id="payment_day" name="payment_day"
                          value="{{ params.payment_day }}" min="1" max="31">
                 </div>
-                <div class="col-6">
-                  <div class="form-check mt-4">
-                    <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
-                           {% if params.is_arm %}checked{% endif %} value="true">
-                    <label class="form-check-label" for="is_arm">Adjustable Rate (ARM)</label>
-                  </div>
+              </div>
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
+                         {% if params.is_arm %}checked{% endif %} value="true">
+                  <label class="form-check-label" for="is_arm">Adjustable Rate (ARM)</label>
                 </div>
               </div>
               <button type="submit" class="btn btn-primary btn-sm">
@@ -174,7 +180,7 @@
         </span>
       </div>
       <div id="escrow-list">
-        {% include "mortgage/_escrow_list.html" %}
+        {% include "loan/_escrow_list.html" %}
       </div>
     </div>
   </div>
@@ -187,7 +193,7 @@
         <h6 class="mb-0"><i class="bi bi-clock-history"></i> Rate History</h6>
       </div>
       <div id="rate-history">
-        {% include "mortgage/_rate_history.html" %}
+        {% include "loan/_rate_history.html" %}
       </div>
     </div>
   </div>
@@ -213,7 +219,7 @@
         <div class="tab-content">
           <div class="tab-pane fade show active" id="extra-tab" role="tabpanel">
             <form id="payoff-form"
-                  hx-post="{{ url_for('mortgage.payoff_calculate', account_id=account.id) }}"
+                  hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
                   hx-target="#payoff-results" hx-swap="innerHTML"
                   hx-trigger="submit, slider-changed">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -246,7 +252,7 @@
             </form>
           </div>
           <div class="tab-pane fade" id="target-tab" role="tabpanel">
-            <form hx-post="{{ url_for('mortgage.payoff_calculate', account_id=account.id) }}"
+            <form hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
                   hx-target="#payoff-results" hx-swap="innerHTML">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="mode" value="target_date">

@@ -511,14 +511,19 @@ class HysaParamsUpdateSchema(BaseSchema):
     )
 
 
-# ── Mortgage Schemas ─────────────────────────────────────────────
+# ── Loan Params Schemas (unified for all installment loan types) ──
 
 
-class MortgageParamsCreateSchema(BaseSchema):
-    """Validates POST data for creating mortgage parameters."""
+class LoanParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating loan parameters.
+
+    Universal max of 600 for term_months; type-specific limits are
+    enforced by the route using ref.account_types.max_term_months.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
@@ -532,26 +537,33 @@ class MortgageParamsCreateSchema(BaseSchema):
     arm_adjustment_interval_months = fields.Integer(allow_none=True)
 
 
-class MortgageParamsUpdateSchema(BaseSchema):
-    """Validates POST data for updating mortgage parameters."""
+class LoanParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating loan parameters.
+
+    All fields optional (partial update).  original_principal and
+    origination_date are omitted -- not updatable after initial setup.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=100))
+    term_months = fields.Integer(validate=validate.Range(min=1, max=600))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
     is_arm = fields.Boolean()
     arm_first_adjustment_months = fields.Integer(allow_none=True)
     arm_adjustment_interval_months = fields.Integer(allow_none=True)
 
 
-class MortgageRateChangeSchema(BaseSchema):
-    """Validates POST data for recording an ARM rate change."""
+class RateChangeSchema(BaseSchema):
+    """Validates POST data for recording a variable-rate change."""
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     effective_date = fields.Date(required=True)
@@ -570,36 +582,6 @@ class EscrowComponentSchema(BaseSchema):
     annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=100))
 
-
-# ── Auto Loan Schemas ────────────────────────────────────────────
-
-
-class AutoLoanParamsCreateSchema(BaseSchema):
-    """Validates POST data for creating auto loan parameters."""
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
-
-    original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(required=True, places=3, as_string=True, validate=validate.Range(min=0, max=100))
-    term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=120))
-    origination_date = fields.Date(required=True)
-    payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
-
-
-class AutoLoanParamsUpdateSchema(BaseSchema):
-    """Validates POST data for updating auto loan parameters."""
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
-
-    current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(places=3, as_string=True, validate=validate.Range(min=0, max=100))
-    term_months = fields.Integer(validate=validate.Range(min=1, max=120))
-    payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
 
 
 class PayoffCalculatorSchema(BaseSchema):

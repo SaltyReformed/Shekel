@@ -18,10 +18,10 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, AcctCategoryEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
 from app.models.investment_params import InvestmentParams
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
+from app.models.ref import AccountType
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
@@ -107,9 +107,10 @@ def dashboard():
         ).all():
             hysa_params_map[hp.account_id] = hp
 
-    # Load loan params for mortgage and auto loan accounts.
-    mortgage_type_id = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
-    auto_loan_type_id = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
+    # Load loan params for all amortizing accounts in one query.
+    amort_type_ids = {
+        at.id for at in db.session.query(AccountType).filter_by(has_amortization=True).all()
+    }
 
     # Load investment params for retirement/investment accounts.
     investment_params_map = {}
@@ -162,18 +163,12 @@ def dashboard():
         ).quantize(Decimal("0.01"))
 
     loan_params_map = {}
-    mortgage_ids = [a.id for a in accounts if a.account_type_id == mortgage_type_id]
-    if mortgage_ids:
-        for mp in db.session.query(MortgageParams).filter(
-            MortgageParams.account_id.in_(mortgage_ids)
+    loan_account_ids = [a.id for a in accounts if a.account_type_id in amort_type_ids]
+    if loan_account_ids:
+        for lp in db.session.query(LoanParams).filter(
+            LoanParams.account_id.in_(loan_account_ids)
         ).all():
-            loan_params_map[mp.account_id] = mp
-    auto_loan_ids = [a.id for a in accounts if a.account_type_id == auto_loan_type_id]
-    if auto_loan_ids:
-        for alp in db.session.query(AutoLoanParams).filter(
-            AutoLoanParams.account_id.in_(auto_loan_ids)
-        ).all():
-            loan_params_map[alp.account_id] = alp
+            loan_params_map[lp.account_id] = lp
 
     # Compute projected balances for each account.
     account_data = []
@@ -222,31 +217,13 @@ def dashboard():
         if acct_loan_params:
             # Debt accounts: use amortization schedule for projections instead
             # of the generic balance calculator (which treats payments as deposits).
-            from datetime import date as _date
-            from decimal import Decimal as D
-            remaining = amortization_engine.calculate_remaining_months(
-                acct_loan_params.origination_date,
-                acct_loan_params.term_months,
-            )
-            principal = D(str(acct_loan_params.current_principal))
-            rate = D(str(acct_loan_params.interest_rate))
-            current_bal = principal
-            monthly = amortization_engine.calculate_monthly_payment(
-                principal, rate, remaining,
-            )
-            schedule = amortization_engine.generate_schedule(
-                principal, rate, remaining,
-                payment_day=acct_loan_params.payment_day,
-            )
+            proj = amortization_engine.get_loan_projection(acct_loan_params)
+            current_bal = Decimal(str(acct_loan_params.current_principal))
+            monthly = proj.summary.monthly_payment
+            summary = proj.summary
             for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
-                if month_offset <= len(schedule):
-                    projected[label] = schedule[month_offset - 1].remaining_balance
-            summary = amortization_engine.calculate_summary(
-                principal, rate, remaining,
-                _date.today().replace(day=1),
-                acct_loan_params.payment_day,
-                acct_loan_params.term_months,
-            )
+                if month_offset <= len(proj.schedule):
+                    projected[label] = proj.schedule[month_offset - 1].remaining_balance
         elif acct_investment_params and current_period:
             # Investment/retirement: full growth projection with contributions.
             acct_deductions = deductions_by_account.get(acct.id, [])
@@ -324,7 +301,7 @@ def dashboard():
             needs_setup = acct_hysa_params is None
         elif acct.account_type_id in retirement_type_ids:
             needs_setup = acct_investment_params is None
-        elif acct.account_type_id in (mortgage_type_id, auto_loan_type_id):
+        elif acct.account_type_id in amort_type_ids:
             needs_setup = acct_loan_params is None
 
         ad = {

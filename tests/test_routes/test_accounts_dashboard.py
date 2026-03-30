@@ -7,9 +7,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 
@@ -112,7 +111,7 @@ class TestDashboardGrouping:
         db.session.flush()
         acct.current_anchor_period_id = seed_periods[0].id
 
-        params = MortgageParams(
+        params = LoanParams(
             account_id=acct.id,
             original_principal=Decimal("250000.00"),
             current_principal=Decimal("200000.00"),
@@ -142,7 +141,7 @@ class TestDashboardGrouping:
         db.session.flush()
         acct.current_anchor_period_id = seed_periods[0].id
 
-        params = AutoLoanParams(
+        params = LoanParams(
             account_id=acct.id,
             original_principal=Decimal("25000.00"),
             current_principal=Decimal("20000.00"),
@@ -172,7 +171,7 @@ class TestDashboardGrouping:
         db.session.flush()
         acct.current_anchor_period_id = seed_periods[0].id
 
-        params = MortgageParams(
+        params = LoanParams(
             account_id=acct.id,
             original_principal=Decimal("200000.00"),
             current_principal=Decimal("150000.00"),

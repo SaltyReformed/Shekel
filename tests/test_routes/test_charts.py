@@ -14,9 +14,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.category import Category
-from app.models.mortgage_params import MortgageParams
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
@@ -346,7 +345,7 @@ class TestAmortizationFragment:
             db.session.add(account)
             db.session.flush()
 
-            params = MortgageParams(
+            params = LoanParams(
                 account_id=account.id,
                 original_principal=Decimal("300000.00"),
                 current_principal=Decimal("250000.00"),

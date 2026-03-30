@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}{{ account.name }} -- Auto Loan Setup -- Shekel{% endblock %}
+{% block title %}{{ account.name }} -- {{ account_type.name }} Setup -- Shekel{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-car-front"></i> {{ account.name }} -- Setup</h4>
+  <h4><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }} -- Setup</h4>
   <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
     <i class="bi bi-arrow-left"></i> Back to Accounts
   </a>
@@ -13,14 +13,14 @@
   <div class="col-md-8 col-lg-6">
     <div class="card">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-gear"></i> Configure Auto Loan Parameters</h6>
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Configure {{ account_type.name }} Parameters</h6>
       </div>
       <div class="card-body">
         <p class="text-muted">
-          Enter the details of your auto loan to enable amortization tracking
-          and balance projections.
+          Enter the details of your {{ account_type.name|lower }} to enable amortization tracking,
+          escrow management, and payoff analysis.
         </p>
-        <form method="POST" action="{{ url_for('auto_loan.create_params', account_id=account.id) }}">
+        <form method="POST" action="{{ url_for('loan.create_params', account_id=account.id) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
           <div class="row mb-3">
@@ -49,16 +49,24 @@
               <div class="input-group">
                 <input type="number" class="form-control" id="interest_rate"
                        name="interest_rate" step="0.001" min="0" max="100" required
-                       placeholder="5.000">
+                       placeholder="6.500">
                 <span class="input-group-text">%</span>
               </div>
-              <div class="form-text">Enter as percentage (e.g. 5 for 5%)</div>
+              <div class="form-text">Enter as percentage (e.g. 6.5 for 6.5%)</div>
             </div>
             <div class="col-6">
               <label for="term_months" class="form-label">Term (months)</label>
               <input type="number" class="form-control" id="term_months"
-                     name="term_months" min="1" max="120" required placeholder="60">
-              <div class="form-text">e.g. 60 for 5 years</div>
+                     name="term_months" min="1"
+                     max="{{ account_type.max_term_months or 600 }}" required
+                     placeholder="{{ account_type.max_term_months or 360 }}">
+              <div class="form-text">
+                {% if account_type.max_term_months %}
+                  Max {{ account_type.max_term_months }} months ({{ (account_type.max_term_months / 12)|round(0)|int }} years)
+                {% else %}
+                  e.g. 360 for 30 years
+                {% endif %}
+              </div>
             </div>
           </div>
 
@@ -71,7 +79,17 @@
             <div class="col-6">
               <label for="payment_day" class="form-label">Payment Day of Month</label>
               <input type="number" class="form-control" id="payment_day"
-                     name="payment_day" min="1" max="31" required value="15">
+                     name="payment_day" min="1" max="31" required value="1">
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="is_arm"
+                     name="is_arm" value="true">
+              <label class="form-check-label" for="is_arm">
+                Adjustable Rate (ARM)
+              </label>
             </div>
           </div>
 

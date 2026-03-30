@@ -404,11 +404,9 @@ def check_data_consistency(session):
         JOIN ref.account_types at ON a.account_type_id = at.id
         JOIN ref.account_type_categories atc ON at.category_id = atc.id
         LEFT JOIN budget.hysa_params hp ON hp.account_id = a.id
-        LEFT JOIN budget.mortgage_params mp ON mp.account_id = a.id
-        LEFT JOIN budget.auto_loan_params alp ON alp.account_id = a.id
+        LEFT JOIN budget.loan_params lp ON lp.account_id = a.id
         WHERE (at.name = 'HYSA' AND hp.id IS NULL)
-           OR (at.name = 'Mortgage' AND mp.id IS NULL)
-           OR (at.name = 'Auto Loan' AND alp.id IS NULL)
+           OR (at.has_amortization = TRUE AND lp.id IS NULL)
         """,
     ))
 

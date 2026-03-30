@@ -15,10 +15,8 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.auto_loan_params import AutoLoanParams
 from app.models.hysa_params import HysaParams
 from app.models.investment_params import InvestmentParams
-from app.models.mortgage_params import MortgageParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
@@ -162,28 +160,15 @@ def create_account():
         return redirect(url_for(
             "accounts.hysa_detail", account_id=account.id, setup=1,
         ))
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE):
+    # Amortizing loan types: redirect to the unified loan dashboard.
+    if account_type and account_type.has_amortization:
         return redirect(url_for(
-            "mortgage.dashboard", account_id=account.id, setup=1,
-        ))
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN):
-        return redirect(url_for(
-            "auto_loan.dashboard", account_id=account.id, setup=1,
+            "loan.dashboard", account_id=account.id, setup=1,
         ))
     if acct_type_id in investment_type_ids:
         return redirect(url_for(
             "investment.dashboard", account_id=account.id, setup=1,
         ))
-
-    # Student loan and personal loan have has_parameters=True but no
-    # dedicated param model or config page yet.  Any other future
-    # parameterized type also falls through here safely.
-    if account_type and account_type.has_parameters:
-        logger.warning(
-            "Account type '%s' (id=%d) has_parameters=True but no "
-            "dedicated config page; redirecting to accounts list.",
-            account_type.name, acct_type_id,
-        )
 
     return redirect(url_for("accounts.list_accounts"))
 

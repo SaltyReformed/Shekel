@@ -32,11 +32,19 @@ class AccountType(db.Model):
     Boolean columns capture behavioural groupings:
 
         has_parameters    -- This type has a linked *Params table
-                             (e.g. HysaParams, MortgageParams) that
+                             (e.g. HysaParams, LoanParams) that
                              must be created alongside the account.
         has_amortization  -- This type uses the amortization engine
                              for balance projections instead of the
                              generic balance calculator.
+
+    Display / validation metadata:
+
+        icon_class        -- Bootstrap icon class for UI rendering
+                             (e.g. 'bi-house' for Mortgage).
+        max_term_months   -- Maximum loan term in months for
+                             type-specific validation.  NULL means
+                             no type-specific limit.
     """
 
     __tablename__ = "account_types"
@@ -51,6 +59,8 @@ class AccountType(db.Model):
     )
     has_parameters = db.Column(db.Boolean, nullable=False, default=False)
     has_amortization = db.Column(db.Boolean, nullable=False, default=False)
+    icon_class = db.Column(db.String(30), nullable=True)
+    max_term_months = db.Column(db.Integer, nullable=True)
 
     category = db.relationship("AccountTypeCategory")
 

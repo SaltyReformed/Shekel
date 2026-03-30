@@ -704,33 +704,33 @@ class TestRetirementAccessControl:
             )
 
 
-# ---- Section 5.9: Mortgage Routes -----------------------------------------
+# ---- Section 5.9: Loan Routes ---------------------------------------------
 
 
-class TestMortgageAccessControl:
-    """IDOR tests for mortgage routes."""
+class TestLoanAccessControl:
+    """IDOR tests for unified loan routes."""
 
-    def test_mortgage_dashboard_blocked(
+    def test_loan_dashboard_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot view User A's mortgage dashboard."""
+        """User B cannot view User A's loan dashboard."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.get(
-                f"/accounts/{target_id}/mortgage"
+                f"/accounts/{target_id}/loan"
             )
             _assert_blocked(
-                response, "GET /accounts/<id>/mortgage",
+                response, "GET /accounts/<id>/loan",
             )
 
-    def test_mortgage_setup_blocked(
+    def test_loan_setup_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot set up mortgage params on User A's account."""
+        """User B cannot set up loan params on User A's account."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/mortgage/setup",
+                f"/accounts/{target_id}/loan/setup",
                 data={
                     "current_principal": "200000",
                     "interest_rate": "6.5",
@@ -740,49 +740,49 @@ class TestMortgageAccessControl:
                 },
             )
             _assert_blocked(
-                response, "POST /accounts/<id>/mortgage/setup",
+                response, "POST /accounts/<id>/loan/setup",
             )
 
-    def test_mortgage_update_params_blocked(
+    def test_loan_update_params_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot update User A's mortgage parameters."""
+        """User B cannot update User A's loan parameters."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/mortgage/params",
+                f"/accounts/{target_id}/loan/params",
                 data={"current_principal": "999999"},
             )
             _assert_blocked(
                 response,
-                "POST /accounts/<id>/mortgage/params",
+                "POST /accounts/<id>/loan/params",
             )
 
-    def test_mortgage_add_rate_blocked(
+    def test_loan_add_rate_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot add a rate change to User A's mortgage."""
+        """User B cannot add a rate change to User A's loan."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/mortgage/rate",
+                f"/accounts/{target_id}/loan/rate",
                 data={
                     "effective_date": "2026-04-01",
                     "interest_rate": "7.0",
                 },
             )
             _assert_blocked(
-                response, "POST /accounts/<id>/mortgage/rate",
+                response, "POST /accounts/<id>/loan/rate",
             )
 
-    def test_mortgage_add_escrow_blocked(
+    def test_loan_add_escrow_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot add an escrow component to User A's mortgage."""
+        """User B cannot add an escrow component to User A's loan."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/mortgage/escrow",
+                f"/accounts/{target_id}/loan/escrow",
                 data={
                     "name": "BLOCKED_TEST",
                     "annual_amount": "3600",
@@ -790,80 +790,24 @@ class TestMortgageAccessControl:
             )
             _assert_blocked(
                 response,
-                "POST /accounts/<id>/mortgage/escrow",
+                "POST /accounts/<id>/loan/escrow",
             )
 
-    def test_mortgage_payoff_blocked(
+    def test_loan_payoff_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot calculate payoff on User A's mortgage."""
+        """User B cannot calculate payoff on User A's loan."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/mortgage/payoff",
+                f"/accounts/{target_id}/loan/payoff",
                 data={
                     "mode": "extra_payment",
                     "extra_monthly": "500",
                 },
             )
             _assert_blocked(
-                response, "POST /accounts/<id>/mortgage/payoff",
-            )
-
-
-# ---- Section 5.10: Auto Loan Routes ---------------------------------------
-
-
-class TestAutoLoanAccessControl:
-    """IDOR tests for auto loan routes."""
-
-    def test_auto_loan_dashboard_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot view User A's auto loan dashboard."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.get(
-                f"/accounts/{target_id}/auto-loan"
-            )
-            _assert_blocked(
-                response, "GET /accounts/<id>/auto-loan",
-            )
-
-    def test_auto_loan_setup_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot set up auto loan params on User A's account."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.post(
-                f"/accounts/{target_id}/auto-loan/setup",
-                data={
-                    "current_principal": "25000",
-                    "interest_rate": "0.055",
-                    "term_months": "60",
-                    "origination_date": "2024-01-01",
-                    "payment_day": "15",
-                },
-            )
-            _assert_blocked(
-                response,
-                "POST /accounts/<id>/auto-loan/setup",
-            )
-
-    def test_auto_loan_update_params_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot update User A's auto loan parameters."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.post(
-                f"/accounts/{target_id}/auto-loan/params",
-                data={"current_principal": "999999"},
-            )
-            _assert_blocked(
-                response,
-                "POST /accounts/<id>/auto-loan/params",
+                response, "POST /accounts/<id>/loan/payoff",
             )
 
 
