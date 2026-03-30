@@ -151,8 +151,12 @@ def project_balance(
             employer_params, contribution
         )
 
-        # Step 4: Update balance.
-        current_balance = start_balance + growth + contribution + employer_contribution
+        # Step 4: Update balance.  Clamp to zero -- standard investment
+        # accounts cannot go negative (M-06).
+        current_balance = max(
+            start_balance + growth + contribution + employer_contribution,
+            ZERO,
+        )
 
         # Step 5: Track limits.
         ytd_contributions += contribution
