@@ -34,9 +34,10 @@ timeout = int(os.getenv("GUNICORN_TIMEOUT", "120"))
 graceful_timeout = int(os.getenv("GUNICORN_GRACEFUL_TIMEOUT", "120"))
 
 # Seconds to wait for the next request on a Keep-Alive connection.
-# Slightly higher than Nginx's keepalive_timeout (65s) to let Nginx
-# close idle connections first, avoiding race conditions.
-keepalive = 5
+# Must be higher than Nginx's keepalive_timeout (default 65s) so
+# that Nginx closes idle connections first, avoiding 502 errors
+# from Gunicorn dropping a connection Nginx tries to reuse.
+keepalive = int(os.getenv("GUNICORN_KEEPALIVE", "70"))
 
 # ── Logging ──────────────────────────────────────────────────────
 # Access log: DISABLED.  Flask's after_request middleware in
