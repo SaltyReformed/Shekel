@@ -570,7 +570,7 @@ def get_net_worth_over_time(user_id, start=None, end=None):
         return {"labels": [], "data": []}
 
     num_points = len(balance_data["labels"])
-    net_worth = [0.0] * num_points
+    net_worth = [Decimal("0")] * num_points
 
     for ds in balance_data["datasets"]:
         acct_info = next(
@@ -582,14 +582,13 @@ def get_net_worth_over_time(user_id, start=None, end=None):
         sign = -1 if category == "liability" else 1
 
         for i, val in enumerate(ds["data"]):
-            net_worth[i] += sign * val
+            net_worth[i] += sign * Decimal(str(val))
 
     return {
         "labels": balance_data["labels"],
-        # Round to 2 decimal places to clean up float arithmetic noise.
-        # The values are already float (converted by _to_chart_float in
-        # get_balance_over_time), so this is not a Decimal conversion.
-        "data": [round(v, 2) for v in net_worth],
+        # Convert Decimal to float at the serialization boundary for
+        # Chart.js.  Rounding happens once here, not during accumulation.
+        "data": [float(v.quantize(Decimal("0.01"))) for v in net_worth],
     }
 
 
