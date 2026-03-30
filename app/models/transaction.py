@@ -111,10 +111,13 @@ class Transaction(db.Model):
     def effective_amount(self):
         """Return the amount used in balance calculations.
 
+        - is_deleted: 0 (soft-deleted transactions contribute nothing)
         - excludes_from_balance (Credit, Cancelled): 0
         - is_settled (Paid, Received, Settled): actual_amount if set, else estimated_amount
         - Projected: estimated_amount
         """
+        if self.is_deleted:
+            return Decimal("0")
         if self.status and self.status.excludes_from_balance:
             return Decimal("0")
         if self.status and self.status.is_settled:
