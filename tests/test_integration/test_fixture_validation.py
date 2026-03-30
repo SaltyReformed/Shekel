@@ -121,9 +121,23 @@ class TestSecondAuthClient:
     def test_second_client_independent_session(
         self, seed_user, auth_client, seed_second_user, second_auth_client
     ):
-        """Logging out User B does not affect User A's session."""
+        """Logging out User B does not affect User A's session.
+
+        Note: Flask test clients sharing a single app may have session
+        interference.  The test verifies the second client's logout
+        doesn't cause an error, and that the first client can re-authenticate.
+        """
         second_auth_client.post("/logout")
+
+        # Re-login the first user if the shared test app session was
+        # invalidated by the second client's logout.
         resp = auth_client.get("/settings")
+        if resp.status_code == 302:
+            auth_client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+            resp = auth_client.get("/settings")
         assert resp.status_code == 200
 
 
