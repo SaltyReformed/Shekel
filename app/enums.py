@@ -81,6 +81,37 @@ class AcctTypeEnum(enum.Enum):
     PLAN_529 = "529 Plan"
 
 
+class DeductionTimingEnum(enum.Enum):
+    """Deduction timing values.
+
+    Values match ``ref.deduction_timings.name`` in the database.
+    """
+
+    PRE_TAX = "pre_tax"
+    POST_TAX = "post_tax"
+
+
+class CalcMethodEnum(enum.Enum):
+    """Calculation method values.
+
+    Values match ``ref.calc_methods.name`` in the database.
+    """
+
+    FLAT = "flat"
+    PERCENTAGE = "percentage"
+
+
+class TaxTypeEnum(enum.Enum):
+    """Tax type values.
+
+    Values match ``ref.tax_types.name`` in the database.
+    """
+
+    FLAT = "flat"
+    NONE = "none"
+    BRACKET = "bracket"
+
+
 class RecurrencePatternEnum(enum.Enum):
     """Recurrence pattern values.
 

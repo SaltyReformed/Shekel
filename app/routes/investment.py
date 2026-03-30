@@ -130,7 +130,7 @@ def dashboard(account_id):
         profile = ded.salary_profile
         adapted_deductions.append(type("D", (), {
             "amount": ded.amount,
-            "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+            "calc_method_id": ded.calc_method_id,
             "annual_salary": profile.annual_salary,
             "pay_periods_per_year": profile.pay_periods_per_year or 26,
         })())
@@ -350,7 +350,7 @@ def growth_chart(account_id):
         profile = ded.salary_profile
         adapted_deductions.append(type("D", (), {
             "amount": ded.amount,
-            "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+            "calc_method_id": ded.calc_method_id,
             "annual_salary": profile.annual_salary,
             "pay_periods_per_year": profile.pay_periods_per_year or 26,
         })())

@@ -129,7 +129,8 @@ def create_app(config_name=None):
     # after the migration completes.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
-        AcctCategoryEnum, AcctTypeEnum, RecurrencePatternEnum,
+        AcctCategoryEnum, AcctTypeEnum, CalcMethodEnum,
+        DeductionTimingEnum, RecurrencePatternEnum,
         StatusEnum, TxnTypeEnum,
     )
     try:
@@ -183,6 +184,14 @@ def create_app(config_name=None):
         app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
         app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
         app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+
+        # Deduction timing IDs
+        app.jinja_env.globals["TIMING_PRE_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+        app.jinja_env.globals["TIMING_POST_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
+
+        # Calc method IDs
+        app.jinja_env.globals["CALC_PERCENTAGE"] = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+        app.jinja_env.globals["CALC_FLAT"] = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
     except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as exc:
         app.logger.warning(
             "ref_cache initialization skipped (%s). "

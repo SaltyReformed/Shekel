@@ -123,14 +123,10 @@ def _seed_fica_for_user(user):
 
 def _seed_state_tax_for_user(user):
     """Seed default state tax configuration."""
-    tax_type = (
-        db.session.query(TaxType)
-        .filter_by(name="flat")
-        .first()
-    )
-    if not tax_type:
-        print("  ! Tax type 'flat' not found, skipping state config.")
-        return
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+
+    flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
 
     for tax_year, data in DEFAULT_STATE_TAX.items():
         state_code = data["state_code"]
@@ -145,7 +141,7 @@ def _seed_state_tax_for_user(user):
 
         state_config = StateTaxConfig(
             user_id=user.id,
-            tax_type_id=tax_type.id,
+            tax_type_id=flat_type_id,
             tax_year=tax_year,
             state_code=state_code,
             flat_rate=data["flat_rate"],

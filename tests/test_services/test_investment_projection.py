@@ -6,16 +6,26 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CalcMethodEnum
 from app.services.investment_projection import (
     calculate_investment_inputs,
     InvestmentInputs,
 )
 
 
+def _flat_id():
+    return ref_cache.calc_method_id(CalcMethodEnum.FLAT)
+
+
+def _pct_id():
+    return ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+
+
 @dataclass
 class FakeDeduction:
     amount: Decimal
-    calc_method_name: str
+    calc_method_id: int
     annual_salary: Decimal
     pay_periods_per_year: int
 
@@ -70,7 +80,7 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_name="flat",
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -86,7 +96,7 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
-        deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_name="percentage",
+        deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_id=_pct_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -121,7 +131,7 @@ class TestCalculateInvestmentInputs:
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="flat_percentage", employer_flat_percentage=Decimal("0.05"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_name="flat",
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -141,7 +151,7 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type="match", employer_match_percentage=Decimal("1.0"),
             employer_match_cap_percentage=Decimal("0.06"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_name="flat",
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -185,7 +195,7 @@ class TestCalculateInvestmentInputs:
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type="none",
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_name="flat",
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         contributions = [
             FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
@@ -234,7 +244,7 @@ class TestCalculateInvestmentInputs:
         deductions = [
             FakeDeduction(
                 amount=Decimal("500.00"),
-                calc_method_name="flat",
+                calc_method_id=_flat_id(),
                 annual_salary=Decimal("120000"),
                 pay_periods_per_year=26,
             ),
@@ -303,7 +313,7 @@ class TestCalculateInvestmentInputs:
         )
         deductions = [FakeDeduction(
             amount=Decimal("0"),
-            calc_method_name="percentage",
+            calc_method_id=_pct_id(),
             annual_salary=Decimal("100000"),
             pay_periods_per_year=26,
         )]
@@ -334,7 +344,7 @@ class TestCalculateInvestmentInputs:
         )
         deductions = [FakeDeduction(
             amount=Decimal("-500.00"),
-            calc_method_name="flat",
+            calc_method_id=_flat_id(),
             annual_salary=Decimal("100000"),
             pay_periods_per_year=26,
         )]

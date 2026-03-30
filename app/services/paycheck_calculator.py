@@ -95,9 +95,17 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     # Step 3: Detect 3rd paycheck
     is_third = _is_third_paycheck(period, all_periods)
 
+    # Resolve deduction timing and calc method IDs from the startup cache.
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import CalcMethodEnum, DeductionTimingEnum  # pylint: disable=import-outside-toplevel
+
+    pre_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+    post_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
+    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+
     # Step 4: Calculate pre-tax deductions
     pre_tax_deductions = _calculate_deductions(
-        profile, period, all_periods, gross_biweekly, "pre_tax", is_third
+        profile, period, all_periods, gross_biweekly, pre_tax_id, pct_id, is_third
     )
     total_pre_tax = sum((d.amount for d in pre_tax_deductions), ZERO)
 
@@ -165,7 +173,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
 
     # Step 8: Post-tax deductions
     post_tax_deductions = _calculate_deductions(
-        profile, period, all_periods, gross_biweekly, "post_tax", is_third
+        profile, period, all_periods, gross_biweekly, post_tax_id, pct_id, is_third
     )
     total_post_tax = sum((d.amount for d in post_tax_deductions), ZERO)
 
@@ -341,8 +349,13 @@ def _is_first_paycheck_of_month(period, all_periods):
 
 
 def _calculate_deductions(profile, period, all_periods, gross_biweekly,
-                          timing_name, is_third_paycheck):
-    """Calculate deductions for a specific timing (pre_tax or post_tax).
+                          timing_id, calc_method_pct_id, is_third_paycheck):
+    """Calculate deductions for a specific timing.
+
+    Args:
+        timing_id:          Integer ID of the DeductionTiming to filter on.
+        calc_method_pct_id: Integer ID of the CalcMethod "percentage" row,
+                            used to detect percentage-based deductions.
 
     Handles:
     - deductions_per_year (26/24/12) filtering based on 3rd paycheck
@@ -357,7 +370,7 @@ def _calculate_deductions(profile, period, all_periods, gross_biweekly,
     for ded in profile.deductions:
         if not ded.is_active:
             continue
-        if ded.deduction_timing.name != timing_name:
+        if ded.deduction_timing_id != timing_id:
             continue
 
         # Skip 24-per-year deductions on 3rd paychecks
@@ -371,7 +384,7 @@ def _calculate_deductions(profile, period, all_periods, gross_biweekly,
 
         # Calculate amount
         amount = Decimal(str(ded.amount))
-        if ded.calc_method.name == "percentage":
+        if ded.calc_method_id == calc_method_pct_id:
             amount = (gross_biweekly * amount).quantize(
                 TWO_PLACES, rounding=ROUND_HALF_UP
             )

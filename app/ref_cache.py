@@ -26,8 +26,11 @@ thereafter.
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
+    CalcMethodEnum,
+    DeductionTimingEnum,
     RecurrencePatternEnum,
     StatusEnum,
+    TaxTypeEnum,
     TxnTypeEnum,
 )
 
@@ -37,6 +40,9 @@ _txn_type_map = {}             # TxnTypeEnum member -> int (database PK)
 _acct_type_map = {}            # AcctTypeEnum member -> int (database PK)
 _acct_category_map = {}        # AcctCategoryEnum member -> int (database PK)
 _recurrence_pattern_map = {}   # RecurrencePatternEnum member -> int (database PK)
+_deduction_timing_map = {}     # DeductionTimingEnum member -> int (database PK)
+_calc_method_map = {}          # CalcMethodEnum member -> int (database PK)
+_tax_type_map = {}             # TaxTypeEnum member -> int (database PK)
 _acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
 _initialized = False
 
@@ -61,13 +67,17 @@ def init(db_session):
     from app.models.ref import (  # pylint: disable=import-outside-toplevel
         AccountType,
         AccountTypeCategory,
+        CalcMethod,
+        DeductionTiming,
         RecurrencePattern,
         Status,
+        TaxType,
         TransactionType,
     )
 
     global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
     global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
+    global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
     global _acct_type_meta, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
@@ -76,6 +86,9 @@ def init(db_session):
     _acct_type_map = {}
     _acct_category_map = {}
     _recurrence_pattern_map = {}
+    _deduction_timing_map = {}
+    _calc_method_map = {}
+    _tax_type_map = {}
     _acct_type_meta = {}
 
     # Build name -> id lookup from the database.
@@ -84,6 +97,9 @@ def init(db_session):
     acct_type_rows = {row.name: row.id for row in db_session.query(AccountType).all()}
     acct_category_rows = {row.name: row.id for row in db_session.query(AccountTypeCategory).all()}
     recurrence_pattern_rows = {row.name: row.id for row in db_session.query(RecurrencePattern).all()}
+    deduction_timing_rows = {row.name: row.id for row in db_session.query(DeductionTiming).all()}
+    calc_method_rows = {row.name: row.id for row in db_session.query(CalcMethod).all()}
+    tax_type_rows = {row.name: row.id for row in db_session.query(TaxType).all()}
 
     # Map each enum member to its database ID, collecting any misses.
     missing = []
@@ -122,6 +138,27 @@ def init(db_session):
             missing.append(f"RecurrencePattern.{member.name} (expected name={member.value!r})")
         else:
             _recurrence_pattern_map[member] = db_id
+
+    for member in DeductionTimingEnum:
+        db_id = deduction_timing_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"DeductionTiming.{member.name} (expected name={member.value!r})")
+        else:
+            _deduction_timing_map[member] = db_id
+
+    for member in CalcMethodEnum:
+        db_id = calc_method_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"CalcMethod.{member.name} (expected name={member.value!r})")
+        else:
+            _calc_method_map[member] = db_id
+
+    for member in TaxTypeEnum:
+        db_id = tax_type_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"TaxType.{member.name} (expected name={member.value!r})")
+        else:
+            _tax_type_map[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -264,3 +301,24 @@ def acct_type_max_term(acct_type_id):
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     meta = _acct_type_meta.get(acct_type_id, {})
     return meta.get("max_term_months")
+
+
+def deduction_timing_id(member):
+    """Return the integer primary key for a DeductionTimingEnum member."""
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _deduction_timing_map[member]
+
+
+def calc_method_id(member):
+    """Return the integer primary key for a CalcMethodEnum member."""
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _calc_method_map[member]
+
+
+def tax_type_id(member):
+    """Return the integer primary key for a TaxTypeEnum member."""
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _tax_type_map[member]

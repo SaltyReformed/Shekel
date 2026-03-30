@@ -637,6 +637,9 @@ class _FakeStateTaxConfig:
     def __init__(self, flat_rate="0.045"):
         self.flat_rate = Decimal(str(flat_rate))
         self.tax_type = type("_TT", (), {"name": "flat"})()
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+        self.tax_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
 
 
 class _FakeFicaConfig:

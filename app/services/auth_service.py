@@ -235,12 +235,15 @@ def _seed_tax_data_for_user(user_id):
     for tax_year, data in DEFAULT_FICA.items():
         db.session.add(FicaConfig(user_id=user_id, tax_year=tax_year, **data))
 
-    tax_type = db.session.query(TaxType).filter_by(name="flat").first()
-    if tax_type:
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+
+    flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
+    if flat_type_id:
         for tax_year, data in DEFAULT_STATE_TAX.items():
             db.session.add(StateTaxConfig(
                 user_id=user_id,
-                tax_type_id=tax_type.id,
+                tax_type_id=flat_type_id,
                 tax_year=tax_year,
                 state_code=data["state_code"],
                 flat_rate=data["flat_rate"],

@@ -251,7 +251,10 @@ def calculate_state_tax(annual_gross, state_config):
     if state_config is None:
         return ZERO
 
-    if state_config.tax_type and state_config.tax_type.name == "none":
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+
+    if state_config.tax_type_id == ref_cache.tax_type_id(TaxTypeEnum.NONE):
         return ZERO
 
     if state_config.flat_rate:

@@ -282,7 +282,7 @@ def _compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                 ded_profile = ded.salary_profile
                 adapted_deductions.append(type("D", (), {
                     "amount": ded.amount,
-                    "calc_method_name": ded.calc_method.name if ded.calc_method else "flat",
+                    "calc_method_id": ded.calc_method_id,
                     "annual_salary": ded_profile.annual_salary,
                     "pay_periods_per_year": ded_profile.pay_periods_per_year or 26,
                 })())

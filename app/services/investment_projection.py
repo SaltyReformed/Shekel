@@ -46,7 +46,7 @@ def calculate_investment_inputs(
         account_id:         int -- the investment account ID.
         investment_params:  Object with employer fields and annual_contribution_limit.
         deductions:         List of deduction-like objects with:
-                            .amount, .calc_method_name, .annual_salary, .pay_periods_per_year
+                            .amount, .calc_method_id, .annual_salary, .pay_periods_per_year
         all_contributions:  List of shadow income transactions (transfer_id IS NOT NULL)
                             in this account.  Each has .estimated_amount and .pay_period_id.
         all_periods:        List of period objects with .id, .start_date, .period_index
@@ -59,13 +59,18 @@ def calculate_investment_inputs(
     periodic_contribution = ZERO
     gross_biweekly = ZERO
 
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
+
+    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+
     for ded in deductions:
         salary = Decimal(str(ded.annual_salary))
         pay_per_year = ded.pay_periods_per_year or 26
         gross = (salary / pay_per_year).quantize(TWO_PLACES)
         gross_biweekly = gross
         amt = Decimal(str(ded.amount))
-        if ded.calc_method_name == "percentage":
+        if ded.calc_method_id == pct_id:
             amt = (gross * amt).quantize(TWO_PLACES)
         periodic_contribution += amt
 

@@ -28,6 +28,19 @@ from app.services.paycheck_calculator import (
     ZERO,
     TWO_PLACES,
 )
+from app import ref_cache
+from app.enums import CalcMethodEnum, DeductionTimingEnum
+
+
+def _timing_id(name):
+    """Resolve a deduction timing name (e.g. 'pre_tax') to its integer ID."""
+    _map = {e.value: e for e in DeductionTimingEnum}
+    return ref_cache.deduction_timing_id(_map[name])
+
+
+def _pct_id():
+    """Return the integer ID for the 'percentage' calc method."""
+    return ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -86,6 +99,13 @@ class FakeDeduction:
         self.inflation_rate = Decimal(str(inflation_rate)) if inflation_rate else None
         self.inflation_effective_month = inflation_effective_month
         self.is_active = is_active
+        # Resolve integer IDs from the ref_cache for ID-based comparisons.
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import CalcMethodEnum, DeductionTimingEnum  # pylint: disable=import-outside-toplevel
+        _timing_map = {e.value: e for e in DeductionTimingEnum}
+        _method_map = {e.value: e for e in CalcMethodEnum}
+        self.deduction_timing_id = ref_cache.deduction_timing_id(_timing_map[deduction_timing])
+        self.calc_method_id = ref_cache.calc_method_id(_method_map[calc_method])
 
 
 class FakeBracket:
@@ -116,6 +136,11 @@ class FakeStateTaxConfig:
     def __init__(self, flat_rate="0.045", tax_type_name="flat"):
         self.flat_rate = Decimal(str(flat_rate))
         self.tax_type = FakeTaxType(tax_type_name)
+        # Resolve the integer ID from the ref_cache for ID-based lookups.
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+        _name_to_enum = {e.value: e for e in TaxTypeEnum}
+        self.tax_type_id = ref_cache.tax_type_id(_name_to_enum[tax_type_name])
 
 
 class FakeFicaConfig:
@@ -718,7 +743,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(profile, p3, all_periods, gross,
-                                       "pre_tax", True)
+                                       _timing_id("pre_tax"), _pct_id(), True)
         assert len(result) == 0
 
     def test_12_per_year_only_first_of_month(self):
@@ -737,7 +762,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(profile, p1, all_periods, gross,
-                                       "pre_tax", False)
+                                       _timing_id("pre_tax"), _pct_id(), False)
         assert len(result) == 1
         assert result[0].amount == Decimal("50")
 
@@ -757,7 +782,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(profile, p2, all_periods, gross,
-                                       "pre_tax", False)
+                                       _timing_id("pre_tax"), _pct_id(), False)
         assert len(result) == 0
 
 
@@ -831,7 +856,7 @@ class TestInflationAdjustment:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(profile, period, [period], gross,
-                                       "pre_tax", False)
+                                       _timing_id("pre_tax"), _pct_id(), False)
         expected = (Decimal("100") * Decimal("1.03")).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
@@ -855,7 +880,7 @@ class TestInflationAdjustment:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(profile, period, [period], gross,
-                                       "pre_tax", False)
+                                       _timing_id("pre_tax"), _pct_id(), False)
         expected = (Decimal("100") * Decimal("1.03") ** 2).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )

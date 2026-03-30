@@ -38,7 +38,10 @@ from app.models.ref import (
     TaxType,
 )
 from app import ref_cache
-from app.enums import AcctCategoryEnum, RecurrencePatternEnum, TxnTypeEnum
+from app.enums import (
+    AcctCategoryEnum, CalcMethodEnum, RecurrencePatternEnum,
+    TaxTypeEnum, TxnTypeEnum,
+)
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -492,8 +495,7 @@ def add_deduction(profile_id):
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     from decimal import Decimal as D
-    calc_method = db.session.get(CalcMethod, data["calc_method_id"])
-    if calc_method and calc_method.name == "percentage":
+    if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = D(str(data["amount"])) / D("100")
     if data.get("inflation_rate"):
         data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
@@ -568,8 +570,7 @@ def update_deduction(ded_id):
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     from decimal import Decimal as D
-    calc_method = db.session.get(CalcMethod, data["calc_method_id"])
-    if calc_method and calc_method.name == "percentage":
+    if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = D(str(data["amount"])) / D("100")
     if data.get("inflation_rate"):
         data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
@@ -911,11 +912,11 @@ def update_tax_config():
         state_config.standard_deduction = standard_deduction
         flash(f"State tax config for {state_code} {tax_year} updated.", "success")
     else:
-        flat_type = db.session.query(TaxType).filter_by(name="flat").first()
-        if flat_type and flat_rate is not None:
+        flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
+        if flat_rate is not None:
             new_config = StateTaxConfig(
                 user_id=current_user.id,
-                tax_type_id=flat_type.id,
+                tax_type_id=flat_type_id,
                 state_code=state_code,
                 tax_year=tax_year,
                 flat_rate=flat_rate,

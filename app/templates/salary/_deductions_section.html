@@ -27,13 +27,13 @@
         <tr>
           <td>{{ d.name }}</td>
           <td>
-            <span class="badge {{ 'bg-info' if d.deduction_timing.name == 'pre_tax' else 'bg-secondary' }}">
+            <span class="badge {{ 'bg-info' if d.deduction_timing_id == TIMING_PRE_TAX else 'bg-secondary' }}">
               {{ d.deduction_timing.name|replace('_', '-') }}
             </span>
           </td>
           <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
           <td class="text-end">
-            {% if d.calc_method and d.calc_method.name == 'percentage' %}
+            {% if d.calc_method_id == CALC_PERCENTAGE %}
               {{ "%.2f"|format((d.amount * 100)|float) }}%
             {% else %}
               ${{ "%.2f"|format(d.amount|float) }}
@@ -66,7 +66,7 @@
                     data-ded-name="{{ d.name }}"
                     data-ded-timing-id="{{ d.deduction_timing_id }}"
                     data-ded-method-id="{{ d.calc_method_id }}"
-                    data-ded-amount="{{ '%.2f'|format((d.amount * 100)|float) if d.calc_method and d.calc_method.name == 'percentage' else '%.2f'|format(d.amount|float) }}"
+                    data-ded-amount="{{ '%.2f'|format((d.amount * 100)|float) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount|float) }}"
                     data-ded-per-year="{{ d.deductions_per_year }}"
                     data-ded-cap="{{ '%.2f'|format(d.annual_cap|float) if d.annual_cap else '' }}"
                     data-ded-target-account="{{ d.target_account_id or '' }}"
