@@ -490,11 +490,22 @@ class TestLogout:
     """Tests for the /logout endpoint."""
 
     def test_logout_redirects_to_login(self, app, auth_client):
-        """GET /logout ends session and redirects."""
+        """POST /logout ends session and redirects."""
         with app.app_context():
-            response = auth_client.get("/logout", follow_redirects=False)
+            response = auth_client.post("/logout", follow_redirects=False)
             assert response.status_code == 302
             assert "login" in response.headers.get("Location", "")
+
+    def test_logout_rejects_get(self, app, seed_user, client):
+        """GET /logout returns 405 Method Not Allowed for authenticated users."""
+        with app.app_context():
+            # Log in with a fresh client so the session is still active.
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+            response = client.get("/logout")
+            assert response.status_code == 405
 
 
 class TestPasswordChange:
@@ -513,7 +524,7 @@ class TestPasswordChange:
             assert b"Password changed successfully" in response.data
 
             # Verify the user can log in with the new password.
-            auth_client.get("/logout")
+            auth_client.post("/logout")
             login_resp = auth_client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "newpassword12",
@@ -990,7 +1001,7 @@ class TestMfaLogin:
             })
 
             # Log out.
-            client.get("/logout")
+            client.post("/logout")
 
             # Second login cycle: try the same backup code again.
             client.post("/login", data={
@@ -1786,7 +1797,7 @@ class TestPasswordChangeEdgeCases:
             assert b"Password changed successfully" in resp2.data
 
             # Verify the password still works for login.
-            auth_client.get("/logout")
+            auth_client.post("/logout")
             login_resp = auth_client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass1234",
@@ -1820,7 +1831,7 @@ class TestPasswordChangeEdgeCases:
             assert b"Current password is incorrect" in resp2.data
 
             # Verify the password is still "newpassword12" (not "anotherpass12").
-            auth_client.get("/logout")
+            auth_client.post("/logout")
             login_resp = auth_client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "newpassword12",
@@ -1848,7 +1859,7 @@ class TestPasswordChangeEdgeCases:
             assert b"Password changed successfully" in response.data
 
             # Verify the whitespace password works for login.
-            auth_client.get("/logout")
+            auth_client.post("/logout")
             login_resp = auth_client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": whitespace_password,

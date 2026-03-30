@@ -18,7 +18,7 @@ import pytest
 
 PROTECTED_ENDPOINTS = [
     # -- auth blueprint --
-    ("GET", "/logout"),  # auth.logout
+    ("POST", "/logout"),  # auth.logout
     ("POST", "/change-password"),  # auth.change_password
     ("POST", "/invalidate-sessions"),  # auth.invalidate_sessions
     ("GET", "/mfa/setup"),  # auth.mfa_setup
