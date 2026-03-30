@@ -10,6 +10,7 @@ import logging
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.services import chart_data_service
 
@@ -60,7 +61,7 @@ def balance_over_time():
             "charts/_balance_over_time.html",
             chart_data=chart_data,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading balance over time chart")
         return _error_fragment(url_for("charts.balance_over_time"))
 
@@ -85,7 +86,7 @@ def spending_by_category():
             chart_data=chart_data,
             selected_range=period_range,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading spending by category chart")
         return _error_fragment(url_for("charts.spending_by_category"))
 
@@ -110,7 +111,7 @@ def budget_vs_actuals():
             chart_data=chart_data,
             selected_range=period_range,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading budget vs actuals chart")
         return _error_fragment(url_for("charts.budget_vs_actuals"))
 
@@ -140,7 +141,7 @@ def amortization():
             loan_accounts=loan_accounts,
             selected_account_id=account_id,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading amortization chart")
         return _error_fragment(url_for("charts.amortization"))
 
@@ -166,7 +167,7 @@ def net_worth():
             "charts/_net_worth.html",
             chart_data=chart_data,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading net worth chart")
         return _error_fragment(url_for("charts.net_worth"))
 
@@ -196,6 +197,6 @@ def net_pay():
             salary_profiles=salary_profiles,
             selected_profile_id=profile_id,
         )
-    except Exception:  # pylint: disable=broad-except
+    except (ValueError, KeyError, SQLAlchemyError):
         logger.exception("Error loading net pay chart")
         return _error_fragment(url_for("charts.net_pay"))

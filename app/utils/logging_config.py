@@ -14,6 +14,7 @@ import time
 import uuid
 
 from flask import Flask, g, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from pythonjsonlogger.json import JsonFormatter  # noqa: F401 -- used in dictConfig
 
@@ -120,7 +121,10 @@ def setup_logging(app: Flask) -> None:
                     db.text("SET LOCAL app.current_user_id = :uid"),
                     {"uid": str(current_user.id)},
                 )
-        except Exception:  # pylint: disable=broad-except
+        except (RuntimeError, AttributeError, SQLAlchemyError):
+            # RuntimeError: outside application/request context.
+            # AttributeError: anonymous user proxy has no 'id'.
+            # SQLAlchemyError: SET LOCAL fails on broken DB session.
             pass
 
     # Slow request threshold in milliseconds (configurable via env var).
@@ -161,7 +165,9 @@ def setup_logging(app: Flask) -> None:
             from flask_login import current_user  # pylint: disable=import-outside-toplevel
             if current_user.is_authenticated:
                 extra_fields["user_id"] = current_user.id
-        except Exception:  # pylint: disable=broad-except
+        except (RuntimeError, AttributeError):
+            # RuntimeError: outside application/request context.
+            # AttributeError: anonymous user proxy has no 'is_authenticated'.
             pass
 
         lgr.log(

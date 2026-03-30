@@ -8,6 +8,7 @@ to get a fully wired Flask instance.
 
 import os
 
+import sqlalchemy.exc
 from flask import Flask, render_template
 
 from app.config import CONFIG_MAP
@@ -182,10 +183,11 @@ def create_app(config_name=None):
         app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
         app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
         app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
-    except Exception:  # pylint: disable=broad-except
+    except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as exc:
         app.logger.warning(
-            "ref_cache initialization skipped (migration pending or DB unavailable). "
-            "Ref ID Jinja globals will not be available until next restart."
+            "ref_cache initialization skipped (%s). "
+            "Jinja globals will not be available until next restart.",
+            type(exc).__name__,
         )
 
     app.logger.info("Shekel app created with config=%s", config_name)
