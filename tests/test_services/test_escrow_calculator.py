@@ -51,15 +51,15 @@ class TestCalculateMonthlyEscrow:
         assert result == Decimal("400.00")
 
     def test_with_inflation(self):
-        """Inflation applied when as_of_date provided."""
+        """Inflation applied with month-aware elapsed years (M-05)."""
         components = [
             _comp("Property Tax", "4800", inflation="0.03",
                   created_at=datetime(2024, 1, 1)),
         ]
-        # 2 years of 3% inflation: 4800 * 1.03^2 / 12
+        # 29 months elapsed (Jan 2024 to Jun 2026) = 29/12 ≈ 2.4167 years
+        # 4800 * 1.03^(29/12) / 12 ≈ 429.62
         result = calculate_monthly_escrow(components, as_of_date=date(2026, 6, 1))
-        # 4800 * 1.03^2 / 12 = 424.36
-        assert result == Decimal("424.36")
+        assert result == Decimal("429.62")
 
     def test_no_inflation_without_date(self):
         """No as_of_date → no inflation applied."""

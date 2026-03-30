@@ -38,7 +38,16 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
             if created:
                 if hasattr(created, "date"):
                     created = created.date()
-                years_elapsed = (as_of_date.year - created.year)
+                # Month-aware elapsed calculation prevents inflating
+                # a full year for a component created late in the
+                # previous calendar year (M-05).
+                months_elapsed = (
+                    (as_of_date.year - created.year) * 12
+                    + (as_of_date.month - created.month)
+                )
+                years_elapsed = max(
+                    months_elapsed / Decimal("12"), Decimal("0")
+                )
                 if years_elapsed > 0:
                     annual = annual * (1 + rate) ** years_elapsed
 
