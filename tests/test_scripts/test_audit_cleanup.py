@@ -1,6 +1,7 @@
 """Tests for scripts/audit_cleanup.py (Phase 8B WU-5)."""
+import pytest
 from app.extensions import db
-from scripts.audit_cleanup import execute_cleanup
+from scripts.audit_cleanup import execute_cleanup, parse_args
 
 
 def _insert_audit_row(days_ago=0):
@@ -118,3 +119,27 @@ class TestAuditCleanup:
         deleted = execute_cleanup(db.session, days=30, dry_run=False)
         assert deleted == 2
         assert _audit_count() == 2
+
+
+class TestParseArgs:
+    """Tests for parse_args CLI argument validation."""
+
+    def test_parse_args_rejects_zero_days(self):
+        """parse_args rejects --days 0 to prevent deleting entire audit log."""
+        with pytest.raises(SystemExit):
+            parse_args(["--days", "0"])
+
+    def test_parse_args_rejects_negative_days(self):
+        """parse_args rejects --days -1 to prevent future-cutoff deletion."""
+        with pytest.raises(SystemExit):
+            parse_args(["--days", "-1"])
+
+    def test_parse_args_accepts_one_day(self):
+        """parse_args accepts --days 1 as the minimum retention period."""
+        args = parse_args(["--days", "1"])
+        assert args.days == 1
+
+    def test_parse_args_accepts_default(self):
+        """parse_args defaults to 365 days when --days is not specified."""
+        args = parse_args([])
+        assert args.days == 365

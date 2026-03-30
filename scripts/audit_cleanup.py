@@ -53,7 +53,10 @@ def parse_args(argv=None):
         action="store_true",
         help="Print count of rows to delete without actually deleting.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.days < 1:
+        parser.error("--days must be at least 1 to prevent deleting the entire audit log.")
+    return args
 
 
 def execute_cleanup(db_session, days, dry_run=False):
