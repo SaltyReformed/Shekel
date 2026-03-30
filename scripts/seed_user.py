@@ -139,7 +139,7 @@ def seed_user():
     db.session.commit()
     print("\nSeed complete.  You can now log in with:")
     print(f"  Email:    {email}")
-    print(f"  Password: {password}")
+    print("  Password: [set via SEED_USER_PASSWORD env var or default]")
     return user
 
 
