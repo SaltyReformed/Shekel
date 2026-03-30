@@ -23,12 +23,13 @@ class Account(db.Model):
         nullable=False,
     )
     account_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.account_types.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.account_types.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     name = db.Column(db.String(100), nullable=False)
     current_anchor_balance = db.Column(db.Numeric(12, 2))
     current_anchor_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id")
+        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
@@ -72,7 +73,8 @@ class AccountAnchorHistory(db.Model):
         nullable=False,
     )
     pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),
+        nullable=False,
     )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     notes = db.Column(db.Text)

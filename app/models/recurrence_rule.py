@@ -24,7 +24,8 @@ class RecurrenceRule(db.Model):
         nullable=False,
     )
     pattern_id = db.Column(
-        db.Integer, db.ForeignKey("ref.recurrence_patterns.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.recurrence_patterns.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     # Used by 'every_n_periods': repeat every N periods.
     interval_n = db.Column(db.Integer, default=1)

@@ -26,16 +26,19 @@ class TransactionTemplate(db.Model):
         nullable=False,
     )
     account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     category_id = db.Column(
-        db.Integer, db.ForeignKey("budget.categories.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.categories.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     recurrence_rule_id = db.Column(
-        db.Integer, db.ForeignKey("budget.recurrence_rules.id")
+        db.Integer, db.ForeignKey("budget.recurrence_rules.id", ondelete="SET NULL"),
     )
     transaction_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.transaction_types.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.transaction_types.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)

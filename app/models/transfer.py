@@ -38,13 +38,16 @@ class Transfer(db.Model):
         nullable=False,
     )
     from_account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     to_account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     scenario_id = db.Column(
         db.Integer,
@@ -52,7 +55,8 @@ class Transfer(db.Model):
         nullable=False,
     )
     status_id = db.Column(
-        db.Integer, db.ForeignKey("ref.statuses.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.statuses.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     transfer_template_id = db.Column(
         db.Integer,
@@ -63,7 +67,7 @@ class Transfer(db.Model):
     is_override = db.Column(db.Boolean, default=False, nullable=False)
     is_deleted = db.Column(db.Boolean, default=False, nullable=False)
     category_id = db.Column(
-        db.Integer, db.ForeignKey("budget.categories.id")
+        db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())

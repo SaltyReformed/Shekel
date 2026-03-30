@@ -52,7 +52,8 @@ class Transaction(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     template_id = db.Column(
         db.Integer,
@@ -69,14 +70,16 @@ class Transaction(db.Model):
         nullable=False,
     )
     status_id = db.Column(
-        db.Integer, db.ForeignKey("ref.statuses.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.statuses.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     name = db.Column(db.String(200), nullable=False)
     category_id = db.Column(
-        db.Integer, db.ForeignKey("budget.categories.id")
+        db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     transaction_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.transaction_types.id"), nullable=False
+        db.Integer, db.ForeignKey("ref.transaction_types.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     estimated_amount = db.Column(db.Numeric(12, 2), nullable=False)
     actual_amount = db.Column(db.Numeric(12, 2))

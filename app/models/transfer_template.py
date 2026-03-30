@@ -34,20 +34,22 @@ class TransferTemplate(db.Model):
         nullable=False,
     )
     from_account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     to_account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id"), nullable=False
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     recurrence_rule_id = db.Column(
-        db.Integer, db.ForeignKey("budget.recurrence_rules.id")
+        db.Integer, db.ForeignKey("budget.recurrence_rules.id", ondelete="SET NULL"),
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
     category_id = db.Column(
-        db.Integer, db.ForeignKey("budget.categories.id")
+        db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
