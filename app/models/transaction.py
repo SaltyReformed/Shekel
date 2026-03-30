@@ -39,6 +39,14 @@ class Transaction(db.Model):
                 "template_id IS NOT NULL AND is_deleted = FALSE"
             ),
         ),
+        db.CheckConstraint(
+            "estimated_amount >= 0",
+            name="ck_transactions_estimated_amount",
+        ),
+        db.CheckConstraint(
+            "actual_amount IS NULL OR actual_amount >= 0",
+            name="ck_transactions_actual_amount",
+        ),
         {"schema": "budget"},
     )
 

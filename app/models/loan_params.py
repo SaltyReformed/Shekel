@@ -23,6 +23,22 @@ class LoanParams(db.Model):
             "payment_day >= 1 AND payment_day <= 31",
             name="ck_loan_params_payment_day",
         ),
+        db.CheckConstraint(
+            "original_principal > 0",
+            name="ck_loan_params_orig_principal",
+        ),
+        db.CheckConstraint(
+            "current_principal >= 0",
+            name="ck_loan_params_curr_principal",
+        ),
+        db.CheckConstraint(
+            "interest_rate >= 0",
+            name="ck_loan_params_interest_rate",
+        ),
+        db.CheckConstraint(
+            "term_months > 0",
+            name="ck_loan_params_term_months",
+        ),
         {"schema": "budget"},
     )
 

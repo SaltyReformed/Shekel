@@ -229,7 +229,11 @@ def mark_done(txn_id):
         transfer_service.update_transfer(
             txn.transfer_id, current_user.id, **svc_kwargs
         )
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return "Invalid reference. Check that all referenced records exist.", 400
         db.session.refresh(txn)
         response = render_template("grid/_transaction_cell.html", txn=txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -245,7 +249,11 @@ def mark_done(txn_id):
         except (InvalidOperation, ValueError, ArithmeticError):
             return "Invalid actual amount", 400
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
     response = render_template("grid/_transaction_cell.html", txn=txn)

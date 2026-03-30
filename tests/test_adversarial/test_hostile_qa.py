@@ -112,10 +112,10 @@ class TestStateMachineViolations:
             assert txn.status.name == "Projected"
 
     def test_mark_done_negative_actual_amount(self, app, auth_client, seed_user, seed_periods):
-        """POST mark_done with actual_amount=-500 -- no range check.
+        """POST mark_done with actual_amount=-500 is rejected by DB CHECK constraint.
 
-        Bug: mark_done parses actual_amount with Decimal() directly,
-        bypassing Marshmallow entirely.  No Range(min=0) check.
+        The CHECK constraint on budget.transactions.actual_amount
+        prevents negative values at the database level (L-01).
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
@@ -125,12 +125,7 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-500.00"},
             )
-            # Current behavior: accepts the negative amount.
-            assert resp.status_code == 200
-
-            db.session.refresh(txn)
-            # Ideal: should reject negative amounts.
-            assert txn.actual_amount == Decimal("-500.00")
+            assert resp.status_code == 400
 
     def test_mark_done_already_done_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST mark_done on an already-done transaction.

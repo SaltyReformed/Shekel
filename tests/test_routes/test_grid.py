@@ -700,22 +700,25 @@ class TestTransactionNegativePaths:
     def test_mark_done_with_negative_actual_amount(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /transactions/<id>/mark-done accepts negative actual_amount (no range check)."""
+        """POST /transactions/<id>/mark-done rejects negative actual_amount.
+
+        The CHECK constraint on budget.transactions.actual_amount
+        prevents negative values at the database level (L-01).
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods)
+            original_status_id = txn.status_id
 
-            # NOTE: mark_done does not validate actual_amount range. Negative
-            # actuals are accepted. The hostile QA audit (test_hostile_qa.py)
-            # documents this as a known behavioral issue.
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-50.00"},
             )
-            assert resp.status_code == 200
+            # The DB CHECK constraint rejects the negative amount.
+            assert resp.status_code == 400
 
+            db.session.rollback()
             db.session.refresh(txn)
-            assert txn.actual_amount == Decimal("-50.00")
-            assert txn.status.name == "Paid"
+            assert txn.status_id == original_status_id
 
     # ── XSS protection test ──────────────────────────────────────
 
