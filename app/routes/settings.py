@@ -15,7 +15,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.schemas.validation import UserSettingsSchema
 from app.models.category import Category
-from app.models.ref import AccountType, FilingStatus, TaxType
+from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
 from app.models.user import UserSettings
 
@@ -52,6 +52,8 @@ def show():
     state_configs = []
     account_types = []
     types_in_use = set()
+    categories = []
+    icon_choices = []
     mfa_enabled = False
 
     if section == "general":
@@ -105,6 +107,18 @@ def show():
             .distinct()
             .all()
         )
+        categories = (
+            db.session.query(AccountTypeCategory)
+            .order_by(AccountTypeCategory.id)
+            .all()
+        )
+        icon_choices = [
+            "bi-bank", "bi-wallet2", "bi-piggy-bank", "bi-cash-stack",
+            "bi-safe", "bi-heart-pulse", "bi-credit-card", "bi-house",
+            "bi-car-front", "bi-mortarboard", "bi-cash-coin",
+            "bi-graph-up-arrow", "bi-bar-chart-line", "bi-building",
+            "bi-briefcase", "bi-coin", "bi-currency-exchange",
+        ]
     # elif section == "retirement": settings already loaded above.
     elif section == "security":
         from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
@@ -129,6 +143,8 @@ def show():
         state_configs=state_configs,
         account_types=account_types,
         types_in_use=types_in_use,
+        categories=categories,
+        icon_choices=icon_choices,
         mfa_enabled=mfa_enabled,
     )
 

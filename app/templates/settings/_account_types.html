@@ -4,45 +4,217 @@
   <div class="card-header fw-semibold">Account Types</div>
   <ul class="list-group list-group-flush">
     {% for at in account_types %}
-    <li class="list-group-item d-flex justify-content-between align-items-center">
-      <form method="POST" action="{{ url_for('accounts.update_account_type', type_id=at.id) }}"
-            class="d-flex align-items-center flex-grow-1 me-2 account-type-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <span class="account-type-display px-1">{{ at.name|format_account_type }}</span>
-        <input type="text" name="name" value="{{ at.name }}" class="form-control form-control-sm border-0 bg-transparent d-none account-type-input"
-               aria-label="Account type name">
-        <button type="submit" class="btn btn-sm btn-outline-primary ms-1 d-none save-type-btn"
-                aria-label="Save">
-          <i class="bi bi-check"></i>
-        </button>
-      </form>
-      {% if at.id in types_in_use %}
-      <button class="btn btn-sm btn-outline-danger" disabled
-              title="In use by accounts" aria-label="Cannot delete -- in use">
-        <i class="bi bi-trash"></i>
-      </button>
-      {% else %}
-      <form method="POST" action="{{ url_for('accounts.delete_account_type', type_id=at.id) }}"
-            class="d-inline"
-            data-confirm="Delete this account type?">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ at.name }}">
-          <i class="bi bi-trash"></i>
-        </button>
-      </form>
-      {% endif %}
+    <li class="list-group-item">
+      <div class="d-flex justify-content-between align-items-start">
+        {# ── Inline edit form ──────────────────────────────────── #}
+        <form method="POST" action="{{ url_for('accounts.update_account_type', type_id=at.id) }}"
+              class="flex-grow-1 me-2 account-type-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          {# Display mode: name + badge summary #}
+          <div class="account-type-display">
+            <span class="fw-semibold px-1">{{ at.name|format_account_type }}</span>
+            <small class="text-muted ms-1">
+              {% if at.category %}{{ at.category.name }}{% endif %}
+              {% if at.has_parameters %}<span class="badge bg-info ms-1">params</span>{% endif %}
+              {% if at.has_amortization %}<span class="badge bg-warning text-dark ms-1">amort</span>{% endif %}
+              {% if at.has_interest %}<span class="badge bg-success ms-1">interest</span>{% endif %}
+              {% if at.is_pretax %}<span class="badge bg-secondary ms-1">pre-tax</span>{% endif %}
+              {% if at.is_liquid %}<span class="badge bg-primary ms-1">liquid</span>{% endif %}
+            </small>
+          </div>
+
+          {# Edit mode: full metadata fields (hidden until edit clicked) #}
+          <div class="account-type-edit d-none mt-2">
+            <div class="row g-2">
+              <div class="col-md-4">
+                <label class="form-label form-label-sm">Name</label>
+                <input type="text" name="name" value="{{ at.name }}"
+                       class="form-control form-control-sm" aria-label="Name">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label form-label-sm">Category</label>
+                <select name="category_id" class="form-select form-select-sm acct-type-category">
+                  {% for cat in categories %}
+                  <option value="{{ cat.id }}" {% if at.category_id == cat.id %}selected{% endif %}>
+                    {{ cat.name }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label form-label-sm">Icon</label>
+                <select name="icon_class" class="form-select form-select-sm">
+                  {% for icon in icon_choices %}
+                  <option value="{{ icon }}" {% if at.icon_class == icon %}selected{% endif %}>
+                    <i class="{{ icon }}"></i> {{ icon }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="row g-2 mt-1">
+              <div class="col-auto">
+                <div class="form-check form-check-inline">
+                  <input type="hidden" name="has_parameters" value="false">
+                  <input type="checkbox" name="has_parameters" value="true"
+                         class="form-check-input" id="edit_params_{{ at.id }}"
+                         {% if at.has_parameters %}checked{% endif %}>
+                  <label class="form-check-label" for="edit_params_{{ at.id }}">Has parameters</label>
+                </div>
+              </div>
+              <div class="col-auto acct-type-flag" data-show-for-category="Liability">
+                <div class="form-check form-check-inline">
+                  <input type="hidden" name="has_amortization" value="false">
+                  <input type="checkbox" name="has_amortization" value="true"
+                         class="form-check-input acct-type-amort-cb" id="edit_amort_{{ at.id }}"
+                         {% if at.has_amortization %}checked{% endif %}>
+                  <label class="form-check-label" for="edit_amort_{{ at.id }}">Amortization</label>
+                </div>
+              </div>
+              <div class="col-auto acct-type-flag" data-show-for-category="Asset">
+                <div class="form-check form-check-inline">
+                  <input type="hidden" name="has_interest" value="false">
+                  <input type="checkbox" name="has_interest" value="true"
+                         class="form-check-input" id="edit_interest_{{ at.id }}"
+                         {% if at.has_interest %}checked{% endif %}>
+                  <label class="form-check-label" for="edit_interest_{{ at.id }}">Interest</label>
+                </div>
+              </div>
+              <div class="col-auto acct-type-flag" data-show-for-category="Retirement">
+                <div class="form-check form-check-inline">
+                  <input type="hidden" name="is_pretax" value="false">
+                  <input type="checkbox" name="is_pretax" value="true"
+                         class="form-check-input" id="edit_pretax_{{ at.id }}"
+                         {% if at.is_pretax %}checked{% endif %}>
+                  <label class="form-check-label" for="edit_pretax_{{ at.id }}">Pre-tax</label>
+                </div>
+              </div>
+              <div class="col-auto acct-type-flag" data-show-for-category="Asset">
+                <div class="form-check form-check-inline">
+                  <input type="hidden" name="is_liquid" value="false">
+                  <input type="checkbox" name="is_liquid" value="true"
+                         class="form-check-input" id="edit_liquid_{{ at.id }}"
+                         {% if at.is_liquid %}checked{% endif %}>
+                  <label class="form-check-label" for="edit_liquid_{{ at.id }}">Liquid</label>
+                </div>
+              </div>
+              <div class="col-auto acct-type-flag" data-show-for-flag="has_amortization">
+                <label class="form-label form-label-sm mb-0">Max term</label>
+                <input type="number" name="max_term_months" min="1" max="600"
+                       value="{{ at.max_term_months or '' }}"
+                       class="form-control form-control-sm" style="width: 90px;">
+              </div>
+            </div>
+            <div class="mt-2">
+              <button type="submit" class="btn btn-sm btn-primary save-type-btn">
+                <i class="bi bi-check"></i> Save
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary cancel-type-btn">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div class="d-flex align-items-center">
+          <button type="button" class="btn btn-sm btn-outline-secondary me-1 edit-type-btn"
+                  aria-label="Edit {{ at.name }}">
+            <i class="bi bi-pencil"></i>
+          </button>
+          {% if at.id in types_in_use %}
+          <button class="btn btn-sm btn-outline-danger" disabled
+                  title="In use by accounts" aria-label="Cannot delete -- in use">
+            <i class="bi bi-trash"></i>
+          </button>
+          {% else %}
+          <form method="POST" action="{{ url_for('accounts.delete_account_type', type_id=at.id) }}"
+                class="d-inline"
+                data-confirm="Delete this account type?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ at.name }}">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
     </li>
     {% else %}
     <li class="list-group-item text-muted">No account types defined.</li>
     {% endfor %}
   </ul>
+
+  {# ── Create new account type form ──────────────────────────── #}
   <div class="card-body">
+    <h6 class="mb-2">Add Account Type</h6>
     <form method="POST" action="{{ url_for('accounts.create_account_type') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="input-group input-group-sm">
-        <input type="text" name="name" class="form-control" required
-               placeholder="New type name" aria-label="New account type name">
-        <button type="submit" class="btn btn-primary">
+      <div class="row g-2">
+        <div class="col-md-4">
+          <input type="text" name="name" class="form-control form-control-sm" required
+                 placeholder="Type name" aria-label="New account type name">
+        </div>
+        <div class="col-md-4">
+          <select name="category_id" class="form-select form-select-sm acct-type-category" required>
+            <option value="">-- Category --</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}">{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <select name="icon_class" class="form-select form-select-sm">
+            {% for icon in icon_choices %}
+            <option value="{{ icon }}">{{ icon }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="row g-2 mt-1" id="create-flags">
+        <div class="col-auto">
+          <div class="form-check form-check-inline">
+            <input type="checkbox" name="has_parameters" value="true"
+                   class="form-check-input" id="create_params">
+            <label class="form-check-label" for="create_params">Has parameters</label>
+          </div>
+        </div>
+        <div class="col-auto acct-type-flag" data-show-for-category="Liability">
+          <div class="form-check form-check-inline">
+            <input type="checkbox" name="has_amortization" value="true"
+                   class="form-check-input acct-type-amort-cb" id="create_amort">
+            <label class="form-check-label" for="create_amort">Amortization</label>
+          </div>
+        </div>
+        <div class="col-auto acct-type-flag" data-show-for-category="Asset">
+          <div class="form-check form-check-inline">
+            <input type="checkbox" name="has_interest" value="true"
+                   class="form-check-input" id="create_interest">
+            <label class="form-check-label" for="create_interest">Interest</label>
+          </div>
+        </div>
+        <div class="col-auto acct-type-flag" data-show-for-category="Retirement">
+          <div class="form-check form-check-inline">
+            <input type="checkbox" name="is_pretax" value="true"
+                   class="form-check-input" id="create_pretax">
+            <label class="form-check-label" for="create_pretax">Pre-tax</label>
+          </div>
+        </div>
+        <div class="col-auto acct-type-flag" data-show-for-category="Asset">
+          <div class="form-check form-check-inline">
+            <input type="checkbox" name="is_liquid" value="true"
+                   class="form-check-input" id="create_liquid">
+            <label class="form-check-label" for="create_liquid">Liquid</label>
+          </div>
+        </div>
+        <div class="col-auto acct-type-flag" data-show-for-flag="has_amortization">
+          <input type="number" name="max_term_months" min="1" max="600"
+                 class="form-control form-control-sm" style="width: 120px;"
+                 placeholder="Max term (mo)">
+        </div>
+      </div>
+      <div class="mt-2">
+        <button type="submit" class="btn btn-sm btn-primary">
           <i class="bi bi-plus"></i> Add
         </button>
       </div>
@@ -50,4 +222,56 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/account_types.js') }}"></script>
+<script>
+// Conditional field visibility for account type forms.
+document.addEventListener("DOMContentLoaded", function () {
+  // Category-based flag visibility.
+  function updateFlagVisibility(form) {
+    var select = form.querySelector(".acct-type-category");
+    if (!select) return;
+    var catName = select.options[select.selectedIndex]
+                  ? select.options[select.selectedIndex].text.trim()
+                  : "";
+    form.querySelectorAll(".acct-type-flag[data-show-for-category]").forEach(function (el) {
+      el.style.display = el.getAttribute("data-show-for-category") === catName ? "" : "none";
+    });
+    // Amortization-dependent fields.
+    var amortCb = form.querySelector(".acct-type-amort-cb");
+    var amortChecked = amortCb && amortCb.checked;
+    form.querySelectorAll(".acct-type-flag[data-show-for-flag='has_amortization']").forEach(function (el) {
+      el.style.display = amortChecked ? "" : "none";
+    });
+  }
+
+  // Bind to category dropdowns and amortization checkboxes.
+  document.querySelectorAll(".acct-type-category").forEach(function (select) {
+    var form = select.closest("form");
+    select.addEventListener("change", function () { updateFlagVisibility(form); });
+    updateFlagVisibility(form);
+  });
+  document.querySelectorAll(".acct-type-amort-cb").forEach(function (cb) {
+    var form = cb.closest("form");
+    cb.addEventListener("change", function () { updateFlagVisibility(form); });
+  });
+
+  // Edit/cancel toggle for existing account type rows.
+  document.querySelectorAll(".edit-type-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var li = btn.closest("li");
+      li.querySelector(".account-type-display").classList.add("d-none");
+      li.querySelector(".account-type-edit").classList.remove("d-none");
+      btn.classList.add("d-none");
+      var form = li.querySelector(".account-type-form");
+      updateFlagVisibility(form);
+    });
+  });
+  document.querySelectorAll(".cancel-type-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var li = btn.closest("li");
+      li.querySelector(".account-type-display").classList.remove("d-none");
+      li.querySelector(".account-type-edit").classList.add("d-none");
+      li.querySelector(".edit-type-btn").classList.remove("d-none");
+    });
+  });
+});
+</script>

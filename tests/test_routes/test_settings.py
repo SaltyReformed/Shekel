@@ -223,6 +223,95 @@ class TestSettingsDashboard:
             assert resp.status_code == 200
             assert b"Account Types" in resp.data
 
+    def test_settings_account_types_shows_categories(self, app, auth_client, seed_user):
+        """Account types section includes the category dropdown with all four categories."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=account-types")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Asset" in html
+            assert "Liability" in html
+            assert "Retirement" in html
+            assert "Investment" in html
+            assert 'name="category_id"' in html
+
+    def test_settings_account_types_shows_flags(self, app, auth_client, seed_user):
+        """Account types section includes metadata flag checkboxes."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=account-types")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert 'name="has_parameters"' in html
+            assert 'name="has_amortization"' in html
+            assert 'name="has_interest"' in html
+            assert 'name="is_pretax"' in html
+            assert 'name="is_liquid"' in html
+            assert 'name="icon_class"' in html
+
+    def test_settings_create_full_type_via_form(self, app, auth_client, seed_user):
+        """POST with all metadata fields creates a complete account type."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+        from app.models.ref import AccountType
+
+        with app.app_context():
+            liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+            resp = auth_client.post(
+                "/accounts/types",
+                data={
+                    "name": "FormTestDebt",
+                    "category_id": liability_id,
+                    "has_parameters": "true",
+                    "has_amortization": "true",
+                    "max_term_months": "180",
+                    "icon_class": "bi-house",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            acct_type = db.session.query(AccountType).filter_by(
+                name="FormTestDebt",
+            ).one()
+            assert acct_type.category_id == liability_id
+            assert acct_type.has_parameters is True
+            assert acct_type.has_amortization is True
+            assert acct_type.max_term_months == 180
+            assert acct_type.icon_class == "bi-house"
+
+    def test_settings_edit_type_metadata(self, app, auth_client, seed_user):
+        """POST update with metadata fields persists changes."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+        from app.models.ref import AccountType
+
+        with app.app_context():
+            custom_type = AccountType(
+                name="EditMetaTest",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={
+                    "name": "EditMetaTest",
+                    "has_parameters": "true",
+                    "has_interest": "true",
+                    "is_liquid": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(custom_type)
+            assert custom_type.has_parameters is True
+            assert custom_type.has_interest is True
+            assert custom_type.is_liquid is True
+
     def test_settings_dashboard_pay_periods_section(self, app, auth_client, seed_user):
         """GET /settings?section=pay-periods renders pay period generation form."""
         with app.app_context():
