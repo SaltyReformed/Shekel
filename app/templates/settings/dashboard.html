@@ -72,3 +72,9 @@
   </div>
 </div>
 {% endblock %}
+
+{% block scripts %}
+{% if active_section == 'account-types' %}
+<script src="{{ url_for('static', filename='js/account_types.js') }}"></script>
+{% endif %}
+{% endblock %}

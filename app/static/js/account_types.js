@@ -1,30 +1,53 @@
 /**
- * Account types -- inline edit styling and save button visibility.
+ * Account types settings -- conditional field visibility and edit/cancel toggle.
  */
-(function() {
-  document.querySelectorAll('.account-type-form').forEach(function(form) {
-    var display = form.querySelector('.account-type-display');
-    var input = form.querySelector('.account-type-input');
-    var btn = form.querySelector('.save-type-btn');
-    if (!input || !btn || !display) return;
-    var original = input.value;
-
-    display.addEventListener('click', function() {
-      display.classList.add('d-none');
-      input.classList.remove('d-none');
-      input.focus();
+document.addEventListener("DOMContentLoaded", function () {
+  // Category-based flag visibility.
+  function updateFlagVisibility(form) {
+    var select = form.querySelector(".acct-type-category");
+    if (!select) return;
+    var catName = select.options[select.selectedIndex]
+                  ? select.options[select.selectedIndex].text.trim()
+                  : "";
+    form.querySelectorAll(".acct-type-flag[data-show-for-category]").forEach(function (el) {
+      el.style.display = el.getAttribute("data-show-for-category") === catName ? "" : "none";
     });
-
-    input.addEventListener('blur', function() {
-      if (!form._changed) {
-        input.classList.add('d-none');
-        display.classList.remove('d-none');
-      }
+    // Amortization-dependent fields.
+    var amortCb = form.querySelector(".acct-type-amort-cb");
+    var amortChecked = amortCb && amortCb.checked;
+    form.querySelectorAll(".acct-type-flag[data-show-for-flag='has_amortization']").forEach(function (el) {
+      el.style.display = amortChecked ? "" : "none";
     });
+  }
 
-    input.addEventListener('input', function() {
-      form._changed = true;
-      btn.classList.toggle('d-none', input.value === original);
+  // Bind to category dropdowns and amortization checkboxes.
+  document.querySelectorAll(".acct-type-category").forEach(function (select) {
+    var form = select.closest("form");
+    select.addEventListener("change", function () { updateFlagVisibility(form); });
+    updateFlagVisibility(form);
+  });
+  document.querySelectorAll(".acct-type-amort-cb").forEach(function (cb) {
+    var form = cb.closest("form");
+    cb.addEventListener("change", function () { updateFlagVisibility(form); });
+  });
+
+  // Edit/cancel toggle for existing account type rows.
+  document.querySelectorAll(".edit-type-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var li = btn.closest("li");
+      li.querySelector(".account-type-display").classList.add("d-none");
+      li.querySelector(".account-type-edit").classList.remove("d-none");
+      btn.classList.add("d-none");
+      var form = li.querySelector(".account-type-form");
+      updateFlagVisibility(form);
     });
   });
-})();
+  document.querySelectorAll(".cancel-type-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var li = btn.closest("li");
+      li.querySelector(".account-type-display").classList.remove("d-none");
+      li.querySelector(".account-type-edit").classList.add("d-none");
+      li.querySelector(".edit-type-btn").classList.remove("d-none");
+    });
+  });
+});
