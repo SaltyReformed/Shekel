@@ -507,15 +507,95 @@ class AccountUpdateSchema(BaseSchema):
 
 
 class AccountTypeCreateSchema(BaseSchema):
-    """Validates POST data for creating an account type."""
+    """Validates POST data for creating an account type.
+
+    Includes all metadata fields that drive dispatch logic.  Cross-field
+    validation ensures flag combinations are consistent with the chosen
+    category (e.g. has_amortization requires Liability).
+    """
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=30))
+    category_id = fields.Integer(required=True)
+    has_parameters = fields.Boolean(load_default=False)
+    has_amortization = fields.Boolean(load_default=False)
+    has_interest = fields.Boolean(load_default=False)
+    is_pretax = fields.Boolean(load_default=False)
+    is_liquid = fields.Boolean(load_default=False)
+    icon_class = fields.String(
+        load_default="bi-bank",
+        validate=validate.Length(max=30),
+    )
+    max_term_months = fields.Integer(
+        load_default=None, allow_none=True,
+        validate=validate.Range(min=1, max=600),
+    )
+
+    @validates_schema
+    def validate_flag_combinations(self, data, **kwargs):
+        """Enforce category-flag consistency rules."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import AcctCategoryEnum  # pylint: disable=import-outside-toplevel
+
+        cat_id = data.get("category_id")
+        liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+        asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+        retirement_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+
+        if data.get("has_amortization") and cat_id != liability_id:
+            raise ValidationError(
+                "has_amortization requires Liability category.",
+                field_name="has_amortization",
+            )
+        if data.get("has_interest") and cat_id != asset_id:
+            raise ValidationError(
+                "has_interest requires Asset category.",
+                field_name="has_interest",
+            )
+        if data.get("is_pretax") and cat_id != retirement_id:
+            raise ValidationError(
+                "is_pretax requires Retirement category.",
+                field_name="is_pretax",
+            )
+        if data.get("is_liquid") and cat_id != asset_id:
+            raise ValidationError(
+                "is_liquid requires Asset category.",
+                field_name="is_liquid",
+            )
+        if data.get("has_amortization") and data.get("has_interest"):
+            raise ValidationError(
+                "has_amortization and has_interest are mutually exclusive.",
+                field_name="has_amortization",
+            )
+        if data.get("max_term_months") and not data.get("has_amortization"):
+            raise ValidationError(
+                "max_term_months requires has_amortization.",
+                field_name="max_term_months",
+            )
 
 
 class AccountTypeUpdateSchema(BaseSchema):
-    """Validates POST data for updating an account type."""
+    """Validates POST data for updating an account type.
 
-    name = fields.String(required=True, validate=validate.Length(min=1, max=30))
+    All fields are optional for partial updates.
+    """
+
+    name = fields.String(validate=validate.Length(min=1, max=30))
+    category_id = fields.Integer()
+    has_parameters = fields.Boolean()
+    has_amortization = fields.Boolean()
+    has_interest = fields.Boolean()
+    is_pretax = fields.Boolean()
+    is_liquid = fields.Boolean()
+    icon_class = fields.String(validate=validate.Length(max=30))
+    max_term_months = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=1, max=600),
+    )
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
+        return {k: v for k, v in data.items() if v != ""}
 
 
 # ── HYSA Schemas ──────────────────────────────────────────────────

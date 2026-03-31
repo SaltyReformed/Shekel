@@ -12,7 +12,7 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for,
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, AcctTypeEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
@@ -396,10 +396,7 @@ def create_account_type():
         flash("An account type with that name already exists.", "warning")
         return redirect(url_for("settings.show", section="account-types"))
 
-    account_type = AccountType(
-        category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
-        **data,
-    )
+    account_type = AccountType(**data)
     db.session.add(account_type)
     db.session.commit()
 
@@ -411,7 +408,7 @@ def create_account_type():
 @accounts_bp.route("/accounts/types/<int:type_id>", methods=["POST"])
 @login_required
 def update_account_type(type_id):
-    """Update an account type name."""
+    """Update an account type's name and/or metadata fields."""
     account_type = db.session.get(AccountType, type_id)
     if account_type is None:
         flash("Account type not found.", "danger")
@@ -424,21 +421,27 @@ def update_account_type(type_id):
 
     data = _type_update_schema.load(request.form)
 
-    # Check for duplicate name.
-    existing = (
-        db.session.query(AccountType)
-        .filter(AccountType.name == data["name"], AccountType.id != type_id)
-        .first()
-    )
-    if existing:
-        flash("An account type with that name already exists.", "warning")
-        return redirect(url_for("settings.show", section="account-types"))
+    # Check for duplicate name (only if name is being changed).
+    if "name" in data:
+        existing = (
+            db.session.query(AccountType)
+            .filter(AccountType.name == data["name"], AccountType.id != type_id)
+            .first()
+        )
+        if existing:
+            flash("An account type with that name already exists.", "warning")
+            return redirect(url_for("settings.show", section="account-types"))
 
-    account_type.name = data["name"]
+    for field in ("name", "category_id", "has_parameters", "has_amortization",
+                  "has_interest", "is_pretax", "is_liquid", "icon_class",
+                  "max_term_months"):
+        if field in data:
+            setattr(account_type, field, data[field])
+
     db.session.commit()
 
     logger.info("Updated account type: %s (id=%d)", account_type.name, account_type.id)
-    flash(f"Account type renamed to '{account_type.name}'.", "success")
+    flash(f"Account type '{account_type.name}' updated.", "success")
     return redirect(url_for("settings.show", section="account-types"))
 
 

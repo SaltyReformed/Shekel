@@ -505,11 +505,12 @@ class TestAccountTypes:
     """Tests for account type create, rename, and delete."""
 
     def test_create_account_type(self, app, auth_client, seed_user):
-        """POST /accounts/types creates a new account type."""
+        """POST /accounts/types creates a new account type with category."""
         with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
             response = auth_client.post(
                 "/accounts/types",
-                data={"name": "investment"},
+                data={"name": "investment", "category_id": asset_id},
                 follow_redirects=True,
             )
 
@@ -519,8 +520,8 @@ class TestAccountTypes:
             acct_type = (
                 db.session.query(AccountType).filter_by(name="investment").one()
             )
-            # .one() already raises NoResultFound if missing; verify the created name
             assert acct_type.name == "investment"
+            assert acct_type.category_id == asset_id
 
     def test_rename_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types/<id> renames an account type."""
@@ -540,7 +541,7 @@ class TestAccountTypes:
             )
 
             assert response.status_code == 200
-            assert b"Account type renamed" in response.data
+            assert b"updated" in response.data
 
             db.session.refresh(new_type)
             assert new_type.name == "rename_target"
@@ -569,10 +570,11 @@ class TestAccountTypes:
     def test_create_duplicate_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types with a duplicate name shows a warning."""
         with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
             # "Checking" already exists from ref seed (exact case match required).
             response = auth_client.post(
                 "/accounts/types",
-                data={"name": "Checking"},
+                data={"name": "Checking", "category_id": asset_id},
                 follow_redirects=True,
             )
 
@@ -597,6 +599,127 @@ class TestAccountTypes:
 
             # Type should still exist.
             assert db.session.get(AccountType, checking_type.id) is not None
+
+
+# ── Account Type Metadata Validation ─────────────────────────────
+
+
+class TestAccountTypeMetadataValidation:
+    """Tests for cross-field validation on account type create/update schemas."""
+
+    def test_create_account_type_with_category(self, app, auth_client, seed_user):
+        """POST with category and flags creates a type with correct metadata."""
+        with app.app_context():
+            liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+            resp = auth_client.post(
+                "/accounts/types",
+                data={
+                    "name": "Test Debt",
+                    "category_id": liability_id,
+                    "has_parameters": "true",
+                    "has_amortization": "true",
+                    "max_term_months": "240",
+                    "icon_class": "bi-cash-coin",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            acct_type = db.session.query(AccountType).filter_by(
+                name="Test Debt",
+            ).one()
+            assert acct_type.category_id == liability_id
+            assert acct_type.has_parameters is True
+            assert acct_type.has_amortization is True
+            assert acct_type.max_term_months == 240
+            assert acct_type.icon_class == "bi-cash-coin"
+
+    def test_create_account_type_invalid_flag_combo(
+        self, app, auth_client, seed_user,
+    ):
+        """has_amortization=True with Asset category is rejected."""
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            resp = auth_client.post(
+                "/accounts/types",
+                data={
+                    "name": "Bad Combo",
+                    "category_id": asset_id,
+                    "has_amortization": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            # Validation error redirects with flash.
+            assert b"correct the highlighted errors" in resp.data
+            # Type should NOT have been created.
+            assert db.session.query(AccountType).filter_by(
+                name="Bad Combo",
+            ).first() is None
+
+    def test_create_account_type_mutual_exclusion(
+        self, app, auth_client, seed_user,
+    ):
+        """has_amortization and has_interest together is rejected."""
+        with app.app_context():
+            liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+            resp = auth_client.post(
+                "/accounts/types",
+                data={
+                    "name": "Bad Exclusive",
+                    "category_id": liability_id,
+                    "has_amortization": "true",
+                    "has_interest": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"correct the highlighted errors" in resp.data
+
+    def test_max_term_without_amortization(self, app, auth_client, seed_user):
+        """max_term_months without has_amortization is rejected."""
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            resp = auth_client.post(
+                "/accounts/types",
+                data={
+                    "name": "Bad Term",
+                    "category_id": asset_id,
+                    "max_term_months": "120",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"correct the highlighted errors" in resp.data
+
+    def test_update_account_type_metadata(self, app, auth_client, seed_user):
+        """POST update changes metadata fields."""
+        with app.app_context():
+            new_type = AccountType(
+                name="update_meta_test",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+            )
+            db.session.add(new_type)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/accounts/types/{new_type.id}",
+                data={
+                    "name": "update_meta_test",
+                    "has_parameters": "true",
+                    "has_interest": "true",
+                    "is_liquid": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(new_type)
+            assert new_type.has_parameters is True
+            assert new_type.has_interest is True
+            assert new_type.is_liquid is True
 
 
 # ── Account Type Metadata Columns ────────────────────────────────
