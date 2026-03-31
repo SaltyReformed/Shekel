@@ -33,12 +33,16 @@ class TestComputeDashboardData:
             assert set(result.keys()) == expected_keys
 
     def test_empty_user_returns_safe_defaults(self, app, db, seed_user):
-        """User with no periods or goals gets safe zero-value defaults."""
+        """User with no periods or goals gets safe zero-value defaults.
+
+        The seed user has a Checking account ($1000) which is liquid,
+        so total_savings reflects that even without pay periods.
+        """
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
             )
-            assert result["total_savings"] == Decimal("0.00")
+            assert result["total_savings"] == Decimal("1000.00")
             assert result["avg_monthly_expenses"] == Decimal("0.00")
             assert result["goal_data"] == []
 
@@ -192,6 +196,6 @@ class TestEmergencyFundMetrics:
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
             )
-            # Checking account balance is NOT included in total_savings.
-            # Only savings-type accounts contribute.
-            assert result["total_savings"] == Decimal("8000.00")
+            # Both Checking ($1000, liquid) and Savings ($8000, liquid)
+            # contribute to total_savings.
+            assert result["total_savings"] == Decimal("9000.00")
