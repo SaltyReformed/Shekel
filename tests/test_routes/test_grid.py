@@ -3300,25 +3300,21 @@ class TestSubtotalDecimalPrecision:
 class TestGridSubtotalsRegressionBaseline:
     """Regression baseline for Section 5A.1.
 
-    Locks down the current grid subtotal behavior: subtotals use
-    txn.effective_amount (grid.py lines 233-234), which for Projected
-    status returns estimated_amount (ignoring actual_amount).  After
-    5A.1 fixes the effective_amount property, subtotals will
-    automatically reflect actual_amount when populated.
+    Grid subtotals use txn.effective_amount (grid.py lines 233-234).
+    After 5A.1, effective_amount returns actual_amount when populated,
+    so subtotals automatically reflect actuals.
     """
 
-    def test_subtotals_use_effective_amount_for_projected(
+    def test_subtotals_reflect_actual_for_projected(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Projected income transaction with both estimated and actual:
-        subtotal reflects estimated_amount (500), not actual (400).
+        """Projected income with estimated=500, actual=400: subtotal
+        reflects actual_amount (400).
 
-        The grid computes subtotals via txn.effective_amount, which
-        currently returns estimated_amount for Projected status
-        (the D-1 bug).  This test documents that behavior so the
-        5A.1 change is demonstrably intentional.
-
-        After 5A.1: subtotal will reflect 400 (the actual_amount).
+        Originally a Commit #0 regression baseline asserting the D-1 bug
+        (subtotal showed estimated).  Updated in Commit 5A.1 to assert
+        the corrected behavior: effective_amount now returns actual when
+        populated, so the grid subtotal automatically shows 400.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -3357,12 +3353,11 @@ class TestGridSubtotalsRegressionBaseline:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Subtotal uses effective_amount, which returns estimated
-            # for Projected status.  Grid formats subtotals as "${:,.0f}".
-            # Current: $500.  After 5A.1: $400.
-            assert "$500" in html, (
-                "Income subtotal should reflect estimated_amount (500) "
-                "for Projected transactions, not actual_amount (400)"
+            # 5A.1 fix: subtotal uses effective_amount which now returns
+            # actual (400).  Grid formats subtotals as "${:,.0f}".
+            assert "$400" in html, (
+                "Income subtotal should reflect actual_amount (400) "
+                "for Projected transactions when actual is populated"
             )
             assert "subtotal-row-income" in html, (
                 "Income subtotal row must be present in grid"

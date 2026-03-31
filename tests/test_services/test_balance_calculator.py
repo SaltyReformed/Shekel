@@ -249,21 +249,36 @@ class FakeTxn:
     """Fake transaction object for pure-function tests (no DB needed).
 
     Provides status_id (integer) and status (FakeStatus with boolean columns)
-    matching the interface expected by the balance calculator.
+    matching the interface expected by the balance calculator, including the
+    effective_amount property.
     """
     def __init__(self, pay_period_id, status_name, type_name, estimated_amount,
-                 transfer_id=None):
+                 transfer_id=None, actual_amount=None, is_deleted=False):
         self.pay_period_id = pay_period_id
         attrs = _STATUS_ATTRS[status_name]
         self.status = FakeStatus(status_name, **attrs)
         self.transaction_type = FakeType(type_name)
         self.estimated_amount = Decimal(str(estimated_amount))
+        self.actual_amount = (
+            Decimal(str(actual_amount)) if actual_amount is not None else None
+        )
         self.transfer_id = transfer_id
+        self.is_deleted = is_deleted
 
         # Resolve the integer status_id from ref_cache.  The cache is
         # initialized by the session-scoped db fixture in conftest.py.
         _name_to_enum = {e.value: e for e in StatusEnum}
         self.status_id = ref_cache.status_id(_name_to_enum[status_name])
+
+    @property
+    def effective_amount(self):
+        """Mirror Transaction.effective_amount for fake objects."""
+        if self.is_deleted:
+            return Decimal("0")
+        if self.status and self.status.excludes_from_balance:
+            return Decimal("0")
+        # Use `is not None` -- zero is a valid actual amount.
+        return self.actual_amount if self.actual_amount is not None else self.estimated_amount
 
     @property
     def is_income(self):
@@ -1371,21 +1386,16 @@ class TestBalanceCalculatorRegressionBaseline:
     with comments indicating the expected post-5A.1 change.
     """
 
-    def test_balance_uses_estimated_for_projected(
+    def test_balance_uses_actual_for_projected_when_populated(
         self, app, db, seed_user, seed_periods,
     ):
         """Projected transaction with actual_amount populated: balance
-        calculator uses estimated_amount, ignoring actual_amount.
+        calculator uses actual_amount via effective_amount.
 
-        This is the D-1 bug documented in the Section 5A implementation
-        plan.  The balance calculator reads txn.estimated_amount directly
-        (balance_calculator.py _sum_remaining line 298 and _sum_all
-        line 326), so actual_amount is never consulted for Projected
-        transactions.
-
-        Commit 5A.1 will change the expected balance from 900.00 to
-        850.00 by switching the calculator to use effective_amount,
-        which will prefer actual_amount when populated.
+        Originally a Commit #0 regression baseline asserting the D-1 bug
+        (estimated_amount was used, ignoring actual).  Updated in Commit
+        5A.1 to assert the corrected behavior: the balance calculator now
+        uses effective_amount, which prefers actual_amount when populated.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -1400,7 +1410,8 @@ class TestBalanceCalculatorRegressionBaseline:
             ).one()
 
             # Expense with both amounts populated -- actual differs from
-            # estimated.  Current code ignores actual for Projected status.
+            # estimated.  After 5A.1, calculator uses actual via
+            # effective_amount.
             txn = Transaction(
                 pay_period_id=periods[0].id,
                 scenario_id=scenario.id,
@@ -1422,11 +1433,11 @@ class TestBalanceCalculatorRegressionBaseline:
                 transactions=[txn],
             )
 
-            # Current behavior: 1000 - 100 (estimated) = 900.
-            # After 5A.1 fix: 1000 - 150 (actual) = 850.
-            assert balances[periods[0].id] == Decimal("900.00"), (
-                "Balance calculator should currently use estimated_amount "
-                "for Projected transactions, not actual_amount"
+            # 5A.1 fix: 1000 - 150 (actual) = 850.
+            # Before fix: was 1000 - 100 (estimated) = 900.
+            assert balances[periods[0].id] == Decimal("850.00"), (
+                "Balance calculator should use actual_amount (150) "
+                "for Projected transactions when populated"
             )
 
     def test_balance_excludes_settled_from_projection(
@@ -1479,23 +1490,21 @@ class TestBalanceCalculatorRegressionBaseline:
                 "projection -- they are already reflected in the anchor"
             )
 
-    def test_effective_amount_property_current_behavior(
+    def test_effective_amount_property_behavior(
         self, app, db, seed_user, seed_periods,
     ):
         """Exhaustive verification of Transaction.effective_amount for
         every status and edge case.
 
-        This test documents the CURRENT property logic (transaction.py
-        lines 121-136) as a regression baseline.  Commit 5A.1 will
-        simplify the property to prefer actual_amount for all active
-        statuses, changing the Projected cases below.
+        Originally a Commit #0 regression baseline.  Updated in Commit
+        5A.1 to assert the corrected property logic: all active statuses
+        now prefer actual_amount when populated.
 
-        Property logic (current):
+        Property logic (after 5A.1):
           - is_deleted=True             -> Decimal("0")
           - status.excludes_from_balance -> Decimal("0")
-          - status.is_settled           -> actual if actual is not None
-                                           else estimated
-          - otherwise (Projected)       -> estimated (IGNORES actual)
+          - actual_amount is not None   -> actual_amount
+          - otherwise                   -> estimated_amount
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -1538,22 +1547,20 @@ class TestBalanceCalculatorRegressionBaseline:
 
             # --- Projected status cases ---
 
-            # Projected with actual populated: returns estimated (the bug).
-            # After 5A.1: will return Decimal("150.00").
+            # Projected with actual populated: returns actual (5A.1 fix).
             t1 = make_txn(
                 "Proj+actual", projected,
                 Decimal("100.00"), Decimal("150.00"),
             )
 
-            # Projected with actual=None: returns estimated (correct).
+            # Projected with actual=None: returns estimated (fallback).
             t2 = make_txn(
                 "Proj+no_actual", projected,
                 Decimal("100.00"), None,
             )
 
-            # Projected with actual=0: returns estimated (the bug --
-            # zero actual is a legitimate value, e.g. a waived fee).
-            # After 5A.1: will return Decimal("0").
+            # Projected with actual=0: returns 0 (5A.1 fix -- zero is
+            # a valid actual, e.g. a waived fee).
             t3 = make_txn(
                 "Proj+zero_actual", projected,
                 Decimal("100.00"), Decimal("0"),
@@ -1604,17 +1611,16 @@ class TestBalanceCalculatorRegressionBaseline:
 
             db.session.flush()
 
-            # Projected: returns estimated, ignores actual.
-            assert t1.effective_amount == Decimal("100.00"), (
-                "Projected with actual: should return estimated (current bug)"
+            # Projected: prefers actual when populated (5A.1 fix).
+            assert t1.effective_amount == Decimal("150.00"), (
+                "Projected with actual: should return actual_amount"
             )
             assert t2.effective_amount == Decimal("100.00"), (
-                "Projected without actual: should return estimated"
+                "Projected without actual: should fall back to estimated"
             )
-            # Projected with actual=0: returns estimated (bug -- should be 0).
-            assert t3.effective_amount == Decimal("100.00"), (
-                "Projected with zero actual: should return estimated "
-                "(current bug -- ignores zero actual)"
+            # Projected with actual=0: returns 0 (zero is a valid actual).
+            assert t3.effective_amount == Decimal("0"), (
+                "Projected with zero actual: should return 0 (waived fee)"
             )
 
             # Settled: returns actual if present, else estimated.
@@ -1640,3 +1646,446 @@ class TestBalanceCalculatorRegressionBaseline:
             assert t9.effective_amount == Decimal("0"), (
                 "Deleted: should return 0 regardless of status"
             )
+
+
+class TestEffectiveAmountFix:
+    """Tests for the 5A.1 effective_amount and balance calculator fix.
+
+    Verifies that the balance calculator correctly uses actual_amount
+    (via effective_amount) when populated, falling back to estimated_amount
+    when actual is null.
+    """
+
+    def test_balance_uses_estimated_when_actual_is_null(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected transaction with actual=None: balance reflects
+        estimated_amount as the fallback.
+
+        Confirms the null path: when no actual has been entered, the
+        calculator correctly uses the estimate.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="No actual entered",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=None,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn],
+            )
+
+            # actual=None -> fallback to estimated: 1000 - 100 = 900.
+            assert balances[periods[0].id] == Decimal("900.00")
+
+    def test_balance_uses_zero_actual_not_estimated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected transaction with actual=0.00: balance reflects zero
+        deduction, NOT the estimated amount.
+
+        This is the most critical edge case.  A waived fee (actual=$0)
+        must not fall back to the $100 estimate.  If the is-not-None
+        check were a truthiness check, Decimal("0") would be falsy and
+        the calculator would incorrectly deduct $100.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Waived fee",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=Decimal("0.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn],
+            )
+
+            # actual=0 -> deduction is 0, not 100: 1000 - 0 = 1000.
+            assert balances[periods[0].id] == Decimal("1000.00"), (
+                "Zero actual must be used, not the estimated amount"
+            )
+
+    def test_mixed_actual_and_estimated_in_same_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two expenses in the same period: one with actual, one without.
+
+        Verifies the calculator handles heterogeneous transactions within
+        a single period correctly -- using actual for one and estimated
+        for the other.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            # Expense 1: actual populated.
+            txn1 = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Rent (actual known)",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=Decimal("200.00"),
+            )
+            # Expense 2: no actual.
+            txn2 = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Groceries (estimate only)",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+                actual_amount=None,
+            )
+            db.session.add_all([txn1, txn2])
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn1, txn2],
+            )
+
+            # 1000 - 200 (actual) - 50 (estimated fallback) = 750.
+            assert balances[periods[0].id] == Decimal("750.00")
+
+    def test_balance_decimal_precision(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Verify balance is correct to exactly 2 decimal places after
+        the Decimal wrapping removal (O-1).
+
+        Guards against precision loss from switching to txn.effective_amount
+        (already Decimal from SQLAlchemy Numeric) instead of
+        Decimal(str(txn.estimated_amount)).
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Precise amount",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.50"),
+                actual_amount=Decimal("99.99"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn],
+            )
+
+            # 1000.00 - 99.99 = 900.01 (exact Decimal arithmetic).
+            assert balances[periods[0].id] == Decimal("900.01")
+
+    def test_effective_amount_projected_actual_zero(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected transaction with actual=Decimal("0.00"): property
+        returns Decimal("0.00"), not the estimated amount.
+
+        Specifically tests the zero-actual path for Projected status.
+        If someone uses truthiness instead of `is not None`, this fails.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Zero actual",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("250.00"),
+                actual_amount=Decimal("0.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            assert txn.effective_amount == Decimal("0"), (
+                "Zero actual must return 0, not fall back to estimated"
+            )
+
+    def test_balance_multiple_periods_with_mixed_actuals(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Running balance across two periods with varying actual/null
+        combinations.
+
+        Period 0 (anchor): expense actual=200, income estimated=500.
+        Period 1 (post-anchor): expense estimated=300.
+        Verifies accumulation across periods is correct.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            income_type = db.session.query(TransactionType).filter_by(
+                name="Income",
+            ).one()
+
+            txns = [
+                # Period 0: expense with actual.
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Rent",
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("150.00"),
+                    actual_amount=Decimal("200.00"),
+                ),
+                # Period 0: income without actual.
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Paycheck",
+                    category_id=seed_user["categories"]["Salary"].id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("500.00"),
+                    actual_amount=None,
+                ),
+                # Period 1: expense without actual.
+                Transaction(
+                    pay_period_id=periods[1].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Groceries",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("300.00"),
+                    actual_amount=None,
+                ),
+            ]
+            for t in txns:
+                db.session.add(t)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:3],
+                transactions=txns,
+            )
+
+            # Period 0: 1000 + 500 (est) - 200 (actual) = 1300.
+            assert balances[periods[0].id] == Decimal("1300.00")
+            # Period 1: 1300 - 300 (est) = 1000.
+            assert balances[periods[1].id] == Decimal("1000.00")
+
+    def test_balance_all_transactions_have_actuals(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Period where every transaction has actual_amount populated.
+
+        Verifies no estimated amounts leak into the balance when all
+        actuals are known.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            income_type = db.session.query(TransactionType).filter_by(
+                name="Income",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txns = [
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Pay",
+                    category_id=seed_user["categories"]["Salary"].id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                    actual_amount=Decimal("1950.00"),
+                ),
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Rent",
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("1200.00"),
+                    actual_amount=Decimal("1200.00"),
+                ),
+            ]
+            for t in txns:
+                db.session.add(t)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("500.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=txns,
+            )
+
+            # 500 + 1950 (actual) - 1200 (actual) = 1250.
+            # NOT 500 + 2000 - 1200 = 1300 (estimated).
+            assert balances[periods[0].id] == Decimal("1250.00")
+
+    def test_balance_no_transactions_have_actuals(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Period where no transactions have actual_amount populated.
+
+        Verifies the calculator falls back to estimated for all of them.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            income_type = db.session.query(TransactionType).filter_by(
+                name="Income",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txns = [
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Pay",
+                    category_id=seed_user["categories"]["Salary"].id,
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                    actual_amount=None,
+                ),
+                Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Rent",
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("1200.00"),
+                    actual_amount=None,
+                ),
+            ]
+            for t in txns:
+                db.session.add(t)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("500.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=txns,
+            )
+
+            # 500 + 2000 (est) - 1200 (est) = 1300.
+            assert balances[periods[0].id] == Decimal("1300.00")

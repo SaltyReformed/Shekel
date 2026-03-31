@@ -40,9 +40,14 @@ def _shadow_income(pay_period_id, amount, transfer_id=1, status="Projected"):
     sid = ref_cache.status_id(enum_member)
     is_settled = status == "Settled"
     excludes = status in ("Cancelled", "Settled", "Credit")
+    est = Decimal(str(amount))
+    # effective_amount mirrors Transaction.effective_amount:
+    # excluded statuses -> 0, otherwise estimated (no actual on fakes).
+    eff = Decimal("0") if excludes else est
     return SimpleNamespace(
         pay_period_id=pay_period_id,
-        estimated_amount=Decimal(str(amount)),
+        estimated_amount=est,
+        effective_amount=eff,
         status=SimpleNamespace(
             name=status,
             is_settled=is_settled,

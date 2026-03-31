@@ -122,18 +122,27 @@ class Transaction(db.Model):
     def effective_amount(self):
         """Return the amount used in balance calculations.
 
-        - is_deleted: 0 (soft-deleted transactions contribute nothing)
-        - excludes_from_balance (Credit, Cancelled): 0
-        - is_settled (Paid, Received, Settled): actual_amount if set, else estimated_amount
-        - Projected: estimated_amount
+        Priority order:
+          1. is_deleted -> Decimal("0") (soft-deleted transactions contribute nothing)
+          2. excludes_from_balance (Credit, Cancelled) -> Decimal("0")
+          3. actual_amount if populated -> actual_amount
+          4. fallback -> estimated_amount
+
+        This property is the single source of truth for what amount a
+        transaction contributes to balance projections, grid subtotals,
+        and any other calculation context.  All active statuses (Projected,
+        Paid, Received, etc.) prefer actual_amount when populated, ensuring
+        that balance projections reflect reality as soon as the user enters
+        a known actual on a still-projected transaction.
         """
         if self.is_deleted:
             return Decimal("0")
         if self.status and self.status.excludes_from_balance:
             return Decimal("0")
-        if self.status and self.status.is_settled:
-            return self.actual_amount if self.actual_amount is not None else self.estimated_amount
-        return self.estimated_amount
+        # Use `is not None` -- NOT truthiness.  actual_amount=Decimal("0")
+        # is a valid value (e.g., a waived fee) and must return 0, not
+        # fall back to estimated_amount.
+        return self.actual_amount if self.actual_amount is not None else self.estimated_amount
 
     @property
     def is_income(self):

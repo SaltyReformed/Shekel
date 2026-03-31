@@ -251,8 +251,9 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            # effective_amount now uses estimated_amount (projected path).
-            assert txn.effective_amount == Decimal("3000.00")
+            # After 5A.1: effective_amount prefers actual_amount for all
+            # active statuses, so even as Projected it returns 2800.
+            assert txn.effective_amount == Decimal("2800.00")
             # actual_amount is NOT cleared by the PATCH.
             assert txn.actual_amount == Decimal("2800.00")
 

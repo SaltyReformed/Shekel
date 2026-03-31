@@ -11,7 +11,7 @@ Calculation rules:
   - Subsequent periods: end_balance[n] = end_balance[n-1] + remaining_income[n] - remaining_expenses[n]
   - All periods use only projected (unsettled) items:
       done / received -> excluded (already settled)
-      projected       -> estimated_amount
+      projected       -> effective_amount (actual if populated, else estimated)
       credit          -> excluded (does not affect checking balance)
 
 Transfer effects are included automatically via shadow transactions
@@ -250,9 +250,10 @@ def calculate_balances_with_amortization(
             if txn.status and txn.status.excludes_from_balance:
                 continue
             # Shadow income transactions in this account are loan payments.
+            # effective_amount prefers actual over estimated (Decimal).
             if (txn.transfer_id is not None
                     and hasattr(txn, "is_income") and txn.is_income):
-                total_payment_in += Decimal(str(txn.estimated_amount))
+                total_payment_in += txn.effective_amount
 
         # For each payment, split into interest and principal.
         if total_payment_in > 0 and running_principal > 0:
@@ -280,6 +281,9 @@ def _sum_remaining(transactions):
     Items marked done/received are already reflected in the anchor balance
     the user entered, so we exclude them.  Credit items are always excluded.
 
+    Uses effective_amount, which prefers actual_amount when populated and
+    falls back to estimated_amount otherwise.
+
     Returns:
         (total_income, total_expenses) as Decimal tuple.
     """
@@ -294,8 +298,8 @@ def _sum_remaining(transactions):
         if txn.status_id != projected_id:
             continue
 
-        # Remaining projected items.
-        amount = Decimal(str(txn.estimated_amount))
+        # effective_amount returns Decimal (actual if set, else estimated).
+        amount = txn.effective_amount
         if txn.is_income:
             income += amount
         elif txn.is_expense:
@@ -310,6 +314,9 @@ def _sum_all(transactions):
     Only projected items contribute to the projected balance.  Settled,
     credit, and cancelled transactions are excluded.
 
+    Uses effective_amount, which prefers actual_amount when populated and
+    falls back to estimated_amount otherwise.
+
     Returns:
         (total_income, total_expenses) as Decimal tuple.
     """
@@ -323,7 +330,8 @@ def _sum_all(transactions):
         if txn.status_id != projected_id:
             continue
 
-        amount = Decimal(str(txn.estimated_amount))
+        # effective_amount returns Decimal (actual if set, else estimated).
+        amount = txn.effective_amount
         if txn.is_income:
             income += amount
         elif txn.is_expense:

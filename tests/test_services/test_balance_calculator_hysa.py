@@ -33,8 +33,8 @@ StatusStub = namedtuple("StatusStub", [
 ])
 TxnTypeStub = namedtuple("TxnTypeStub", ["name"])
 ShadowTxn = namedtuple("ShadowTxn", [
-    "pay_period_id", "estimated_amount", "status", "status_id",
-    "transaction_type", "transfer_id", "is_income", "is_expense",
+    "pay_period_id", "estimated_amount", "effective_amount", "status",
+    "status_id", "transaction_type", "transfer_id", "is_income", "is_expense",
 ])
 
 
@@ -67,9 +67,13 @@ def _shadow_income(pay_period_id, amount, status_name="Projected"):
     sid = ref_cache.status_id(enum_member)
     is_settled = status_name == "Settled"
     excludes = status_name in ("Cancelled", "Settled", "Credit")
+    # effective_amount mirrors Transaction.effective_amount:
+    # excluded statuses -> 0, otherwise estimated (no actual on fakes).
+    eff = Decimal("0") if excludes else amount
     return ShadowTxn(
         pay_period_id=pay_period_id,
         estimated_amount=amount,
+        effective_amount=eff,
         status=StatusStub(
             name=status_name,
             is_settled=is_settled,
