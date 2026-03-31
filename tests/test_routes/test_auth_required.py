@@ -112,9 +112,9 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/accounts/99999/anchor-form"),
     # accounts.anchor_display
     ("GET", "/accounts/99999/anchor-display"),
-    ("GET", "/accounts/99999/hysa"),  # accounts.hysa_detail
-    # accounts.update_hysa_params
-    ("POST", "/accounts/99999/hysa/params"),
+    ("GET", "/accounts/99999/interest"),  # accounts.interest_detail
+    # accounts.update_interest_params
+    ("POST", "/accounts/99999/interest/params"),
 
     # -- categories blueprint --
     ("GET", "/categories"),  # categories.list_categories

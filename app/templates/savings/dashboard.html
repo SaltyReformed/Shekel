@@ -71,8 +71,8 @@
               {% elif ad.account.account_type %}
                 {{ ad.account.account_type.name|format_account_type }}
               {% endif %}
-              {% if ad.hysa_params is defined and ad.hysa_params %}
-                -- APY: {{ "%.2f"|format(ad.hysa_params.apy|float * 100) }}%
+              {% if ad.interest_params is defined and ad.interest_params %}
+                -- APY: {{ "%.2f"|format(ad.interest_params.apy|float * 100) }}%
               {% endif %}
               {% if ad.loan_params is defined and ad.loan_params %}
                 -- {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
@@ -93,7 +93,7 @@
             <i class="bi bi-bank"></i>
           </a>
           {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
-          <a href="{{ url_for('accounts.hysa_detail', account_id=ad.account.id) }}"
+          <a href="{{ url_for('accounts.interest_detail', account_id=ad.account.id) }}"
              class="btn btn-sm btn-outline-info" title="HYSA Detail">
             <i class="bi bi-graph-up"></i>
           </a>

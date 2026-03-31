@@ -111,19 +111,20 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
 
 def calculate_balances_with_interest(
     anchor_balance, anchor_period_id, periods, transactions,
-    hysa_params=None,
+    interest_params=None,
 ):
     """Same as calculate_balances but also returns interest earned per period.
 
-    When hysa_params is provided (an object with .apy and .compounding_frequency),
-    interest is projected for each period and added to the running balance.
+    When interest_params is provided (an object with .apy and
+    .compounding_frequency), interest is projected for each period and
+    added to the running balance.
 
     Args:
         anchor_balance:    Decimal -- the real balance at the anchor period.
         anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
         transactions:      List of Transaction objects (including shadow transactions).
-        hysa_params:       Object with .apy (Decimal) and .compounding_frequency (str).
+        interest_params:   Object with .apy (Decimal) and .compounding_frequency (str).
 
     Returns:
         (balances, interest_by_period) where:
@@ -137,11 +138,11 @@ def calculate_balances_with_interest(
 
     interest_by_period = {}
 
-    if not hysa_params or not hasattr(hysa_params, "apy"):
+    if not interest_params or not hasattr(interest_params, "apy"):
         return base_balances, interest_by_period
 
-    apy = Decimal(str(hysa_params.apy))
-    compounding = hysa_params.compounding_frequency
+    apy = Decimal(str(interest_params.apy))
+    compounding = interest_params.compounding_frequency
 
     # Re-walk periods, layering interest on top of the base balances.
     balances = OrderedDict()

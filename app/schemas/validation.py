@@ -521,8 +521,8 @@ class AccountTypeUpdateSchema(BaseSchema):
 # ── HYSA Schemas ──────────────────────────────────────────────────
 
 
-class HysaParamsCreateSchema(BaseSchema):
-    """Validates POST data for creating/updating HYSA parameters."""
+class InterestParamsCreateSchema(BaseSchema):
+    """Validates POST data for creating interest parameters."""
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -538,8 +538,8 @@ class HysaParamsCreateSchema(BaseSchema):
     )
 
 
-class HysaParamsUpdateSchema(BaseSchema):
-    """Validates POST data for updating HYSA parameters."""
+class InterestParamsUpdateSchema(BaseSchema):
+    """Validates POST data for updating interest parameters."""
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):

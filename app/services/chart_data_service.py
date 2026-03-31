@@ -221,9 +221,9 @@ def _calculate_account_balances(account, scenario, periods):
         "transactions": transactions,
     }
 
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA) and account.hysa_params:
+    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA) and account.interest_params:
         balances, _ = balance_calculator.calculate_balances_with_interest(
-            **base_args, hysa_params=account.hysa_params,
+            **base_args, interest_params=account.interest_params,
         )
         return balances
 

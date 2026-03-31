@@ -18,7 +18,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.hysa_params import HysaParams
+from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -158,14 +158,14 @@ def _load_account_params(user_id, accounts):
     Returns a dict with maps for each param type and supporting data
     needed by the projection loop.
     """
-    hysa_type_id = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
-    hysa_params_map = {}
-    hysa_account_ids = [a.id for a in accounts if a.account_type_id == hysa_type_id]
-    if hysa_account_ids:
-        for hp in db.session.query(HysaParams).filter(
-            HysaParams.account_id.in_(hysa_account_ids)
+    interest_type_id = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
+    interest_params_map = {}
+    interest_account_ids = [a.id for a in accounts if a.account_type_id == interest_type_id]
+    if interest_account_ids:
+        for hp in db.session.query(InterestParams).filter(
+            InterestParams.account_id.in_(interest_account_ids)
         ).all():
-            hysa_params_map[hp.account_id] = hp
+            interest_params_map[hp.account_id] = hp
 
     amort_type_ids = {
         at.id for at in db.session.query(AccountType).filter_by(has_amortization=True).all()
@@ -227,8 +227,8 @@ def _load_account_params(user_id, accounts):
             loan_params_map[lp.account_id] = lp
 
     return {
-        "hysa_type_id": hysa_type_id,
-        "hysa_params_map": hysa_params_map,
+        "interest_type_id": interest_type_id,
+        "interest_params_map": interest_params_map,
         "amort_type_ids": amort_type_ids,
         "retirement_type_ids": retirement_type_ids,
         "investment_params_map": investment_params_map,
@@ -266,16 +266,16 @@ def _compute_account_projections(
         )
 
         balances = {}
-        acct_hysa_params = params["hysa_params_map"].get(acct.id)
+        acct_interest_params = params["interest_params_map"].get(acct.id)
 
         if anchor_period_id:
-            if acct_hysa_params:
+            if acct_interest_params:
                 balances, _ = balance_calculator.calculate_balances_with_interest(
                     anchor_balance=anchor_balance,
                     anchor_period_id=anchor_period_id,
                     periods=all_periods,
                     transactions=acct_transactions,
-                    hysa_params=acct_hysa_params,
+                    interest_params=acct_interest_params,
                 )
             else:
                 balances, _ = balance_calculator.calculate_balances(
@@ -313,8 +313,8 @@ def _compute_account_projections(
                             break
 
         needs_setup = False
-        if acct.account_type_id == params["hysa_type_id"]:
-            needs_setup = acct_hysa_params is None
+        if acct.account_type_id == params["interest_type_id"]:
+            needs_setup = acct_interest_params is None
         elif acct.account_type_id in params["retirement_type_ids"]:
             needs_setup = acct_investment_params is None
         elif acct.account_type_id in params["amort_type_ids"]:
@@ -326,8 +326,8 @@ def _compute_account_projections(
             "projected": projected,
             "needs_setup": needs_setup,
         }
-        if acct_hysa_params:
-            ad["hysa_params"] = acct_hysa_params
+        if acct_interest_params:
+            ad["interest_params"] = acct_interest_params
         if acct_investment_params:
             ad["investment_params"] = acct_investment_params
         if acct_loan_params:

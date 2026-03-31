@@ -198,7 +198,7 @@ def db(app, setup_database):
             "budget.rate_history, "
             "budget.loan_params, "
             "budget.investment_params, "
-            "budget.hysa_params, "
+            "budget.interest_params, "
             "budget.savings_goals, "
             "budget.transfers, "
             "budget.transfer_templates, "
@@ -918,7 +918,7 @@ def _create_audit_infrastructure():
         ("budget", "recurrence_rules"),
         ("budget", "pay_periods"),
         ("budget", "account_anchor_history"),
-        ("budget", "hysa_params"),
+        ("budget", "interest_params"),
         ("budget", "loan_params"),
         ("budget", "rate_history"),
         ("budget", "escrow_components"),

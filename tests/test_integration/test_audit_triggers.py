@@ -344,7 +344,7 @@ class TestAuditTriggerAllTables:
             ("budget", "recurrence_rules"),
             ("budget", "pay_periods"),
             ("budget", "account_anchor_history"),
-            ("budget", "hysa_params"),
+            ("budget", "interest_params"),
             ("budget", "loan_params"),
             ("budget", "rate_history"),
             ("budget", "escrow_components"),

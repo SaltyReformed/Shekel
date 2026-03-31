@@ -394,7 +394,7 @@ def check_data_consistency(session):
     ))
 
     # DC-03: Account type-specific params mismatch (warning).
-    # Checks: HYSA accounts without hysa_params.
+    # Checks: interest-bearing accounts without interest_params.
     results.append(_run_check(
         session, "DC-03", "consistency", "warning",
         "Typed accounts missing their type-specific params",
@@ -403,7 +403,7 @@ def check_data_consistency(session):
         FROM budget.accounts a
         JOIN ref.account_types at ON a.account_type_id = at.id
         JOIN ref.account_type_categories atc ON at.category_id = atc.id
-        LEFT JOIN budget.hysa_params hp ON hp.account_id = a.id
+        LEFT JOIN budget.interest_params hp ON hp.account_id = a.id
         LEFT JOIN budget.loan_params lp ON lp.account_id = a.id
         WHERE (at.name = 'HYSA' AND hp.id IS NULL)
            OR (at.has_amortization = TRUE AND lp.id IS NULL)

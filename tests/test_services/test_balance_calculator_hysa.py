@@ -21,8 +21,8 @@ from app.services.balance_calculator import (
 Period = namedtuple(
     "Period", ["id", "period_index", "start_date", "end_date"]
 )
-HysaParams = namedtuple(
-    "HysaParams", ["apy", "compounding_frequency"]
+InterestParams = namedtuple(
+    "InterestParams", ["apy", "compounding_frequency"]
 )
 
 # Shadow transaction stub -- represents a transfer's effect as an
@@ -97,7 +97,7 @@ class TestHysaBalanceWithInterest:
         hand-computed values from the daily compounding formula.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -107,7 +107,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=params,
+            interest_params=params,
         )
 
         # Period 1: interest on $10,000 for 14 days at 4.5% daily
@@ -154,7 +154,7 @@ class TestHysaBalanceWithInterest:
         compounding causes each period's interest to increase.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -164,7 +164,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=params,
+            interest_params=params,
         )
 
         # Period 1: Q(10000.00 * ((1+0.045/365)^14-1)) = 17.27
@@ -205,7 +205,7 @@ class TestHysaBalanceWithInterest:
         transaction increases the base balance mid-projection.
         """
         periods = _make_periods(2)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -223,7 +223,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=txns,
-            hysa_params=params,
+            interest_params=params,
         )
 
         # Period 1: interest on $10,000 for 14 days at 4.5% daily
@@ -252,7 +252,7 @@ class TestHysaBalanceWithInterest:
     def test_hysa_zero_apy_no_interest(self):
         """APY=0 -> balances identical to non-HYSA."""
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.00000"),
             compounding_frequency="daily",
         )
@@ -269,7 +269,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=params,
+            interest_params=params,
         )
 
         for pid in base_balances:
@@ -277,7 +277,7 @@ class TestHysaBalanceWithInterest:
             assert interest[pid] == Decimal("0.00")
 
     def test_non_hysa_ignores_interest(self):
-        """Without hysa_params, behavior is identical to existing."""
+        """Without interest_params, behavior is identical to existing."""
         periods = _make_periods(3)
 
         base_balances, _ = calculate_balances(
@@ -292,7 +292,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=None,
+            interest_params=None,
         )
 
         for pid in base_balances:
@@ -310,7 +310,7 @@ class TestHysaBalanceWithInterest:
         match hand-computed exact amounts.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -320,7 +320,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=params,
+            interest_params=params,
         )
 
         # Should have interest entries for every period in balances.
@@ -376,7 +376,7 @@ class TestHysaBalanceWithInterest:
         using raw Decimal arithmetic, with no rounding drift.
         """
         periods = _make_periods(26)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -420,7 +420,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=[],
-                hysa_params=params,
+                interest_params=params,
             )
         )
 
@@ -465,7 +465,7 @@ class TestHysaBalanceWithInterest:
         days_in_month is derived from period_start.month.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="monthly",
         )
@@ -505,7 +505,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=[],
-                hysa_params=params,
+                interest_params=params,
             )
         )
 
@@ -553,7 +553,7 @@ class TestHysaBalanceWithInterest:
         period_days/91) produces correct results.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="quarterly",
         )
@@ -597,7 +597,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=[],
-                hysa_params=params,
+                interest_params=params,
             )
         )
 
@@ -643,7 +643,7 @@ class TestHysaBalanceWithInterest:
         so balances equal base balances exactly.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="invalid_string",
         )
@@ -653,7 +653,7 @@ class TestHysaBalanceWithInterest:
             anchor_period_id=1,
             periods=periods,
             transactions=[],
-            hysa_params=params,
+            interest_params=params,
         )
 
         for pid in [1, 2, 3]:
@@ -678,7 +678,7 @@ class TestHysaBalanceWithInterest:
         precision loss or overflow in Decimal arithmetic.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.10000"),
             compounding_frequency="daily",
         )
@@ -713,7 +713,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=[],
-                hysa_params=params,
+                interest_params=params,
             )
         )
 
@@ -759,7 +759,7 @@ class TestHysaBalanceWithInterest:
         accruing once a deposit makes the balance positive.
         """
         periods = _make_periods(3)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -810,7 +810,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=txns,
-                hysa_params=params,
+                interest_params=params,
             )
         )
 
@@ -856,7 +856,7 @@ class TestHysaBalanceWithInterest:
         deposit events.
         """
         periods = _make_periods(6)
-        params = HysaParams(
+        params = InterestParams(
             apy=Decimal("0.04500"),
             compounding_frequency="daily",
         )
@@ -917,7 +917,7 @@ class TestHysaBalanceWithInterest:
                 anchor_period_id=1,
                 periods=periods,
                 transactions=txns,
-                hysa_params=params,
+                interest_params=params,
             )
         )
 

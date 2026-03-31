@@ -35,7 +35,7 @@ from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal
-from app.models.hysa_params import HysaParams
+from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.investment_params import InvestmentParams

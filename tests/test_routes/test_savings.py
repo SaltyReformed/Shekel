@@ -982,7 +982,7 @@ class TestSavingsDashboardShadowTransactions:
         increase the projected balance.  Without this, HYSA projections
         underestimate the balance by the total of all missed deposits.
         """
-        from app.models.hysa_params import HysaParams as HP  # pylint: disable=import-outside-toplevel
+        from app.models.interest_params import InterestParams as IP  # pylint: disable=import-outside-toplevel
         from app.models.category import Category  # pylint: disable=import-outside-toplevel
         from app.models.ref import Status  # pylint: disable=import-outside-toplevel
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
@@ -1000,12 +1000,12 @@ class TestSavingsDashboardShadowTransactions:
             db.session.add(hysa)
             db.session.flush()
 
-            hp = HP(
+            ip = IP(
                 account_id=hysa.id,
                 apy=Decimal("0.04500"),  # 4.5% stored as decimal
                 compounding_frequency="daily",
             )
-            db.session.add(hp)
+            db.session.add(ip)
 
             # Add transfer categories required by transfer_service.
             incoming = Category(
@@ -1463,7 +1463,7 @@ class TestSetupRequiredBadge:
     def test_setup_badge_shown_for_hysa_without_params(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """HYSA without HysaParams shows 'Setup Required' badge on dashboard."""
+        """HYSA without InterestParams shows 'Setup Required' badge on dashboard."""
         with app.app_context():
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
@@ -1485,9 +1485,9 @@ class TestSetupRequiredBadge:
     def test_setup_badge_hidden_for_hysa_with_params(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """HYSA with HysaParams does NOT show 'Setup Required' badge."""
+        """HYSA with InterestParams does NOT show 'Setup Required' badge."""
         with app.app_context():
-            from app.models.hysa_params import HysaParams
+            from app.models.interest_params import InterestParams
 
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
@@ -1501,7 +1501,7 @@ class TestSetupRequiredBadge:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(HysaParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id))
             db.session.commit()
 
             resp = auth_client.get("/savings")

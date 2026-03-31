@@ -15,7 +15,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.hysa_params import HysaParams
+from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
@@ -27,7 +27,7 @@ from app.schemas.validation import (
     AccountTypeCreateSchema,
     AccountTypeUpdateSchema,
     AnchorUpdateSchema,
-    HysaParamsUpdateSchema,
+    InterestParamsUpdateSchema,
 )
 from app.services import balance_calculator, pay_period_service
 
@@ -40,7 +40,7 @@ _create_schema = AccountCreateSchema()
 _update_schema = AccountUpdateSchema()
 _type_create_schema = AccountTypeCreateSchema()
 _type_update_schema = AccountTypeUpdateSchema()
-_hysa_params_schema = HysaParamsUpdateSchema()
+_interest_params_schema = InterestParamsUpdateSchema()
 
 
 # ── Account CRUD ───────────────────────────────────────────────────
@@ -133,10 +133,10 @@ def create_account():
     account_type = db.session.get(AccountType, account.account_type_id)
     acct_type_id = account_type.id if account_type else None
 
-    # HYSA: auto-create HysaParams with sensible defaults.
+    # HYSA: auto-create InterestParams with sensible defaults.
     if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
-        if not db.session.query(HysaParams).filter_by(account_id=account.id).first():
-            db.session.add(HysaParams(account_id=account.id))
+        if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
+            db.session.add(InterestParams(account_id=account.id))
 
     # Investment/retirement: auto-create InvestmentParams with sensible defaults.
     investment_type_ids = {
@@ -158,7 +158,7 @@ def create_account():
     # Redirect parameterized accounts to their configuration page.
     if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
         return redirect(url_for(
-            "accounts.hysa_detail", account_id=account.id, setup=1,
+            "accounts.interest_detail", account_id=account.id, setup=1,
         ))
     # Amortizing loan types: redirect to the unified loan dashboard.
     if account_type and account_type.has_amortization:
@@ -561,30 +561,30 @@ def anchor_display(account_id):
     )
 
 
-# ── HYSA Detail & Params ──────────────────────────────────────────
+# ── Interest Detail & Params ──────────────────────────────────────
 
 
-@accounts_bp.route("/accounts/<int:account_id>/hysa")
+@accounts_bp.route("/accounts/<int:account_id>/interest")
 @login_required
-def hysa_detail(account_id):
-    """HYSA detail page with interest projections."""
+def interest_detail(account_id):
+    """Interest-bearing account detail page with interest projections."""
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         return redirect(url_for("accounts.list_accounts"))
 
-    # Verify this is a HYSA account.
+    # Verify this is an interest-bearing account type.
     if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
-        flash("This account is not a HYSA.", "warning")
+        flash("This account type does not support interest parameters.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 
     params = (
-        db.session.query(HysaParams)
+        db.session.query(InterestParams)
         .filter_by(account_id=account.id)
         .first()
     )
     if not params:
         # Auto-create params if missing (shouldn't happen normally).
-        params = HysaParams(account_id=account.id)
+        params = InterestParams(account_id=account.id)
         db.session.add(params)
         db.session.commit()
 
@@ -630,7 +630,7 @@ def hysa_detail(account_id):
             anchor_period_id=anchor_period_id,
             periods=all_periods,
             transactions=acct_transactions,
-            hysa_params=params,
+            interest_params=params,
         )
 
     current_bal = balances.get(current_period.id) if current_period else anchor_balance
@@ -656,7 +656,7 @@ def hysa_detail(account_id):
                     break
 
     return render_template(
-        "accounts/hysa_detail.html",
+        "accounts/interest_detail.html",
         account=account,
         params=params,
         current_balance=current_bal,
@@ -665,33 +665,33 @@ def hysa_detail(account_id):
     )
 
 
-@accounts_bp.route("/accounts/<int:account_id>/hysa/params", methods=["POST"])
+@accounts_bp.route("/accounts/<int:account_id>/interest/params", methods=["POST"])
 @login_required
-def update_hysa_params(account_id):
-    """Update HYSA parameters (APY, compounding frequency)."""
+def update_interest_params(account_id):
+    """Update interest parameters (APY, compounding frequency)."""
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
     if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
-        flash("This account is not a HYSA.", "warning")
+        flash("This account type does not support interest parameters.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 
-    errors = _hysa_params_schema.validate(request.form)
+    errors = _interest_params_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("accounts.hysa_detail", account_id=account_id))
+        return redirect(url_for("accounts.interest_detail", account_id=account_id))
 
-    data = _hysa_params_schema.load(request.form)
+    data = _interest_params_schema.load(request.form)
 
     params = (
-        db.session.query(HysaParams)
+        db.session.query(InterestParams)
         .filter_by(account_id=account.id)
         .first()
     )
     if not params:
-        params = HysaParams(account_id=account.id)
+        params = InterestParams(account_id=account.id)
         db.session.add(params)
 
     if "apy" in data:
@@ -702,9 +702,9 @@ def update_hysa_params(account_id):
         params.compounding_frequency = data["compounding_frequency"]
 
     db.session.commit()
-    logger.info("Updated HYSA params for account %d", account.id)
-    flash("HYSA parameters updated.", "success")
-    return redirect(url_for("accounts.hysa_detail", account_id=account_id))
+    logger.info("Updated interest params for account %d", account.id)
+    flash("Interest parameters updated.", "success")
+    return redirect(url_for("accounts.interest_detail", account_id=account_id))
 
 
 # ── Checking Detail ──────────────────────────────────────────────

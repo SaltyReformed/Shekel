@@ -73,10 +73,10 @@
   <div class="col-md-6">
     <div class="card h-100">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-gear"></i> HYSA Parameters</h6>
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Interest Parameters</h6>
       </div>
       <div class="card-body">
-        <form method="POST" action="{{ url_for('accounts.update_hysa_params', account_id=account.id) }}">
+        <form method="POST" action="{{ url_for('accounts.update_interest_params', account_id=account.id) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label for="apy" class="form-label">APY (Annual Percentage Yield)</label>

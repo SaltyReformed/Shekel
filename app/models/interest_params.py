@@ -1,21 +1,26 @@
 """
-Shekel Budget App -- HYSA Parameters Model (budget schema)
+Shekel Budget App -- Interest Parameters Model (budget schema)
 
-Stores interest configuration for High-Yield Savings Account accounts:
-APY and compounding frequency.
+Stores interest configuration for interest-bearing account types
+(HYSA, Money Market, CD, HSA, etc.): APY and compounding frequency.
 """
 
 from app.extensions import db
 
 
-class HysaParams(db.Model):
-    """HYSA-specific parameters linked one-to-one with an Account."""
+class InterestParams(db.Model):
+    """Interest parameters linked one-to-one with an Account.
 
-    __tablename__ = "hysa_params"
+    Serves any account type that has ``has_interest=True`` on its
+    :class:`AccountType`.  Stores the annual percentage yield and
+    compounding frequency used by the interest projection engine.
+    """
+
+    __tablename__ = "interest_params"
     __table_args__ = (
         db.CheckConstraint(
             "compounding_frequency IN ('daily', 'monthly', 'quarterly')",
-            name="ck_hysa_params_frequency",
+            name="ck_interest_params_frequency",
         ),
         {"schema": "budget"},
     )
@@ -43,8 +48,8 @@ class HysaParams(db.Model):
     # Relationships
     account = db.relationship(
         "Account",
-        backref=db.backref("hysa_params", uselist=False, lazy="joined"),
+        backref=db.backref("interest_params", uselist=False, lazy="joined"),
     )
 
     def __repr__(self):
-        return f"<HysaParams account_id={self.account_id} apy={self.apy}>"
+        return f"<InterestParams account_id={self.account_id} apy={self.apy}>"

@@ -12,7 +12,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.hysa_params import HysaParams
+from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
@@ -859,7 +859,7 @@ class TestAccountCreationRedirects:
     def test_hysa_creation_redirects_to_detail(
         self, app, auth_client, seed_user,
     ):
-        """HYSA creation redirects to HYSA detail with setup=1 and auto-creates HysaParams."""
+        """HYSA creation redirects to HYSA detail with setup=1 and auto-creates InterestParams."""
         with app.app_context():
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
@@ -871,13 +871,13 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/hysa" in location
+            assert "/interest" in location
             assert "setup=1" in location
 
             acct = db.session.query(Account).filter_by(
                 user_id=seed_user["user"].id, name="My HYSA",
             ).one()
-            assert db.session.query(HysaParams).filter_by(
+            assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id
             ).first() is not None
 
@@ -1170,10 +1170,10 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(HysaParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/hysa?setup=1")
+            resp = auth_client.get(f"/accounts/{acct.id}/interest?setup=1")
             assert resp.status_code == 200
             assert b"Configure the settings below" in resp.data
             assert b"alert-dismissible" in resp.data
@@ -1195,10 +1195,10 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(HysaParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/hysa")
+            resp = auth_client.get(f"/accounts/{acct.id}/interest")
             assert resp.status_code == 200
             assert b"Configure the settings below" not in resp.data
 

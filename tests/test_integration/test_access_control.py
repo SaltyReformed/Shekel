@@ -178,9 +178,9 @@ class TestAccountAccessControl:
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.get(
-                f"/accounts/{target_id}/hysa"
+                f"/accounts/{target_id}/interest"
             )
-            _assert_blocked(response, "GET /accounts/<id>/hysa")
+            _assert_blocked(response, "GET /accounts/<id>/interest")
 
     def test_update_hysa_params_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -189,14 +189,14 @@ class TestAccountAccessControl:
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/hysa/params",
+                f"/accounts/{target_id}/interest/params",
                 data={
                     "apy": "5.00",
                     "compounding_frequency": "daily",
                 },
             )
             _assert_blocked(
-                response, "POST /accounts/<id>/hysa/params",
+                response, "POST /accounts/<id>/interest/params",
             )
 
 

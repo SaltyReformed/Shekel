@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.hysa_params import HysaParams
+from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
@@ -39,7 +39,7 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     db_session.add(account)
     db_session.flush()
 
-    params = HysaParams(account_id=account.id)
+    params = InterestParams(account_id=account.id)
     db_session.add(params)
     db_session.commit()
     return account
