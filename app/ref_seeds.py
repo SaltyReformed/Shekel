@@ -36,7 +36,7 @@ ACCT_TYPE_SEEDS = [
     ("Traditional IRA", "Retirement", True,  False, False, True,  False, "bi-graph-up-arrow", None),
     ("Roth IRA",        "Retirement", True,  False, False, False, False, "bi-graph-up-arrow", None),
     ("Brokerage",       "Investment", True,  False, False, False, False, "bi-bar-chart-line", None),
-    ("529 Plan",        "Investment", False, False, False, False, False, "bi-mortarboard",    None),
+    ("529 Plan",        "Investment", True,  False, False, False, False, "bi-mortarboard",    None),
 ]
 # pylint: enable=line-too-long
 # fmt: on

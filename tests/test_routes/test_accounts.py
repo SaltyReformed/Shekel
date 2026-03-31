@@ -1344,20 +1344,22 @@ class TestInvestmentDispatch:
                 account_id=acct.id,
             ).first() is None
 
-    def test_create_account_529_auto_creates_investment_params(
-        self, app, auth_client, seed_user, db,
-    ):
-        """529 Plan with has_parameters=True auto-creates InvestmentParams.
-
-        Uses a test fixture to set has_parameters=True (the real seed
-        update happens in Commit 6).
-        """
+    def test_529_plan_has_parameters_true_in_seed(self, app, seed_user):
+        """529 Plan has has_parameters=True in seed data."""
         with app.app_context():
             plan_type = db.session.query(AccountType).filter_by(
                 name="529 Plan",
             ).one()
-            plan_type.has_parameters = True
-            db.session.commit()
+            assert plan_type.has_parameters is True
+
+    def test_create_account_529_auto_creates_investment_params(
+        self, app, auth_client, seed_user,
+    ):
+        """529 Plan auto-creates InvestmentParams and redirects to investment dashboard."""
+        with app.app_context():
+            plan_type = db.session.query(AccountType).filter_by(
+                name="529 Plan",
+            ).one()
 
             resp = auth_client.post("/accounts", data={
                 "name": "College Fund",
