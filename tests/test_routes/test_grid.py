@@ -3295,3 +3295,75 @@ class TestSubtotalDecimalPrecision:
             assert "$3,889" in html or "$3,888" in html, (
                 "Expected income subtotal ~$3888-3889 in grid"
             )
+
+
+class TestGridSubtotalsRegressionBaseline:
+    """Regression baseline for Section 5A.1.
+
+    Locks down the current grid subtotal behavior: subtotals use
+    txn.effective_amount (grid.py lines 233-234), which for Projected
+    status returns estimated_amount (ignoring actual_amount).  After
+    5A.1 fixes the effective_amount property, subtotals will
+    automatically reflect actual_amount when populated.
+    """
+
+    def test_subtotals_use_effective_amount_for_projected(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Projected income transaction with both estimated and actual:
+        subtotal reflects estimated_amount (500), not actual (400).
+
+        The grid computes subtotals via txn.effective_amount, which
+        currently returns estimated_amount for Projected status
+        (the D-1 bug).  This test documents that behavior so the
+        5A.1 change is demonstrably intentional.
+
+        After 5A.1: subtotal will reflect 400 (the actual_amount).
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            income_type = db.session.query(TransactionType).filter_by(
+                name="Income",
+            ).one()
+
+            # Place the transaction in the current period so it is
+            # visible on the default grid view.
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            if not current:
+                current = seed_periods[0]
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Regression Subtotal Income",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("500.00"),
+                actual_amount=Decimal("400.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Subtotal uses effective_amount, which returns estimated
+            # for Projected status.  Grid formats subtotals as "${:,.0f}".
+            # Current: $500.  After 5A.1: $400.
+            assert "$500" in html, (
+                "Income subtotal should reflect estimated_amount (500) "
+                "for Projected transactions, not actual_amount (400)"
+            )
+            assert "subtotal-row-income" in html, (
+                "Income subtotal row must be present in grid"
+            )

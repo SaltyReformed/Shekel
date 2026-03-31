@@ -1360,3 +1360,283 @@ class TestStaleAnchorWarning:
         assert balances_done[2] == Decimal("5000.00")  # done excluded
         assert balances_projected[3] == Decimal("4300.00")
         assert balances_done[3] == Decimal("4800.00")  # done excluded
+
+
+class TestBalanceCalculatorRegressionBaseline:
+    """Regression baseline for Section 5A.
+
+    Locks down current balance calculator behavior BEFORE 5A.1 changes
+    how effective_amount and the calculator handle actual vs. estimated.
+    Tests that intentionally assert current (buggy) behavior are marked
+    with comments indicating the expected post-5A.1 change.
+    """
+
+    def test_balance_uses_estimated_for_projected(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected transaction with actual_amount populated: balance
+        calculator uses estimated_amount, ignoring actual_amount.
+
+        This is the D-1 bug documented in the Section 5A implementation
+        plan.  The balance calculator reads txn.estimated_amount directly
+        (balance_calculator.py _sum_remaining line 298 and _sum_all
+        line 326), so actual_amount is never consulted for Projected
+        transactions.
+
+        Commit 5A.1 will change the expected balance from 900.00 to
+        850.00 by switching the calculator to use effective_amount,
+        which will prefer actual_amount when populated.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            # Expense with both amounts populated -- actual differs from
+            # estimated.  Current code ignores actual for Projected status.
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Regression: est vs actual",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=Decimal("150.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn],
+            )
+
+            # Current behavior: 1000 - 100 (estimated) = 900.
+            # After 5A.1 fix: 1000 - 150 (actual) = 850.
+            assert balances[periods[0].id] == Decimal("900.00"), (
+                "Balance calculator should currently use estimated_amount "
+                "for Projected transactions, not actual_amount"
+            )
+
+    def test_balance_excludes_settled_from_projection(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Settled (Paid) transaction in anchor period is excluded from
+        the remaining-items calculation.
+
+        Both _sum_remaining and _sum_all filter by status_id ==
+        projected_id, so any non-Projected transaction contributes zero
+        regardless of its estimated or actual amounts.  This test locks
+        down that behavior with a Paid expense that has both amounts
+        populated, ensuring the exclusion persists after 5A.1 changes
+        the amount source.
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            txn = Transaction(
+                pay_period_id=periods[0].id,
+                scenario_id=scenario.id,
+                account_id=account.id,
+                status_id=paid.id,
+                name="Regression: settled exclusion",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                actual_amount=Decimal("150.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:2],
+                transactions=[txn],
+            )
+
+            # Paid transaction excluded entirely: balance = anchor unchanged.
+            assert balances[periods[0].id] == Decimal("1000.00"), (
+                "Settled transactions must be excluded from balance "
+                "projection -- they are already reflected in the anchor"
+            )
+
+    def test_effective_amount_property_current_behavior(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Exhaustive verification of Transaction.effective_amount for
+        every status and edge case.
+
+        This test documents the CURRENT property logic (transaction.py
+        lines 121-136) as a regression baseline.  Commit 5A.1 will
+        simplify the property to prefer actual_amount for all active
+        statuses, changing the Projected cases below.
+
+        Property logic (current):
+          - is_deleted=True             -> Decimal("0")
+          - status.excludes_from_balance -> Decimal("0")
+          - status.is_settled           -> actual if actual is not None
+                                           else estimated
+          - otherwise (Projected)       -> estimated (IGNORES actual)
+        """
+        with app.app_context():
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            periods = seed_periods
+
+            # Look up all statuses and types.
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            received = db.session.query(Status).filter_by(
+                name="Received",
+            ).one()
+            credit = db.session.query(Status).filter_by(name="Credit").one()
+            cancelled = db.session.query(Status).filter_by(
+                name="Cancelled",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+
+            def make_txn(name, status, estimated, actual=None,
+                         is_deleted=False):
+                """Create a transaction with the given parameters."""
+                txn = Transaction(
+                    pay_period_id=periods[0].id,
+                    scenario_id=scenario.id,
+                    account_id=account.id,
+                    status_id=status.id,
+                    name=name,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=estimated,
+                    actual_amount=actual,
+                    is_deleted=is_deleted,
+                )
+                db.session.add(txn)
+                return txn
+
+            # --- Projected status cases ---
+
+            # Projected with actual populated: returns estimated (the bug).
+            # After 5A.1: will return Decimal("150.00").
+            t1 = make_txn(
+                "Proj+actual", projected,
+                Decimal("100.00"), Decimal("150.00"),
+            )
+
+            # Projected with actual=None: returns estimated (correct).
+            t2 = make_txn(
+                "Proj+no_actual", projected,
+                Decimal("100.00"), None,
+            )
+
+            # Projected with actual=0: returns estimated (the bug --
+            # zero actual is a legitimate value, e.g. a waived fee).
+            # After 5A.1: will return Decimal("0").
+            t3 = make_txn(
+                "Proj+zero_actual", projected,
+                Decimal("100.00"), Decimal("0"),
+            )
+
+            # --- Settled status cases ---
+
+            # Paid with actual populated: returns actual.
+            t4 = make_txn(
+                "Paid+actual", paid,
+                Decimal("100.00"), Decimal("80.00"),
+            )
+
+            # Paid with actual=None: returns estimated (fallback).
+            t5 = make_txn(
+                "Paid+no_actual", paid,
+                Decimal("100.00"), None,
+            )
+
+            # Received with actual populated: returns actual.
+            t6 = make_txn(
+                "Received+actual", received,
+                Decimal("100.00"), Decimal("120.00"),
+            )
+
+            # --- Excluded status cases ---
+
+            # Credit: returns 0 regardless of amounts.
+            t7 = make_txn(
+                "Credit", credit,
+                Decimal("100.00"), Decimal("150.00"),
+            )
+
+            # Cancelled: returns 0 regardless of amounts.
+            t8 = make_txn(
+                "Cancelled", cancelled,
+                Decimal("100.00"), Decimal("150.00"),
+            )
+
+            # --- Deleted case ---
+
+            # Soft-deleted: returns 0 regardless of status or amounts.
+            t9 = make_txn(
+                "Deleted", projected,
+                Decimal("100.00"), Decimal("150.00"),
+                is_deleted=True,
+            )
+
+            db.session.flush()
+
+            # Projected: returns estimated, ignores actual.
+            assert t1.effective_amount == Decimal("100.00"), (
+                "Projected with actual: should return estimated (current bug)"
+            )
+            assert t2.effective_amount == Decimal("100.00"), (
+                "Projected without actual: should return estimated"
+            )
+            # Projected with actual=0: returns estimated (bug -- should be 0).
+            assert t3.effective_amount == Decimal("100.00"), (
+                "Projected with zero actual: should return estimated "
+                "(current bug -- ignores zero actual)"
+            )
+
+            # Settled: returns actual if present, else estimated.
+            assert t4.effective_amount == Decimal("80.00"), (
+                "Paid with actual: should return actual_amount"
+            )
+            assert t5.effective_amount == Decimal("100.00"), (
+                "Paid without actual: should fall back to estimated"
+            )
+            assert t6.effective_amount == Decimal("120.00"), (
+                "Received with actual: should return actual_amount"
+            )
+
+            # Excluded statuses: always 0.
+            assert t7.effective_amount == Decimal("0"), (
+                "Credit: should return 0 (excludes_from_balance)"
+            )
+            assert t8.effective_amount == Decimal("0"), (
+                "Cancelled: should return 0 (excludes_from_balance)"
+            )
+
+            # Deleted: always 0.
+            assert t9.effective_amount == Decimal("0"), (
+                "Deleted: should return 0 regardless of status"
+            )

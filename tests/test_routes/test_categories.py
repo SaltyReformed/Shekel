@@ -496,3 +496,63 @@ class TestCategoryNegativePaths:
             assert settings_resp.status_code == 200
             assert b"<tag>" not in settings_resp.data
             assert b"&lt;tag&gt;" in settings_resp.data
+
+
+class TestCategoryManagementBaseline:
+    """Regression baseline for Section 5A.4/5A.5.
+
+    Locks down category management behavior before the category
+    overhaul and CRUD consistency changes.
+    """
+
+    def test_category_delete_preserves_other_categories(
+        self, app, auth_client, seed_user,
+    ):
+        """Deleting one category does not affect sibling categories
+        in the same group.
+
+        Guards against cascade bugs that could inadvertently remove
+        related categories when one is deleted.  Important because
+        Section 5A.5 introduces new delete/archive patterns.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+
+            # Create two categories in the same group.
+            cat_a = Category(
+                user_id=user.id,
+                group_name="TestGroup",
+                item_name="ItemA",
+            )
+            cat_b = Category(
+                user_id=user.id,
+                group_name="TestGroup",
+                item_name="ItemB",
+            )
+            db.session.add_all([cat_a, cat_b])
+            db.session.commit()
+
+            cat_a_id = cat_a.id
+            cat_b_id = cat_b.id
+
+            # Delete cat_a.
+            resp = auth_client.post(
+                f"/categories/{cat_a_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"deleted" in resp.data
+
+            # cat_a is gone.
+            assert db.session.get(Category, cat_a_id) is None, (
+                "Deleted category should no longer exist in the database"
+            )
+
+            # cat_b is untouched.
+            surviving = db.session.get(Category, cat_b_id)
+            assert surviving is not None, (
+                "Sibling category in the same group must not be affected "
+                "by deleting another category"
+            )
+            assert surviving.group_name == "TestGroup"
+            assert surviving.item_name == "ItemB"
