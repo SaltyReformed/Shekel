@@ -1268,6 +1268,114 @@ class TestInterestDispatch:
             ).first() is not None
 
 
+# ── Investment Dispatch (Metadata-Driven) ────────────────────────
+
+
+class TestInvestmentDispatch:
+    """Verify that investment/retirement auto-creation and redirect use
+    metadata flags instead of hardcoded type ID frozensets."""
+
+    def test_create_account_user_type_retirement_auto_creates_params(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A user-created Retirement type with has_parameters=True auto-creates
+        InvestmentParams and redirects to the investment dashboard."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+
+        with app.app_context():
+            custom_type = AccountType(
+                name="TestSEPIRA",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
+                has_parameters=True,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My SEP IRA",
+                "account_type_id": custom_type.id,
+                "anchor_balance": "10000.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/investment" in location
+            assert "setup=1" in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="My SEP IRA",
+            ).one()
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id,
+            ).first()
+            assert params is not None, "InvestmentParams not auto-created"
+
+    def test_has_parameters_false_no_auto_create(
+        self, app, auth_client, seed_user,
+    ):
+        """An account type with has_parameters=False gets no params and
+        redirects to the accounts list."""
+        with app.app_context():
+            # Savings has has_parameters=False.
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            assert savings_type.has_parameters is False
+
+            resp = auth_client.post("/accounts", data={
+                "name": "Plain Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/accounts" in location
+            assert "setup" not in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Plain Savings",
+            ).one()
+            assert db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first() is None
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id,
+            ).first() is None
+
+    def test_create_account_529_auto_creates_investment_params(
+        self, app, auth_client, seed_user, db,
+    ):
+        """529 Plan with has_parameters=True auto-creates InvestmentParams.
+
+        Uses a test fixture to set has_parameters=True (the real seed
+        update happens in Commit 6).
+        """
+        with app.app_context():
+            plan_type = db.session.query(AccountType).filter_by(
+                name="529 Plan",
+            ).one()
+            plan_type.has_parameters = True
+            db.session.commit()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "College Fund",
+                "account_type_id": plan_type.id,
+                "anchor_balance": "2000.00",
+            })
+
+            assert resp.status_code == 302
+            assert "/investment" in resp.headers["Location"]
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="College Fund",
+            ).one()
+            assert db.session.query(InvestmentParams).filter_by(
+                account_id=acct.id,
+            ).first() is not None
+
+
 # ── Wizard Banner Tests ──────────────────────────────────────────
 
 

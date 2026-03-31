@@ -166,27 +166,26 @@ def _load_account_params(user_id, accounts):
         ).all():
             interest_params_map[hp.account_id] = hp
 
+    # Amortizing loan types: already metadata-driven via has_amortization.
     amort_type_ids = {
         at.id for at in db.session.query(AccountType).filter_by(has_amortization=True).all()
     }
 
+    # Investment/retirement: parameterized types that are not interest-bearing
+    # and not amortizing -- by elimination, these use InvestmentParams.
     investment_params_map = {}
-    retirement_type_ids = {
-        ref_cache.acct_type_id(AcctTypeEnum.K401),
-        ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K),
-        ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA),
-        ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA),
-        ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE),
-    }
-    if retirement_type_ids:
-        inv_account_ids = [
-            a.id for a in accounts if a.account_type_id in retirement_type_ids
-        ]
-        if inv_account_ids:
-            for ip in db.session.query(InvestmentParams).filter(
-                InvestmentParams.account_id.in_(inv_account_ids)
-            ).all():
-                investment_params_map[ip.account_id] = ip
+    inv_account_ids = [
+        a.id for a in accounts
+        if a.account_type
+        and a.account_type.has_parameters
+        and not a.account_type.has_interest
+        and not a.account_type.has_amortization
+    ]
+    if inv_account_ids:
+        for ip in db.session.query(InvestmentParams).filter(
+            InvestmentParams.account_id.in_(inv_account_ids)
+        ).all():
+            investment_params_map[ip.account_id] = ip
 
     deductions_by_account = {}
     if investment_params_map:
@@ -227,8 +226,6 @@ def _load_account_params(user_id, accounts):
 
     return {
         "interest_params_map": interest_params_map,
-        "amort_type_ids": amort_type_ids,
-        "retirement_type_ids": retirement_type_ids,
         "investment_params_map": investment_params_map,
         "deductions_by_account": deductions_by_account,
         "salary_gross_biweekly": salary_gross_biweekly,
@@ -311,12 +308,13 @@ def _compute_account_projections(
                             break
 
         needs_setup = False
-        if acct.account_type and acct.account_type.has_interest:
-            needs_setup = acct_interest_params is None
-        elif acct.account_type_id in params["retirement_type_ids"]:
-            needs_setup = acct_investment_params is None
-        elif acct.account_type_id in params["amort_type_ids"]:
-            needs_setup = acct_loan_params is None
+        if acct.account_type and acct.account_type.has_parameters:
+            if acct.account_type.has_interest:
+                needs_setup = acct_interest_params is None
+            elif acct.account_type.has_amortization:
+                needs_setup = acct_loan_params is None
+            else:
+                needs_setup = acct_investment_params is None
 
         ad = {
             "account": acct,

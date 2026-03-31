@@ -138,15 +138,12 @@ def create_account():
             db.session.add(InterestParams(account_id=account.id))
 
     # Investment/retirement: auto-create InvestmentParams with sensible defaults.
-    investment_type_ids = {
-        ref_cache.acct_type_id(AcctTypeEnum.K401),
-        ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K),
-        ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA),
-        ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA),
-        ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE),
-    }
-    acct_type_id = account_type.id if account_type else None
-    if acct_type_id in investment_type_ids:
+    # Predicate: parameterized types that are not interest-bearing and not
+    # amortizing -- by elimination, these are investment/retirement types.
+    if (account_type
+            and account_type.has_parameters
+            and not account_type.has_interest
+            and not account_type.has_amortization):
         if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
             db.session.add(InvestmentParams(account_id=account.id))
 
@@ -165,7 +162,10 @@ def create_account():
         return redirect(url_for(
             "loan.dashboard", account_id=account.id, setup=1,
         ))
-    if acct_type_id in investment_type_ids:
+    if (account_type
+            and account_type.has_parameters
+            and not account_type.has_interest
+            and not account_type.has_amortization):
         return redirect(url_for(
             "investment.dashboard", account_id=account.id, setup=1,
         ))
