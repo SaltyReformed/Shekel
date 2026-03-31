@@ -1307,3 +1307,109 @@ class TestReturnRateClarity:
         assert "Monthly Income Gap" in html
         assert "Projected Retirement Savings" in html
         assert "3.5% rule" in html
+
+
+# ── is_pretax Metadata Dispatch ──────────────────────────────────
+
+
+class TestIsPretaxDispatch:
+    """Verify that the is_pretax metadata flag on AccountType drives the
+    pre-tax / post-tax distinction in retirement gap analysis, replacing
+    the hardcoded TRADITIONAL_TYPE_ENUMS frozenset."""
+
+    def test_gap_analysis_user_created_pretax_type(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A user-created Retirement type with is_pretax=True is flagged
+        as traditional (pre-tax) in the gap analysis projections."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+        from app.services.retirement_dashboard_service import compute_gap_data
+
+        with app.app_context():
+            _create_salary_profile(seed_user, db.session)
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            settings.planned_retirement_date = date(2060, 1, 1)
+            db.session.commit()
+
+            custom_type = AccountType(
+                name="Test403b",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
+                has_parameters=True,
+                is_pretax=True,
+                icon_class="bi-graph-up-arrow",
+            )
+            db.session.add(custom_type)
+            db.session.flush()
+
+            acct = Account(
+                user_id=seed_user["user"].id,
+                name="My 403(b)",
+                account_type_id=custom_type.id,
+                current_anchor_balance=Decimal("50000"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.commit()
+
+            data = compute_gap_data(seed_user["user"].id)
+            projections = data["retirement_account_projections"]
+            proj = next(p for p in projections if p["account"].id == acct.id)
+            assert proj["is_traditional"] is True
+
+    def test_gap_analysis_posttax_type(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A Retirement type with is_pretax=False is NOT flagged as traditional."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+        from app.services.retirement_dashboard_service import compute_gap_data
+
+        with app.app_context():
+            _create_salary_profile(seed_user, db.session)
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            settings.planned_retirement_date = date(2060, 1, 1)
+            db.session.commit()
+
+            custom_type = AccountType(
+                name="TestRothSolo",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
+                has_parameters=True,
+                is_pretax=False,
+                icon_class="bi-graph-up-arrow",
+            )
+            db.session.add(custom_type)
+            db.session.flush()
+
+            acct = Account(
+                user_id=seed_user["user"].id,
+                name="My Roth Solo 401(k)",
+                account_type_id=custom_type.id,
+                current_anchor_balance=Decimal("25000"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.commit()
+
+            data = compute_gap_data(seed_user["user"].id)
+            projections = data["retirement_account_projections"]
+            proj = next(p for p in projections if p["account"].id == acct.id)
+            assert proj["is_traditional"] is False
+
+    def test_gap_analysis_no_retirement_accounts(
+        self, app, auth_client, seed_user, db,
+    ):
+        """Gap analysis returns empty projections when no retirement accounts exist."""
+        from app.services.retirement_dashboard_service import compute_gap_data
+
+        with app.app_context():
+            data = compute_gap_data(seed_user["user"].id)
+            assert data["retirement_account_projections"] == []

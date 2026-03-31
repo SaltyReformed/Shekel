@@ -18,7 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, AcctTypeEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -40,10 +40,6 @@ from app.services import (
 from app.services.investment_projection import calculate_investment_inputs
 
 logger = logging.getLogger(__name__)
-
-# Account type enums considered "traditional" (pre-tax contributions).
-TRADITIONAL_TYPE_ENUMS = frozenset({AcctTypeEnum.K401, AcctTypeEnum.TRADITIONAL_IRA})
-
 
 def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     """Compute gap analysis data for the retirement dashboard or HTMX fragment.
@@ -126,7 +122,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     )
     retirement_type_ids = {rt.id for rt in retirement_types}
     traditional_type_ids = frozenset(
-        ref_cache.acct_type_id(m) for m in TRADITIONAL_TYPE_ENUMS
+        rt.id for rt in retirement_types if rt.is_pretax
     )
 
     accounts = (
