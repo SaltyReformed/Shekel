@@ -129,12 +129,11 @@ def create_account():
     db.session.add(account)
     db.session.flush()
 
-    # Auto-create type-specific params.
+    # Auto-create type-specific params based on metadata flags.
     account_type = db.session.get(AccountType, account.account_type_id)
-    acct_type_id = account_type.id if account_type else None
 
-    # HYSA: auto-create InterestParams with sensible defaults.
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+    # Interest-bearing types: auto-create InterestParams with sensible defaults.
+    if account_type and account_type.has_interest:
         if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
             db.session.add(InterestParams(account_id=account.id))
 
@@ -146,6 +145,7 @@ def create_account():
         ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA),
         ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE),
     }
+    acct_type_id = account_type.id if account_type else None
     if acct_type_id in investment_type_ids:
         if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
             db.session.add(InvestmentParams(account_id=account.id))
@@ -156,7 +156,7 @@ def create_account():
     flash(f"Account '{account.name}' created.", "success")
 
     # Redirect parameterized accounts to their configuration page.
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+    if account_type and account_type.has_interest:
         return redirect(url_for(
             "accounts.interest_detail", account_id=account.id, setup=1,
         ))
@@ -573,7 +573,7 @@ def interest_detail(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     # Verify this is an interest-bearing account type.
-    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+    if not account.account_type or not account.account_type.has_interest:
         flash("This account type does not support interest parameters.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 
@@ -674,7 +674,7 @@ def update_interest_params(account_id):
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
-    if not account.account_type or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.HYSA):
+    if not account.account_type or not account.account_type.has_interest:
         flash("This account type does not support interest parameters.", "warning")
         return redirect(url_for("accounts.list_accounts"))
 

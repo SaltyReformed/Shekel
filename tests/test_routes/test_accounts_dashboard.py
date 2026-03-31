@@ -203,3 +203,76 @@ class TestDashboardGrouping:
         assert resp.status_code == 200
         assert b"Accounts Dashboard" in resp.data
         assert b"New Account" in resp.data
+
+    def test_emergency_fund_uses_is_liquid(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Emergency fund total includes all is_liquid=True accounts.
+
+        Checking and Savings are is_liquid=True by default. HYSA and
+        Money Market are also is_liquid=True. CD (is_liquid=False) and
+        retirement accounts should not contribute.
+        """
+        # seed_user["account"] is a Checking account (is_liquid=True).
+        seed_user["account"].current_anchor_balance = Decimal("1000.00")
+        seed_user["account"].current_anchor_period_id = seed_periods[0].id
+
+        # Add a Money Market account (is_liquid=True by seed).
+        mm_type = db.session.query(AccountType).filter_by(
+            name="Money Market",
+        ).one()
+        mm_acct = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=mm_type.id,
+            name="My Money Market",
+            current_anchor_balance=Decimal("2000.00"),
+            current_anchor_period_id=seed_periods[0].id,
+        )
+        db.session.add(mm_acct)
+
+        # Add a CD account (is_liquid=False).
+        cd_type = db.session.query(AccountType).filter_by(name="CD").one()
+        cd_acct = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=cd_type.id,
+            name="My CD",
+            current_anchor_balance=Decimal("5000.00"),
+            current_anchor_period_id=seed_periods[0].id,
+        )
+        db.session.add(cd_acct)
+        db.session.commit()
+
+        resp = auth_client.get("/savings")
+        assert resp.status_code == 200
+        # Emergency fund section should appear (liquid accounts exist).
+        assert b"Emergency Fund" in resp.data
+
+    def test_user_created_liquid_type_in_emergency_fund(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A user-created type with is_liquid=True contributes to emergency fund."""
+        from app import ref_cache
+        from app.enums import AcctCategoryEnum
+
+        with app.app_context():
+            custom_type = AccountType(
+                name="TestLiquid",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+                is_liquid=True,
+            )
+            db.session.add(custom_type)
+            db.session.flush()
+
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=custom_type.id,
+                name="Custom Liquid",
+                current_anchor_balance=Decimal("3000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Emergency Fund" in resp.data

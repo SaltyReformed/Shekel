@@ -1143,6 +1143,131 @@ class TestAccountCreationRedirects:
             assert params.assumed_annual_return >= 0
 
 
+# ── Metadata-Driven Interest Dispatch ────────────────────────────
+
+
+class TestInterestDispatch:
+    """Verify that has_interest metadata flag drives auto-creation,
+    redirect, and detail page access instead of hardcoded HYSA type ID."""
+
+    def test_create_account_hsa_auto_creates_interest_params(
+        self, app, auth_client, seed_user,
+    ):
+        """HSA has has_interest=True; creating one auto-creates InterestParams."""
+        with app.app_context():
+            hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
+            assert hsa_type.has_interest is True
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My HSA",
+                "account_type_id": hsa_type.id,
+                "anchor_balance": "1200.00",
+            })
+
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert "/interest" in location
+            assert "setup=1" in location
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="My HSA",
+            ).one()
+            params = db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first()
+            assert params is not None, "InterestParams not auto-created for HSA"
+
+    def test_create_account_money_market_with_interest(
+        self, app, auth_client, seed_user, db,
+    ):
+        """Money Market with has_interest=True auto-creates InterestParams."""
+        with app.app_context():
+            mm_type = db.session.query(AccountType).filter_by(
+                name="Money Market",
+            ).one()
+            mm_type.has_interest = True
+            mm_type.has_parameters = True
+            db.session.commit()
+
+            resp = auth_client.post("/accounts", data={
+                "name": "My MM",
+                "account_type_id": mm_type.id,
+                "anchor_balance": "3000.00",
+            })
+
+            assert resp.status_code == 302
+            assert "/interest" in resp.headers["Location"]
+
+            acct = db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="My MM",
+            ).one()
+            params = db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first()
+            assert params is not None
+
+    def test_interest_detail_accepts_any_interest_type(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """Interest detail page renders for any has_interest=True type."""
+        with app.app_context():
+            hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                name="HSA Detail Test",
+                account_type_id=hsa_type.id,
+                current_anchor_balance=500,
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InterestParams(account_id=acct.id))
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/interest")
+            assert resp.status_code == 200
+
+    def test_interest_detail_rejects_non_interest_type(
+        self, app, auth_client, seed_user,
+    ):
+        """Checking (has_interest=False) is rejected by interest detail."""
+        with app.app_context():
+            acct = seed_user["account"]
+            resp = auth_client.get(
+                f"/accounts/{acct.id}/interest", follow_redirects=True,
+            )
+            assert b"does not support interest parameters" in resp.data
+
+    def test_has_interest_true_but_no_params_row(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """Interest detail auto-creates params if row missing."""
+        with app.app_context():
+            hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
+            acct = Account(
+                user_id=seed_user["user"].id,
+                name="HSA No Params",
+                account_type_id=hsa_type.id,
+                current_anchor_balance=100,
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            # No InterestParams row exists yet.
+            assert db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first() is None
+
+            resp = auth_client.get(f"/accounts/{acct.id}/interest")
+            assert resp.status_code == 200
+
+            # Auto-created by the detail route's safety fallback.
+            assert db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first() is not None
+
+
 # ── Wizard Banner Tests ──────────────────────────────────────────
 
 

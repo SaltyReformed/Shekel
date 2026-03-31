@@ -116,14 +116,10 @@ def compute_dashboard_data(user_id):
         user_id, accounts, all_periods, current_period, scenario,
     )
 
-    savings_type_ids = {
-        ref_cache.acct_type_id(AcctTypeEnum.SAVINGS),
-        ref_cache.acct_type_id(AcctTypeEnum.HYSA),
-    }
-
+    # Sum liquid account balances for emergency fund calculation.
     total_savings = Decimal("0.00")
     for ad in account_data:
-        if ad["account"].account_type_id in savings_type_ids:
+        if ad["account"].account_type and ad["account"].account_type.is_liquid:
             total_savings += ad["current_balance"] or Decimal("0.00")
 
     emergency_metrics = savings_goal_service.calculate_savings_metrics(
@@ -131,9 +127,10 @@ def compute_dashboard_data(user_id):
     )
 
     # ── Template helpers ────────────────────────────────────────
+    # Liquid accounts appear in the savings goal form dropdown.
     savings_accounts = [
         ad["account"] for ad in account_data
-        if ad["account"].account_type_id in savings_type_ids
+        if ad["account"].account_type and ad["account"].account_type.is_liquid
     ]
 
     grouped_accounts = _group_accounts_by_category(account_data)
@@ -158,9 +155,11 @@ def _load_account_params(user_id, accounts):
     Returns a dict with maps for each param type and supporting data
     needed by the projection loop.
     """
-    interest_type_id = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
     interest_params_map = {}
-    interest_account_ids = [a.id for a in accounts if a.account_type_id == interest_type_id]
+    interest_account_ids = [
+        a.id for a in accounts
+        if a.account_type and a.account_type.has_interest
+    ]
     if interest_account_ids:
         for hp in db.session.query(InterestParams).filter(
             InterestParams.account_id.in_(interest_account_ids)
@@ -227,7 +226,6 @@ def _load_account_params(user_id, accounts):
             loan_params_map[lp.account_id] = lp
 
     return {
-        "interest_type_id": interest_type_id,
         "interest_params_map": interest_params_map,
         "amort_type_ids": amort_type_ids,
         "retirement_type_ids": retirement_type_ids,
@@ -313,7 +311,7 @@ def _compute_account_projections(
                             break
 
         needs_setup = False
-        if acct.account_type_id == params["interest_type_id"]:
+        if acct.account_type and acct.account_type.has_interest:
             needs_setup = acct_interest_params is None
         elif acct.account_type_id in params["retirement_type_ids"]:
             needs_setup = acct_investment_params is None

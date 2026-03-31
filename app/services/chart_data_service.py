@@ -23,7 +23,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.ref import AccountType
 from app import ref_cache
-from app.enums import AcctCategoryEnum, AcctTypeEnum, StatusEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, StatusEnum, TxnTypeEnum
 from app.services import (
     amortization_engine,
     balance_calculator,
@@ -213,7 +213,6 @@ def _calculate_account_balances(account, scenario, periods):
         .all()
     )
 
-    acct_type_id = account.account_type_id if account.account_type else None
     base_args = {
         "anchor_balance": account.current_anchor_balance,
         "anchor_period_id": account.current_anchor_period_id,
@@ -221,7 +220,7 @@ def _calculate_account_balances(account, scenario, periods):
         "transactions": transactions,
     }
 
-    if acct_type_id == ref_cache.acct_type_id(AcctTypeEnum.HYSA) and account.interest_params:
+    if account.account_type and account.account_type.has_interest and account.interest_params:
         balances, _ = balance_calculator.calculate_balances_with_interest(
             **base_args, interest_params=account.interest_params,
         )
