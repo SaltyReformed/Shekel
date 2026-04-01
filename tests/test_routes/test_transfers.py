@@ -352,7 +352,7 @@ class TestTemplateCreate:
 
 
 class TestTemplateUpdate:
-    """Tests for GET/POST /transfers/<id>/edit and /delete and /reactivate."""
+    """Tests for GET/POST /transfers/<id>/edit and /archive and /unarchive."""
 
     def test_edit_template_form(self, app, auth_client, seed_user, seed_periods):
         """GET /transfers/<id>/edit renders the edit form."""
@@ -388,20 +388,20 @@ class TestTemplateUpdate:
             db.session.refresh(template)
             assert template.default_amount == Decimal("300.00")
 
-    def test_delete_template(self, app, auth_client, seed_user, seed_periods):
-        """POST /transfers/<id>/delete deactivates the template and soft-deletes transfers."""
+    def test_archive_template(self, app, auth_client, seed_user, seed_periods):
+        """POST /transfers/<id>/archive archives the template and soft-deletes transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods, savings, template)
 
             response = auth_client.post(
-                f"/transfers/{template.id}/delete",
+                f"/transfers/{template.id}/archive",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"deactivated" in response.data
+            assert b"archived" in response.data
 
             db.session.refresh(template)
             assert template.is_active is False
@@ -409,8 +409,8 @@ class TestTemplateUpdate:
             db.session.refresh(xfer)
             assert xfer.is_deleted is True
 
-    def test_reactivate_template(self, app, auth_client, seed_user, seed_periods):
-        """POST /transfers/<id>/reactivate restores the template and its transfers."""
+    def test_unarchive_template(self, app, auth_client, seed_user, seed_periods):
+        """POST /transfers/<id>/unarchive restores the template and its transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
@@ -422,12 +422,12 @@ class TestTemplateUpdate:
             db.session.commit()
 
             response = auth_client.post(
-                f"/transfers/{template.id}/reactivate",
+                f"/transfers/{template.id}/unarchive",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"reactivated" in response.data
+            assert b"unarchived" in response.data
 
             db.session.refresh(template)
             assert template.is_active is True
@@ -451,15 +451,15 @@ class TestTemplateUpdate:
             assert response.status_code == 200
             assert b"Recurring transfer not found." in response.data
 
-    def test_delete_other_users_template_redirects(
+    def test_archive_other_users_template_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /transfers/<id>/delete for another user's template redirects."""
+        """POST /transfers/<id>/archive for another user's template redirects."""
         with app.app_context():
             other = _create_other_user_with_template()
 
             response = auth_client.post(
-                f"/transfers/{other['template'].id}/delete",
+                f"/transfers/{other['template'].id}/archive",
                 follow_redirects=True,
             )
 
@@ -1246,23 +1246,23 @@ class TestShadowContextResponse:
             assert xfer_a.amount == Decimal("450.00")
 
 
-# ── Reactivation Service Integration Tests (M1) ──────────────────
+# ── Unarchive Service Integration Tests (M1) ─────────────────────
 
 
-class TestReactivateUsesService:
-    """Verify that reactivate_transfer_template delegates to
+class TestUnarchiveUsesService:
+    """Verify that unarchive_transfer_template delegates to
     transfer_service.restore_transfer instead of directly manipulating
     ORM objects, ensuring all transfer mutations flow through the
     service layer.
     """
 
-    def test_reactivate_restores_via_service_with_invariant_correction(
+    def test_unarchive_restores_via_service_with_invariant_correction(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Verify that the reactivate route uses the transfer service to
+        """Verify that the unarchive route uses the transfer service to
         restore soft-deleted transfers, including the service's invariant
         correction logic.  An intentionally drifted shadow amount should
-        be corrected on reactivation, proving the service was called.
+        be corrected on unarchive, proving the service was called.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1287,9 +1287,9 @@ class TestReactivateUsesService:
             template.is_active = False
             db.session.commit()
 
-            # Reactivate via the route.
+            # Unarchive via the route.
             response = auth_client.post(
-                f"/transfers/{template.id}/reactivate",
+                f"/transfers/{template.id}/unarchive",
                 follow_redirects=True,
             )
 

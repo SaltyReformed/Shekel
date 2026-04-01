@@ -307,10 +307,10 @@ def update_template(template_id):
     return redirect(url_for("templates.list_templates"))
 
 
-@templates_bp.route("/templates/<int:template_id>/delete", methods=["POST"])
+@templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])
 @login_required
-def delete_template(template_id):
-    """Deactivate a template (stops future generation, keeps history)."""
+def archive_template(template_id):
+    """Archive a template (stops future generation, keeps history)."""
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
         flash("Recurring transaction not found.", "danger")
@@ -329,17 +329,17 @@ def delete_template(template_id):
     db.session.commit()
 
     flash(
-        f"Recurring transaction '{template.name}' deactivated. "
+        f"Recurring transaction '{template.name}' archived. "
         f"{deleted_count} projected transaction(s) removed.",
         "info",
     )
     return redirect(url_for("templates.list_templates"))
 
 
-@templates_bp.route("/templates/<int:template_id>/reactivate", methods=["POST"])
+@templates_bp.route("/templates/<int:template_id>/unarchive", methods=["POST"])
 @login_required
-def reactivate_template(template_id):
-    """Reactivate a deactivated template and restore projected transactions."""
+def unarchive_template(template_id):
+    """Unarchive a template and restore projected transactions."""
     template = db.session.get(TransactionTemplate, template_id)
     if template is None or template.user_id != current_user.id:
         flash("Recurring transaction not found.", "danger")
@@ -371,7 +371,7 @@ def reactivate_template(template_id):
     db.session.commit()
 
     flash(
-        f"Recurring transaction '{template.name}' reactivated. "
+        f"Recurring transaction '{template.name}' unarchived. "
         f"{restored_count} projected transaction(s) restored.",
         "success",
     )

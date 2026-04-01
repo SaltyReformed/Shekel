@@ -59,19 +59,19 @@
               <i class="bi bi-pencil"></i>
             </a>
             {% if acct.is_active %}
-            <form method="POST" action="{{ url_for('accounts.deactivate_account', account_id=acct.id) }}"
+            <form method="POST" action="{{ url_for('accounts.archive_account', account_id=acct.id) }}"
                   class="d-inline"
-                  data-confirm="Deactivate this account?">
+                  data-confirm="Archive this account?">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Deactivate {{ acct.name }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Archive {{ acct.name }}">
                 <i class="bi bi-x-circle"></i>
               </button>
             </form>
             {% else %}
-            <form method="POST" action="{{ url_for('accounts.reactivate_account', account_id=acct.id) }}"
+            <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=acct.id) }}"
                   class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Reactivate {{ acct.name }}">
+              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ acct.name }}">
                 <i class="bi bi-arrow-counterclockwise"></i>
               </button>
             </form>

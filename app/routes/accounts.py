@@ -248,10 +248,10 @@ def update_account(account_id):
     return redirect(url_for("accounts.list_accounts"))
 
 
-@accounts_bp.route("/accounts/<int:account_id>/delete", methods=["POST"])
+@accounts_bp.route("/accounts/<int:account_id>/archive", methods=["POST"])
 @login_required
-def deactivate_account(account_id):
-    """Deactivate an account (soft delete)."""
+def archive_account(account_id):
+    """Archive an account (soft delete)."""
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
@@ -274,23 +274,23 @@ def deactivate_account(account_id):
     )
     if active_transfers:
         flash(
-            "Cannot deactivate this account -- it is used by active recurring transfers. "
-            "Deactivate those recurring transfers first.",
+            "Cannot archive this account -- it is used by active recurring transfers. "
+            "Archive those recurring transfers first.",
             "warning",
         )
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = False
     db.session.commit()
-    logger.info("Deactivated account: %s (id=%d)", account.name, account.id)
-    flash(f"Account '{account.name}' deactivated.", "info")
+    logger.info("Archived account: %s (id=%d)", account.name, account.id)
+    flash(f"Account '{account.name}' archived.", "info")
     return redirect(url_for("accounts.list_accounts"))
 
 
-@accounts_bp.route("/accounts/<int:account_id>/reactivate", methods=["POST"])
+@accounts_bp.route("/accounts/<int:account_id>/unarchive", methods=["POST"])
 @login_required
-def reactivate_account(account_id):
-    """Reactivate a deactivated account."""
+def unarchive_account(account_id):
+    """Unarchive an account."""
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
@@ -298,8 +298,8 @@ def reactivate_account(account_id):
 
     account.is_active = True
     db.session.commit()
-    logger.info("Reactivated account: %s (id=%d)", account.name, account.id)
-    flash(f"Account '{account.name}' reactivated.", "success")
+    logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
+    flash(f"Account '{account.name}' unarchived.", "success")
     return redirect(url_for("accounts.list_accounts"))
 
 

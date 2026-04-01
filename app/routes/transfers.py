@@ -318,14 +318,14 @@ def update_transfer_template(template_id):
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
-@transfers_bp.route("/transfers/<int:template_id>/delete", methods=["POST"])
+@transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
 @login_required
-def delete_transfer_template(template_id):
-    """Deactivate a transfer template (stops future generation, keeps history).
+def archive_transfer_template(template_id):
+    """Archive a transfer template (stops future generation, keeps history).
 
     Soft-deletes projected transfers and their shadow transactions via
     the transfer service to maintain the three-level cascade:
-    template deactivation -> transfer soft-delete -> shadow soft-delete.
+    template archival -> transfer soft-delete -> shadow soft-delete.
     """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
@@ -353,17 +353,17 @@ def delete_transfer_template(template_id):
     db.session.commit()
 
     flash(
-        f"Recurring transfer '{template.name}' deactivated. "
+        f"Recurring transfer '{template.name}' archived. "
         f"{len(transfers_to_delete)} projected transfer(s) removed.",
         "info",
     )
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
-@transfers_bp.route("/transfers/<int:template_id>/reactivate", methods=["POST"])
+@transfers_bp.route("/transfers/<int:template_id>/unarchive", methods=["POST"])
 @login_required
-def reactivate_transfer_template(template_id):
-    """Reactivate a deactivated transfer template.
+def unarchive_transfer_template(template_id):
+    """Unarchive a transfer template.
 
     Restores soft-deleted transfers and their shadow transactions.
     """
@@ -407,7 +407,7 @@ def reactivate_transfer_template(template_id):
 
     db.session.commit()
     flash(
-        f"Recurring transfer '{template.name}' reactivated. "
+        f"Recurring transfer '{template.name}' unarchived. "
         f"{restored_count} projected transfer(s) restored.",
         "success",
     )

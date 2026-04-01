@@ -70,10 +70,10 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/templates/99999/edit"),
     # templates.update_template
     ("POST", "/templates/99999"),
-    # templates.delete_template
-    ("POST", "/templates/99999/delete"),
-    # templates.reactivate_template
-    ("POST", "/templates/99999/reactivate"),
+    # templates.archive_template
+    ("POST", "/templates/99999/archive"),
+    # templates.unarchive_template
+    ("POST", "/templates/99999/unarchive"),
     # templates.preview_recurrence
     ("GET", "/templates/preview-recurrence"),
 
@@ -90,10 +90,10 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/accounts/99999/edit"),
     # accounts.update_account
     ("POST", "/accounts/99999"),
-    # accounts.deactivate_account
-    ("POST", "/accounts/99999/delete"),
-    # accounts.reactivate_account
-    ("POST", "/accounts/99999/reactivate"),
+    # accounts.archive_account
+    ("POST", "/accounts/99999/archive"),
+    # accounts.unarchive_account
+    ("POST", "/accounts/99999/unarchive"),
     # accounts.inline_anchor_update
     ("PATCH", "/accounts/99999/inline-anchor"),
     # accounts.inline_anchor_form
@@ -166,10 +166,10 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/transfers/99999/edit"),
     # transfers.update_transfer_template
     ("POST", "/transfers/99999"),
-    # transfers.delete_transfer_template
-    ("POST", "/transfers/99999/delete"),
-    # transfers.reactivate_transfer_template
-    ("POST", "/transfers/99999/reactivate"),
+    # transfers.archive_transfer_template
+    ("POST", "/transfers/99999/archive"),
+    # transfers.unarchive_transfer_template
+    ("POST", "/transfers/99999/unarchive"),
     # transfers.get_cell
     ("GET", "/transfers/cell/99999"),
     # transfers.get_quick_edit

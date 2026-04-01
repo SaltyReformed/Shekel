@@ -213,49 +213,49 @@ class TestAccountUpdate:
             assert acct.name == "Other Checking"
 
 
-class TestAccountDeactivate:
-    """Tests for POST /accounts/<id>/delete and /reactivate."""
+class TestAccountArchive:
+    """Tests for POST /accounts/<id>/archive and /unarchive."""
 
-    def test_deactivate_account(self, app, auth_client, seed_user):
-        """POST /accounts/<id>/delete soft-deactivates the account."""
+    def test_archive_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/archive archives the account."""
         with app.app_context():
             account_id = seed_user["account"].id
 
             response = auth_client.post(
-                f"/accounts/{account_id}/delete",
+                f"/accounts/{account_id}/archive",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"deactivated" in response.data
+            assert b"archived" in response.data
 
             acct = db.session.get(Account, account_id)
             assert acct.is_active is False
 
-    def test_reactivate_account(self, app, auth_client, seed_user):
-        """POST /accounts/<id>/reactivate restores a deactivated account."""
+    def test_unarchive_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/unarchive restores an archived account."""
         with app.app_context():
             account_id = seed_user["account"].id
 
-            # Deactivate first.
+            # Archive first.
             seed_user["account"].is_active = False
             db.session.commit()
 
             response = auth_client.post(
-                f"/accounts/{account_id}/reactivate",
+                f"/accounts/{account_id}/unarchive",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"reactivated" in response.data
+            assert b"unarchived" in response.data
 
             acct = db.session.get(Account, account_id)
             assert acct.is_active is True
 
-    def test_deactivate_account_with_active_transfers(
+    def test_archive_account_with_active_transfers(
         self, app, auth_client, seed_user
     ):
-        """POST /accounts/<id>/delete is blocked when active transfer templates reference it."""
+        """POST /accounts/<id>/archive is blocked when active transfer templates reference it."""
         with app.app_context():
             from app.models.transfer_template import TransferTemplate
 
@@ -282,26 +282,26 @@ class TestAccountDeactivate:
             db.session.commit()
 
             response = auth_client.post(
-                f"/accounts/{seed_user['account'].id}/delete",
+                f"/accounts/{seed_user['account'].id}/archive",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"Cannot deactivate this account" in response.data
+            assert b"Cannot archive this account" in response.data
 
             # Account should still be active.
             acct = db.session.get(Account, seed_user["account"].id)
             assert acct.is_active is True
 
-    def test_deactivate_other_users_account_redirects(
+    def test_archive_other_users_account_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /accounts/<id>/delete for another user's account redirects."""
+        """POST /accounts/<id>/archive for another user's account redirects."""
         with app.app_context():
             other = _create_other_user_account()
 
             response = auth_client.post(
-                f"/accounts/{other['account'].id}/delete",
+                f"/accounts/{other['account'].id}/archive",
                 follow_redirects=True,
             )
 
@@ -837,20 +837,20 @@ class TestAccountNegativePaths:
             assert resp.status_code == 200
             assert b"Account not found." in resp.data
 
-    def test_deactivate_nonexistent_account(self, app, auth_client, seed_user):
-        """POST /accounts/999999/delete for a nonexistent account redirects with flash."""
+    def test_archive_nonexistent_account(self, app, auth_client, seed_user):
+        """POST /accounts/999999/archive for a nonexistent account redirects with flash."""
         with app.app_context():
             resp = auth_client.post(
-                "/accounts/999999/delete", follow_redirects=True,
+                "/accounts/999999/archive", follow_redirects=True,
             )
 
             assert resp.status_code == 200
             assert b"Account not found." in resp.data
 
-    def test_reactivate_other_users_account_idor(
+    def test_unarchive_other_users_account_idor(
         self, app, auth_client, seed_user, second_user
     ):
-        """POST /accounts/<id>/reactivate for another user's deactivated account is blocked."""
+        """POST /accounts/<id>/unarchive for another user's archived account is blocked."""
         with app.app_context():
             # Re-query to ensure the object is in the current session.
             acct_id = second_user["account"].id
@@ -859,7 +859,7 @@ class TestAccountNegativePaths:
             db.session.commit()
 
             resp = auth_client.post(
-                f"/accounts/{acct_id}/reactivate",
+                f"/accounts/{acct_id}/unarchive",
                 follow_redirects=True,
             )
 
@@ -871,49 +871,49 @@ class TestAccountNegativePaths:
             refreshed = db.session.get(Account, acct_id)
             assert refreshed.is_active is False
 
-    def test_deactivate_already_inactive_account(self, app, auth_client, seed_user):
-        """POST /accounts/<id>/delete on an already-inactive account is idempotent."""
+    def test_archive_already_inactive_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/archive on an already-inactive account is idempotent."""
         with app.app_context():
             account_id = seed_user["account"].id
 
-            # First deactivation via the route.
+            # First archive via the route.
             resp1 = auth_client.post(
-                f"/accounts/{account_id}/delete",
+                f"/accounts/{account_id}/archive",
                 follow_redirects=True,
             )
             assert resp1.status_code == 200
-            assert b"deactivated" in resp1.data
+            assert b"archived" in resp1.data
 
-            # Second deactivation -- account is already inactive.
+            # Second archive -- account is already inactive.
             resp2 = auth_client.post(
-                f"/accounts/{account_id}/delete",
+                f"/accounts/{account_id}/archive",
                 follow_redirects=True,
             )
 
-            # Route does not guard against double-deactivate; it sets
+            # Route does not guard against double-archive; it sets
             # is_active=False and commits. This is idempotent behavior.
             assert resp2.status_code == 200
-            assert b"deactivated" in resp2.data
+            assert b"archived" in resp2.data
 
             db.session.expire_all()
             refreshed = db.session.get(Account, account_id)
             assert refreshed.is_active is False
 
-    def test_reactivate_already_active_account(self, app, auth_client, seed_user):
-        """POST /accounts/<id>/reactivate on an already-active account is idempotent."""
+    def test_unarchive_already_active_account(self, app, auth_client, seed_user):
+        """POST /accounts/<id>/unarchive on an already-active account is idempotent."""
         with app.app_context():
             account_id = seed_user["account"].id
 
-            # Account starts active (default from seed). Reactivate anyway.
+            # Account starts active (default from seed). Unarchive anyway.
             resp = auth_client.post(
-                f"/accounts/{account_id}/reactivate",
+                f"/accounts/{account_id}/unarchive",
                 follow_redirects=True,
             )
 
-            # Route does not guard against reactivating an already-active
+            # Route does not guard against unarchiving an already-active
             # account; it sets is_active=True and commits.
             assert resp.status_code == 200
-            assert b"reactivated" in resp.data
+            assert b"unarchived" in resp.data
 
             db.session.expire_all()
             refreshed = db.session.get(Account, account_id)

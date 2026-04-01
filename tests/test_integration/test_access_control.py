@@ -70,27 +70,27 @@ class TestAccountAccessControl:
             )
             _assert_blocked(response, "POST /accounts/<id>")
 
-    def test_deactivate_account_blocked(
+    def test_archive_account_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot deactivate User A's account."""
+        """User B cannot archive User A's account."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/delete"
+                f"/accounts/{target_id}/archive"
             )
-            _assert_blocked(response, "POST /accounts/<id>/delete")
+            _assert_blocked(response, "POST /accounts/<id>/archive")
 
-    def test_reactivate_account_blocked(
+    def test_unarchive_account_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot reactivate User A's account."""
+        """User B cannot unarchive User A's account."""
         with app.app_context():
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
-                f"/accounts/{target_id}/reactivate"
+                f"/accounts/{target_id}/unarchive"
             )
-            _assert_blocked(response, "POST /accounts/<id>/reactivate")
+            _assert_blocked(response, "POST /accounts/<id>/unarchive")
 
     def test_inline_anchor_update_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -229,30 +229,30 @@ class TestTemplateAccessControl:
             )
             _assert_blocked(response, "POST /templates/<id>")
 
-    def test_delete_template_blocked(
+    def test_archive_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot deactivate User A's template."""
+        """User B cannot archive User A's template."""
         with app.app_context():
             target_id = seed_full_user_data["template"].id
             response = second_auth_client.post(
-                f"/templates/{target_id}/delete"
+                f"/templates/{target_id}/archive"
             )
             _assert_blocked(
-                response, "POST /templates/<id>/delete",
+                response, "POST /templates/<id>/archive",
             )
 
-    def test_reactivate_template_blocked(
+    def test_unarchive_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot reactivate User A's template."""
+        """User B cannot unarchive User A's template."""
         with app.app_context():
             target_id = seed_full_user_data["template"].id
             response = second_auth_client.post(
-                f"/templates/{target_id}/reactivate"
+                f"/templates/{target_id}/unarchive"
             )
             _assert_blocked(
-                response, "POST /templates/<id>/reactivate",
+                response, "POST /templates/<id>/unarchive",
             )
 
 
@@ -427,30 +427,30 @@ class TestTransferTemplateAccessControl:
             )
             _assert_blocked(response, "POST /transfers/<id>")
 
-    def test_delete_transfer_template_blocked(
+    def test_archive_transfer_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot deactivate User A's transfer template."""
+        """User B cannot archive User A's transfer template."""
         with app.app_context():
             target_id = seed_full_user_data["transfer_template"].id
             response = second_auth_client.post(
-                f"/transfers/{target_id}/delete"
+                f"/transfers/{target_id}/archive"
             )
             _assert_blocked(
-                response, "POST /transfers/<id>/delete",
+                response, "POST /transfers/<id>/archive",
             )
 
-    def test_reactivate_transfer_template_blocked(
+    def test_unarchive_transfer_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User B cannot reactivate User A's transfer template."""
+        """User B cannot unarchive User A's transfer template."""
         with app.app_context():
             target_id = seed_full_user_data["transfer_template"].id
             response = second_auth_client.post(
-                f"/transfers/{target_id}/reactivate"
+                f"/transfers/{target_id}/unarchive"
             )
             _assert_blocked(
-                response, "POST /transfers/<id>/reactivate",
+                response, "POST /transfers/<id>/unarchive",
             )
 
 
@@ -969,19 +969,19 @@ class TestDataIntegrityAfterBlockedAccess:
                 "Transaction status changed after blocked mark-done"
             )
 
-    def test_template_unchanged_after_blocked_delete(
+    def test_template_unchanged_after_blocked_archive(
         self, app, second_auth_client, seed_full_user_data,
     ):
-        """User A's template is still active after blocked delete."""
+        """User A's template is still active after blocked archive."""
         with app.app_context():
             target_id = seed_full_user_data["template"].id
             original_active = seed_full_user_data["template"].is_active
 
             response = second_auth_client.post(
-                f"/templates/{target_id}/delete"
+                f"/templates/{target_id}/archive"
             )
             _assert_blocked(
-                response, "POST /templates/<id>/delete",
+                response, "POST /templates/<id>/archive",
             )
 
             _db.session.expire_all()

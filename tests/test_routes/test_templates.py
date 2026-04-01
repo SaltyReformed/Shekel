@@ -5,8 +5,8 @@ Tests for transaction template CRUD and recurrence preview:
   - Template listing (happy path, auth)
   - Template creation (with/without recurrence, validation, IDOR)
   - Template update (happy path, validation, IDOR, recurrence conflict)
-  - Template delete (deactivate + soft-delete projected txns)
-  - Template reactivate (restore + regenerate)
+  - Template archive (archive + soft-delete projected txns)
+  - Template unarchive (restore + regenerate)
   - Recurrence preview HTMX endpoint
 """
 
@@ -383,14 +383,14 @@ class TestTemplateUpdate:
             assert b"overridden" in resp.data or b"updated" in resp.data
 
 
-# ── Delete Tests ─────────────────────────────────────────────────────
+# ── Archive Tests ────────────────────────────────────────────────────
 
 
-class TestTemplateDelete:
-    """Tests for POST /templates/<id>/delete."""
+class TestTemplateArchive:
+    """Tests for POST /templates/<id>/archive."""
 
-    def test_delete_deactivates_and_soft_deletes(self, app, auth_client, seed_user, seed_periods):
-        """POST /templates/<id>/delete deactivates template and soft-deletes projected txns."""
+    def test_archive_and_soft_deletes(self, app, auth_client, seed_user, seed_periods):
+        """POST /templates/<id>/archive archives template and soft-deletes projected txns."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
 
@@ -408,11 +408,11 @@ class TestTemplateDelete:
             assert txn_count == 10
 
             resp = auth_client.post(
-                f"/templates/{template.id}/delete",
+                f"/templates/{template.id}/archive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"deactivated" in resp.data
+            assert b"archived" in resp.data
 
             db.session.refresh(template)
             assert template.is_active is False
@@ -423,13 +423,13 @@ class TestTemplateDelete:
             ).count()
             assert remaining == 0
 
-    def test_delete_template_idor(self, app, auth_client, seed_user):
-        """POST /templates/<id>/delete for another user's template redirects."""
+    def test_archive_template_idor(self, app, auth_client, seed_user):
+        """POST /templates/<id>/archive for another user's template redirects."""
         with app.app_context():
             other = _create_other_user_with_template()
 
             resp = auth_client.post(
-                f"/templates/{other['template'].id}/delete",
+                f"/templates/{other['template'].id}/archive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
@@ -439,25 +439,25 @@ class TestTemplateDelete:
             db.session.refresh(other["template"])
             assert other["template"].is_active is True
 
-    def test_delete_nonexistent_template(self, app, auth_client, seed_user):
-        """POST /templates/999999/delete for missing template redirects."""
+    def test_archive_nonexistent_template(self, app, auth_client, seed_user):
+        """POST /templates/999999/archive for missing template redirects."""
         with app.app_context():
             resp = auth_client.post(
-                "/templates/999999/delete",
+                "/templates/999999/archive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
             assert b"Recurring transaction not found" in resp.data
 
 
-# ── Reactivate Tests ─────────────────────────────────────────────────
+# ── Unarchive Tests ──────────────────────────────────────────────────
 
 
-class TestTemplateReactivate:
-    """Tests for POST /templates/<id>/reactivate."""
+class TestTemplateUnarchive:
+    """Tests for POST /templates/<id>/unarchive."""
 
-    def test_reactivate_restores_transactions(self, app, auth_client, seed_user, seed_periods):
-        """POST /templates/<id>/reactivate restores soft-deleted txns."""
+    def test_unarchive_restores_transactions(self, app, auth_client, seed_user, seed_periods):
+        """POST /templates/<id>/unarchive restores soft-deleted txns."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
 
@@ -468,19 +468,19 @@ class TestTemplateReactivate:
             recurrence_engine.generate_for_template(template, periods, scenario.id)
             db.session.commit()
 
-            # Deactivate via the delete route.
-            auth_client.post(f"/templates/{template.id}/delete")
+            # Archive via the archive route.
+            auth_client.post(f"/templates/{template.id}/archive")
 
             db.session.refresh(template)
             assert template.is_active is False
 
-            # Now reactivate.
+            # Now unarchive.
             resp = auth_client.post(
-                f"/templates/{template.id}/reactivate",
+                f"/templates/{template.id}/unarchive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"reactivated" in resp.data
+            assert b"unarchived" in resp.data
 
             db.session.refresh(template)
             assert template.is_active is True
@@ -492,13 +492,13 @@ class TestTemplateReactivate:
             ).count()
             assert active_txns == 10
 
-    def test_reactivate_template_idor(self, app, auth_client, seed_user):
-        """POST /templates/<id>/reactivate for another user's template redirects."""
+    def test_unarchive_template_idor(self, app, auth_client, seed_user):
+        """POST /templates/<id>/unarchive for another user's template redirects."""
         with app.app_context():
             other = _create_other_user_with_template()
 
             resp = auth_client.post(
-                f"/templates/{other['template'].id}/reactivate",
+                f"/templates/{other['template'].id}/unarchive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
@@ -659,46 +659,46 @@ class TestPreviewRecurrence:
 class TestTemplateNegativePaths:
     """Tests for template edge cases, validation gaps, and idempotent operations."""
 
-    def test_delete_already_deactivated_template(self, app, auth_client, seed_user, seed_periods):
-        """Deleting an already-deactivated template is idempotent."""
+    def test_archive_already_archived_template(self, app, auth_client, seed_user, seed_periods):
+        """Archiving an already-archived template is idempotent."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
             template.is_active = False
             db.session.commit()
 
             resp = auth_client.post(
-                f"/templates/{template.id}/delete",
+                f"/templates/{template.id}/archive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"deactivated" in resp.data
+            assert b"archived" in resp.data
             # No projected transactions exist, so 0 are soft-deleted.
             assert b"0 projected transaction(s) removed" in resp.data
 
             db.session.refresh(template)
             assert template.is_active is False
-            # NOTE: delete_template is idempotent -- no guard against
-            # deactivating an already-inactive template.
+            # NOTE: archive_template is idempotent -- no guard against
+            # archiving an already-inactive template.
 
-    def test_reactivate_already_active_template(self, app, auth_client, seed_user, seed_periods):
-        """Reactivating an already-active template is idempotent."""
+    def test_unarchive_already_active_template(self, app, auth_client, seed_user, seed_periods):
+        """Unarchiving an already-active template is idempotent."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
             assert template.is_active is True
 
             resp = auth_client.post(
-                f"/templates/{template.id}/reactivate",
+                f"/templates/{template.id}/unarchive",
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"reactivated" in resp.data
+            assert b"unarchived" in resp.data
             # No soft-deleted transactions to restore.
             assert b"0 projected transaction(s) restored" in resp.data
 
             db.session.refresh(template)
             assert template.is_active is True
-            # NOTE: reactivate is idempotent -- no guard against
-            # reactivating an already-active template.
+            # NOTE: unarchive is idempotent -- no guard against
+            # unarchiving an already-active template.
 
     def test_create_template_missing_name(self, app, auth_client, seed_user):
         """Creating a template without name fails schema validation."""

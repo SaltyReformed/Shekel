@@ -433,13 +433,13 @@ class TestReferentialIntegrity:
             db.session.add(template)
             db.session.commit()
 
-            resp = auth_client.post(f"/accounts/{checking_id}/delete")
-            # Current behavior: route blocks deactivation with a flash warning.
+            resp = auth_client.post(f"/accounts/{checking_id}/archive")
+            # Current behavior: route blocks archiving with a flash warning.
             assert resp.status_code == 302  # Redirect back to list
 
             # Follow redirect to verify the flash message.
             follow = auth_client.get(resp.headers["Location"])
-            assert b"Cannot deactivate" in follow.data
+            assert b"Cannot archive" in follow.data
 
             # Re-query to verify account is still active.
             acct = db.session.get(Account, checking_id)
@@ -1201,8 +1201,8 @@ class TestCrossResourceIDOR:
             db.session.commit()
             template2_id = template2.id
 
-            # Auth client (user 1) tries to delete user 2's template.
-            resp = auth_client.post(f"/transfers/{template2_id}/delete")
+            # Auth client (user 1) tries to archive user 2's template.
+            resp = auth_client.post(f"/transfers/{template2_id}/archive")
             assert resp.status_code == 302
 
             # Follow redirect to verify flash message.
