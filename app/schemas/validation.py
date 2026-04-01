@@ -146,6 +146,13 @@ class CategoryCreateSchema(BaseSchema):
     sort_order = fields.Integer(load_default=0)
 
 
+class CategoryEditSchema(BaseSchema):
+    """Validates POST data for editing a category (rename / re-parent)."""
+
+    group_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+    item_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+
+
 # ── Salary / Paycheck Schemas (Phase 2) ───────────────────────────
 
 

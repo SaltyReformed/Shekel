@@ -556,3 +556,289 @@ class TestCategoryManagementBaseline:
             )
             assert surviving.group_name == "TestGroup"
             assert surviving.item_name == "ItemB"
+
+
+# ── Edit Tests (5A.4-1) ────────────────────────────────────────────
+
+
+class TestCategoryEdit:
+    """Tests for POST /categories/<id>/edit (rename and re-parent)."""
+
+    def test_edit_category_rename(self, app, auth_client, seed_user):
+        """Renaming item_name preserves group_name and updates the item."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Auto", "item_name": "Fuel"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.item_name == "Fuel"
+            assert cat.group_name == "Auto"
+
+    def test_edit_category_reparent(self, app, auth_client, seed_user):
+        """Changing group_name moves the category to a different group."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Toll Pass",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Travel", "item_name": "Toll Pass"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(cat)
+            assert cat.group_name == "Travel"
+            assert cat.item_name == "Toll Pass"
+
+    def test_edit_category_rename_and_reparent(self, app, auth_client, seed_user):
+        """Changing both group_name and item_name in a single edit."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Travel", "item_name": "Fuel"},
+            )
+
+            db.session.refresh(cat)
+            assert cat.group_name == "Travel"
+            assert cat.item_name == "Fuel"
+
+    def test_edit_category_preserves_transaction_association(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Renaming a category does not break transaction FK references.
+
+        Transactions reference categories by integer category_id, so
+        changing group_name or item_name on the Category row leaves
+        all transaction associations intact.
+        """
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.flush()
+
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(
+                name="Projected"
+            ).one()
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=cat.id,
+                transaction_type_id=txn_type.id,
+                name="Fill Up",
+                estimated_amount=Decimal("45.00"),
+                status_id=projected.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+            cat_id = cat.id
+            txn_id = txn.id
+
+            auth_client.post(
+                f"/categories/{cat_id}/edit",
+                data={"group_name": "Travel", "item_name": "Fuel"},
+            )
+
+            db.session.refresh(txn)
+            assert txn.category_id == cat_id
+            assert txn.category.group_name == "Travel"
+            assert txn.category.item_name == "Fuel"
+
+    def test_edit_category_duplicate_blocked(self, app, auth_client, seed_user):
+        """Editing a category to match an existing group+item is rejected."""
+        with app.app_context():
+            cat_gas = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            cat_insurance = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Insurance",
+            )
+            db.session.add_all([cat_gas, cat_insurance])
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat_gas.id}/edit",
+                data={"group_name": "Auto", "item_name": "Insurance"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"already exists" in resp.data
+
+            db.session.refresh(cat_gas)
+            assert cat_gas.item_name == "Gas"
+
+    def test_edit_category_blank_name_rejected(self, app, auth_client, seed_user):
+        """Empty or whitespace-only names are rejected after server-side strip."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            # Empty item_name.
+            resp = auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Auto", "item_name": "   "},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"cannot be blank" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.item_name == "Gas"
+
+    def test_edit_category_idor(
+        self, app, auth_client, seed_user,
+    ):
+        """Editing another user's category returns 'not found' (same as nonexistent)."""
+        with app.app_context():
+            other = _create_other_user_category()
+
+            resp = auth_client.post(
+                f"/categories/{other['category'].id}/edit",
+                data={"group_name": "Hacked", "item_name": "Pwned"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+            db.session.refresh(other["category"])
+            assert other["category"].group_name == "Other"
+
+    def test_edit_category_nonexistent(self, app, auth_client, seed_user):
+        """Editing a nonexistent category returns 'not found'."""
+        with app.app_context():
+            resp = auth_client.post(
+                "/categories/999999/edit",
+                data={"group_name": "Ghost", "item_name": "Phantom"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+    def test_edit_category_no_op_same_values(self, app, auth_client, seed_user):
+        """Submitting the same values is not flagged as a duplicate."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Auto", "item_name": "Gas"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.group_name == "Auto"
+            assert cat.item_name == "Gas"
+
+    def test_edit_category_strips_whitespace(self, app, auth_client, seed_user):
+        """Leading and trailing whitespace is stripped before saving."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "  Travel  ", "item_name": "  Fuel  "},
+            )
+
+            db.session.refresh(cat)
+            assert cat.group_name == "Travel"
+            assert cat.item_name == "Fuel"
+
+    def test_edit_category_max_length(self, app, auth_client, seed_user):
+        """Item name exceeding 100 characters is rejected by schema validation."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Auto", "item_name": "X" * 101},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.item_name == "Gas"
+
+    def test_edit_category_preserves_sort_order(self, app, auth_client, seed_user):
+        """Editing name fields does not reset the sort_order column."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+                sort_order=5,
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            auth_client.post(
+                f"/categories/{cat.id}/edit",
+                data={"group_name": "Auto", "item_name": "Fuel"},
+            )
+
+            db.session.refresh(cat)
+            assert cat.item_name == "Fuel"
+            assert cat.sort_order == 5

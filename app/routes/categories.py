@@ -11,13 +11,14 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.category import Category
-from app.schemas.validation import CategoryCreateSchema
+from app.schemas.validation import CategoryCreateSchema, CategoryEditSchema
 
 logger = logging.getLogger(__name__)
 
 categories_bp = Blueprint("categories", __name__)
 
 _create_schema = CategoryCreateSchema()
+_edit_schema = CategoryEditSchema()
 
 
 @categories_bp.route("/categories")
@@ -73,6 +74,55 @@ def create_category():
         return render_template("categories/_category_row.html", category=category)
 
     flash(f"Category '{category.display_name}' created.", "success")
+    return redirect(url_for("settings.show", section="categories"))
+
+
+@categories_bp.route("/categories/<int:category_id>/edit", methods=["POST"])
+@login_required
+def edit_category(category_id):
+    """Edit a category item name and/or group assignment (re-parenting)."""
+    category = db.session.get(Category, category_id)
+    if category is None or category.user_id != current_user.id:
+        flash("Category not found.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
+
+    errors = _edit_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
+
+    data = _edit_schema.load(request.form)
+    new_group = data["group_name"].strip()
+    new_item = data["item_name"].strip()
+
+    if not new_group or not new_item:
+        flash("Category names cannot be blank.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
+
+    # Check for duplicate: another category with the same group + item
+    # for this user.  PostgreSQL default collation is case-sensitive,
+    # so "Auto" != "auto" -- intentional case changes are allowed.
+    duplicate = (
+        db.session.query(Category)
+        .filter(
+            Category.user_id == current_user.id,
+            Category.group_name == new_group,
+            Category.item_name == new_item,
+            Category.id != category_id,
+        )
+        .first()
+    )
+    if duplicate:
+        flash(f"Category '{new_group}: {new_item}' already exists.", "warning")
+        return redirect(url_for("settings.show", section="categories"))
+
+    old_name = category.display_name
+    category.group_name = new_group
+    category.item_name = new_item
+    db.session.commit()
+
+    logger.info("Edited category: %s -> %s", old_name, category.display_name)
+    flash(f"Category updated to '{category.display_name}'.", "success")
     return redirect(url_for("settings.show", section="categories"))
 
 

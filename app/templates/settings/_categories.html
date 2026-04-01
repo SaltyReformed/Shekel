@@ -7,16 +7,50 @@
       <div class="card-header fw-semibold category-group-header">{{ group_name }}</div>
       <ul class="list-group list-group-flush">
         {% for cat in cats %}
-        <li class="list-group-item d-flex justify-content-between align-items-center">
-          {{ cat.item_name }}
-          <form method="POST"
-                action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
-                class="d-inline"
-                data-confirm="Delete this category?">
+        <li class="list-group-item">
+          <div class="d-flex justify-content-between align-items-center"
+               id="cat-display-{{ cat.id }}">
+            {{ cat.item_name }}
+            <div>
+              <button type="button" class="btn btn-sm btn-outline-secondary"
+                      title="Edit"
+                      onclick="document.getElementById('cat-edit-{{ cat.id }}').classList.remove('d-none');
+                               this.closest('[id^=cat-display]').classList.add('d-none');">
+                <i class="bi bi-pencil"></i>
+              </button>
+              <form method="POST"
+                    action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
+                    class="d-inline"
+                    data-confirm="Delete this category?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+          </div>
+          <form method="POST" id="cat-edit-{{ cat.id }}"
+                action="{{ url_for('categories.edit_category', category_id=cat.id) }}"
+                class="d-none mt-2">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-danger">
-              <i class="bi bi-trash"></i>
-            </button>
+            <div class="mb-2">
+              <label class="form-label small">Group</label>
+              <input type="text" name="group_name" class="form-control form-control-sm"
+                     value="{{ cat.group_name }}" required>
+            </div>
+            <div class="mb-2">
+              <label class="form-label small">Item Name</label>
+              <input type="text" name="item_name" class="form-control form-control-sm"
+                     value="{{ cat.item_name }}" required>
+            </div>
+            <div class="d-flex gap-1">
+              <button type="submit" class="btn btn-sm btn-primary">Save</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary"
+                      onclick="this.closest('form').classList.add('d-none');
+                               document.getElementById('cat-display-{{ cat.id }}').classList.remove('d-none');">
+                Cancel
+              </button>
+            </div>
           </form>
         </li>
         {% endfor %}
