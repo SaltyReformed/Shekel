@@ -141,7 +141,7 @@ def calculate_balances_with_interest(
     if not interest_params or not hasattr(interest_params, "apy"):
         return base_balances, interest_by_period
 
-    apy = Decimal(str(interest_params.apy))
+    apy = interest_params.apy  # Already Decimal from Numeric(7,5) column.
     compounding = interest_params.compounding_frequency
 
     # Re-walk periods, layering interest on top of the base balances.
@@ -211,11 +211,11 @@ def calculate_balances_with_amortization(
     if not loan_params or not hasattr(loan_params, "interest_rate"):
         return base_balances, principal_by_period
 
-    annual_rate = Decimal(str(loan_params.interest_rate))
+    annual_rate = loan_params.interest_rate  # Already Decimal from Numeric(7,5).
     # Contractual payment: computed from original loan amount and full term,
     # not from current balance.  This is what the borrower actually pays.
     monthly_payment = calculate_monthly_payment(
-        Decimal(str(loan_params.original_principal)),
+        loan_params.original_principal,  # Already Decimal from Numeric(12,2).
         annual_rate,
         loan_params.term_months,
     )
