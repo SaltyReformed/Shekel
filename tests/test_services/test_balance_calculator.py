@@ -2089,3 +2089,266 @@ class TestEffectiveAmountFix:
 
             # 500 + 2000 (est) - 1200 (est) = 1300.
             assert balances[periods[0].id] == Decimal("1300.00")
+
+
+# ── Section 5 Regression Baseline ──────────────────────────────────────
+
+
+class TestTransferInvariantsBalanceRegression:
+    """Regression tests verifying the five transfer invariants hold when
+    transfers are used with the balance calculator.
+
+    These tests create real transfers via transfer_service and then run
+    the balance calculator to verify shadow transactions are correctly
+    reflected.  This is a cross-cutting concern that Section 5 must
+    preserve.
+    """
+
+    def test_transfer_creates_exactly_two_shadows(  # pylint: disable=too-many-locals
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Invariant 1: Every transfer has exactly two linked shadow
+        transactions (one expense, one income).
+
+        Verifies the count and types after creating a transfer between
+        checking and a savings account.
+        """
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            account = seed_user["account"]
+            scenario = seed_user["scenario"]
+            periods = seed_periods
+
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings"
+            ).one()
+            savings_acct = Account(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Invariant Savings",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_acct)
+            db.session.flush()
+            savings_acct.current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            transfer = create_transfer(
+                user_id=user.id,
+                from_account_id=account.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=periods[1].id,
+                scenario_id=scenario.id,
+                amount=Decimal("200.00"),
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            # Query shadow transactions.
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id, is_deleted=False)
+                .all()
+            )
+            assert len(shadows) == 2
+
+            types = {s.transaction_type.name for s in shadows}
+            assert types == {"Expense", "Income"}
+
+    def test_shadow_amounts_match_transfer(  # pylint: disable=too-many-locals
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Invariant 3: Shadow transaction amounts equal the parent
+        transfer's amount.
+        """
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            account = seed_user["account"]
+            scenario = seed_user["scenario"]
+            periods = seed_periods
+
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings"
+            ).one()
+            savings_acct = Account(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Amount Test Savings",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_acct)
+            db.session.flush()
+            savings_acct.current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            transfer_amount = Decimal("350.00")
+            transfer = create_transfer(
+                user_id=user.id,
+                from_account_id=account.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=periods[1].id,
+                scenario_id=scenario.id,
+                amount=transfer_amount,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id, is_deleted=False)
+                .all()
+            )
+            for shadow in shadows:
+                assert shadow.estimated_amount == transfer_amount, (
+                    f"Shadow {shadow.id} estimated_amount "
+                    f"{shadow.estimated_amount} != transfer {transfer_amount}"
+                )
+
+    def test_shadow_statuses_and_periods_match_transfer(  # pylint: disable=too-many-locals
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Invariants 4 & 5: Shadow statuses and periods always equal
+        the parent transfer's.
+        """
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            account = seed_user["account"]
+            scenario = seed_user["scenario"]
+            periods = seed_periods
+
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings"
+            ).one()
+            savings_acct = Account(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Status Period Savings",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_acct)
+            db.session.flush()
+            savings_acct.current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            transfer = create_transfer(
+                user_id=user.id,
+                from_account_id=account.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=periods[2].id,
+                scenario_id=scenario.id,
+                amount=Decimal("100.00"),
+                status_id=projected_id,
+            )
+            db.session.commit()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id, is_deleted=False)
+                .all()
+            )
+            for shadow in shadows:
+                assert shadow.status_id == transfer.status_id, (
+                    f"Shadow {shadow.id} status_id {shadow.status_id} "
+                    f"!= transfer status_id {transfer.status_id}"
+                )
+                assert shadow.pay_period_id == transfer.pay_period_id, (
+                    f"Shadow {shadow.id} pay_period_id "
+                    f"{shadow.pay_period_id} != transfer "
+                    f"pay_period_id {transfer.pay_period_id}"
+                )
+
+    def test_balance_calculator_reflects_transfer_shadows(  # pylint: disable=too-many-locals
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Balance calculator correctly reflects transfer shadow transactions.
+
+        Creates a transfer between checking and savings, then verifies
+        the balance calculator shows the checking balance decreased and
+        the savings balance increased by the transfer amount.  This
+        confirms no double-counting occurs.
+        """
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            checking = seed_user["account"]
+            scenario = seed_user["scenario"]
+            periods = seed_periods
+
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings"
+            ).one()
+            savings_acct = Account(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Balance Check Savings",
+                current_anchor_balance=Decimal("500.00"),
+            )
+            db.session.add(savings_acct)
+            db.session.flush()
+            savings_acct.current_anchor_period_id = periods[0].id
+            db.session.commit()
+
+            transfer_amount = Decimal("250.00")
+            transfer = create_transfer(
+                user_id=user.id,
+                from_account_id=checking.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=periods[1].id,
+                scenario_id=scenario.id,
+                amount=transfer_amount,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            # Get all shadow transactions.
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id, is_deleted=False)
+                .all()
+            )
+
+            # ── Checking account balance ──
+            checking_shadows = [
+                s for s in shadows if s.account_id == checking.id
+            ]
+            checking_balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:3],
+                transactions=checking_shadows,
+            )
+            # Checking decreased by transfer amount in period 2.
+            assert checking_balances[periods[1].id] == (
+                Decimal("1000.00") - transfer_amount
+            )
+
+            # ── Savings account balance ──
+            savings_shadows = [
+                s for s in shadows if s.account_id == savings_acct.id
+            ]
+            savings_balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("500.00"),
+                anchor_period_id=periods[0].id,
+                periods=periods[:3],
+                transactions=savings_shadows,
+            )
+            # Savings increased by transfer amount in period 2.
+            assert savings_balances[periods[1].id] == (
+                Decimal("500.00") + transfer_amount
+            )

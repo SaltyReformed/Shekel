@@ -701,3 +701,294 @@ class TestDebtBalanceCalculator:
             f"Period 3 principal: expected 0.00, "
             f"got {principal_by_period[3]}"
         )
+
+
+# ── Section 5 Regression Baseline ──────────────────────────────────────
+
+
+class TestBalanceCalculatorDebtRegression:
+    """Regression baseline for Section 5 balance calculator changes.
+
+    Verifies debt balance calculations with shadow transactions,
+    multi-period accumulation, status handling, and consistency
+    properties before Section 5 modifies the amortization path.
+    """
+
+    def test_checking_and_debt_accounts_no_double_counting(self):
+        """A transfer between checking and debt must not double-count.
+
+        The checking account decreases by the full transfer amount
+        (via shadow expense) and the debt account decreases by only
+        the principal portion (via amortization split).  The balance
+        calculator must query only budget.transactions, never
+        budget.transfers directly.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+        ]
+        transfer_amount = Decimal("599.55")
+
+        # ── Checking side: shadow expense reduces balance ──
+        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+        checking_shadow = SimpleNamespace(
+            pay_period_id=2,
+            estimated_amount=transfer_amount,
+            effective_amount=transfer_amount,
+            status=SimpleNamespace(
+                name="Projected",
+                is_settled=False,
+                is_immutable=False,
+                excludes_from_balance=False,
+            ),
+            status_id=projected_id,
+            transaction_type=SimpleNamespace(name="Expense"),
+            transfer_id=1,
+            is_income=False,
+            is_expense=True,
+        )
+        checking_balances, _ = calculate_balances(
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[checking_shadow],
+        )
+        # Checking should decrease by full transfer amount.
+        assert checking_balances[2] == Decimal("5000.00") - transfer_amount
+
+        # ── Debt side: shadow income splits into principal + interest ──
+        debt_shadow = _shadow_income(2, str(transfer_amount))
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        debt_balances, principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=[debt_shadow],
+                account_id=1,
+                loan_params=params,
+            )
+        )
+        # interest = 100000 * 0.005 = 500.00
+        # principal = 599.55 - 500.00 = 99.55
+        assert principal_by_period[2] == Decimal("99.55")
+        assert debt_balances[2] == Decimal("100000.00") - Decimal("99.55")
+
+        # ── Cross-check: amounts are consistent ──
+        # Checking decreased by 599.55, debt principal decreased by 99.55.
+        # These are different because interest is consumed, not transferred.
+        checking_decrease = checking_balances[1] - checking_balances[2]
+        assert checking_decrease == transfer_amount
+
+    def test_multi_period_cumulative_debt_balance(self):
+        """Multiple transfers across different periods produce correct
+        cumulative balance.
+
+        Each period's interest is computed on the prior period's ending
+        balance, creating a compounding effect that must be exact.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+            _period(3, 2, date(2026, 1, 29), date(2026, 2, 11)),
+            _period(4, 3, date(2026, 2, 12), date(2026, 2, 25)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        txns = [
+            _shadow_income(2, "599.55", transfer_id=1),
+            _shadow_income(3, "599.55", transfer_id=2),
+            _shadow_income(4, "599.55", transfer_id=3),
+        ]
+
+        balances, _principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=txns,
+                account_id=1,
+                loan_params=params,
+            )
+        )
+
+        # Period 2: interest=500.00, principal=99.55, balance=99900.45
+        assert balances[2] == Decimal("99900.45")
+        # Period 3: interest=99900.45*0.005=499.50 (rounded)
+        # principal=599.55-499.50=100.05, balance=99900.45-100.05=99800.40
+        assert balances[3] == Decimal("99800.40")
+        # Period 4: interest=99800.40*0.005=499.00 (rounded)
+        # principal=599.55-499.00=100.55, balance=99800.40-100.55=99699.85
+        assert balances[4] == Decimal("99699.85")
+
+        # Balance must monotonically decrease.
+        for i in range(2, 5):
+            assert balances[i] < balances[i - 1], (
+                f"Balance did not decrease from period {i-1} to {i}: "
+                f"{balances[i-1]} -> {balances[i]}"
+            )
+
+    def test_paid_status_shadow_applies_to_debt(self):
+        """Shadow transaction with Paid status still applies to debt balance.
+
+        Paid transactions have excludes_from_balance=False (they represent
+        real payments that occurred), so the balance calculator must
+        include them in the amortization calculation.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        # Paid status shadow (not excluded from balance).
+        paid_shadow = _shadow_income(2, "599.55", status="Paid")
+        projected_shadow = _shadow_income(2, "599.55", status="Projected")
+
+        # Both should produce the same balance reduction since neither
+        # status excludes from balance.
+        paid_balances, _ = calculate_balances_with_amortization(
+            anchor_balance=Decimal("100000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[paid_shadow],
+            account_id=1,
+            loan_params=params,
+        )
+        projected_balances, _ = calculate_balances_with_amortization(
+            anchor_balance=Decimal("100000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[projected_shadow],
+            account_id=1,
+            loan_params=params,
+        )
+
+        # Both should reduce debt by the same principal portion.
+        assert paid_balances[2] == projected_balances[2]
+
+    def test_credit_status_shadow_excluded_from_debt(self):
+        """Shadow transaction with Credit status is excluded from debt calc.
+
+        Credit status has excludes_from_balance=True.  Even though the
+        shadow exists, it should not reduce the debt balance.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        credit_shadow = _shadow_income(2, "599.55", status="Credit")
+
+        balances, principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=[credit_shadow],
+                account_id=1,
+                loan_params=params,
+            )
+        )
+
+        # Credit-status payment should be ignored -- balance unchanged.
+        assert balances[2] == Decimal("100000.00")
+        assert principal_by_period[2] == Decimal("0.00")
+
+    def test_all_monetary_outputs_are_decimal(self):
+        """Every balance and principal value must be Decimal, not float.
+
+        Section 5 must preserve Decimal precision throughout the
+        balance calculator pipeline.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+            _period(3, 2, date(2026, 1, 29), date(2026, 2, 11)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+        txns = [_shadow_income(2, "599.55")]
+
+        balances, principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=txns,
+                account_id=1,
+                loan_params=params,
+            )
+        )
+
+        for period_id, balance in balances.items():
+            assert isinstance(balance, Decimal), (
+                f"Period {period_id}: balance is {type(balance).__name__}, "
+                f"expected Decimal"
+            )
+        for period_id, principal in principal_by_period.items():
+            assert isinstance(principal, Decimal), (
+                f"Period {period_id}: principal is {type(principal).__name__}, "
+                f"expected Decimal"
+            )
+
+    def test_interest_only_payment_no_principal_reduction(self):
+        """A payment that covers only interest reduces principal by zero.
+
+        If the payment equals exactly the interest for the period,
+        no principal reduction occurs and the balance stays the same.
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        # Interest = 100000 * 0.005 = 500.00 exactly.
+        interest_only = _shadow_income(2, "500.00")
+
+        balances, principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=[interest_only],
+                account_id=1,
+                loan_params=params,
+            )
+        )
+
+        # All payment went to interest -- balance unchanged.
+        assert balances[2] == Decimal("100000.00")
+        assert principal_by_period[2] == Decimal("0.00")
+
+    def test_partial_payment_below_interest(self):
+        """Payment less than monthly interest still reduces by zero principal.
+
+        If payment < interest, the balance calculator does not create
+        negative principal (which would increase the balance).
+        """
+        periods = [
+            _period(1, 0, date(2026, 1, 1), date(2026, 1, 14)),
+            _period(2, 1, date(2026, 1, 15), date(2026, 1, 28)),
+        ]
+        params = _loan_params(principal="100000", rate="0.06", term=360)
+
+        # $300 < $500 interest
+        underpayment = _shadow_income(2, "300.00")
+
+        balances, principal_by_period = (
+            calculate_balances_with_amortization(
+                anchor_balance=Decimal("100000.00"),
+                anchor_period_id=1,
+                periods=periods,
+                transactions=[underpayment],
+                account_id=1,
+                loan_params=params,
+            )
+        )
+
+        # No negative amortization -- balance must not increase.
+        assert balances[2] == Decimal("100000.00")
+        assert principal_by_period[2] == Decimal("0.00")

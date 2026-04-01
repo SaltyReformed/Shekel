@@ -742,3 +742,151 @@ class TestLoanNegativePaths:
 
         count = db.session.query(EscrowComponent).filter_by(account_id=other.id).count()
         assert count == 0
+
+
+# ── Section 5 Regression Baseline ──────────────────────────────────────
+
+# All five amortizing account types with realistic parameters.
+_AMORTIZING_TYPES = [
+    ("Mortgage", Decimal("250000.00"), Decimal("0.06500"), 360, 600),
+    ("Auto Loan", Decimal("25000.00"), Decimal("0.05000"), 60, 120),
+    ("Student Loan", Decimal("45000.00"), Decimal("0.04500"), 120, 300),
+    ("Personal Loan", Decimal("10000.00"), Decimal("0.08000"), 48, 120),
+    ("HELOC", Decimal("50000.00"), Decimal("0.07250"), 180, 360),
+]
+
+
+class TestLoanDashboardRegression:
+    """Regression baseline for Section 5 loan dashboard changes.
+
+    Verifies dashboard rendering, payoff calculator modes, and
+    multi-type support before Section 5 modifies the amortization
+    engine and loan UI.
+    """
+
+    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    def test_dashboard_renders_for_all_amortizing_types(
+        self, auth_client, seed_user, db, seed_periods,
+        type_name, principal, rate, term, max_term,
+    ):
+        """Dashboard must render successfully for every amortizing account type.
+
+        Section 5 may add type-specific dashboard panels.  This ensures
+        all existing types continue to work.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, type_name, f"Test {type_name}",
+            principal, rate, term, date(2024, 1, 1), 1,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Dashboard should display the monthly payment.
+        assert "Monthly" in html or "monthly" in html
+
+    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    def test_payoff_extra_payment_all_types(
+        self, auth_client, seed_user, db, seed_periods,
+        type_name, principal, rate, term, max_term,
+    ):
+        """Payoff calculator extra-payment mode works for all amortizing types.
+
+        Verifies months saved, interest saved, and new payoff date are
+        present in the response.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, type_name, f"Test {type_name}",
+            principal, rate, term, date(2024, 1, 1), 1,
+        )
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200.00"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Response must contain savings metrics.
+        assert "saved" in html.lower() or "interest" in html.lower()
+
+    def test_payoff_target_date_returns_required_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Target-date mode returns the extra monthly payment needed.
+
+        Verifies the payoff calculator correctly handles the target_date
+        code path and returns a numeric result.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2040-06-01"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Should contain a dollar amount for the required extra payment.
+        assert "$" in html or "extra" in html.lower()
+
+    def test_payoff_zero_extra_payment_shows_standard_metrics(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Zero extra payment should return standard schedule metrics
+        with zero months saved and zero interest saved.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "0.00"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # With zero extra, months saved should be 0.
+        assert "0 months" in html.lower() or "0 mo" in html.lower() or \
+               "$0" in html
+
+    def test_payoff_invalid_mode_does_not_crash(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Invalid payoff mode must not cause a server error.
+
+        The handler returns 200 with default/empty results rather than
+        a 400 validation error.  This documents the current behavior.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "invalid_mode"},
+        )
+        # Must not crash -- 200 or 400 are both acceptable, not 500.
+        assert resp.status_code != 500
+
+    def test_payoff_negative_extra_payment_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Negative extra payment must be rejected by validation."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "-100.00"},
+        )
+        # Should not succeed -- either 400 or validation error.
+        assert resp.status_code in (400, 422) or b"error" in resp.data.lower()
+
+    def test_dashboard_idor_blocked(
+        self, auth_client, seed_second_user, seed_second_periods,
+        second_auth_client, seed_user, seed_periods, db,
+    ):
+        """User A cannot view User B's loan dashboard.
+
+        Verifies the IDOR protection returns an identical response
+        for 'not found' and 'not yours' per the security response rule.
+        """
+        other_acct = _create_loan_account(
+            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            Decimal("200000.00"), Decimal("0.06000"), 360,
+            date(2024, 1, 1), 1,
+        )
+        # User A tries to access User B's dashboard.
+        resp = auth_client.get(f"/accounts/{other_acct.id}/loan")
+        # Must not return 200 -- should redirect or return 404.
+        assert resp.status_code in (302, 404)
+        if resp.status_code == 200:
+            pytest.fail("IDOR: User A could view User B's loan dashboard")

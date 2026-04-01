@@ -1590,3 +1590,234 @@ class TestSetupRequiredBadge:
             assert resp.status_code == 200
             assert b"Legacy 401k" in resp.data
             assert b"Setup Required" in resp.data
+
+
+# ── Section 5 Regression Baseline ──────────────────────────────────────
+
+
+class TestSavingsGoalRegression:
+    """Regression baseline for Section 5 savings goal changes.
+
+    Locks down the full savings goal lifecycle (create, read, update,
+    deactivate) and edge cases before Section 5 modifies savings
+    projections and goal computation.
+    """
+
+    def test_full_lifecycle_create_read_update_deactivate(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Complete goal lifecycle: create -> read on dashboard -> update
+        -> deactivate -> verify absent from active views.
+
+        This is the primary regression test for the goal CRUD pipeline.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "Lifecycle Savings")
+
+            # Create.
+            resp = auth_client.post("/savings/goals", data={
+                "name": "Lifecycle Goal",
+                "target_amount": "8000.00",
+                "target_date": "2027-12-01",
+                "contribution_per_period": "100.00",
+                "account_id": str(acct.id),
+            })
+            assert resp.status_code == 302
+
+            goal = db.session.query(SavingsGoal).filter_by(
+                name="Lifecycle Goal"
+            ).one()
+            assert goal.target_amount == Decimal("8000.00")
+            assert goal.is_active is True
+
+            # Read on dashboard.
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Lifecycle Goal" in resp.data
+
+            # Update.
+            resp = auth_client.post(f"/savings/goals/{goal.id}", data={
+                "name": "Updated Goal",
+                "target_amount": "12000.00",
+                "target_date": "2028-06-01",
+                "contribution_per_period": "150.00",
+                "account_id": str(acct.id),
+            })
+            assert resp.status_code == 302
+            db.session.refresh(goal)
+            assert goal.name == "Updated Goal"
+            assert goal.target_amount == Decimal("12000.00")
+
+            # Deactivate.
+            resp = auth_client.post(f"/savings/goals/{goal.id}/delete")
+            assert resp.status_code == 302
+            db.session.refresh(goal)
+            assert goal.is_active is False
+
+            # Verify absent from active goal list (goal name may still
+            # appear in flash/toast messages, so check the DB instead).
+            active_goals = (
+                db.session.query(SavingsGoal)
+                .filter_by(user_id=seed_user["user"].id, is_active=True)
+                .all()
+            )
+            active_names = [g.name for g in active_goals]
+            assert "Updated Goal" not in active_names
+
+    def test_goal_with_past_target_date(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Goal with target_date in the past must not crash the dashboard.
+
+        Users may have goals whose deadlines have passed.  The dashboard
+        should handle this gracefully.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "Past Date Savings")
+
+            # Create goal with past target_date directly in DB.
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="Overdue Goal",
+                target_amount=Decimal("5000.00"),
+                target_date=date(2020, 1, 1),
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Overdue Goal" in resp.data
+
+    def test_goal_with_zero_target_amount_rejected(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Goal with zero target_amount must fail validation.
+
+        The savings_goals table has a CHECK constraint: target_amount > 0.
+        The schema validation should catch this before hitting the DB.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "Zero Target Savings")
+            auth_client.post("/savings/goals", data={
+                "name": "Zero Goal",
+                "target_amount": "0.00",
+                "account_id": str(acct.id),
+            })
+            # Should fail validation -- not create the goal.
+            count = db.session.query(SavingsGoal).filter_by(
+                name="Zero Goal"
+            ).count()
+            assert count == 0
+
+    def test_goal_without_contribution_per_period(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Goal without contribution_per_period must still render on dashboard.
+
+        contribution_per_period is optional (nullable).  The dashboard
+        must handle None gracefully in its progress calculations.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "No Contrib Savings")
+
+            resp = auth_client.post("/savings/goals", data={
+                "name": "No Contribution Goal",
+                "target_amount": "3000.00",
+                "target_date": "2028-01-01",
+                "account_id": str(acct.id),
+            })
+            assert resp.status_code == 302
+
+            goal = db.session.query(SavingsGoal).filter_by(
+                name="No Contribution Goal"
+            ).one()
+            assert goal.contribution_per_period is None
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"No Contribution Goal" in resp.data
+
+    def test_goal_without_target_date(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Goal without target_date must still render on dashboard.
+
+        target_date is nullable.  The dashboard's remaining_periods
+        calculation must handle None target_date without error.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "No Date Savings")
+
+            resp = auth_client.post("/savings/goals", data={
+                "name": "Dateless Goal",
+                "target_amount": "7000.00",
+                "account_id": str(acct.id),
+            })
+            assert resp.status_code == 302
+
+            goal = db.session.query(SavingsGoal).filter_by(
+                name="Dateless Goal"
+            ).one()
+            assert goal.target_date is None
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Dateless Goal" in resp.data
+
+    def test_goal_idor_view_blocked(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_second_user, second_auth_client, seed_second_periods,
+    ):
+        """User A cannot view or edit User B's savings goal.
+
+        Verifies the ownership check on the goal edit endpoint returns
+        an identical response for 'not found' and 'not yours'.
+        """
+        with app.app_context():
+            # Create goal for user B.
+            other_acct = _create_savings_account(
+                seed_second_user, "Other User Savings",
+            )
+            other_goal = SavingsGoal(
+                user_id=seed_second_user["user"].id,
+                account_id=other_acct.id,
+                name="Private Goal",
+                target_amount=Decimal("20000.00"),
+            )
+            db.session.add(other_goal)
+            db.session.commit()
+
+            # User A tries to access User B's goal edit form.
+            resp = auth_client.get(f"/savings/goals/{other_goal.id}/edit")
+            assert resp.status_code == 302
+
+            # User A tries to update User B's goal.
+            resp = auth_client.post(f"/savings/goals/{other_goal.id}", data={
+                "name": "Hijacked",
+                "target_amount": "1.00",
+                "account_id": str(other_acct.id),
+            })
+            assert resp.status_code == 302
+
+            # Goal must be unchanged.
+            db.session.refresh(other_goal)
+            assert other_goal.name == "Private Goal"
+            assert other_goal.target_amount == Decimal("20000.00")
+
+    def test_goal_negative_target_amount_rejected(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Negative target_amount must be rejected by schema validation."""
+        with app.app_context():
+            acct = _create_savings_account(seed_user, "Neg Target Savings")
+            auth_client.post("/savings/goals", data={
+                "name": "Negative Goal",
+                "target_amount": "-5000.00",
+                "account_id": str(acct.id),
+            })
+            count = db.session.query(SavingsGoal).filter_by(
+                name="Negative Goal"
+            ).count()
+            assert count == 0
