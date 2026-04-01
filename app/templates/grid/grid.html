@@ -108,24 +108,14 @@
       </tr>
 
       {# Render income rows -- one row per unique (category, template, name) #}
-      {% set ns = namespace(current_group='', current_item='') %}
+      {% set ns = namespace(current_group='') %}
       {% for rk in income_row_keys %}
         {% if rk.group_name != ns.current_group %}
           {% set ns.current_group = rk.group_name %}
-          {% set ns.current_item = '' %}
           <tr class="group-header-row">
             <td class="sticky-col text-muted small fw-semibold"
                 colspan="{{ periods|length + 1 }}">
               {{ rk.group_name }}
-            </td>
-          </tr>
-        {% endif %}
-        {% if rk.item_name != ns.current_item %}
-          {% set ns.current_item = rk.item_name %}
-          <tr class="item-subheader-row">
-            <td class="sticky-col ps-3 text-muted small"
-                colspan="{{ periods|length + 1 }}">
-              {{ rk.item_name }}
             </td>
           </tr>
         {% endif %}
@@ -194,24 +184,14 @@
         </td>
       </tr>
 
-      {% set ns2 = namespace(current_group='', current_item='') %}
+      {% set ns2 = namespace(current_group='') %}
       {% for rk in expense_row_keys %}
         {% if rk.group_name != ns2.current_group %}
           {% set ns2.current_group = rk.group_name %}
-          {% set ns2.current_item = '' %}
           <tr class="group-header-row">
             <td class="sticky-col text-muted small fw-semibold"
                 colspan="{{ periods|length + 1 }}">
               {{ rk.group_name }}
-            </td>
-          </tr>
-        {% endif %}
-        {% if rk.item_name != ns2.current_item %}
-          {% set ns2.current_item = rk.item_name %}
-          <tr class="item-subheader-row">
-            <td class="sticky-col ps-3 text-muted small"
-                colspan="{{ periods|length + 1 }}">
-              {{ rk.item_name }}
             </td>
           </tr>
         {% endif %}

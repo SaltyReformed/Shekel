@@ -320,15 +320,6 @@ thead .sticky-col {
   color: var(--shekel-text-muted);
 }
 
-/* Item sub-headers within category groups */
-.item-subheader-row td {
-  font-size: 0.8rem;
-  padding-top: 0.15rem;
-  padding-bottom: 0.15rem;
-  border-bottom: none;
-  color: var(--shekel-text-muted);
-}
-
 /* Spacer row between sections */
 .spacer-row td {
   background-color: var(--bs-body-bg) !important;

@@ -362,7 +362,6 @@ document.addEventListener('keydown', function(e) {
              !tr.classList.contains('section-banner-expense') &&
              !tr.classList.contains('spacer-row') &&
              !tr.classList.contains('group-header-row') &&
-             !tr.classList.contains('item-subheader-row') &&
              !tr.classList.contains('subtotal-row') &&
              !tr.classList.contains('net-cash-flow-row');
     });
