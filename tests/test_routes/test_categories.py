@@ -842,3 +842,197 @@ class TestCategoryEdit:
             db.session.refresh(cat)
             assert cat.item_name == "Fuel"
             assert cat.sort_order == 5
+
+
+# ── Group Dropdown Tests (5A.4-2) ──────────────────────────────────
+
+
+class TestCategoryGroupDropdown:
+    """Tests for the group name dropdown on category add and edit forms."""
+
+    def test_add_form_shows_group_dropdown(self, app, auth_client, seed_user):
+        """Add form contains a select dropdown with existing groups and 'Add new group'."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # The add form has a <select> for group selection.
+            assert 'id="add-group-select"' in html
+
+            # Existing groups appear as options (seed_user has 5 groups).
+            assert '<option value="Auto">' in html
+            assert '<option value="Home">' in html
+            assert '<option value="Income">' in html
+
+            # Sentinel option for adding a new group.
+            assert '__new__' in html
+            assert "Add new group" in html
+
+    def test_add_form_groups_sorted_alphabetically(self, app, auth_client, seed_user):
+        """Dropdown options are sorted alphabetically, with 'Add new group' last."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # Isolate the add form's select to avoid matching edit form dropdowns.
+            select_start = html.index('id="add-group-select"')
+            select_end = html.index("</select>", select_start)
+            select_html = html[select_start:select_end]
+
+            # seed_user groups: Auto, Credit Card, Family, Home, Income
+            auto_pos = select_html.index('value="Auto"')
+            credit_pos = select_html.index('value="Credit Card"')
+            family_pos = select_html.index('value="Family"')
+            home_pos = select_html.index('value="Home"')
+            income_pos = select_html.index('value="Income"')
+            new_pos = select_html.index('value="__new__"')
+
+            assert auto_pos < credit_pos < family_pos < home_pos < income_pos < new_pos
+
+    def test_add_to_existing_group_via_dropdown(self, app, auth_client, seed_user):
+        """Creating a category with an existing group name works via hidden input."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "Auto",
+                "item_name": "Insurance",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            auto_cats = (
+                db.session.query(Category)
+                .filter_by(user_id=seed_user["user"].id, group_name="Auto")
+                .all()
+            )
+            assert len(auto_cats) == 2  # Car Payment + Insurance
+
+    def test_add_with_new_group(self, app, auth_client, seed_user):
+        """Creating a category with a new group name adds a new group."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "Travel",
+                "item_name": "Airline",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+
+            groups = set(
+                row[0] for row in
+                db.session.query(Category.group_name)
+                .filter_by(user_id=seed_user["user"].id)
+                .distinct()
+            )
+            assert "Travel" in groups
+
+    def test_edit_form_preselects_current_group(self, app, auth_client, seed_user):
+        """Edit form dropdown pre-selects the category's current group."""
+        with app.app_context():
+            cat = seed_user["categories"]["Car Payment"]
+
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # Find the edit form's select for this category.
+            select_id = f'id="edit-group-select-{cat.id}"'
+            assert select_id in html
+
+            # The "Auto" option within this category's edit select has 'selected'.
+            # Locate the select, then find the selected option within it.
+            select_start = html.index(select_id)
+            # The closing </select> after this select.
+            select_end = html.index("</select>", select_start)
+            select_html = html[select_start:select_end]
+
+            assert 'value="Auto" selected' in select_html
+
+    def test_no_existing_groups(self, app, auth_client, seed_user):
+        """With no categories, only 'Add new group' option and text field is visible."""
+        with app.app_context():
+            # Remove all seed categories (no templates reference them).
+            db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id
+            ).delete()
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # The add form select exists with only the sentinel option.
+            assert 'id="add-group-select"' in html
+            assert '__new__' in html
+
+            # The custom text field is visible (no d-none class on container).
+            # When group_names is empty, the div should NOT have d-none.
+            custom_div_start = html.index('id="add-group-custom"')
+            # Walk back to find the opening tag.
+            div_start = html.rfind("<div", 0, custom_div_start)
+            div_tag = html[div_start:custom_div_start + len('id="add-group-custom"')]
+            assert "d-none" not in div_tag
+
+    def test_edit_form_dropdown_ids_unique_per_category(self, app, auth_client, seed_user):
+        """Each edit form has a distinct set of dropdown element IDs."""
+        with app.app_context():
+            cats = list(seed_user["categories"].values())
+            cat_a = cats[0]
+            cat_b = cats[1]
+
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # Both categories have their own select elements.
+            assert f'id="edit-group-select-{cat_a.id}"' in html
+            assert f'id="edit-group-select-{cat_b.id}"' in html
+
+            # Both have their own hidden inputs.
+            assert f'id="edit-group-name-{cat_a.id}"' in html
+            assert f'id="edit-group-name-{cat_b.id}"' in html
+
+            # Both have their own custom divs.
+            assert f'id="edit-group-custom-{cat_a.id}"' in html
+            assert f'id="edit-group-custom-{cat_b.id}"' in html
+
+    def test_add_form_hidden_input_name_is_group_name(self, app, auth_client, seed_user):
+        """Only the hidden input has name='group_name'; the select does not."""
+        with app.app_context():
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            # The add form's select should NOT have name="group_name".
+            select_start = html.index('id="add-group-select"')
+            select_tag_start = html.rfind("<select", 0, select_start)
+            select_tag = html[select_tag_start:select_start + len('id="add-group-select"')]
+            assert 'name="group_name"' not in select_tag
+
+            # The hidden input has both the id and name.
+            assert 'id="add-group-name" name="group_name"' in html
+
+    def test_group_dropdown_reflects_newly_created_group(self, app, auth_client, seed_user):
+        """Creating a category with a new group adds it to the dropdown on next load."""
+        with app.app_context():
+            auth_client.post("/categories", data={
+                "group_name": "NewGroup",
+                "item_name": "NewItem",
+            })
+
+            resp = auth_client.get("/settings?section=categories")
+            html = resp.data.decode()
+
+            assert '<option value="NewGroup">' in html
+
+    def test_htmx_row_partial_includes_dropdown(self, app, auth_client, seed_user):
+        """HTMX-created category row includes group dropdown in its edit form."""
+        with app.app_context():
+            resp = auth_client.post("/categories", data={
+                "group_name": "Auto",
+                "item_name": "Tolls",
+            }, headers={"HX-Request": "true"})
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # The partial should contain a select for the edit form.
+            assert "edit-group-select-" in html
+            # Existing groups should appear as options.
+            assert '<option value="Auto"' in html
+            assert '__new__' in html

@@ -71,7 +71,18 @@ def create_category():
     logger.info("Created category: %s", category.display_name)
 
     if request.headers.get("HX-Request"):
-        return render_template("categories/_category_row.html", category=category)
+        # Fresh group list for the edit-form dropdown in the HTMX partial.
+        group_names = sorted(
+            row[0] for row in
+            db.session.query(Category.group_name)
+            .filter_by(user_id=current_user.id)
+            .distinct()
+        )
+        return render_template(
+            "categories/_category_row.html",
+            category=category,
+            group_names=group_names,
+        )
 
     flash(f"Category '{category.display_name}' created.", "success")
     return redirect(url_for("settings.show", section="categories"))

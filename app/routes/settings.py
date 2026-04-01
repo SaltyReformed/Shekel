@@ -53,6 +53,7 @@ def show():
     account_types = []
     types_in_use = set()
     categories = []
+    group_names = []
     icon_choices = []
     mfa_enabled = False
 
@@ -70,6 +71,8 @@ def show():
             .order_by(Category.sort_order, Category.group_name, Category.item_name)
             .all()
         )
+        # Distinct group names for the category add/edit dropdown (5A.4-2).
+        group_names = sorted(set(cat.group_name for cat in categories))
         for cat in categories:
             grouped.setdefault(cat.group_name, []).append(cat)
     elif section == "pay-periods":
@@ -144,6 +147,7 @@ def show():
         account_types=account_types,
         types_in_use=types_in_use,
         categories=categories,
+        group_names=group_names,
         icon_choices=icon_choices,
         mfa_enabled=mfa_enabled,
     )
