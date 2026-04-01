@@ -2641,29 +2641,10 @@ class TestCalibration:
 class TestButtonPlacement:
     """Tests for prominent View Breakdown / View Projection buttons on salary pages."""
 
-    def test_salary_list_buttons_appear_before_actions(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Labeled 'View Breakdown' buttons appear before the icon-only Actions buttons."""
-        with app.app_context():
-            _create_profile(seed_user)
-
-            response = auth_client.get("/salary")
-            html = response.data.decode()
-
-            # The labeled button text should appear before the icon-only title attr
-            labeled_pos = html.index("View Breakdown")
-            icon_pos = html.index('title="Breakdown"')
-            assert labeled_pos < icon_pos
-
-            labeled_proj_pos = html.index("View Projection")
-            icon_proj_pos = html.index('title="Projection"')
-            assert labeled_proj_pos < icon_proj_pos
-
     def test_salary_list_buttons_link_to_correct_routes(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Labeled buttons on the list page link to the correct breakdown/projection URLs."""
+        """Action icons on the list page link to the correct breakdown/projection URLs."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -2676,7 +2657,7 @@ class TestButtonPlacement:
     def test_salary_list_buttons_per_profile(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Each profile on the list page has its own View Breakdown and View Projection buttons."""
+        """Each profile on the list page has breakdown and projection action icons."""
         with app.app_context():
             profile1 = _create_profile(seed_user)
 
@@ -2778,20 +2759,20 @@ class TestButtonPlacement:
     def test_salary_list_existing_buttons_preserved(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """The original icon-only buttons in the Actions column are still present on the list page."""
+        """Action column icon buttons link to breakdown and projection pages exactly once each."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get("/salary")
             html = response.data.decode()
 
-            # The breakdown URL should appear at least twice: once for the
-            # labeled button in the Name cell, once for the icon button in Actions.
+            # After 5A.3 duplicate button removal, each URL appears once
+            # (in Actions column only, not duplicated in Name column).
             breakdown_url = f"/salary/{profile.id}/breakdown"
-            assert html.count(breakdown_url) >= 2
+            assert html.count(breakdown_url) == 1
 
             projection_url = f"/salary/{profile.id}/projection"
-            assert html.count(projection_url) >= 2
+            assert html.count(projection_url) == 1
 
     def test_salary_form_buttons_inline_with_submit(
         self, app, auth_client, seed_user, seed_periods
@@ -2845,3 +2826,105 @@ class TestButtonPlacement:
 
             assert response.status_code == 200
             assert b"Salary Projection" in response.data
+
+
+# ── Salary Listing Button Cleanup (5A.3) ────────────────────────
+
+
+class TestSalaryListingButtonCleanup:
+    """Verify duplicate View Breakdown / View Projection buttons were removed from /salary.
+
+    Task 5A.3 removed full-width labeled buttons from the Name column,
+    keeping only the compact icon buttons in the Actions column.
+    """
+
+    def test_salary_listing_no_duplicate_buttons(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Name column no longer contains labeled View Breakdown / View Projection buttons."""
+        with app.app_context():
+            _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # The labeled button text "View Breakdown" and "View Projection" only
+            # appeared in the Name column's full-width buttons. The Actions column
+            # uses title attributes ("Breakdown", "Projection") without "View" prefix.
+            assert "View Breakdown" not in html
+            assert "View Projection" not in html
+
+            # The flex container that held the duplicate buttons should be gone.
+            assert 'd-flex gap-2 mt-1' not in html
+
+    def test_salary_action_icons_still_functional(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Actions column icon buttons link to the correct breakdown and projection URLs."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            breakdown_url = f"/salary/{profile.id}/breakdown"
+            projection_url = f"/salary/{profile.id}/projection"
+
+            # Action icon buttons carry title attributes for accessibility.
+            assert 'title="Breakdown"' in html
+            assert 'title="Projection"' in html
+
+            # The URLs appear exactly once each (Actions column only).
+            assert html.count(breakdown_url) == 1
+            assert html.count(projection_url) == 1
+
+            # Verify the icon links contain the correct href.
+            # Find the title="Breakdown" anchor and confirm it points to the right URL.
+            breakdown_anchor_start = html.index('title="Breakdown"')
+            # Walk backwards to find the opening <a tag for this anchor.
+            breakdown_tag_start = html.rfind("<a ", 0, breakdown_anchor_start)
+            breakdown_tag = html[breakdown_tag_start:breakdown_anchor_start]
+            assert breakdown_url in breakdown_tag
+
+            projection_anchor_start = html.index('title="Projection"')
+            projection_tag_start = html.rfind("<a ", 0, projection_anchor_start)
+            projection_tag = html[projection_tag_start:projection_anchor_start]
+            assert projection_url in projection_tag
+
+    def test_salary_listing_name_column_clean(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Name column cells contain only the profile name with no button markup."""
+        with app.app_context():
+            _create_profile(seed_user)
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # The Name column <td> should be a simple single-line cell.
+            # After removal, the pattern is: <td>ProfileName</td>
+            # with no nested <a> or <div> tags containing button classes.
+            assert "<td>Day Job</td>" in html
+
+    def test_salary_listing_inactive_profile_no_duplicate_buttons(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Inactive salary profiles also have no duplicate buttons in the Name column."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            profile.is_active = False
+            db.session.commit()
+
+            response = auth_client.get("/salary")
+            html = response.data.decode()
+
+            # Even for inactive profiles, no labeled buttons in Name column.
+            assert "View Breakdown" not in html
+            assert "View Projection" not in html
+
+            # The profile name still renders.
+            assert "Day Job" in html
+
+            # Action icons still present for inactive profiles.
+            assert f"/salary/{profile.id}/breakdown" in html
+            assert f"/salary/{profile.id}/projection" in html
