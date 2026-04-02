@@ -25,7 +25,9 @@ from app.schemas.validation import (
     PayoffCalculatorSchema,
     RateChangeSchema,
 )
+from app.models.scenario import Scenario
 from app.services import amortization_engine, escrow_calculator
+from app.services.loan_payment_service import get_payment_history
 from app.utils.formatting import pct_to_decimal
 
 logger = logging.getLogger(__name__)
@@ -103,8 +105,18 @@ def dashboard(account_id):
             account_type=account_type,
         )
 
+    # Load payment history from shadow income transactions.
+    # When no transfers exist, payments is [] and the engine behaves
+    # identically to the pre-5.1 no-payments path.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    payments = get_payment_history(account.id, scenario.id) if scenario else []
+
     # Calculate projection (summary + schedule) in one call.
-    proj = amortization_engine.get_loan_projection(params)
+    proj = amortization_engine.get_loan_projection(params, payments=payments)
     summary = proj.summary
 
     # Load escrow components.
@@ -411,6 +423,14 @@ def payoff_calculate(account_id):
     original = Decimal(str(params.original_principal))
     rate = Decimal(str(params.interest_rate))
 
+    # Load payment history for payment-aware projections.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    payments = get_payment_history(account.id, scenario.id) if scenario else []
+
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
         payoff_summary = amortization_engine.calculate_summary(
@@ -422,21 +442,27 @@ def payoff_calculate(account_id):
             term_months=params.term_months,
             extra_monthly=extra,
             original_principal=original,
+            payments=payments,
         )
 
         # Generate chart data for comparison.
+        # Standard schedule: contractual baseline with no extra (but
+        # includes committed payments so the baseline reflects reality).
         standard_schedule = amortization_engine.generate_schedule(
             principal, rate, remaining_months,
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
+            payments=payments,
         )
+        # Accelerated schedule: committed payments + extra_monthly.
         accelerated_schedule = amortization_engine.generate_schedule(
             principal, rate, remaining_months,
             extra_monthly=extra,
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
+            payments=payments,
         )
 
         chart_labels, chart_standard = _build_chart_data(standard_schedule)

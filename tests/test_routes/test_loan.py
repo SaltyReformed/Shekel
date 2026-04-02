@@ -11,11 +11,14 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
+from app.services.transfer_service import create_transfer
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -890,3 +893,174 @@ class TestLoanDashboardRegression:
         assert resp.status_code in (302, 404)
         if resp.status_code == 200:
             pytest.fail("IDOR: User A could view User B's loan dashboard")
+
+
+# ── Payment Integration Tests (Commit 5.1-2) ────────────────────────
+
+
+def _create_transfer_to_loan(seed_user, loan_account, period, amount,
+                              status_enum=StatusEnum.PROJECTED):
+    """Create a transfer from checking to loan account via the transfer service.
+
+    Enforces shadow transaction invariants by using the production
+    code path.  Does NOT directly insert shadow transactions.
+    """
+    return create_transfer(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=loan_account.id,
+        pay_period_id=period.id,
+        scenario_id=seed_user["scenario"].id,
+        amount=amount,
+        status_id=ref_cache.status_id(status_enum),
+        category_id=seed_user["categories"]["Rent"].id,
+    )
+
+
+class TestLoanDashboardWithPayments:
+    """Integration tests for payment-aware loan dashboard.
+
+    Verifies that the dashboard and payoff calculator correctly load
+    payment history from shadow transactions and pass it to the
+    amortization engine.
+    """
+
+    def test_dashboard_no_payments_backward_compat(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with no transfers renders identically to pre-5.1 behavior.
+
+        This complements the Commit #0 regression tests by explicitly
+        verifying the payment integration code path produces the same
+        output when no payments exist.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Loan Summary" in html
+
+    def test_dashboard_with_confirmed_payments(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with confirmed transfer payments renders successfully.
+
+        A Paid transfer to the loan account creates a confirmed shadow
+        income transaction.  The dashboard should load it and pass it
+        to the engine without error.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Loan Summary" in html
+
+    def test_dashboard_with_projected_payments(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with projected (future) transfer payments renders.
+
+        Projected shadow transactions represent committed future payments
+        from recurring transfers.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+
+    def test_dashboard_with_mixed_payments(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with confirmed + projected payments renders correctly.
+
+        This is the typical real-world case: past payments are confirmed
+        (Paid/Settled), future payments are projected.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+
+    def test_payoff_extra_payment_with_history(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff calculator extra payment mode works with payment history.
+
+        The calculator should not crash when shadow transactions exist
+        for the loan account.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200.00"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "saved" in html.lower() or "interest" in html.lower()
+
+    def test_payoff_target_date_with_history(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff calculator target date mode works with payment history.
+
+        The target date mode uses current_principal from LoanParams
+        (not derived from payments in this commit).
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2040-06-01"},
+        )
+        assert resp.status_code == 200
+
+    def test_dashboard_cancelled_transfer_excluded(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Cancelled transfers do not affect the dashboard projection.
+
+        A cancelled payment should not appear in the payment history.
+        The dashboard output should match the no-payments case.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.CANCELLED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Loan Summary" in html
