@@ -5,10 +5,14 @@ Tests for investment/retirement account routes.
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.ref import AccountType
+from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.ref import AccountType, FilingStatus
+from app.models.salary_profile import SalaryProfile
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
@@ -426,3 +430,103 @@ class TestGrowthChartFragment:
         assert b"Other 401k" not in resp.data, (
             "IDOR response leaked victim's account name"
         )
+
+
+# ── Tests: Contribution-Aware Dashboard ───────────────────────
+
+
+def _create_salary_profile(db_session, user_id, scenario_id):
+    """Create an active salary profile for the test user."""
+    filing = db_session.query(FilingStatus).filter_by(name="single").one()
+    profile = SalaryProfile(
+        user_id=user_id,
+        scenario_id=scenario_id,
+        filing_status_id=filing.id,
+        name="Day Job",
+        annual_salary=Decimal("100000.00"),
+        state_code="NC",
+        is_active=True,
+    )
+    db_session.add(profile)
+    db_session.flush()
+    return profile
+
+
+def _create_deduction(db_session, profile_id, account_id, amount="500.00"):
+    """Create a flat-dollar deduction targeting the investment account."""
+    flat_id = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
+    timing_id = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+    ded = PaycheckDeduction(
+        salary_profile_id=profile_id,
+        deduction_timing_id=timing_id,
+        calc_method_id=flat_id,
+        name="401k Contribution",
+        amount=Decimal(amount),
+        target_account_id=account_id,
+        is_active=True,
+    )
+    db_session.add(ded)
+    db_session.flush()
+    return ded
+
+
+class TestContributionAwareDashboard:
+    """Tests for the contribution timeline integration (5.2-2).
+
+    Backward compatibility (no deductions/transfers) is already covered
+    by TestInvestmentDashboard.test_dashboard_with_params.
+    IDOR is already covered by TestInvestmentDashboard.test_dashboard_idor.
+    """
+
+    def test_dashboard_with_deduction(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard renders with deduction-based contributions.
+
+        Creates a salary profile and a flat $500 deduction targeting the
+        investment account.  Verifies the dashboard renders without error
+        and the periodic contribution value appears in the response.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+
+        profile = _create_salary_profile(
+            db.session, seed_user["user"].id,
+            seed_user["scenario"].id,
+        )
+        _create_deduction(db.session, profile.id, acct.id, "500.00")
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        # The deduction contributes $500/period.
+        assert b"500.00" in resp.data
+
+    def test_growth_chart_with_deduction(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Growth chart HTMX fragment renders with deduction contributions.
+
+        Verifies the growth chart route processes contribution data without
+        error.  The chart uses synthetic periods, so deduction dates
+        mostly fall back to periodic_contribution -- but the route must
+        still call build_contribution_timeline without crashing.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+
+        profile = _create_salary_profile(
+            db.session, seed_user["user"].id,
+            seed_user["scenario"].id,
+        )
+        _create_deduction(db.session, profile.id, acct.id, "500.00")
+        db.session.commit()
+
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"growthChart" in resp.data

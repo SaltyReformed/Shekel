@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.orm import joinedload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -27,7 +28,7 @@ from app.schemas.validation import (
 )
 from app.models.scenario import Scenario
 from app.services import balance_calculator, growth_engine, pay_period_service, paycheck_calculator
-from app.services.investment_projection import calculate_investment_inputs
+from app.services.investment_projection import build_contribution_timeline, calculate_investment_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ def dashboard(account_id):
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
+        .options(joinedload(Transaction.status))
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.isnot(None),
@@ -169,6 +171,13 @@ def dashboard(account_id):
         )
     ytd_contributions = inputs.ytd_contributions
 
+    # Build per-period contribution timeline from deductions and transfers.
+    contributions = build_contribution_timeline(
+        deductions=adapted_deductions,
+        contribution_transactions=acct_contributions,
+        periods=all_periods,
+    )
+
     # Project balances forward.
     projection = []
     chart_labels = []
@@ -187,6 +196,7 @@ def dashboard(account_id):
             employer_params=employer_params,
             annual_contribution_limit=params.annual_contribution_limit,
             ytd_contributions_start=ytd_contributions,
+            contributions=contributions,
         )
 
         cumulative_contrib = Decimal("0")
@@ -359,6 +369,7 @@ def growth_chart(account_id):
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
+        .options(joinedload(Transaction.status))
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.isnot(None),
@@ -379,6 +390,13 @@ def growth_chart(account_id):
         salary_gross_biweekly=salary_gross_biweekly,
     )
 
+    # Build per-period contribution timeline from deductions and transfers.
+    contributions = build_contribution_timeline(
+        deductions=adapted_deductions,
+        contribution_transactions=acct_contributions,
+        periods=all_periods,
+    )
+
     projection = growth_engine.project_balance(
         current_balance=current_balance,
         assumed_annual_return=params.assumed_annual_return,
@@ -387,6 +405,7 @@ def growth_chart(account_id):
         employer_params=inputs.employer_params,
         annual_contribution_limit=params.annual_contribution_limit,
         ytd_contributions_start=inputs.ytd_contributions,
+        contributions=contributions,
     )
 
     period_map = {p.id: p for p in periods}

@@ -8,7 +8,9 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import CalcMethodEnum
+from app.services.growth_engine import ContributionRecord
 from app.services.investment_projection import (
+    build_contribution_timeline,
     calculate_investment_inputs,
     InvestmentInputs,
 )
@@ -411,3 +413,283 @@ class TestCalculateInvestmentInputs:
         # (200 + 400) / 2 periods = 300
         assert result.periodic_contribution == Decimal("300")
         assert result.ytd_contributions == Decimal("0")
+
+
+# ── Fake Objects for build_contribution_timeline ──────────────
+
+
+@dataclass
+class FakeStatus:
+    """Mimics ref.Status model for testing."""
+    is_settled: bool
+    excludes_from_balance: bool = False
+
+
+@dataclass
+class FakeContribTransaction:
+    """Shadow income transaction with status for timeline tests."""
+    effective_amount: Decimal
+    pay_period_id: int
+    status: FakeStatus
+
+
+# ── Tests: build_contribution_timeline ────────────────────────
+
+
+class TestBuildContributionTimeline:
+    """Tests for build_contribution_timeline().
+
+    Verifies that the function correctly combines deduction-based and
+    transfer-based contributions into a unified ContributionRecord list,
+    with correct amounts, is_confirmed semantics, and sorting.
+    """
+
+    def test_deduction_only(self):
+        """Deductions with no transfers: one record per period from deduction amount.
+
+        Flat $500 deduction across 3 periods.
+        """
+        deductions = [FakeDeduction(
+            amount=Decimal("500.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        periods = [
+            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2020, 1, 16), period_index=1),
+            FakePeriod(id=3, start_date=date(2020, 1, 30), period_index=2),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        assert len(result) == 3
+        for r in result:
+            assert r.amount == Decimal("500.00")
+            assert isinstance(r, ContributionRecord)
+
+    def test_transfer_only(self):
+        """Shadow income transactions with no deductions: one record per transaction."""
+        settled = FakeStatus(is_settled=True)
+        txns = [
+            FakeContribTransaction(Decimal("200"), 1, settled),
+            FakeContribTransaction(Decimal("300"), 2, settled),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2020, 1, 16), period_index=1),
+        ]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert len(result) == 2
+        assert result[0].amount == Decimal("200")
+        assert result[1].amount == Decimal("300")
+
+    def test_both_paths_summed(self):
+        """Deduction and transfer on the same period produce separate records.
+
+        The growth engine's lookup dict aggregates same-date records.
+        Flat $500 deduction + $200 transfer on period 1.
+        """
+        deductions = [FakeDeduction(
+            amount=Decimal("500.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        settled = FakeStatus(is_settled=True)
+        txns = [FakeContribTransaction(Decimal("200"), 1, settled)]
+        periods = [
+            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=txns,
+            periods=periods,
+        )
+        # One record from deduction, one from transfer, same date.
+        assert len(result) == 2
+        total = sum(r.amount for r in result)
+        assert total == Decimal("700.00")
+
+    def test_deduction_flat_amount(self):
+        """Flat-dollar deduction: amount matches deduction.amount exactly."""
+        deductions = [FakeDeduction(
+            amount=Decimal("269.23"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        assert result[0].amount == Decimal("269.23")
+
+    def test_deduction_percentage(self):
+        """Percentage deduction: amount = gross_biweekly * percentage.
+
+        7% of ($100,000 / 26) = 7% of $3846.15 = $269.23.
+        """
+        deductions = [FakeDeduction(
+            amount=Decimal("0.07"), calc_method_id=_pct_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
+        expected = (gross * Decimal("0.07")).quantize(Decimal("0.01"))
+        assert result[0].amount == expected
+
+    def test_is_confirmed_deduction_past(self):
+        """Deduction for a past period: is_confirmed=True."""
+        deductions = [FakeDeduction(
+            amount=Decimal("500"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        # Far in the past -- guaranteed to be before today.
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        assert result[0].is_confirmed is True
+
+    def test_is_confirmed_deduction_future(self):
+        """Deduction for a future period: is_confirmed=False."""
+        deductions = [FakeDeduction(
+            amount=Decimal("500"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        # Far in the future -- guaranteed to be after today.
+        periods = [FakePeriod(id=1, start_date=date(2099, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        assert result[0].is_confirmed is False
+
+    def test_is_confirmed_transfer_settled(self):
+        """Settled shadow transaction: is_confirmed=True."""
+        settled = FakeStatus(is_settled=True)
+        txns = [FakeContribTransaction(Decimal("200"), 1, settled)]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert result[0].is_confirmed is True
+
+    def test_is_confirmed_transfer_projected(self):
+        """Projected shadow transaction: is_confirmed=False."""
+        projected = FakeStatus(is_settled=False)
+        txns = [FakeContribTransaction(Decimal("200"), 1, projected)]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert result[0].is_confirmed is False
+
+    def test_is_confirmed_mixed_same_date(self):
+        """Confirmed deduction + projected transfer on same date.
+
+        Both produce records for the same date.  The growth engine's
+        lookup dict applies the conservative rule (all must be confirmed).
+        Here we verify both records are produced -- one True, one False.
+        """
+        deductions = [FakeDeduction(
+            amount=Decimal("500"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+        )]
+        projected = FakeStatus(is_settled=False)
+        txns = [FakeContribTransaction(Decimal("200"), 1, projected)]
+        # Past date so deduction is confirmed.
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=txns,
+            periods=periods,
+        )
+        assert len(result) == 2
+        confirmed_flags = {r.is_confirmed for r in result}
+        assert True in confirmed_flags   # Deduction (past).
+        assert False in confirmed_flags  # Transfer (projected).
+
+    def test_empty_both(self):
+        """No deductions and no transactions: empty list returned."""
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=[], periods=periods,
+        )
+        assert result == []
+
+    def test_sorted_output(self):
+        """Output is sorted by contribution_date regardless of input order."""
+        settled = FakeStatus(is_settled=True)
+        txns = [
+            FakeContribTransaction(Decimal("300"), 2, settled),
+            FakeContribTransaction(Decimal("100"), 1, settled),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2020, 1, 16), period_index=1),
+        ]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        dates = [r.contribution_date for r in result]
+        assert dates == sorted(dates)
+
+    def test_uses_effective_amount(self):
+        """The function uses effective_amount from the transaction object."""
+        settled = FakeStatus(is_settled=True)
+        # effective_amount is a pre-computed value (property on real model).
+        txns = [FakeContribTransaction(Decimal("999.99"), 1, settled)]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert result[0].amount == Decimal("999.99")
+
+    def test_multiple_deductions_summed(self):
+        """Two deductions targeting the same account: amounts summed per period.
+
+        $500 flat + 5% of $3846.15 = $500 + $192.31 = $692.31.
+        """
+        deductions = [
+            FakeDeduction(
+                amount=Decimal("500.00"), calc_method_id=_flat_id(),
+                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            ),
+            FakeDeduction(
+                amount=Decimal("0.05"), calc_method_id=_pct_id(),
+                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            ),
+        ]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
+        expected = Decimal("500.00") + (gross * Decimal("0.05")).quantize(Decimal("0.01"))
+        assert result[0].amount == expected
+
+    def test_excluded_transaction_skipped(self):
+        """Cancelled/credit transactions (excludes_from_balance) are skipped."""
+        cancelled = FakeStatus(is_settled=False, excludes_from_balance=True)
+        settled = FakeStatus(is_settled=True)
+        txns = [
+            FakeContribTransaction(Decimal("200"), 1, cancelled),
+            FakeContribTransaction(Decimal("300"), 2, settled),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2020, 1, 16), period_index=1),
+        ]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert len(result) == 1
+        assert result[0].amount == Decimal("300")
+
+    def test_transaction_outside_period_range_skipped(self):
+        """Transaction with pay_period_id not in periods list is skipped."""
+        settled = FakeStatus(is_settled=True)
+        txns = [FakeContribTransaction(Decimal("200"), 99, settled)]
+        periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
+        result = build_contribution_timeline(
+            deductions=[], contribution_transactions=txns, periods=periods,
+        )
+        assert result == []
