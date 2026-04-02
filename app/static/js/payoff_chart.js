@@ -1,11 +1,17 @@
 'use strict';
 
 /**
- * Shekel Budget App -- Payoff Chart (Chart.js)
+ * Shekel Budget App -- Loan Payoff Chart (Chart.js)
  *
- * Renders a line chart showing loan balance over time.
+ * Renders a multi-scenario line chart showing loan balance over time.
+ * Supports up to four scenarios:
+ *
+ *   - Original: contractual baseline (dashed, lighter)
+ *   - Committed: all payments applied (solid, primary)
+ *   - Floor: confirmed payments only (dashed, distinct)
+ *   - Accelerated: with extra payments (dashed, amber)
+ *
  * Data is read from data-* attributes on the canvas element (CSP-compliant).
- * Supports optional accelerated (extra payment) schedule overlay.
  * Uses ShekelChart.create() for consistent theming.
  *
  * @param {string} canvasId - The canvas element ID.
@@ -15,30 +21,72 @@ function renderPayoffChart(canvasId) {
   if (!canvas) return;
 
   var labels = JSON.parse(canvas.getAttribute('data-labels') || '[]');
-  var standard = JSON.parse(canvas.getAttribute('data-standard') || '[]');
+  var original = JSON.parse(canvas.getAttribute('data-original') || '[]');
+  var committed = JSON.parse(canvas.getAttribute('data-committed') || '[]');
+  var floor = JSON.parse(canvas.getAttribute('data-floor') || '[]');
   var accelerated = JSON.parse(canvas.getAttribute('data-accelerated') || '[]');
 
-  if (labels.length === 0 || standard.length === 0) return;
+  // Backward compat: data-standard maps to original for older callers.
+  if (original.length === 0) {
+    var standard = JSON.parse(canvas.getAttribute('data-standard') || '[]');
+    if (standard.length > 0) {
+      original = standard;
+    }
+  }
 
-  var datasets = [{
-    label: 'Standard Payments',
-    data: standard,
-    borderColor: ShekelChart.getColor(0),
-    backgroundColor: ShekelChart.getColor(0) + '1A',
-    borderWidth: 2.5,
-    fill: true,
+  if (labels.length === 0 || original.length === 0) return;
+
+  var datasets = [];
+
+  // Original: always present as reference baseline.
+  datasets.push({
+    label: 'Original Schedule',
+    data: original,
+    borderColor: ShekelChart.getColor(7),
+    borderDash: [5, 5],
+    borderWidth: 1.5,
+    fill: false,
     tension: 0.3,
     pointRadius: 0,
-  }];
+  });
 
+  // Committed: present when real payments exist.
+  if (committed.length > 0) {
+    datasets.push({
+      label: 'Current Plan',
+      data: committed,
+      borderColor: ShekelChart.getColor(0),
+      backgroundColor: ShekelChart.getColor(0) + '1A',
+      borderWidth: 2.5,
+      fill: true,
+      tension: 0.3,
+      pointRadius: 0,
+    });
+  }
+
+  // Floor: confirmed payments only (when different from committed).
+  if (floor.length > 0 && committed.length > 0) {
+    datasets.push({
+      label: 'Confirmed Only',
+      data: floor,
+      borderColor: ShekelChart.getColor(4),
+      borderDash: [3, 3],
+      borderWidth: 1.5,
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+    });
+  }
+
+  // Accelerated: with extra payments (payoff calculator results).
   if (accelerated.length > 0) {
     datasets.push({
       label: 'With Extra Payments',
       data: accelerated,
-      borderColor: ShekelChart.getColor(1),
-      backgroundColor: ShekelChart.getColor(1) + '1A',
+      borderColor: ShekelChart.getColor(2),
+      borderDash: [8, 4],
       borderWidth: 2,
-      fill: true,
+      fill: false,
       tension: 0.3,
       pointRadius: 0,
     });

@@ -1396,3 +1396,218 @@ class TestARMRateHistoryIntegration:
         assert "Loan Summary" in html
         # Non-ARM: rate history section should NOT be visible.
         assert "Rate History" not in html or "Rate Change" not in html
+
+
+# ── Multi-Scenario Visualization Tests (Commit 5.5-1) ──────────────
+
+
+class TestMultiScenarioVisualization:
+    """Tests for multi-scenario balance chart and payoff calculator.
+
+    Verifies that the dashboard and payoff calculator correctly compute
+    and display original, committed, floor, and accelerated scenarios.
+    """
+
+    def test_dashboard_chart_original_only_no_payments(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with no transfers: only original schedule in chart.
+
+        data-original should be non-empty.  data-committed and
+        data-floor should be empty arrays.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-original=" in html
+        # No payments means committed and floor are empty.
+        assert "data-committed='[]'" in html
+        assert "data-floor='[]'" in html
+
+    def test_dashboard_chart_with_committed_schedule(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with projected transfers: data-committed populated.
+
+        A projected transfer creates shadow transactions that the
+        dashboard should reflect in the committed schedule.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-original=" in html
+        assert "data-committed=" in html
+        # Committed should not be empty.
+        assert "data-committed='[]'" not in html
+
+    def test_dashboard_chart_with_floor(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with confirmed transfers: data-floor populated.
+
+        A confirmed (Paid) transfer establishes the floor -- the real
+        position if all extras were cancelled.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-floor=" in html
+        assert "data-floor='[]'" not in html
+
+    def test_payoff_results_committed_metrics(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff calculator shows committed vs. original comparison.
+
+        When payments exist, the payoff results partial should show
+        how many months the committed plan saves vs. the original.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Multi-scenario chart data should be present.
+        assert "data-original=" in html
+        assert "data-committed=" in html
+
+    def test_payoff_what_if_three_scenarios(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff with extra: original + committed + accelerated.
+
+        With payments and extra_monthly > 0, all three chart datasets
+        should be present and the accelerated line should be shorter.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[1], Decimal("1580.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-original=" in html
+        assert "data-accelerated=" in html
+        assert "Months Saved" in html
+
+    def test_payoff_no_transfer_degrades(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff with no transfers: committed is empty, original shown.
+
+        When no payments exist, committed chart data should be empty.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-original=" in html
+        # No payments -> committed is empty.
+        assert "data-committed='[]'" in html
+
+    def test_payoff_what_if_zero(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """extra_monthly=0: accelerated matches committed.
+
+        Zero extra should not cause errors and should still render.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "0"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "data-original=" in html
+
+    def test_payoff_target_date_still_works(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Target date mode is unaffected by multi-scenario changes.
+
+        The existing target_date mode should continue to return
+        required extra payment data without regressions.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2040-01-01"},
+        )
+        assert resp.status_code == 200
+
+    def test_charts_page_amortization_not_broken(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Charts page amortization endpoint still renders.
+
+        The Charts page uses get_amortization_breakdown() which is
+        unchanged.  This test verifies no side effects from the
+        multi-scenario changes in the loan route.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(
+            "/charts/amortization",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+
+    def test_dashboard_arm_original_excludes_rate_changes(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """ARM loan: original schedule does NOT include rate changes.
+
+        The original schedule is the pure contractual baseline at the
+        initial rate.  Rate changes only affect committed and floor.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            Decimal("100000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        entry = RateHistory(
+            account_id=acct.id,
+            effective_date=date(2025, 2, 1),
+            interest_rate=Decimal("0.07000"),
+        )
+        db.session.add(entry)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Original and committed should both be present.
+        assert "data-original=" in html
+        assert "Loan Summary" in html

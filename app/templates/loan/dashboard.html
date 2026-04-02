@@ -200,7 +200,9 @@
       <div class="card-body">
         <canvas id="payoff-chart"
                 data-labels='{{ chart_labels|tojson }}'
-                data-standard='{{ chart_standard|tojson }}'
+                data-original='{{ chart_original|tojson }}'
+                data-committed='{{ chart_committed|tojson }}'
+                data-floor='{{ chart_floor|tojson }}'
                 style="max-height: 400px;"></canvas>
       </div>
     </div>

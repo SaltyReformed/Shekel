@@ -149,6 +149,8 @@ def dashboard(account_id):
             ]
 
     # Calculate projection (summary + schedule) in one call.
+    # This is the COMMITTED projection: all payments (confirmed +
+    # projected) plus ARM rate changes.
     proj = amortization_engine.get_loan_projection(
         params, payments=payments, rate_changes=rate_changes,
     )
@@ -166,8 +168,43 @@ def dashboard(account_id):
         summary.monthly_payment, escrow_components,
     )
 
-    # Chart data.
-    chart_labels, chart_standard = _build_chart_data(proj.schedule)
+    # --- Multi-scenario chart data ---
+    # Original schedule: contractual baseline, no payments, no rate
+    # changes.  "What the bank expects."
+    principal = Decimal(str(params.current_principal))
+    original_principal = Decimal(str(params.original_principal))
+    rate = Decimal(str(params.interest_rate))
+    remaining = proj.remaining_months
+
+    original_schedule = amortization_engine.generate_schedule(
+        principal, rate, remaining,
+        payment_day=params.payment_day,
+        original_principal=original_principal,
+        term_months=params.term_months,
+    )
+    chart_labels, chart_original = _build_chart_data(original_schedule)
+
+    # Committed schedule: already computed as proj.schedule.
+    has_payments = len(payments) > 0
+    if has_payments:
+        _, chart_committed = _build_chart_data(proj.schedule)
+    else:
+        chart_committed = []
+
+    # Floor schedule: confirmed payments only, standard payments
+    # forward.  "Where I stand if I cancel all extras today."
+    chart_floor = []
+    if has_payments:
+        confirmed_payments = [p for p in payments if p.is_confirmed]
+        floor_schedule = amortization_engine.generate_schedule(
+            principal, rate, remaining,
+            payment_day=params.payment_day,
+            original_principal=original_principal,
+            term_months=params.term_months,
+            payments=confirmed_payments if confirmed_payments else None,
+            rate_changes=rate_changes,
+        )
+        _, chart_floor = _build_chart_data(floor_schedule)
 
     # Recurring payment transfer prompt: show when LoanParams exist
     # but no active recurring transfer template targets this account.
@@ -221,7 +258,10 @@ def dashboard(account_id):
         total_payment=total_payment,
         rate_history=rate_history,
         chart_labels=chart_labels,
-        chart_standard=chart_standard,
+        chart_original=chart_original,
+        chart_committed=chart_committed,
+        chart_floor=chart_floor,
+        has_payments=has_payments,
         show_transfer_prompt=show_transfer_prompt,
         source_accounts=source_accounts,
         default_source_id=default_source_id,
@@ -533,10 +573,16 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
-        # Generate chart data for comparison.
-        # Standard schedule: contractual baseline with no extra (but
-        # includes committed payments so the baseline reflects reality).
-        standard_schedule = amortization_engine.generate_schedule(
+        # --- Multi-scenario chart data for payoff calculator ---
+        # Original: contractual baseline, no payments, no rate changes.
+        original_schedule = amortization_engine.generate_schedule(
+            principal, rate, remaining_months,
+            payment_day=params.payment_day,
+            original_principal=original,
+            term_months=params.term_months,
+        )
+        # Committed: all payments (confirmed + projected), no extra.
+        committed_schedule = amortization_engine.generate_schedule(
             principal, rate, remaining_months,
             payment_day=params.payment_day,
             original_principal=original,
@@ -544,7 +590,7 @@ def payoff_calculate(account_id):
             payments=payments,
             rate_changes=rate_changes,
         )
-        # Accelerated schedule: committed payments + extra_monthly.
+        # Accelerated: committed payments + extra_monthly.
         accelerated_schedule = amortization_engine.generate_schedule(
             principal, rate, remaining_months,
             extra_monthly=extra,
@@ -555,16 +601,37 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
-        chart_labels, chart_standard = _build_chart_data(standard_schedule)
+        chart_labels, chart_original = _build_chart_data(original_schedule)
+        _, chart_committed = _build_chart_data(committed_schedule)
         _, chart_accelerated = _build_chart_data(accelerated_schedule)
+
+        has_payments = len(payments) > 0
+
+        # Comparison metrics: committed vs. original.
+        committed_months_saved = (
+            len(original_schedule) - len(committed_schedule)
+        )
+        original_interest = sum(
+            (r.interest for r in original_schedule), Decimal("0.00"),
+        )
+        committed_interest = sum(
+            (r.interest for r in committed_schedule), Decimal("0.00"),
+        )
+        committed_interest_saved = (
+            original_interest - committed_interest
+        ).quantize(Decimal("0.01"))
 
         return render_template(
             "loan/_payoff_results.html",
             mode=mode,
             payoff_summary=payoff_summary,
             chart_labels=chart_labels,
-            chart_standard=chart_standard,
+            chart_original=chart_original,
+            chart_committed=chart_committed if has_payments else [],
             chart_accelerated=chart_accelerated,
+            has_payments=has_payments,
+            committed_months_saved=committed_months_saved,
+            committed_interest_saved=committed_interest_saved,
         )
 
     elif mode == "target_date":
