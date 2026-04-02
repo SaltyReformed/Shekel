@@ -1,67 +1,52 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-Shekel is a personal budget app that organizes finances around **pay periods** (biweekly paychecks) rather than calendar months. Every transaction maps to a specific paycheck with ~2-year forward projections.
+Shekel is a personal budget app organized around **pay periods** (biweekly paychecks) rather than calendar months. Every transaction maps to a specific paycheck with ~2-year forward projections.
 
 **Stack:** Python 3.12+ · Flask 3.1 · SQLAlchemy 2.0 · PostgreSQL (multi-schema) · Jinja2 · HTMX · Bootstrap 5
 
-**Critical context:** This project is built and maintained by a solo developer with no QA team and no safety net. There is no one to catch mistakes after the fact. You (Claude Code) are the only safeguard between this code and production. A miscalculation, a missed edge case, or a sloppy shortcut in a budgeting application means real money is mismanaged -- bills get missed, projections are wrong, and financial decisions are made on bad data. If this project becomes public, those consequences extend to every user who trusts it. Treat every line of code as if someone's rent payment depends on it being correct, because it might.
+**YOU ARE THE ONLY SAFEGUARD.** This project has no QA team, no code reviewer, no CI pipeline. The developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that defect ships to production. In a budgeting app, that means real money is mismanaged. Treat every line of code as if someone's rent payment depends on it being correct.
 
-## Non-Negotiable Rules
+## Rules
 
-These rules apply to every task, every file, every commit. No exceptions. They are not guidelines or suggestions. They are requirements. Violating them is never acceptable, even if following them is slower, harder, or more verbose.
+These are requirements, not suggestions. Violating them is never acceptable.
 
-1. **Do it right, not fast.** Never take shortcuts, use workarounds, or choose an easier path over the correct one. If the right approach takes longer or requires more effort, that is the approach to use. Do not stub out implementations with `pass` or `TODO` and call it done. Do not hardcode values to avoid writing proper logic. Do not skip validation because "it probably won't happen." Do not use broad `except Exception` blocks to sweep problems under the rug. Do not write a "quick fix" that avoids the root cause. Do not simplify a solution in ways that sacrifice correctness, security, or maintainability. If best practice exists for a problem, follow it -- even if a shortcut would "work for now." The correct solution is the only acceptable solution. **No band-aid fixes.** When a function produces wrong output, fix the function's logic -- do not patch around it with overrides, wrappers, or caller-side workarounds that leave the broken code in place. Address root causes, not symptoms.
+1. **Do it right, not fast.** No shortcuts, no workarounds, no band-aid fixes. Do not stub with `pass` or `TODO`. Do not hardcode values. Do not use broad `except Exception`. Fix root causes, not symptoms. The correct solution is the only acceptable solution.
 
-2. **Read before you write.** Before changing ANY file, read the ENTIRE file first. Do not rely on memory, assumptions, or line number references from planning documents. Line numbers shift between commits. Find the actual code by reading the file.
+2. **Read before you write.** Read the ENTIRE file before changing it. Do not rely on memory or line numbers from planning documents.
 
-3. **Verify before you fix.** Before implementing any fix, confirm the problem still exists in the current code. If a fix has already been applied, skip it and document that you skipped it and why.
+3. **No guessing.** If uncertain, read the code or ask the developer. Do not assume what a function returns, what columns a table has, or what state an object is in. For ambiguous financial logic, ask before proceeding.
 
-4. **No guessing, no assuming.** If you are uncertain about how something works, read the code. If you are uncertain about what the user wants, ask. Do not fill gaps with assumptions and do not fabricate information. Do not assume what a function returns, what columns a table has, or what state an object is in -- open the file and verify. Wrong assumptions that slip through become bugs that are harder to find than if the code had never been written. When uncertain about financial logic (rounding, truncation, tax rules, etc.), research the standard best practice first. If there is a definitive industry-standard answer, follow it. If the situation is ambiguous, ask for the developer's preference before proceeding.
+4. **NEVER ignore a problem.** If you find a failing test, bug, linter error, or logic flaw -- whether you caused it or not -- you MUST either (a) fix it, or (b) stop and report it with full details. There is no third option. Do not dismiss failures as "pre-existing." Do not say "unrelated to my changes" without investigating and reporting. The developer has no one else to catch these.
 
-5. **Match existing patterns.** Study the codebase before writing new code. The project has established patterns for ownership checks, test fixtures, service isolation, error handling, and configuration. Use them. Do not invent new patterns unless there is a documented reason to do so.
+5. **NEVER modify a test to make it pass.** If a test fails after your change, your code is wrong, not the test. Financial assertions were computed by hand. Fix your code. The only exception is when the developer explicitly confirms the expected behavior has changed.
 
-6. **One concern per commit.** Each commit should be atomic and individually revertable. Do not batch unrelated changes. Each fix, feature, or refactor gets its own commit.
+6. **Stay in scope.** Only modify code related to the current task. Report out-of-scope issues but do not fix them without approval. Unscoped changes are unreviewed changes.
 
-7. **Test everything.** Every code change must have corresponding tests. Run the relevant tests before committing. Run the full suite before reporting done. Tests are not optional, not "nice to have," and not something to circle back to later.
+7. **Trace impact before changing interfaces.** Before modifying any function signature, return value, model property, or column definition, grep the entire codebase for all callers, consumers, and template references. Update every one.
 
-8. **No silent failures.** Do not suppress errors, swallow exceptions, or ignore edge cases to make something "work." Handle errors explicitly and visibly.
+8. **Ask before making design decisions.** If multiple valid approaches exist (adding a column vs. a table, denormalizing vs. not), present options with tradeoffs. Do not make architectural decisions unilaterally.
 
-9. **Think about edge cases.** Before writing any logic, consider: what if the input is zero? Negative? None? An empty list? A boundary date? A user with no data yet? This is a financial application -- edge cases are where money gets lost. Write defensive code and test the boundaries, not just the happy path.
+9. **Show your work.** Show actual terminal output from tests and linting, not summaries. The developer must be able to verify your claims from the output you provide.
 
-10. **Finish what you start.** Do not leave partial implementations, placeholder logic, or "temporary" solutions that become permanent. Every piece of code you write should be production-ready when you commit it. If a task is too large to complete properly in one pass, break it into smaller tasks that are each individually complete and correct.
+10. **Understand before you change.** Before modifying any function over 20 lines, explain to yourself what it does and why. If you cannot explain it, you do not understand it. Ask the developer. NEVER rewrite a function from scratch unless explicitly asked.
 
-11. **Offer to commit and push after every task.** When a task is complete (code written, tests passing), always ask the developer if they would like the changes committed and pushed. Do not commit or push without confirmation, but always prompt so changes are not left uncommitted.
+11. **Debug, do not abandon.** When code errors, read the full traceback. Fix the specific bug. Do not throw away a correct approach because your first implementation had a bug.
 
-12. **DRY, SOLID, and normalized.** All code must adhere to DRY (Don't Repeat Yourself) and SOLID principles. Do not duplicate logic -- extract shared behavior into functions or services. Do not add parameters that patch around a function's broken internals when the internals should be fixed. Keep the database fully normalized: no redundant columns, no transitive dependencies, no data duplication across tables. Reference data must live in one canonical location (not copied into multiple seed files or migration backfills). When adding new code, verify that equivalent logic does not already exist elsewhere in the codebase before writing it.
+12. **Write complete code.** Never use placeholder comments like "repeat for remaining cases" or "similar for other types." Write every line, every branch, every mapping entry.
 
 ## Common Commands
 
 ```bash
-# Run dev server
-flask run                    # or: python run.py (http://localhost:5000)
+# Dev server
+flask run
 
-# Tests -- IMPORTANT: full suite takes ~9 minutes (526s+)
-# Always use an explicit timeout so long runs are not mistakenly killed.
-
-# Full suite (use 660s timeout -- 11 min with buffer)
-timeout 660 pytest -v --tb=short
-
-# Targeted runs for development iteration (fast feedback):
-pytest tests/test_routes/test_grid.py -v           # ~20s
-pytest tests/test_services/ -v                     # ~120s
-pytest tests/path/test_file.py -v                  # single file
-pytest tests/path/test_file.py::TestClass -v       # single class
-pytest tests/path/test_file.py::test_name -v       # single test
-
-# With coverage (also needs the long timeout)
-timeout 660 pytest --cov=app --cov-report=term-missing
+# Tests -- full suite: ~9 minutes (1258 tests), always use timeout
+timeout 720 pytest -v --tb=short              # full suite
+pytest tests/path/test_file.py -v             # single file (fast feedback)
+pytest tests/path/test_file.py::test_name -v  # single test
 
 # Lint
-pylint app/
+pylint app/ --fail-on=E,F
 
 # Database migrations
 flask db migrate -m "description"
@@ -75,151 +60,65 @@ python scripts/seed_tax_brackets.py
 
 ## Architecture
 
-### Layered Design
-
 ```
-Routes (Blueprints)  →  Services (pure logic, no Flask imports)  →  Models (SQLAlchemy ORM)
-                                                                  →  Schemas (Marshmallow validation)
+Routes (Blueprints) → Services (no Flask imports) → Models (SQLAlchemy) / Schemas (Marshmallow)
 ```
 
-**Services are isolated from Flask** -- they take plain data, return plain data, and never import Flask or touch `request`/`session`. This is intentional for testability. Do not violate this boundary.
+**Services are isolated from Flask** -- they take plain data, return plain data, never import `request`/`session`. Do not violate this boundary.
 
-### PostgreSQL Schemas
+**PostgreSQL schemas:** ref (lookup tables), auth (users/sessions), budget (transactions/accounts/templates), salary (pay/tax/deductions), system (audit metadata).
 
-Five database schemas separate concerns:
+**Key domain concepts:** Anchor Balance (real checking balance, projections flow forward from it). Balance Calculator (period-by-period from anchor). Recurrence Engine (8 patterns from templates). Paycheck Calculator (salary + raises - taxes - deductions). Status workflow: `projected -> done|credit|cancelled`, `done|received -> settled`.
 
-- **ref** -- Lookup/reference tables (AccountType, Status, TransactionType, FilingStatus, etc.)
-- **auth** -- Users, sessions, MFA, user settings
-- **budget** -- Pay periods, transactions, categories, scenarios, accounts, templates
-- **salary** -- Salary profiles, deductions, tax configs, raises, pensions
-- **system** -- Reserved for audit/system metadata
+**Established patterns -- use these, do not reinvent:** Ownership helpers in `app/utils/auth_helpers.py`. Security response rule: 404 for both "not found" and "not yours." Structured logging via `log_event()`. Dependencies pinned in `requirements.txt` -- no new packages without approval.
 
-### Core Domain Concepts
+**Reference tables: IDs for logic, strings for display only.** Enums in `app/enums.py`, cached in `app/ref_cache.py`. NEVER compare against string `name` columns in Python or Jinja.
 
-- **Anchor Balance** -- A real checking account balance at a reference pay period. All projections flow forward from this point.
-- **Balance Calculator** (`app/services/balance_calculator.py`) -- Computes end-of-period balances by anchoring to a real balance, then adding income and subtracting expenses period-by-period. Excludes "done/received" (already settled) and "credit" (on credit card) transactions.
-- **Recurrence Engine** (`app/services/recurrence_engine.py`) -- Generates transactions from templates using 8 patterns: `every_period`, `every_n_periods`, `monthly`, `monthly_first`, `quarterly`, `semi_annual`, `annual`, `once`. Handles overrides and deletions.
-- **Paycheck Calculator** (`app/services/paycheck_calculator.py`) -- Computes net pay: salary + raises - federal/state taxes - FICA - deductions. Supports multi-state tax brackets.
-- **Transaction Status Workflow** -- `projected -> done|credit|cancelled`, `done|received -> settled`
+## Definition of Done
 
-### Frontend Pattern
+A task is NOT complete until ALL of these are true:
 
-HTMX with server-rendered partials -- no SPA. The budget grid uses HTMX for inline editing, creating/deleting transactions, and carry-forward without full page reloads. Templates are in `app/templates/` organized by domain.
+1. Code is implemented in full -- no TODOs, no placeholders.
+2. Docstrings and comments per coding standards.
+3. `pylint app/ --fail-on=E,F` passes with no new warnings.
+4. Targeted tests pass for changed files.
+5. Full suite passes: `timeout 720 pytest -v --tb=short`
+6. Test output (pass/fail counts) shown to developer.
+7. Migrations tested in both upgrade and downgrade directions.
+8. Commit message format: `<type>(<scope>): <what changed>`
+9. Developer asked if they want to commit and push.
 
-### Application Factory
+## Active Work -- Debt and Account Improvements (Section 5)
 
-`create_app()` in `app/__init__.py` with configs in `app/config.py` (DevConfig, TestConfig, ProdConfig). Extensions initialized in `app/extensions.py`.
+**Before starting any task in this section**, read the supporting documents in full. They contain decisions and constraints not repeated here.
 
-### Established Patterns (Use These -- Do Not Reinvent)
+**Docs:** `docs/project_roadmap_v4-3.md`, `docs/implementation_plan_section5.md`
 
-**Ownership verification:** Use the helpers in `app/utils/auth_helpers.py`. `get_or_404(model, pk)` for models with a direct `user_id` column. `get_owned_via_parent(model, pk, parent_attr)` for models scoped through a FK parent (e.g., Transaction via PayPeriod). Never write ad-hoc ownership checks inline when these helpers exist.
-
-**Security response rule:** When a resource is not found OR belongs to another user, the response MUST be identical -- return 404 with the same body in both cases. Never return different status codes or messages that would let an attacker distinguish "does not exist" from "exists but is not yours."
-
-**Structured logging:** Use `log_event()` from `app/utils/logging_helpers.py` with the established event categories (`AUTH`, `BUSINESS`, `ERROR`, `PERFORMANCE`). Do not use bare `logger.info()` calls with ad-hoc message formats. Do not invent new event categories without documenting them.
-
-**Dependencies:** Only use packages already in `requirements.txt`. All packages are pinned to exact versions. Do not add new dependencies without explicit approval. Do not suggest switching to alternative libraries for functionality that already works.
-
-## Code Quality Standards
-
-### Python
-
-- **Pylint compliance is mandatory.** Run `pylint app/ --fail-on=E,F` after every change. Do not decrease the current score.
-- **Docstrings on every module, class, and function.** Explain what it does, not how the syntax works.
-- **Inline comments on non-obvious logic.** If a line would make a future reader pause, comment it.
-- **Use `Decimal`, never `float`**, for all monetary amounts. Financial precision is non-negotiable.
-- **snake_case** for all variables, functions, modules, and database columns.
-- **No unused imports.** Pylint catches these. Fix them immediately.
-
-### SQL / Database
-
-- **All queries must be user-scoped.** Every query touching user data must filter by `user_id`. No exceptions. Missing ownership checks are IDOR vulnerabilities.
-- **Use SQLAlchemy ORM** for all database access. No raw SQL strings in application code.
-- **Always use Alembic migrations** for schema changes. Never modify the database schema by hand and never use `db.create_all()` outside of the test suite. Migrations provide traceability -- they have been critical for tracking down the source of bugs in this project. Every column, constraint, and index change must have a corresponding migration file with a descriptive message.
-- **Migration messages must be descriptive.** Use `flask db migrate -m "add pension_type column to salary_profiles"`, not `flask db migrate -m "update"`.
-- **Reference tables: IDs for logic, strings for display only.** All comparisons, conditionals, queries, and filter expressions on reference tables (`ref.statuses`, `ref.account_types`, `ref.transaction_types`, `ref.recurrence_patterns`, etc.) must use integer primary key IDs, never string `name` columns. The `name` column exists solely for rendering display text in templates -- no Python code or Jinja logic may compare against it. Python Enums in `app/enums.py` define valid members (e.g., `StatusEnum.PROJECTED`). A one-time startup cache in `app/ref_cache.py` maps enum members to their database IDs -- the app fails to start if any enum member is missing from the database. Use boolean columns on ref tables for grouping logic (e.g., `is_settled`, `is_immutable` on statuses). Use foreign key references for category groupings (e.g., `category_id` on account_types), not bare string columns.
-
-### Commit Messages
-
-Format: `<type>(<scope>): <what changed>`
-
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
-
-Examples:
-
-- `fix(transactions): add ownership check to quick-create GET endpoint`
-- `feat(salary): add pension deduction support`
-- `refactor(balance): extract anchor lookup into helper function`
-- `test(recurrence): add coverage for quarterly pattern edge cases`
-
-### Branch Workflow
-
-All development work happens on the `dev` branch. Confirm you are on `dev` and the working tree is clean before starting any task.
-
-## Testing
-
-- Tests use a real PostgreSQL database (configured via `TEST_DATABASE_URL` or defaults in TestConfig)
-- `conftest.py` uses session-scoped app/db setup, truncates tables between tests
-- Test categories: `test_routes/`, `test_services/`, `test_models/`, `test_integration/`, `test_adversarial/`, `test_scripts/`
-- **All tests need docstrings** explaining what is verified and why
-- **Use existing fixtures** from `conftest.py` (`seed_user`, `seed_second_user`, `auth_client`, `second_auth_client`, etc.). Do not create ad-hoc user setup in test methods.
-- **Before writing a new test**, check if equivalent coverage already exists. Duplicate tests waste CI time and create maintenance burden.
-
-## Test Run Guidelines
-
-- **Full suite runtime:** ~9 minutes (1258 tests). Always use
-  `timeout 660` when invoking `pytest` without a file target.
-- **During development:** Run only the test file(s) relevant to the code
-  being changed. These typically complete in under 30 seconds.
-- **Before reporting done:** Run the full suite once with
-  `timeout 660 pytest -v --tb=short` as a final gate.
-- **If a test appears stuck:** It is almost certainly still running (the
-  slowest individual test is ~3 seconds). Wait for the full timeout before
-  concluding there is a problem.
-- **MFA/auth tests are slow** (~1-3s each) due to bcrypt hashing. This is
-  expected.
-
-## Deployment Context
-
-**Target environment:** Bare-metal Arch Linux desktop running Docker. Shekel runs as a Docker container with Gunicorn as the WSGI server behind Nginx. Nginx and Cloudflare Tunnel also run as Docker containers on the same host. Multiple services share the same Nginx instance, each on its own subdomain (e.g., `shekel.mydomain.com`). External access is through Cloudflare Tunnel only -- no ports are exposed directly.
-
-**What this means for code decisions:** Do not suggest Ubuntu-specific packages, systemd service files, or Proxmox-specific configurations. Do not suggest exposing ports directly to the internet. Docker, Gunicorn, Nginx, and Cloudflare Tunnel are the deployment stack -- work within it.
-
-## Environment
-
-Copy `.env.example` to `.env` and configure. Key vars: `DATABASE_URL`, `SECRET_KEY`, `TOTP_ENCRYPTION_KEY`. Default login: `admin@shekel.local` / `ChangeMe!2026`. Alternatively, use `/register` to create an account.
-
-## Style
-
-- **No Unicode dashes.** Never use em dashes (U+2014) or en dashes (U+2013). Use `--` (double hyphen) for sentence breaks/separators and `-` (single hyphen) for ranges/short separators.
-
-## Active Work -- Transfer Architecture Rework (Section 3A)
-
-**Supporting documents:**
-
-- `docs/transfer_rework_inventory.md` -- Codebase inventory of all affected files (created
-  during inventory phase).
-- `docs/transfer_rework_implementation.md` -- Detailed implementation plan with atomic commits
-  (created during planning phase).
-- `docs/project_roadmap_v4-1.md` -- Overall project roadmap. This rework is Section 3A.
-- `docs/implementation_plan_section4.md` -- Section 4 UX/Grid Overhaul plan. Task 4.2 is
-  superseded by Phase 3A-II of this rework.
-
-**Key invariants (memorize these -- violating any one is a critical bug):**
+**CRITICAL INVARIANTS (violating any one is a critical bug):**
 
 1. Every transfer has exactly two linked shadow transactions (one expense, one income).
 2. Shadow transactions are never orphaned and never created without their sibling.
-3. Shadow transaction amounts, statuses, and periods always equal the parent transfer's.
-4. No code path directly mutates a shadow transaction. All mutations go through the transfer
-   service.
-5. The balance calculator queries ONLY budget.transactions. It must NOT also query
-   budget.transfers. Double-counting is the highest-risk failure mode.
+3. Shadow amounts, statuses, and periods always equal the parent transfer's.
+4. No code path directly mutates a shadow. All mutations go through the transfer service.
+5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
 
-**When this work is complete**, remove this section and update Development Status below.
+**When complete**, remove this section and update Development Status.
 
 ## Development Status
 
-Multi-phase project. Phases 1-8 complete (core budgeting, salary, accounts, transfers, savings,
-charts, UI/UX, hardening/ops). Currently executing Section 4 UX/Grid Overhaul plan
-(see Active Work section above). Remaining phases will be implemented as feature updates after
-the rework is complete. See `docs/` for detailed plans.
+Phases 1-8 complete. Currently executing Section 5 Debt and Account Improvements. See `docs/` for plans.
+
+## Deployment
+
+Docker container (Gunicorn + Nginx + Cloudflare Tunnel) on bare-metal Arch Linux. No Ubuntu packages, no exposed ports, no systemd. `.env` config: `DATABASE_URL`, `SECRET_KEY`, `TOTP_ENCRYPTION_KEY`.
+
+## Style
+
+No Unicode dashes. Use `--` for sentence breaks, `-` for ranges. All development on the `dev` branch.
+
+## Standards and Protocols
+
+Detailed standards are in these files. Read them when working on code, tests, or scripts.
+
+- Coding standards (Python, SQL, HTML/Jinja, JS, CSS, shell): @docs/coding-standards.md
+- Testing standards and problem reporting: @docs/testing-standards.md
