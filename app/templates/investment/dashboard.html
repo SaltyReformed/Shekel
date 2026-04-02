@@ -90,6 +90,75 @@
 </div>
 {% endif %}
 
+{# --- Contribution Setup Prompt --- #}
+{% if show_contribution_prompt %}
+{% if is_deduction_path %}
+<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+  <i class="bi bi-briefcase me-3 fs-4"></i>
+  <div class="flex-grow-1">
+    <h6 class="alert-heading mb-1">No paycheck deduction linked to this account</h6>
+    <p class="mb-2 small">
+      Link a paycheck deduction to this account so contributions are tracked automatically.
+      Configure a deduction with this account as the target on your salary profile.
+    </p>
+    {% if salary_profile_url %}
+    <a href="{{ salary_profile_url }}" class="btn btn-primary btn-sm">
+      <i class="bi bi-gear"></i> Go to Salary Profile
+    </a>
+    {% else %}
+    <a href="{{ url_for('salary.salary_listing') }}" class="btn btn-primary btn-sm">
+      <i class="bi bi-gear"></i> Set Up Salary Profile
+    </a>
+    {% endif %}
+  </div>
+</div>
+{% elif source_accounts %}
+<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+  <i class="bi bi-arrow-repeat me-3 fs-4"></i>
+  <div class="flex-grow-1">
+    <h6 class="alert-heading mb-1">No recurring contribution set up for this account</h6>
+    <p class="mb-2 small">
+      {% if suggested_amount and suggested_amount > 0 %}
+      Create a recurring transfer of
+      <strong class="font-mono">${{ "{:,.2f}".format(suggested_amount|float) }}</strong>
+      per pay period to stay on track with your contribution limit.
+      {% else %}
+      Create a recurring transfer to this account to start building your investment.
+      {% endif %}
+    </p>
+    <form method="POST" action="{{ url_for('investment.create_contribution_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-auto">
+        <label for="source_account_id" class="form-label form-label-sm mb-0">From</label>
+        <select class="form-select form-select-sm" id="source_account_id" name="source_account_id" required>
+          {% for acct in source_accounts %}
+          <option value="{{ acct.id }}" {% if acct.id == default_source_id %}selected{% endif %}>
+            {{ acct.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label for="contribution_amount" class="form-label form-label-sm mb-0">Amount</label>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0.01" name="amount" id="contribution_amount"
+                 class="form-control" style="width: 100px;"
+                 value="{{ "{:.2f}".format(suggested_amount|float) if suggested_amount and suggested_amount > 0 else '' }}"
+                 placeholder="0.00">
+        </div>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="bi bi-plus-circle"></i> Create Recurring Transfer
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
 {# --- Employer Contribution Details --- #}
 {% if employer_params and employer_params.type != 'none' %}
 <div class="card mb-4">

@@ -530,3 +530,332 @@ class TestContributionAwareDashboard:
         )
         assert resp.status_code == 200
         assert b"growthChart" in resp.data
+
+
+# ── Tests: Contribution Setup Prompt (5.2-3) ─────────────────
+
+
+def _create_transfer_template(db_session, user_id, from_id, to_id,
+                               is_active=True):
+    """Create a recurring transfer template targeting an account."""
+    from app.enums import RecurrencePatternEnum as RPE
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.transfer_template import TransferTemplate
+
+    every_id = ref_cache.recurrence_pattern_id(RPE.EVERY_PERIOD)
+    rule = RecurrenceRule(user_id=user_id, pattern_id=every_id)
+    db_session.add(rule)
+    db_session.flush()
+    tpl = TransferTemplate(
+        user_id=user_id,
+        from_account_id=from_id,
+        to_account_id=to_id,
+        recurrence_rule_id=rule.id,
+        name=f"Contribution {from_id}->{to_id}",
+        default_amount=Decimal("200.00"),
+        is_active=is_active,
+    )
+    db_session.add(tpl)
+    db_session.flush()
+    return tpl
+
+
+class TestContributionPrompt:
+    """Tests for the contribution setup prompt on the investment dashboard.
+
+    Verifies prompt visibility rules, prompt type (transfer vs. deduction),
+    and the create_contribution_transfer route.
+    """
+
+    def test_prompt_shown_ira_no_contribution(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """IRA with params, no transfer or deduction: transfer prompt visible."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring contribution" in html
+        assert "Create Recurring Transfer" in html
+
+    def test_prompt_shown_401k_no_deduction(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """401(k) with params, no deduction: deduction linkage prompt visible."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="My 401k", balance="50000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No paycheck deduction linked" in html
+        assert "Salary Profile" in html
+
+    def test_prompt_hidden_transfer_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """IRA with active recurring transfer: prompt hidden."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        _create_transfer_template(
+            db.session, seed_user["user"].id,
+            seed_user["account"].id, acct.id,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring contribution" not in html
+        assert "No paycheck deduction" not in html
+
+    def test_prompt_hidden_deduction_linked(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """401(k) with linked deduction: prompt hidden."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="My 401k", balance="50000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+        profile = _create_salary_profile(
+            db.session, seed_user["user"].id,
+            seed_user["scenario"].id,
+        )
+        _create_deduction(db.session, profile.id, acct.id)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No paycheck deduction linked" not in html
+
+    def test_prompt_hidden_no_params(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Account without InvestmentParams: no prompt shown."""
+        acct = _create_investment_account(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring contribution" not in html
+        assert "No paycheck deduction" not in html
+
+    def test_prompt_shown_archived_transfer(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Archived transfer template: prompt still shown."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        _create_transfer_template(
+            db.session, seed_user["user"].id,
+            seed_user["account"].id, acct.id,
+            is_active=False,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring contribution" in html
+
+    def test_create_transfer_success(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with valid source creates RecurrenceRule + TransferTemplate."""
+        from app.models.recurrence_rule import RecurrenceRule as RR
+        from app.models.transfer_template import TransferTemplate as TT
+
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "269.23",
+            },
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/investment" in resp.headers.get(
+            "Location", "",
+        )
+
+        tpl = (
+            db.session.query(TT)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.is_active is True
+        assert tpl.from_account_id == checking.id
+        assert tpl.default_amount == Decimal("269.23")
+        assert tpl.recurrence_rule_id is not None
+
+        rule = db.session.get(RR, tpl.recurrence_rule_id)
+        assert rule is not None
+
+    def test_create_transfer_generates_shadows(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation: shadow transactions exist on the investment account."""
+        from app.enums import TxnTypeEnum as TTE
+        from app.models.transaction import Transaction as Txn
+
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        checking = seed_user["account"]
+
+        auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "269.23",
+            },
+        )
+
+        income_type_id = ref_cache.txn_type_id(TTE.INCOME)
+        shadows = (
+            db.session.query(Txn)
+            .filter(
+                Txn.account_id == acct.id,
+                Txn.transfer_id.isnot(None),
+                Txn.transaction_type_id == income_type_id,
+                Txn.is_deleted.is_(False),
+            )
+            .all()
+        )
+        assert len(shadows) > 0
+
+    def test_create_transfer_redirect_hides_prompt(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation, GET dashboard: prompt no longer visible."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        checking = seed_user["account"]
+
+        auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "269.23",
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring contribution" not in html
+
+    def test_create_transfer_validates_source_not_self(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with investment account as source: validation error."""
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={"source_account_id": str(acct.id), "amount": "100"},
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/investment" in resp.headers.get(
+            "Location", "",
+        )
+
+    def test_create_transfer_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """POST to other user's investment account: 404-equivalent redirect."""
+        other_acct = _create_other_investment(second_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{other_acct.id}/investment/create-contribution-transfer",
+            data={"source_account_id": "1", "amount": "100"},
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+
+    def test_create_transfer_amount_override(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with custom amount: template uses the override amount."""
+        from app.models.transfer_template import TransferTemplate as TT
+
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods[0].id
+        _create_investment_params(db.session, acct.id)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "1000.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TT)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.default_amount == Decimal("1000.00")

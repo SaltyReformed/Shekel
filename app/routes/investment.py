@@ -11,23 +11,33 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import AcctTypeEnum, RecurrencePatternEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transfer_template import TransferTemplate
 from app.models.user import UserSettings
 from app.schemas.validation import (
+    InvestmentContributionTransferSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
 )
-from app.models.scenario import Scenario
-from app.services import balance_calculator, growth_engine, pay_period_service, paycheck_calculator
+from app.services import (
+    balance_calculator,
+    growth_engine,
+    pay_period_service,
+    paycheck_calculator,
+    transfer_recurrence,
+)
 from app.services.investment_projection import build_contribution_timeline, calculate_investment_inputs
 
 logger = logging.getLogger(__name__)
@@ -36,6 +46,16 @@ investment_bp = Blueprint("investment", __name__)
 
 _create_schema = InvestmentParamsCreateSchema()
 _update_schema = InvestmentParamsUpdateSchema()
+_transfer_schema = InvestmentContributionTransferSchema()
+
+# Account types where contributions come from paycheck deductions
+# (employer-sponsored plans) vs. bank transfers (individual accounts).
+# No metadata flag exists on ref.account_types for this distinction,
+# so we check specific types.  If new employer-plan types are added,
+# update this set.
+_DEDUCTION_PATH_TYPES = frozenset([AcctTypeEnum.K401, AcctTypeEnum.ROTH_401K])
+
+TWO_PLACES = Decimal("0.01")
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
@@ -241,6 +261,84 @@ def dashboard(account_id):
     else:
         default_horizon = 10
 
+    # Contribution setup prompt: show when params exist but no
+    # contribution mechanism (recurring transfer or deduction) is linked.
+    show_contribution_prompt = False
+    is_deduction_path = False
+    source_accounts = []
+    default_source_id = None
+    suggested_amount = Decimal("0")
+    salary_profile_url = None
+
+    if params:
+        has_linked_deduction = bool(deductions)
+        has_recurring_transfer = (
+            db.session.query(TransferTemplate)
+            .filter(
+                TransferTemplate.user_id == current_user.id,
+                TransferTemplate.to_account_id == account.id,
+                TransferTemplate.is_active.is_(True),
+                TransferTemplate.recurrence_rule_id.isnot(None),
+            )
+            .first()
+        ) is not None
+
+        show_contribution_prompt = (
+            not has_linked_deduction and not has_recurring_transfer
+        )
+
+    if show_contribution_prompt:
+        is_deduction_path = account.account_type_id in {
+            ref_cache.acct_type_id(t) for t in _DEDUCTION_PATH_TYPES
+        }
+
+        if is_deduction_path:
+            # Link to the active salary profile edit page for
+            # deduction configuration.
+            if active_profile:
+                salary_profile_url = url_for(
+                    "salary.edit_profile", profile_id=active_profile.id,
+                )
+            else:
+                salary_profile_url = url_for("salary.list_profiles")
+        else:
+            # Transfer-path: compute suggested amount and load
+            # eligible source accounts.
+            if params.annual_contribution_limit:
+                remaining = ytd_contributions or Decimal("0")
+                today_date = date.today()
+                remaining_periods = sum(
+                    1 for p in all_periods
+                    if p.start_date.year == today_date.year
+                    and p.start_date >= today_date
+                )
+                remaining_limit = max(
+                    params.annual_contribution_limit - remaining,
+                    Decimal("0"),
+                )
+                suggested_amount = (
+                    remaining_limit / max(remaining_periods, 1)
+                ).quantize(TWO_PLACES)
+            else:
+                # No IRS limit (e.g. Brokerage) -- no default amount.
+                suggested_amount = Decimal("0")
+
+            source_accounts = (
+                db.session.query(Account)
+                .filter(
+                    Account.user_id == current_user.id,
+                    Account.is_active.is_(True),
+                    Account.id != account.id,
+                )
+                .order_by(Account.sort_order, Account.name)
+                .all()
+            )
+            checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+            for acct in source_accounts:
+                if acct.account_type_id == checking_type_id:
+                    default_source_id = acct.id
+                    break
+
     return render_template(
         "investment/dashboard.html",
         account=account,
@@ -255,6 +353,12 @@ def dashboard(account_id):
         chart_balances=chart_balances,
         chart_contributions=chart_contributions,
         default_horizon=default_horizon,
+        show_contribution_prompt=show_contribution_prompt,
+        is_deduction_path=is_deduction_path,
+        source_accounts=source_accounts,
+        default_source_id=default_source_id,
+        suggested_amount=suggested_amount,
+        salary_profile_url=salary_profile_url,
     )
 
 
@@ -429,6 +533,136 @@ def growth_chart(account_id):
         chart_labels=chart_labels,
         chart_balances=chart_balances,
         chart_contributions=chart_contributions,
+    )
+
+
+@investment_bp.route(
+    "/accounts/<int:account_id>/investment/create-contribution-transfer",
+    methods=["POST"],
+)
+@login_required
+def create_contribution_transfer(account_id):
+    """Create a recurring biweekly transfer to an investment account.
+
+    Creates a RecurrenceRule (every-period pattern), a TransferTemplate
+    (from the selected source to the investment account), and generates
+    Transfer records (with shadow transactions) for existing pay periods.
+
+    The amount defaults to a suggested per-period contribution based on
+    the annual limit and remaining periods.  The user may override it.
+    """
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("savings.dashboard"))
+
+    errors = _transfer_schema.validate(request.form)
+    if errors:
+        flash("Please correct the errors and try again.", "danger")
+        return redirect(
+            url_for("investment.dashboard", account_id=account_id),
+        )
+
+    data = _transfer_schema.load(request.form)
+    source_account_id = data["source_account_id"]
+
+    # Verify source account ownership (404 for both "not found" and
+    # "not yours" per the security response rule).
+    source_account = db.session.get(Account, source_account_id)
+    if source_account is None or source_account.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("savings.dashboard"))
+
+    if not source_account.is_active:
+        flash("Source account is inactive.", "danger")
+        return redirect(
+            url_for("investment.dashboard", account_id=account_id),
+        )
+
+    if source_account_id == account_id:
+        flash("Source and destination accounts must be different.", "danger")
+        return redirect(
+            url_for("investment.dashboard", account_id=account_id),
+        )
+
+    # Determine transfer amount: user override or suggested default.
+    if "amount" in data and data["amount"] is not None:
+        transfer_amount = data["amount"]
+    else:
+        # Compute suggested amount from annual limit and remaining periods.
+        inv_params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=account_id)
+            .first()
+        )
+        if inv_params and inv_params.annual_contribution_limit:
+            transfer_amount = (
+                inv_params.annual_contribution_limit / 26
+            ).quantize(TWO_PLACES)
+        else:
+            transfer_amount = Decimal("500.00")
+
+    # Create every-period recurrence rule (biweekly, matching paycheck).
+    every_period_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_PERIOD,
+    )
+    rule = RecurrenceRule(
+        user_id=current_user.id,
+        pattern_id=every_period_id,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    # Create transfer template.
+    template_name = f"{source_account.name} -> {account.name} Contribution"
+    template = TransferTemplate(
+        user_id=current_user.id,
+        from_account_id=source_account.id,
+        to_account_id=account.id,
+        recurrence_rule_id=rule.id,
+        name=template_name,
+        default_amount=transfer_amount,
+    )
+    db.session.add(template)
+
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        flash(
+            "A recurring transfer with that name already exists.",
+            "warning",
+        )
+        return redirect(
+            url_for("investment.dashboard", account_id=account_id),
+        )
+
+    # Generate transfers for existing pay periods.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if scenario:
+        periods = pay_period_service.get_all_periods(current_user.id)
+        transfer_recurrence.generate_for_template(
+            template, periods, scenario.id,
+        )
+
+    db.session.commit()
+
+    logger.info(
+        "Created recurring contribution transfer for investment %d: "
+        "$%s from account %d",
+        account.id, transfer_amount, source_account.id,
+    )
+    flash(
+        f"Recurring transfer of ${transfer_amount:,.2f} created "
+        f"from {source_account.name} to {account.name}.",
+        "success",
+    )
+    return redirect(
+        url_for("investment.dashboard", account_id=account_id),
     )
 
 
