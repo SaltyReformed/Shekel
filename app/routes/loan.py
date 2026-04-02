@@ -12,21 +12,32 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from sqlalchemy.exc import IntegrityError
+
 from app import ref_cache
+from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
+from app.models.scenario import Scenario
+from app.models.transfer_template import TransferTemplate
 from app.schemas.validation import (
     EscrowComponentSchema,
     LoanParamsCreateSchema,
     LoanParamsUpdateSchema,
+    LoanPaymentTransferSchema,
     PayoffCalculatorSchema,
     RateChangeSchema,
 )
-from app.models.scenario import Scenario
-from app.services import amortization_engine, escrow_calculator
+from app.services import (
+    amortization_engine,
+    escrow_calculator,
+    pay_period_service,
+    transfer_recurrence,
+)
 from app.services.loan_payment_service import get_payment_history
 from app.utils.formatting import pct_to_decimal
 
@@ -39,6 +50,7 @@ _update_schema = LoanParamsUpdateSchema()
 _rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
 _payoff_schema = PayoffCalculatorSchema()
+_transfer_schema = LoanPaymentTransferSchema()
 
 
 def _load_loan_account(account_id):
@@ -144,6 +156,47 @@ def dashboard(account_id):
     # Chart data.
     chart_labels, chart_standard = _build_chart_data(proj.schedule)
 
+    # Recurring payment transfer prompt: show when LoanParams exist
+    # but no active recurring transfer template targets this account.
+    has_recurring_transfer = (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == current_user.id,
+            TransferTemplate.to_account_id == account.id,
+            TransferTemplate.is_active.is_(True),
+            TransferTemplate.recurrence_rule_id.isnot(None),
+        )
+        .first()
+    ) is not None
+
+    show_transfer_prompt = not has_recurring_transfer
+
+    # Source accounts for the transfer prompt dropdown: active accounts
+    # excluding the current debt account and other amortizing accounts.
+    source_accounts = []
+    if show_transfer_prompt:
+        all_accounts = (
+            db.session.query(Account)
+            .join(AccountType)
+            .filter(
+                Account.user_id == current_user.id,
+                Account.is_active.is_(True),
+                Account.id != account.id,
+                AccountType.has_amortization.is_(False),
+            )
+            .order_by(Account.sort_order, Account.name)
+            .all()
+        )
+        source_accounts = all_accounts
+
+    # Default to the checking account if one exists.
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    default_source_id = None
+    for acct in source_accounts:
+        if acct.account_type_id == checking_type_id:
+            default_source_id = acct.id
+            break
+
     return render_template(
         "loan/dashboard.html",
         account=account,
@@ -156,6 +209,9 @@ def dashboard(account_id):
         rate_history=rate_history,
         chart_labels=chart_labels,
         chart_standard=chart_standard,
+        show_transfer_prompt=show_transfer_prompt,
+        source_accounts=source_accounts,
+        default_source_id=default_source_id,
     )
 
 
@@ -511,3 +567,120 @@ def payoff_calculate(account_id):
         "loan/_payoff_results.html",
         error="Invalid mode.",
     )
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/create-transfer", methods=["POST"])
+@login_required
+def create_payment_transfer(account_id):
+    """Create a recurring monthly transfer to a debt account.
+
+    Creates a RecurrenceRule (monthly pattern), a TransferTemplate
+    (from the selected source account to the debt account), and
+    generates Transfer records (with shadow transactions) for
+    existing pay periods.
+
+    The amount defaults to the computed monthly payment (P&I + escrow).
+    The user may override with a custom amount.
+    """
+    account, params, _ = _load_loan_account(account_id)
+    if account is None or params is None:
+        flash("Loan account not found.", "danger")
+        return redirect(url_for("savings.dashboard"))
+
+    errors = _transfer_schema.validate(request.form)
+    if errors:
+        flash("Please correct the errors and try again.", "danger")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    data = _transfer_schema.load(request.form)
+    source_account_id = data["source_account_id"]
+
+    # Verify source account ownership (404 for both "not found" and
+    # "not yours" per the security response rule).
+    source_account = db.session.get(Account, source_account_id)
+    if source_account is None or source_account.user_id != current_user.id:
+        flash("Loan account not found.", "danger")
+        return redirect(url_for("savings.dashboard"))
+
+    if not source_account.is_active:
+        flash("Source account is inactive.", "danger")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    if source_account_id == account_id:
+        flash("Source and destination accounts must be different.", "danger")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    # Determine the transfer amount: user override or computed default.
+    if "amount" in data and data["amount"] is not None:
+        transfer_amount = data["amount"]
+    else:
+        # Compute P&I + escrow as the full monthly payment.
+        monthly_pi = amortization_engine.calculate_monthly_payment(
+            Decimal(str(params.original_principal)),
+            Decimal(str(params.interest_rate)),
+            params.term_months,
+        )
+        escrow_components = (
+            db.session.query(EscrowComponent)
+            .filter_by(account_id=account.id, is_active=True)
+            .all()
+        )
+        transfer_amount = escrow_calculator.calculate_total_payment(
+            monthly_pi, escrow_components,
+        )
+
+    # Create monthly recurrence rule.
+    monthly_pattern_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.MONTHLY,
+    )
+    rule = RecurrenceRule(
+        user_id=current_user.id,
+        pattern_id=monthly_pattern_id,
+        day_of_month=params.payment_day,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    # Create transfer template.
+    template_name = f"{source_account.name} -> {account.name} Payment"
+    template = TransferTemplate(
+        user_id=current_user.id,
+        from_account_id=source_account.id,
+        to_account_id=account.id,
+        recurrence_rule_id=rule.id,
+        name=template_name,
+        default_amount=transfer_amount,
+    )
+    db.session.add(template)
+
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        flash("A recurring transfer with that name already exists.", "warning")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    # Generate transfers for existing pay periods.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    if scenario:
+        periods = pay_period_service.get_all_periods(current_user.id)
+        transfer_recurrence.generate_for_template(
+            template, periods, scenario.id,
+        )
+
+    db.session.commit()
+
+    logger.info(
+        "Created recurring payment transfer for loan %d: $%s from account %d",
+        account.id, transfer_amount, source_account.id,
+    )
+    flash(
+        f"Recurring monthly transfer of ${transfer_amount:,.2f} created "
+        f"from {source_account.name} to {account.name}.",
+        "success",
+    )
+    return redirect(url_for("loan.dashboard", account_id=account_id))

@@ -726,6 +726,18 @@ class PayoffCalculatorSchema(BaseSchema):
     target_date = fields.Date()
 
 
+class LoanPaymentTransferSchema(BaseSchema):
+    """Validates POST data for creating a recurring loan payment transfer.
+
+    The source_account_id is required (the account money comes from).
+    The amount is optional -- if omitted, the route uses the computed
+    monthly payment (P&I + escrow).  If provided, must be positive.
+    """
+
+    source_account_id = fields.Integer(required=True, validate=validate.Range(min=1))
+    amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False))
+
+
 # ── Investment Schemas (Phase 5) ────────────────────────────────
 
 

@@ -1064,3 +1064,267 @@ class TestLoanDashboardWithPayments:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Loan Summary" in html
+
+
+# ── Transfer Prompt Tests (Commit 5.1-3) ─────────────────────────
+
+
+class TestTransferPrompt:
+    """Tests for the recurring payment transfer prompt on the loan dashboard
+    and the create_payment_transfer route.
+    """
+
+    def test_dashboard_shows_prompt_no_transfer(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with LoanParams but no recurring transfer: prompt visible."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" in html
+        assert "Create Recurring Transfer" in html
+
+    def test_dashboard_hides_prompt_transfer_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with active recurring transfer template: prompt hidden."""
+        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+
+        # Create an active recurring transfer template targeting this account.
+        monthly_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=monthly_id,
+            day_of_month=1,
+        )
+        db.session.add(rule)
+        db.session.flush()
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            recurrence_rule_id=rule.id,
+            name="Existing Mortgage Payment",
+            default_amount=Decimal("1500.00"),
+            is_active=True,
+        )
+        db.session.add(tpl)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" not in html
+
+    def test_dashboard_shows_prompt_inactive_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Inactive (archived) transfer template: prompt still shown.
+
+        The user may have deactivated a prior transfer. The prompt
+        should reappear so they can create a new one.
+        """
+        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+
+        monthly_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=monthly_id,
+            day_of_month=1,
+        )
+        db.session.add(rule)
+        db.session.flush()
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            recurrence_rule_id=rule.id,
+            name="Old Mortgage Payment",
+            default_amount=Decimal("1500.00"),
+            is_active=False,  # Deactivated
+        )
+        db.session.add(tpl)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" in html
+
+    def test_create_transfer_success(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with valid source account creates RecurrenceRule + TransferTemplate.
+
+        Redirects to the loan dashboard after successful creation.
+        """
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+        # Verify records were created.
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.is_active is True
+        assert tpl.from_account_id == checking.id
+        assert tpl.recurrence_rule_id is not None
+        assert tpl.default_amount > 0
+
+        rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
+        assert rule is not None
+
+    def test_create_transfer_redirect_hides_prompt(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation, GET dashboard: prompt no longer visible."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        # Create the recurring transfer.
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        # Dashboard should no longer show the prompt.
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" not in html
+
+    def test_create_transfer_generates_shadow_transactions(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation: shadow transactions exist on the loan account."""
+        from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        # Shadow income transactions should exist on the loan account.
+        income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        shadows = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == acct.id,
+                Transaction.transfer_id.isnot(None),
+                Transaction.transaction_type_id == income_type_id,
+                Transaction.is_deleted.is_(False),
+            )
+            .all()
+        )
+        assert len(shadows) > 0
+
+    def test_create_transfer_validates_source_ownership(
+        self, auth_client, seed_user, seed_second_user,
+        seed_second_periods, db, seed_periods,
+    ):
+        """POST with other user's account as source: 404-equivalent redirect."""
+        acct = _create_mortgage(seed_user, db.session)
+        other_account = seed_second_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(other_account.id)},
+        )
+        # Should not succeed -- security response rule.
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+
+    def test_create_transfer_validates_source_not_self(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with debt account as source: validation error."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(acct.id)},
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+    def test_create_transfer_idor_debt_account(
+        self, auth_client, seed_user, seed_second_user,
+        seed_second_periods, db, seed_periods,
+    ):
+        """POST to other user's debt account: 404-equivalent redirect."""
+        other_loan = _create_loan_account(
+            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            Decimal("200000.00"), Decimal("0.06000"), 360,
+            date(2024, 1, 1), 1,
+        )
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{other_loan.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        assert resp.status_code == 302
+        assert "/savings" in resp.headers.get("Location", "")
+
+    def test_create_transfer_amount_override(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with custom amount: template uses the override amount."""
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "2000.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.default_amount == Decimal("2000.00")
+
+    def test_source_accounts_exclude_debt_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Source accounts dropdown does not include the current debt account."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The prompt's <select> should not have the mortgage as an option.
+        assert f'value="{acct.id}"' not in html or "No recurring payment" not in html

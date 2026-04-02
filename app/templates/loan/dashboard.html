@@ -39,6 +39,42 @@
   </li>
 </ul>
 
+{% if show_transfer_prompt and source_accounts %}
+<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+  <i class="bi bi-arrow-repeat me-3 fs-4"></i>
+  <div class="flex-grow-1">
+    <h6 class="alert-heading mb-1">No recurring payment set up for this loan</h6>
+    <p class="mb-2 small">
+      Create a recurring monthly transfer of
+      <strong class="font-mono">${{ "{:,.2f}".format(total_payment|float) }}</strong>
+      {% if monthly_escrow|float > 0 %}
+        (<span class="font-mono">${{ "{:,.2f}".format(summary.monthly_payment|float) }}</span> P&I
+        + <span class="font-mono">${{ "{:,.2f}".format(monthly_escrow|float) }}</span> escrow)
+      {% endif %}
+      to keep your loan on track.
+    </p>
+    <form method="POST" action="{{ url_for('loan.create_payment_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-auto">
+        <label for="source_account_id" class="form-label form-label-sm mb-0">From</label>
+        <select class="form-select form-select-sm" id="source_account_id" name="source_account_id" required>
+          {% for acct in source_accounts %}
+          <option value="{{ acct.id }}" {% if acct.id == default_source_id %}selected{% endif %}>
+            {{ acct.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="bi bi-plus-circle"></i> Create Recurring Transfer
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="tab-content">
   {# === Overview Tab === #}
   <div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
