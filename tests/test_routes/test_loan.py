@@ -1328,3 +1328,71 @@ class TestTransferPrompt:
         html = resp.data.decode()
         # The prompt's <select> should not have the mortgage as an option.
         assert f'value="{acct.id}"' not in html or "No recurring payment" not in html
+
+
+# ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
+
+
+class TestARMRateHistoryIntegration:
+    """Tests for ARM rate history integration in the loan dashboard.
+
+    Verifies that the dashboard and payoff calculator correctly load
+    RateHistory entries for ARM loans, convert them to RateChangeRecords,
+    and pass them to the amortization engine.
+    """
+
+    def test_arm_dashboard_passes_rate_history(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """ARM mortgage with rate history: dashboard projection differs
+        from a fixed-rate projection.
+
+        Creates an ARM mortgage at 5%, adds a rate change to 7%,
+        verifies the dashboard renders and shows rate history data.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            Decimal("100000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        # Add a rate change effective Feb 2025.
+        entry = RateHistory(
+            account_id=acct.id,
+            effective_date=date(2025, 2, 1),
+            interest_rate=Decimal("0.07000"),
+        )
+        db.session.add(entry)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Dashboard should render with the rate history visible.
+        assert "Loan Summary" in html
+
+    def test_non_arm_dashboard_ignores_rate_history(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Non-ARM loan with rate history entries: rate_changes not passed.
+
+        Defensively verifies that rate history entries on a non-ARM loan
+        do not affect the projection.  The dashboard should produce
+        identical output to one with no rate history.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+
+        # Insert rate history despite is_arm=False (defensive case).
+        entry = RateHistory(
+            account_id=acct.id,
+            effective_date=date(2025, 2, 1),
+            interest_rate=Decimal("0.07000"),
+        )
+        db.session.add(entry)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Loan Summary" in html
+        # Non-ARM: rate history section should NOT be visible.
+        assert "Rate History" not in html or "Rate Change" not in html

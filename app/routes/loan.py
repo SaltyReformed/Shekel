@@ -38,6 +38,7 @@ from app.services import (
     pay_period_service,
     transfer_recurrence,
 )
+from app.services.amortization_engine import RateChangeRecord
 from app.services.loan_payment_service import get_payment_history
 from app.utils.formatting import pct_to_decimal
 
@@ -127,8 +128,30 @@ def dashboard(account_id):
     )
     payments = get_payment_history(account.id, scenario.id) if scenario else []
 
+    # Load rate history for ARM loans and convert to engine-compatible
+    # RateChangeRecord instances.  Non-ARM loans pass rate_changes=None.
+    rate_history = []
+    rate_changes = None
+    if params.is_arm:
+        rate_history = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=account.id)
+            .order_by(RateHistory.effective_date.desc())
+            .all()
+        )
+        if rate_history:
+            rate_changes = [
+                RateChangeRecord(
+                    effective_date=rh.effective_date,
+                    interest_rate=Decimal(str(rh.interest_rate)),
+                )
+                for rh in rate_history
+            ]
+
     # Calculate projection (summary + schedule) in one call.
-    proj = amortization_engine.get_loan_projection(params, payments=payments)
+    proj = amortization_engine.get_loan_projection(
+        params, payments=payments, rate_changes=rate_changes,
+    )
     summary = proj.summary
 
     # Load escrow components.
@@ -142,16 +165,6 @@ def dashboard(account_id):
     total_payment = escrow_calculator.calculate_total_payment(
         summary.monthly_payment, escrow_components,
     )
-
-    # Rate history (for ARM).
-    rate_history = []
-    if params.is_arm:
-        rate_history = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account.id)
-            .order_by(RateHistory.effective_date.desc())
-            .all()
-        )
 
     # Chart data.
     chart_labels, chart_standard = _build_chart_data(proj.schedule)
@@ -487,6 +500,24 @@ def payoff_calculate(account_id):
     )
     payments = get_payment_history(account.id, scenario.id) if scenario else []
 
+    # Load rate changes for ARM loans (same pattern as dashboard).
+    rate_changes = None
+    if params.is_arm:
+        rate_history = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=account.id)
+            .order_by(RateHistory.effective_date)
+            .all()
+        )
+        if rate_history:
+            rate_changes = [
+                RateChangeRecord(
+                    effective_date=rh.effective_date,
+                    interest_rate=Decimal(str(rh.interest_rate)),
+                )
+                for rh in rate_history
+            ]
+
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
         payoff_summary = amortization_engine.calculate_summary(
@@ -499,6 +530,7 @@ def payoff_calculate(account_id):
             extra_monthly=extra,
             original_principal=original,
             payments=payments,
+            rate_changes=rate_changes,
         )
 
         # Generate chart data for comparison.
@@ -510,6 +542,7 @@ def payoff_calculate(account_id):
             original_principal=original,
             term_months=params.term_months,
             payments=payments,
+            rate_changes=rate_changes,
         )
         # Accelerated schedule: committed payments + extra_monthly.
         accelerated_schedule = amortization_engine.generate_schedule(
@@ -519,6 +552,7 @@ def payoff_calculate(account_id):
             original_principal=original,
             term_months=params.term_months,
             payments=payments,
+            rate_changes=rate_changes,
         )
 
         chart_labels, chart_standard = _build_chart_data(standard_schedule)
@@ -550,6 +584,7 @@ def payoff_calculate(account_id):
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
+            rate_changes=rate_changes,
         )
 
         monthly_payment = amortization_engine.calculate_monthly_payment(

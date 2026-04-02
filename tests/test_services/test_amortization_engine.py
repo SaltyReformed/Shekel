@@ -12,6 +12,7 @@ from app.services.amortization_engine import (
     AmortizationSummary,
     LoanProjection,
     PaymentRecord,
+    RateChangeRecord,
     calculate_monthly_payment,
     calculate_payoff_by_date,
     calculate_remaining_months,
@@ -1589,3 +1590,470 @@ class TestPaymentRecordValidation:
         assert record.payment_date == date(2026, 2, 15)
         assert record.amount == Decimal("1500.00")
         assert record.is_confirmed is True
+
+
+# ── ARM Rate Change Schedule Tests (Commit 5.7-1) ─────────────────────
+
+
+class TestARMRateChangeSchedule:
+    """Tests for ARM rate change support in the amortization engine.
+
+    Verifies that generate_schedule() correctly handles the optional
+    rate_changes parameter: rate lookup by effective_date, re-amortization
+    at rate boundaries, interest_rate field population, and interaction
+    with the payments parameter.
+
+    Uses a $100,000 loan at 5% for 360 months as the standard scenario.
+    Monthly payment = $536.82 (standard amortization formula).
+    """
+
+    # ── Standard test scenario ────────────────────────────────────
+    PRINCIPAL = Decimal("100000.00")
+    RATE = Decimal("0.05")
+    MONTHS = 360
+    ORIGINATION = date(2024, 1, 1)
+    PAYMENT_DAY = 1
+    MONTHLY_PAYMENT = Decimal("536.82")
+
+    # ── Backward compatibility ────────────────────────────────────
+
+    def test_arm_no_rate_changes_none(self):
+        """rate_changes=None produces identical output to no rate_changes.
+
+        Three-way equivalence: omitted, None, and empty list must all
+        produce the same schedule.
+        """
+        schedule_omit = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        schedule_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=None,
+        )
+        schedule_empty = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=[],
+        )
+        assert len(schedule_omit) == len(schedule_none) == len(schedule_empty)
+        for row_o, row_n, row_e in zip(schedule_omit, schedule_none, schedule_empty):
+            assert row_o.payment == row_n.payment == row_e.payment
+            assert row_o.interest == row_n.interest == row_e.interest
+            assert row_o.remaining_balance == row_n.remaining_balance == row_e.remaining_balance
+            # No rate_changes -> interest_rate is None on all rows.
+            assert row_o.interest_rate is None
+            assert row_n.interest_rate is None
+            assert row_e.interest_rate is None
+
+    # ── Rate increase ─────────────────────────────────────────────
+
+    def test_arm_single_rate_increase(self):
+        """Rate increases from 5% to 7% at month 13 (Feb 2025).
+
+        Before adjustment: payment = $536.82, rate = 5%.
+        Month 12 (Jan 2025): interest = balance * 0.05/12.
+        Month 13 (Feb 2025): rate changes to 7%, payment re-amortizes.
+
+        Re-amortization at month 13:
+          balance after 12 months at 5% = $98,386.31 (from schedule).
+          remaining months = 360 - 12 = 348.
+          new payment = amortize($98,386.31, 0.07, 348).
+
+        Hand calculation for new payment:
+          r = 0.07/12 = 0.00583333...
+          factor = (1 + r)^348
+          M = 98386.31 * r * factor / (factor - 1)
+          = $671.12 (verified via formula)
+        """
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2025, 2, 1),
+                interest_rate=Decimal("0.07"),
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+
+        # Month 12 (Jan 2025): last month at original rate.
+        assert schedule[11].interest_rate == self.RATE
+        assert schedule[11].payment == self.MONTHLY_PAYMENT
+
+        # Month 13 (Feb 2025): rate changes, payment re-amortizes.
+        assert schedule[12].interest_rate == Decimal("0.07")
+        balance_at_12 = schedule[11].remaining_balance
+        new_payment = calculate_monthly_payment(
+            balance_at_12, Decimal("0.07"), 348,
+        )
+        assert schedule[12].payment == new_payment
+
+        # Interest in month 13 uses the new rate.
+        expected_interest = (
+            balance_at_12 * Decimal("0.07") / 12
+        ).quantize(Decimal("0.01"))
+        assert schedule[12].interest == expected_interest
+
+        # Total interest should be higher than fixed-rate schedule.
+        fixed = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        total_arm = sum(r.interest for r in schedule)
+        total_fixed = sum(r.interest for r in fixed)
+        assert total_arm > total_fixed
+
+    # ── Rate decrease ─────────────────────────────────────────────
+
+    def test_arm_single_rate_decrease(self):
+        """Rate decreases from 5% to 3% at month 13 (Feb 2025).
+
+        Re-amortization at month 13:
+          balance after 12 months at 5% = $98,386.31.
+          remaining months = 348.
+          new payment = amortize($98,386.31, 0.03, 348) = $408.16.
+        """
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2025, 2, 1),
+                interest_rate=Decimal("0.03"),
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+
+        # Month 13: payment decreases at new rate.
+        balance_at_12 = schedule[11].remaining_balance
+        new_payment = calculate_monthly_payment(
+            balance_at_12, Decimal("0.03"), 348,
+        )
+        assert schedule[12].payment == new_payment
+        assert schedule[12].payment < self.MONTHLY_PAYMENT
+
+        # Total interest should be lower than fixed-rate schedule.
+        fixed = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        total_arm = sum(r.interest for r in schedule)
+        total_fixed = sum(r.interest for r in fixed)
+        assert total_arm < total_fixed
+
+    # ── Multiple rate changes ─────────────────────────────────────
+
+    def test_arm_multiple_rate_changes(self):
+        """Three rate changes: 5%->6% at month 13, 6%->7% at month 25,
+        7%->4% at month 37.
+
+        Verifies: each rate change triggers re-amortization, interest_rate
+        field reflects the correct rate for each period, and the schedule
+        terminates cleanly.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.06")),
+            RateChangeRecord(date(2026, 2, 1), Decimal("0.07")),
+            RateChangeRecord(date(2027, 2, 1), Decimal("0.04")),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+
+        # Verify rate field transitions.
+        assert schedule[0].interest_rate == self.RATE    # Month 1: 5%
+        assert schedule[11].interest_rate == self.RATE   # Month 12: 5%
+        assert schedule[12].interest_rate == Decimal("0.06")  # Month 13: 6%
+        assert schedule[24].interest_rate == Decimal("0.07")  # Month 25: 7%
+        assert schedule[36].interest_rate == Decimal("0.04")  # Month 37: 4%
+
+        # Payment changes at each boundary.
+        assert schedule[11].payment != schedule[12].payment
+        assert schedule[23].payment != schedule[24].payment
+        assert schedule[35].payment != schedule[36].payment
+
+        # Schedule terminates with zero balance.
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    # ── Pre-origination filtering ─────────────────────────────────
+
+    def test_arm_rate_change_before_origination(self):
+        """Rate change before origination_date is silently ignored.
+
+        Schedule should be identical to one with no rate changes.
+        """
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2023, 1, 1),  # Before 2024-01-01
+                interest_rate=Decimal("0.08"),
+            ),
+        ]
+        schedule_with = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+        schedule_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        assert len(schedule_with) == len(schedule_none)
+        for row_a, row_b in zip(schedule_with, schedule_none):
+            assert row_a.payment == row_b.payment
+            assert row_a.interest == row_b.interest
+            assert row_a.remaining_balance == row_b.remaining_balance
+
+    # ── Rate change + payments interaction ────────────────────────
+
+    def test_arm_rate_change_with_payments(self):
+        """ARM loan with both payment records AND rate changes.
+
+        Rate increases to 7% at month 13.  A $2000 lump-sum payment
+        occurs in month 6.  Verifies:
+        1. Month 6 uses the payment record amount (not standard payment).
+        2. Month 13 re-amortizes at the new rate with the correct balance.
+        3. Interest in month 13 uses 7%.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
+        ]
+        payments = [
+            PaymentRecord(
+                payment_date=date(2024, 7, 1),  # Month 6
+                amount=Decimal("2000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+            payments=payments,
+        )
+
+        # Month 6: payment record used.
+        assert schedule[5].payment + schedule[5].extra_payment >= Decimal("2000.00") - Decimal("1.00")
+        assert schedule[5].is_confirmed is True
+
+        # Month 13: rate change applies after lower balance from extra payment.
+        assert schedule[12].interest_rate == Decimal("0.07")
+        balance_at_12 = schedule[11].remaining_balance
+        expected_interest = (
+            balance_at_12 * Decimal("0.07") / 12
+        ).quantize(Decimal("0.01"))
+        assert schedule[12].interest == expected_interest
+
+    # ── Zero rate ─────────────────────────────────────────────────
+
+    def test_arm_rate_change_to_zero(self):
+        """Rate changes to 0%: no interest accrues, no division by zero.
+
+        For 0% rate, payment = remaining_balance / remaining_months.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.00")),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+
+        # After rate change, interest should be $0 for all remaining months.
+        for row in schedule[12:]:
+            assert row.interest == Decimal("0.00"), (
+                f"Month {row.month}: expected $0 interest at 0% rate, "
+                f"got {row.interest}"
+            )
+
+        # Schedule must still terminate.
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    # ── Negative rate rejected ────────────────────────────────────
+
+    def test_arm_negative_rate_rejected(self):
+        """Negative interest rate raises ValueError at construction."""
+        with pytest.raises(ValueError, match="interest_rate must be >= 0"):
+            RateChangeRecord(
+                effective_date=date(2025, 6, 1),
+                interest_rate=Decimal("-0.01"),
+            )
+
+    # ── Same-date deduplication ───────────────────────────────────
+
+    def test_arm_multiple_changes_same_date(self):
+        """Two rate changes on the same effective_date: last one wins.
+
+        Sorted order is stable, so the second entry with the same date
+        overwrites the first.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.06")),
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.08")),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+        # The winning rate should be 0.08 (second entry).
+        assert schedule[12].interest_rate == Decimal("0.08")
+
+    # ── Rate change on exact payment date ─────────────────────────
+
+    def test_arm_rate_change_exactly_on_payment_date(self):
+        """Rate change effective_date == payment_date: new rate applies
+        to that month's interest calculation.
+
+        Month 1 payment_date = 2024-02-01.  Rate changes on 2024-02-01.
+        Interest for month 1 should use the new rate.
+        """
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2024, 2, 1),
+                interest_rate=Decimal("0.08"),
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+        # Month 1: rate changed to 8%.
+        # Interest = $100,000 * 0.08 / 12 = $666.67
+        expected_interest = (
+            self.PRINCIPAL * Decimal("0.08") / 12
+        ).quantize(Decimal("0.01"))
+        assert schedule[0].interest == expected_interest
+        assert schedule[0].interest_rate == Decimal("0.08")
+
+    # ── interest_rate field population ────────────────────────────
+
+    def test_arm_interest_rate_field_populated(self):
+        """Every row has interest_rate populated when rate_changes is provided.
+
+        Rate starts at 5%, changes to 7% at month 13.
+        Months 1-12: 5%.  Months 13+: 7%.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+        )
+        for row in schedule:
+            assert row.interest_rate is not None, (
+                f"Month {row.month}: interest_rate is None"
+            )
+        # Spot-check values.
+        for row in schedule[:12]:
+            assert row.interest_rate == self.RATE
+        for row in schedule[12:]:
+            assert row.interest_rate == Decimal("0.07")
+
+    # ── Summary and projection passthrough ────────────────────────
+
+    def test_arm_calculate_summary_with_rate_changes(self):
+        """calculate_summary with rate_changes produces different totals
+        than a fixed-rate summary.
+
+        A rate increase to 7% at month 13 should increase total interest.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
+        ]
+        summary_fixed = calculate_summary(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
+        )
+        summary_arm = calculate_summary(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
+            rate_changes=rate_changes,
+        )
+        # Rate increase -> more total interest.
+        assert summary_arm.total_interest > summary_fixed.total_interest
+
+    def test_arm_get_loan_projection_with_rate_changes(self):
+        """get_loan_projection threads rate_changes correctly.
+
+        A rate increase should produce a different total_interest than
+        the fixed-rate projection.
+        """
+        schedule_start = date(2024, 1, 1)
+        params = type("P", (), {
+            "origination_date": self.ORIGINATION,
+            "term_months": self.MONTHS,
+            "original_principal": self.PRINCIPAL,
+            "current_principal": self.PRINCIPAL,
+            "interest_rate": self.RATE,
+            "payment_day": self.PAYMENT_DAY,
+        })()
+        rate_changes = [
+            RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
+        ]
+        proj_fixed = get_loan_projection(
+            params, schedule_start=schedule_start,
+        )
+        proj_arm = get_loan_projection(
+            params, schedule_start=schedule_start,
+            rate_changes=rate_changes,
+        )
+        assert proj_arm.summary.total_interest > proj_fixed.summary.total_interest
+
+
+class TestRateChangeRecordValidation:
+    """Tests for RateChangeRecord dataclass validation.
+
+    Mirrors TestPaymentRecordValidation: validates that invalid inputs
+    are caught at construction time with clear error messages.
+    """
+
+    def test_negative_rate_raises_value_error(self):
+        """Negative interest rate must be rejected."""
+        with pytest.raises(ValueError, match="interest_rate must be >= 0"):
+            RateChangeRecord(
+                effective_date=date(2025, 6, 1),
+                interest_rate=Decimal("-0.01"),
+            )
+
+    def test_float_rate_raises_type_error(self):
+        """Float rate is a precision bug and must be rejected."""
+        with pytest.raises(TypeError, match="interest_rate must be a Decimal"):
+            RateChangeRecord(
+                effective_date=date(2025, 6, 1),
+                interest_rate=0.07,
+            )
+
+    def test_string_date_raises_type_error(self):
+        """String date must be rejected -- only date instances accepted."""
+        with pytest.raises(TypeError, match="effective_date must be a date"):
+            RateChangeRecord(
+                effective_date="2025-06-01",
+                interest_rate=Decimal("0.07"),
+            )
+
+    def test_zero_rate_valid(self):
+        """Zero rate is valid -- represents an interest-free period."""
+        record = RateChangeRecord(
+            effective_date=date(2025, 6, 1),
+            interest_rate=Decimal("0.00"),
+        )
+        assert record.interest_rate == Decimal("0.00")
+
+    def test_valid_construction(self):
+        """Valid RateChangeRecord construction succeeds."""
+        record = RateChangeRecord(
+            effective_date=date(2025, 6, 1),
+            interest_rate=Decimal("0.07"),
+        )
+        assert record.effective_date == date(2025, 6, 1)
+        assert record.interest_rate == Decimal("0.07")

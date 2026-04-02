@@ -16,9 +16,12 @@ enables three projection scenarios from the same engine:
 """
 
 import calendar
+import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+
+logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 
@@ -76,6 +79,52 @@ class PaymentRecord:
             )
 
 
+@dataclass(frozen=True)
+class RateChangeRecord:
+    """A historical or scheduled rate change applied to an ARM loan.
+
+    Used to replay known rate adjustments through the amortization
+    schedule so projections reflect the loan's actual rate history
+    rather than assuming a fixed rate for the entire term.
+
+    Attributes:
+        effective_date: The date the new rate takes effect.  Matched
+            to schedule months by finding the most recent entry with
+            effective_date <= payment_date.
+        interest_rate: The new annual interest rate as a Decimal
+            (e.g., Decimal("0.065") for 6.5%).  Must be >= 0.
+    """
+
+    effective_date: date
+    interest_rate: Decimal
+
+    def __post_init__(self):
+        """Validate rate change record fields at construction time.
+
+        Catches invalid data immediately rather than producing wrong
+        results deep in the schedule loop.
+
+        Raises:
+            TypeError: If effective_date is not a date or interest_rate
+                is not a Decimal.
+            ValueError: If interest_rate is negative.
+        """
+        if not isinstance(self.effective_date, date):
+            raise TypeError(
+                f"effective_date must be a date, "
+                f"got {type(self.effective_date).__name__}"
+            )
+        if not isinstance(self.interest_rate, Decimal):
+            raise TypeError(
+                f"interest_rate must be a Decimal, "
+                f"got {type(self.interest_rate).__name__}"
+            )
+        if self.interest_rate < 0:
+            raise ValueError(
+                f"interest_rate must be >= 0, got {self.interest_rate}"
+            )
+
+
 def calculate_remaining_months(
     origination_date: date, term_months: int, as_of: date | None = None,
 ) -> int:
@@ -111,6 +160,7 @@ class AmortizationRow:
     extra_payment: Decimal
     remaining_balance: Decimal
     is_confirmed: bool = False
+    interest_rate: Decimal | None = None
 
 
 @dataclass
@@ -202,6 +252,77 @@ def _build_payment_lookups(
     return amount_by_month, confirmed_by_month
 
 
+def _build_rate_change_list(
+    rate_changes: list[RateChangeRecord],
+    origination_date: date | None,
+) -> list[tuple[date, Decimal]]:
+    """Build a sorted, deduplicated list of (effective_date, rate) tuples.
+
+    Pre-origination entries are filtered.  When multiple entries share
+    the same effective_date, the last one (after stable sort) wins --
+    this is deterministic but likely a data entry error, so a warning
+    is logged.
+
+    Args:
+        rate_changes: Non-empty list of RateChangeRecord instances.
+        origination_date: Loan origination date.  Entries before this
+            date are excluded.  If None, no filtering is applied.
+
+    Returns:
+        List of (effective_date, interest_rate) sorted by effective_date.
+    """
+    sorted_changes = sorted(rate_changes, key=lambda r: r.effective_date)
+
+    # Filter pre-origination entries.
+    if origination_date is not None:
+        sorted_changes = [
+            r for r in sorted_changes
+            if r.effective_date >= origination_date
+        ]
+
+    # Deduplicate by effective_date (last entry wins).
+    seen_dates: dict[date, Decimal] = {}
+    for record in sorted_changes:
+        if record.effective_date in seen_dates:
+            logger.warning(
+                "Multiple rate changes on %s: overriding %.5f with %.5f",
+                record.effective_date,
+                seen_dates[record.effective_date],
+                record.interest_rate,
+            )
+        seen_dates[record.effective_date] = record.interest_rate
+
+    return sorted(seen_dates.items(), key=lambda x: x[0])
+
+
+def _find_applicable_rate(
+    payment_date: date,
+    rate_schedule: list[tuple[date, Decimal]],
+    base_rate: Decimal,
+) -> Decimal:
+    """Find the applicable annual rate for a given payment date.
+
+    Scans the rate_schedule for the most recent entry with
+    effective_date <= payment_date.  Falls back to base_rate if
+    no entry qualifies.
+
+    Args:
+        payment_date: The payment date for the current schedule month.
+        rate_schedule: Sorted list of (effective_date, rate) tuples.
+        base_rate: The loan's original annual rate (fallback).
+
+    Returns:
+        The applicable annual interest rate as a Decimal.
+    """
+    applicable_rate = base_rate
+    for effective_date, rate in rate_schedule:
+        if effective_date <= payment_date:
+            applicable_rate = rate
+        else:
+            break
+    return applicable_rate
+
+
 def generate_schedule(
     current_principal: Decimal,
     annual_rate: Decimal,
@@ -212,6 +333,7 @@ def generate_schedule(
     original_principal: Decimal | None = None,
     term_months: int | None = None,
     payments: list[PaymentRecord] | None = None,
+    rate_changes: list[RateChangeRecord] | None = None,
 ) -> list[AmortizationRow]:
     """Generate month-by-month amortization schedule.
 
@@ -226,6 +348,14 @@ def generate_schedule(
 
     Payment matching is by year-month of ``payment_date``, not exact
     day, so biweekly payment dates correctly map to monthly periods.
+
+    When *rate_changes* is provided, the schedule re-amortizes the
+    remaining balance at each rate adjustment.  The applicable rate for
+    each month is the most recent entry with effective_date <= the
+    month's payment_date.  The monthly payment is recalculated using
+    the standard amortization formula: M = P * [r(1+r)^n] / [(1+r)^n-1]
+    where P = remaining balance, r = new monthly rate, n = remaining
+    months.  Both payments and rate_changes can be used together.
 
     Args:
         current_principal: Current outstanding balance.
@@ -245,6 +375,11 @@ def generate_schedule(
             provided, each month checks for a matching payment (by
             year-month) and uses that amount instead of the contractual
             payment.
+        rate_changes: Optional list of RateChangeRecord instances for
+            ARM loans.  When provided, the schedule applies rate changes
+            at their effective dates and re-amortizes the remaining
+            balance at the new rate.  Pre-origination entries are
+            filtered.  None or [] leaves behavior unchanged.
 
     Returns:
         List of AmortizationRow objects.
@@ -262,6 +397,13 @@ def generate_schedule(
         amount_by_month = {}
         confirmed_by_month = {}
 
+    # Build rate change schedule if rate_changes are provided.
+    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
+    if has_rate_changes:
+        rate_schedule = _build_rate_change_list(rate_changes, origination_date)
+    else:
+        rate_schedule = []
+
     # Compute the monthly payment.  When original loan terms are provided,
     # use them for the contractual payment (what the borrower actually pays).
     # Otherwise re-amortize from current_principal (backward compat).
@@ -276,6 +418,7 @@ def generate_schedule(
         monthly_payment = calculate_monthly_payment(
             current_principal, annual_rate, remaining_months,
         )
+    current_annual_rate = annual_rate
     monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
 
     # When using the contractual payment, the number of months needed to
@@ -312,6 +455,27 @@ def generate_schedule(
         # Calculate payment date.
         max_day = calendar.monthrange(pay_year, pay_month)[1]
         pay_date = date(pay_year, pay_month, min(payment_day, max_day))
+
+        # ARM rate adjustment: check if the rate changes this month.
+        # When the rate differs from the previous period, re-amortize
+        # the remaining balance over the remaining months at the new rate.
+        if rate_schedule:
+            period_rate = _find_applicable_rate(
+                pay_date, rate_schedule, annual_rate,
+            )
+            if period_rate != current_annual_rate:
+                current_annual_rate = period_rate
+                monthly_rate = (
+                    current_annual_rate / 12
+                    if current_annual_rate > 0
+                    else Decimal("0")
+                )
+                # Re-amortize: new payment for remaining balance over
+                # remaining months at the new rate.
+                months_left = max_months - month_num + 1
+                monthly_payment = calculate_monthly_payment(
+                    balance, current_annual_rate, months_left,
+                )
 
         # Calculate interest for this month.
         interest = (balance * monthly_rate).quantize(TWO_PLACES, ROUND_HALF_UP)
@@ -381,6 +545,11 @@ def generate_schedule(
                     extra += balance
                     balance = Decimal("0.00")
 
+        # Record the rate used for this period.  When rate_changes are
+        # provided, always populate; otherwise leave as None for backward
+        # compatibility with consumers that do not expect the field.
+        row_rate = current_annual_rate if rate_schedule else None
+
         rows.append(AmortizationRow(
             month=month_num,
             payment_date=pay_date,
@@ -390,6 +559,7 @@ def generate_schedule(
             extra_payment=extra.quantize(TWO_PLACES, ROUND_HALF_UP),
             remaining_balance=balance,
             is_confirmed=row_confirmed,
+            interest_rate=row_rate,
         ))
 
         if balance <= 0:
@@ -414,6 +584,7 @@ def calculate_summary(
     extra_monthly: Decimal = Decimal("0.00"),
     original_principal: Decimal | None = None,
     payments: list[PaymentRecord] | None = None,
+    rate_changes: list[RateChangeRecord] | None = None,
 ) -> AmortizationSummary:
     """Compute summary metrics: payoff date, interest saved, etc.
 
@@ -429,6 +600,8 @@ def calculate_summary(
             re-amortizing from current_principal.
         payments: Optional list of PaymentRecord instances passed
             through to generate_schedule().
+        rate_changes: Optional list of RateChangeRecord instances
+            passed through to generate_schedule() for ARM loans.
     """
     if original_principal is not None:
         monthly_payment = calculate_monthly_payment(
@@ -448,6 +621,7 @@ def calculate_summary(
         original_principal=original_principal,
         term_months=term_months,
         payments=payments,
+        rate_changes=rate_changes,
     )
 
     total_interest_standard = sum((r.interest for r in standard), Decimal("0.00"))
@@ -463,6 +637,7 @@ def calculate_summary(
             original_principal=original_principal,
             term_months=term_months,
             payments=payments,
+            rate_changes=rate_changes,
         )
         total_interest_extra = sum((r.interest for r in accelerated), Decimal("0.00"))
         payoff_date_extra = accelerated[-1].payment_date if accelerated else origination_date
@@ -494,12 +669,15 @@ def calculate_payoff_by_date(
     payment_day: int,
     original_principal: Decimal | None = None,
     term_months: int | None = None,
+    rate_changes: list[RateChangeRecord] | None = None,
 ) -> Decimal | None:
     """Calculate required extra monthly payment to pay off by target_date.
 
     Args:
         original_principal: Original loan amount for contractual payment.
         term_months: Original loan term for contractual payment.
+        rate_changes: Optional list of RateChangeRecord instances
+            passed through to generate_schedule() for ARM loans.
 
     Returns None if target_date is not achievable (already past or too soon).
     Returns Decimal("0.00") if standard payoff is already before target.
@@ -514,6 +692,7 @@ def calculate_payoff_by_date(
         payment_day=payment_day,
         original_principal=original_principal,
         term_months=term_months,
+        rate_changes=rate_changes,
     )
     if not standard:
         return Decimal("0.00")
@@ -559,6 +738,7 @@ def calculate_payoff_by_date(
             payment_day=payment_day,
             original_principal=original_principal,
             term_months=term_months,
+            rate_changes=rate_changes,
         )
         if not schedule:
             return mid
@@ -583,7 +763,12 @@ class LoanProjection:
     schedule: list  # list[AmortizationRow]
 
 
-def get_loan_projection(params, schedule_start=None, payments=None):
+def get_loan_projection(
+    params,
+    schedule_start=None,
+    payments=None,
+    rate_changes=None,
+):
     """Compute remaining months, summary, and schedule for a loan in one call.
 
     The contractual monthly payment is computed from ``original_principal``
@@ -600,6 +785,8 @@ def get_loan_projection(params, schedule_start=None, payments=None):
                         first day of the current month.
         payments: Optional list of PaymentRecord instances passed
                   through to generate_schedule() and calculate_summary().
+        rate_changes: Optional list of RateChangeRecord instances
+                      passed through for ARM rate adjustment support.
 
     Returns:
         LoanProjection with remaining_months, summary, and schedule.
@@ -624,6 +811,7 @@ def get_loan_projection(params, schedule_start=None, payments=None):
         term_months=params.term_months,
         original_principal=original,
         payments=payments,
+        rate_changes=rate_changes,
     )
 
     schedule = generate_schedule(
@@ -632,6 +820,7 @@ def get_loan_projection(params, schedule_start=None, payments=None):
         original_principal=original,
         term_months=params.term_months,
         payments=payments,
+        rate_changes=rate_changes,
     )
 
     return LoanProjection(
