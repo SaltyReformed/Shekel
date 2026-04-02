@@ -513,6 +513,15 @@ def generate_schedule(
                 actual_payment = principal_portion + interest
                 balance -= principal_portion
                 balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
+
+                # Guard against negative balance from rounding.
+                # Mirrors the standard-path guard at the end of the
+                # else branch below.  Trigger conditions are extremely
+                # narrow (sub-penny rounding after quantize), but a
+                # negative balance would propagate downstream as a
+                # nonsensical financial value.
+                if balance < 0:
+                    balance = Decimal("0.00")
         else:
             # No payment record: use standard contractual logic.
             row_confirmed = False

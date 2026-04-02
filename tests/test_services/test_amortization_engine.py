@@ -2057,3 +2057,504 @@ class TestRateChangeRecordValidation:
         )
         assert record.effective_date == date(2025, 6, 1)
         assert record.interest_rate == Decimal("0.07")
+
+
+# ── Edge Case Guards Tests (Commit 5.8-1) ─────────────────────────────
+
+
+class TestEdgeCaseGuards:
+    """Tests for overpayment capping, zero-balance termination, and
+    zero-principal entry guards in the amortization engine.
+
+    These guards harden the engine against boundary conditions reachable
+    when real payment data (5.1) and ARM rate changes (5.7) interact
+    with the schedule loop.  Every test asserts exact Decimal equality
+    for financial values.
+
+    Standard scenario: $10,000 at 6% for 12 months.
+    Monthly payment = $860.66 (amortization formula).
+    """
+
+    PRINCIPAL = Decimal("10000.00")
+    RATE = Decimal("0.06")
+    MONTHS = 12
+    ORIGINATION = date(2026, 1, 1)
+    PAYMENT_DAY = 15
+    MONTHLY_PAYMENT = Decimal("860.66")
+
+    # ── C-5.8-1: Payment exactly equals remaining ────────────────
+
+    def test_payment_exactly_equals_remaining(self):
+        """PaymentRecord for exactly remaining_balance + interest_due.
+
+        Setup: $1000 balance, 6% rate, 1 month.
+        Interest = $1000 * 0.06/12 = $5.00.
+        Payment = $1000 + $5.00 = $1005.00.
+        Principal = $1005.00 - $5.00 = $1000.00 = balance.
+        Result: 1 row, remaining_balance == $0.00 exactly.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("1005.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            Decimal("1000.00"), Decimal("0.06"), 1,
+            origination_date=date(2026, 1, 1), payment_day=15,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+        assert schedule[0].interest == Decimal("5.00")
+        assert schedule[0].principal == Decimal("1000.00")
+
+    # ── C-5.8-2: Payment exceeds remaining ───────────────────────
+
+    def test_payment_exceeds_remaining(self):
+        """PaymentRecord of $5000 against $1000 remaining.
+
+        Interest = $1000 * 0.06/12 = $5.00.
+        Principal = $5000 - $5 = $4995, but capped at $1000.
+        Actual payment = $1000 + $5 = $1005.00.
+        Extra = max($1005 - $860.66, 0) = $144.34.
+        Remaining = $0.00.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("5000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            Decimal("1000.00"), Decimal("0.06"), 12,
+            origination_date=date(2026, 1, 1), payment_day=15,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+        assert schedule[0].interest == Decimal("5.00")
+        assert schedule[0].principal == Decimal("1000.00")
+        # Payment is capped: interest + remaining_balance.
+        assert schedule[0].payment == Decimal("1005.00")
+
+    # ── C-5.8-3: Zero-balance stops schedule ─────────────────────
+
+    def test_zero_balance_stops_schedule(self):
+        """360-month term, lump sum at month 1 pays off loan.
+
+        Result: exactly 1 row, not 360.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("50000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, 360,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1, (
+            f"Expected 1 row after lump-sum payoff, got {len(schedule)}"
+        )
+        assert schedule[0].remaining_balance == Decimal("0.00")
+
+    # ── C-5.8-4: Payments after payoff ignored ───────────────────
+
+    def test_payments_after_payoff_ignored(self):
+        """PaymentRecords exist for months 1-6, but payoff at month 1.
+
+        Only the first month produces a row; months 2-6 are unreachable.
+        """
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("50000.00"), True),
+            PaymentRecord(date(2026, 3, 15), Decimal("500.00"), True),
+            PaymentRecord(date(2026, 4, 15), Decimal("500.00"), True),
+            PaymentRecord(date(2026, 5, 15), Decimal("500.00"), True),
+            PaymentRecord(date(2026, 6, 15), Decimal("500.00"), True),
+            PaymentRecord(date(2026, 7, 15), Decimal("500.00"), True),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1, (
+            f"Expected 1 row (payoff at month 1), got {len(schedule)}"
+        )
+
+    # ── C-5.8-5: Very large one-time payment ─────────────────────
+
+    def test_very_large_one_time_payment(self):
+        """$200K loan, single PaymentRecord of $300K in month 1.
+
+        Interest = $200,000 * 0.065/12 = $1,083.33.
+        Principal capped at $200,000 (remaining balance).
+        Actual payment = $200,000 + $1,083.33 = $201,083.33.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2024, 2, 1),
+                amount=Decimal("300000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            Decimal("200000.00"), Decimal("0.065"), 360,
+            origination_date=date(2024, 1, 1), payment_day=1,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+        assert schedule[0].interest == Decimal("1083.33")
+        assert schedule[0].principal == Decimal("200000.00")
+        assert schedule[0].payment == Decimal("201083.33")
+        # Payment must be < original $300K (capped).
+        assert schedule[0].payment < Decimal("300000.00")
+
+    # ── C-5.8-6: Remaining balance never negative (parametrized) ──
+
+    @pytest.mark.parametrize(
+        "principal,rate,months,extra,payments_fn,rate_changes_fn",
+        [
+            # Standard loan, no extras.
+            (Decimal("100000.00"), Decimal("0.06"), 360, Decimal("0.00"),
+             None, None),
+            # Loan with extra_monthly.
+            (Decimal("100000.00"), Decimal("0.06"), 360, Decimal("500.00"),
+             None, None),
+            # Loan with very large extra_monthly.
+            (Decimal("50000.00"), Decimal("0.05"), 60, Decimal("5000.00"),
+             None, None),
+            # Loan with PaymentRecord overpayment.
+            (Decimal("10000.00"), Decimal("0.06"), 12, Decimal("0.00"),
+             lambda: [PaymentRecord(date(2026, 2, 15), Decimal("15000.00"), True)],
+             None),
+            # Loan with ARM rate change.
+            (Decimal("100000.00"), Decimal("0.05"), 360, Decimal("0.00"),
+             None,
+             lambda: [RateChangeRecord(date(2027, 1, 1), Decimal("0.08"))]),
+            # Both payments and rate changes.
+            (Decimal("10000.00"), Decimal("0.06"), 12, Decimal("0.00"),
+             lambda: [PaymentRecord(date(2026, 5, 15), Decimal("8000.00"), True)],
+             lambda: [RateChangeRecord(date(2026, 4, 1), Decimal("0.08"))]),
+        ],
+        ids=[
+            "standard", "with_extra", "large_extra", "payment_overpay",
+            "arm_rate_change", "payment_and_rate",
+        ],
+    )
+    def test_remaining_balance_never_negative(
+        self, principal, rate, months, extra, payments_fn, rate_changes_fn,
+    ):
+        """Invariant: remaining_balance >= 0 on every row of every schedule.
+
+        Parametrized across multiple loan configurations to catch any
+        combination that could produce a negative balance.
+        """
+        payments = payments_fn() if payments_fn else None
+        rate_changes = rate_changes_fn() if rate_changes_fn else None
+        schedule = generate_schedule(
+            principal, rate, months,
+            extra_monthly=extra,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+            rate_changes=rate_changes,
+        )
+        for row in schedule:
+            assert row.remaining_balance >= Decimal("0.00"), (
+                f"Month {row.month}: remaining_balance={row.remaining_balance} "
+                f"is negative"
+            )
+
+    # ── C-5.8-7: Zero-principal loan ─────────────────────────────
+
+    def test_zero_principal_loan(self):
+        """current_principal=0 returns empty schedule immediately."""
+        schedule = generate_schedule(
+            Decimal("0.00"), Decimal("0.06"), 360,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        assert schedule == []
+
+    # ── C-5.8-8: Overpayment + ARM rate change same month ────────
+
+    def test_overpayment_with_arm_rate_change(self):
+        """ARM rate change in the same month as an overpaying PaymentRecord.
+
+        Setup: $1000 balance, rate changes from 6% to 3% on month 1.
+        PaymentRecord: $5000 in month 1.
+        Interest at new rate: $1000 * 0.03/12 = $2.50.
+        Principal capped at $1000.  Actual payment = $1000 + $2.50 = $1002.50.
+        """
+        rate_changes = [
+            RateChangeRecord(date(2026, 2, 15), Decimal("0.03")),
+        ]
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("5000.00"), True),
+        ]
+        schedule = generate_schedule(
+            Decimal("1000.00"), Decimal("0.06"), 12,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            rate_changes=rate_changes,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+        assert schedule[0].interest == Decimal("2.50")
+        assert schedule[0].principal == Decimal("1000.00")
+        assert schedule[0].interest_rate == Decimal("0.03")
+
+    # ── C-5.8-9: Overpayment via extra_monthly only ──────────────
+
+    def test_overpayment_via_extra_monthly_only(self):
+        """Large extra_monthly terminates schedule early.
+
+        $10,000 at 6%, 12 months.  Monthly payment = $860.66.
+        extra_monthly = $9,000.
+
+        Month 1:
+          interest = $50.00, principal = $810.66.
+          extra = min($9000, $10000 - $810.66) = min($9000, $9189.34) = $9000.
+          balance = $10000 - $810.66 - $9000 = $189.34.
+        Month 2:
+          interest = $189.34 * 0.005 = $0.95.
+          principal = $860.66 - $0.95 = $859.71 >= $189.34 → is_final.
+          principal capped at $189.34.
+          balance = $0.00.
+
+        Schedule should be 2 rows (not 12).
+        """
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            extra_monthly=Decimal("9000.00"),
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        assert len(schedule) == 2, (
+            f"Expected 2 rows with $9K extra on $10K loan, got {len(schedule)}"
+        )
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+        # Month 1: extra is the full $9000 (capped at extra_monthly, not
+        # balance - principal_portion which would be $9189.34).
+        assert schedule[0].extra_payment == Decimal("9000.00")
+        assert schedule[0].remaining_balance == Decimal("189.34")
+        # Month 2: final payment absorbs the residual.
+        assert schedule[1].principal == Decimal("189.34")
+        assert schedule[1].interest == Decimal("0.95")
+
+    # ── C-5.8-10: Sub-penny residual cleanup ─────────────────────
+
+    def test_sub_penny_residual_cleanup(self):
+        """Standard amortization over full term ends at exactly $0.00.
+
+        The is_final guard on the last iteration absorbs any sub-penny
+        residual from accumulated rounding.  Verifies the final row has
+        remaining_balance == $0.00 exactly (not $0.003 or -$0.001).
+        Also verifies total principal paid = original principal.
+        """
+        principal = Decimal("123456.78")
+        rate = Decimal("0.04875")
+        months = 360
+        schedule = generate_schedule(
+            principal, rate, months,
+            origination_date=date(2024, 1, 1), payment_day=1,
+        )
+        assert schedule[-1].remaining_balance == Decimal("0.00"), (
+            f"Final balance: {schedule[-1].remaining_balance} (expected 0.00)"
+        )
+        total_principal = sum(r.principal + r.extra_payment for r in schedule)
+        assert total_principal == principal, (
+            f"Total principal {total_principal} != original {principal}"
+        )
+
+    # ── C-5.8-11: Negative amortization -- no false trigger ──────
+
+    def test_negative_amortization_no_false_trigger(self):
+        """Payment below interest: balance grows, guard does NOT trigger.
+
+        $10,000 at 6%.  Month 1 interest = $50.00.
+        PaymentRecord: $20.00 (below interest).
+        Principal = $20 - $50 = -$30 (negative amortization).
+        Balance = $10,000 - (-$30) = $10,030.00 (grows).
+
+        The overpayment guard must NOT cap this; the loan must NOT
+        terminate early.
+        """
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("20.00"), True),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # Month 1: negative amortization increases balance.
+        assert schedule[0].principal == Decimal("-30.00")
+        assert schedule[0].remaining_balance == Decimal("10030.00")
+        # Loan must NOT terminate -- more months follow.
+        assert len(schedule) > 1
+
+    # ── C-5.8-12: Multiple overpayments, only first counts ───────
+
+    def test_multiple_overpayments_only_first_counts(self):
+        """PaymentRecords at months 1 and 2 -- month 1 pays off loan.
+
+        Month 2's payment is unreachable because the loop breaks after
+        month 1's payoff.
+        """
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("50000.00"), True),
+            PaymentRecord(date(2026, 3, 15), Decimal("50000.00"), True),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1, (
+            f"Expected 1 row (payoff at month 1), got {len(schedule)}"
+        )
+        assert schedule[0].remaining_balance == Decimal("0.00")
+
+    # ── C-5.8-13: Standard payments terminate at exactly zero ────
+
+    def test_exactly_zero_after_standard_payments(self):
+        """Loan that pays off cleanly with standard payments.
+
+        $12,000 at 0% for 12 months: payment = $1,000, no interest.
+        All 12 payments of $1,000 each = $12,000 total.
+        Final balance is exactly $0.00 with no residual.
+        """
+        schedule = generate_schedule(
+            Decimal("12000.00"), Decimal("0.00"), 12,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        assert len(schedule) == 12
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+        # Every row should have exactly $1000 principal.
+        for row in schedule:
+            assert row.principal == Decimal("1000.00")
+            assert row.interest == Decimal("0.00")
+
+    # ── C-5.8-14: calculate_summary empty schedule ───────────────
+
+    def test_calculate_summary_empty_schedule(self):
+        """calculate_summary with zero principal: no crash, sensible defaults.
+
+        Zero principal produces an empty schedule.  The summary must not
+        access schedule[-1] and must return zero-value metrics.
+        """
+        summary = calculate_summary(
+            current_principal=Decimal("0.00"),
+            annual_rate=Decimal("0.06"),
+            remaining_months=360,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=360,
+        )
+        assert summary.total_interest == Decimal("0.00")
+        assert summary.interest_saved == Decimal("0.00")
+        assert summary.months_saved == 0
+
+    # ── C-5.8-15: calculate_summary early termination ────────────
+
+    def test_calculate_summary_early_termination(self):
+        """calculate_summary with lump-sum payoff in month 1.
+
+        Payoff_date should be month 1, not month 360.
+        Total interest is one month's worth.
+        """
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("50000.00"), True),
+        ]
+        summary = calculate_summary(
+            current_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            remaining_months=360,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.MONTHS,
+            payments=payments,
+        )
+        # Payoff date is month 1, not month 360.
+        assert summary.payoff_date == date(2026, 2, 15)
+        # Total interest is one month's worth: $10000 * 0.06/12 = $50.00.
+        assert summary.total_interest == Decimal("50.00")
+
+    # ── C-5.8-16: Overpayment extra_payment field correct ────────
+
+    def test_overpayment_extra_payment_field_correct(self):
+        """When overpayment cap triggers, extra_payment field is correct.
+
+        $1000 balance, 6%, 12 months.  Monthly payment = $86.07.
+        PaymentRecord: $2000 in month 1.
+        Interest = $5.00.  Principal capped at $1000.
+        Actual payment = $1005.00.
+        Extra = max($1005.00 - $86.07, $0) = $918.93.
+
+        Hand calculation:
+            monthly_payment = amortize($1000, 0.06, 12) = $86.07
+            interest = $1000 * 0.005 = $5.00
+            principal_portion = $2000 - $5 = $1995 -> capped at $1000
+            actual_payment = $1000 + $5 = $1005
+            extra = max($1005 - $86.07, $0) = $918.93
+        """
+        payments = [
+            PaymentRecord(date(2026, 2, 15), Decimal("2000.00"), True),
+        ]
+        schedule = generate_schedule(
+            Decimal("1000.00"), self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].payment == Decimal("1005.00")
+        assert schedule[0].extra_payment == Decimal("918.93"), (
+            f"Expected extra $918.93, got {schedule[0].extra_payment}"
+        )
+
+    # ── C-5.8-17: payoff_by_date with guards ─────────────────────
+
+    def test_payoff_by_date_with_guards(self):
+        """calculate_payoff_by_date works correctly with early termination.
+
+        The function uses generate_schedule internally in a binary search.
+        Guards must not cause the binary search to diverge.
+        The result should produce a schedule that pays off by the target.
+        """
+        target = date(2029, 1, 1)  # ~3 years
+        extra = calculate_payoff_by_date(
+            Decimal("100000.00"), Decimal("0.065"), 360,
+            target_date=target,
+            origination_date=date(2026, 1, 1),
+            payment_day=1,
+        )
+        assert extra is not None
+        assert extra > Decimal("0.00")
+        # Verify the result actually achieves the target.
+        schedule = generate_schedule(
+            Decimal("100000.00"), Decimal("0.065"), 360,
+            extra_monthly=extra,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        assert schedule[-1].payment_date <= target
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    # ── C-5.8-18: Negative principal (defensive) ─────────────────
+
+    def test_negative_principal_defensive(self):
+        """current_principal=-100 returns empty schedule, does not crash.
+
+        Negative principal should never occur in practice, but the guard
+        must handle it defensively.
+        """
+        schedule = generate_schedule(
+            Decimal("-100.00"), Decimal("0.06"), 360,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        assert schedule == []
