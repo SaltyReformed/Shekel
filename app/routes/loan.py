@@ -7,7 +7,7 @@ and payoff calculator for all installment loan account types.
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -89,6 +89,112 @@ def _build_chart_data(schedule):
     return labels, balances
 
 
+def _find_current_period_row(schedule):
+    """Find the schedule row for the current or next upcoming payment.
+
+    Returns the first projected (non-confirmed) row if one exists,
+    otherwise the last confirmed row.  Returns None for an empty
+    schedule.
+
+    This approach is more robust than date-based lookup because
+    shadow transaction dates (biweekly) and schedule payment dates
+    (monthly) use different calendars.  The confirmed/projected
+    boundary is the cleanest split.
+
+    Args:
+        schedule: List of AmortizationRow objects.
+
+    Returns:
+        AmortizationRow or None.
+    """
+    if not schedule:
+        return None
+    for row in schedule:
+        if not row.is_confirmed:
+            return row
+    # All rows confirmed -- use the last one.
+    return schedule[-1]
+
+
+def _compute_payment_breakdown(schedule, escrow_components):
+    """Build payment allocation breakdown for the current period.
+
+    Combines the amortization engine's per-period principal/interest
+    split with the escrow calculator's monthly total to show the user
+    exactly how their payment is allocated.
+
+    Percentages are computed with a truncate-then-distribute algorithm
+    to guarantee they sum to exactly 100.0%.
+
+    Args:
+        schedule: List of AmortizationRow objects (committed schedule).
+        escrow_components: List of active EscrowComponent objects.
+
+    Returns:
+        dict with breakdown data, or None if no schedule data.
+    """
+    current_row = _find_current_period_row(schedule)
+    if current_row is None:
+        return None
+
+    principal_portion = current_row.principal + current_row.extra_payment
+    interest_portion = current_row.interest
+    escrow_portion = escrow_calculator.calculate_monthly_escrow(
+        escrow_components,
+    )
+    total_payment = principal_portion + interest_portion + escrow_portion
+
+    if total_payment <= Decimal("0.00"):
+        return None
+
+    # Truncate-then-distribute: guarantees percentages sum to 100.0%.
+    one_decimal = Decimal("0.1")
+    parts = [
+        ("principal", principal_portion),
+        ("interest", interest_portion),
+        ("escrow", escrow_portion),
+    ]
+    truncated = {}
+    for name, amount in parts:
+        raw_pct = amount / total_payment * 100
+        truncated[name] = raw_pct.quantize(one_decimal, rounding=ROUND_DOWN)
+
+    residual = Decimal("100.0") - sum(truncated.values())
+    # Assign residual to the largest portion.
+    largest = max(truncated, key=truncated.get)
+    truncated[largest] += residual
+
+    # O-3: Escrow inflation projection.  If any component has a
+    # non-null inflation_rate, compute next year's monthly escrow
+    # to show the user projected changes.
+    next_year_escrow = None
+    has_inflation = any(
+        getattr(c, "inflation_rate", None)
+        for c in escrow_components
+    )
+    if has_inflation and escrow_portion > Decimal("0.00"):
+        next_year_date = date(date.today().year + 1, 1, 1)
+        next_year_escrow = escrow_calculator.calculate_monthly_escrow(
+            escrow_components, as_of_date=next_year_date,
+        )
+        # Only show the note if next year differs from current.
+        if next_year_escrow == escrow_portion:
+            next_year_escrow = None
+
+    return {
+        "principal": principal_portion,
+        "interest": interest_portion,
+        "escrow": escrow_portion,
+        "total": total_payment,
+        "principal_pct": truncated["principal"],
+        "interest_pct": truncated["interest"],
+        "escrow_pct": truncated["escrow"],
+        "is_confirmed": current_row.is_confirmed,
+        "payment_date": current_row.payment_date,
+        "next_year_escrow": next_year_escrow,
+    }
+
+
 def _compute_total_payment(params, escrow_components):
     """Compute total monthly payment (P&I + escrow) for OOB updates.
 
@@ -166,6 +272,11 @@ def dashboard(account_id):
     monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
     total_payment = escrow_calculator.calculate_total_payment(
         summary.monthly_payment, escrow_components,
+    )
+
+    # Payment allocation breakdown for the current period.
+    payment_breakdown = _compute_payment_breakdown(
+        proj.schedule, escrow_components,
     )
 
     # --- Multi-scenario chart data ---
@@ -256,6 +367,7 @@ def dashboard(account_id):
         escrow_components=escrow_components,
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
+        payment_breakdown=payment_breakdown,
         rate_history=rate_history,
         chart_labels=chart_labels,
         chart_original=chart_original,

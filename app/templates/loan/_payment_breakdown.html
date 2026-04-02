@@ -1,0 +1,76 @@
+{# Payment allocation breakdown: P/I/E split with stacked progress bar #}
+{% if payment_breakdown %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-pie-chart"></i> Payment Allocation
+      {% if payment_breakdown.is_confirmed %}
+      <span class="badge bg-success ms-1">Confirmed</span>
+      {% endif %}
+    </h6>
+  </div>
+  <div class="card-body">
+    <div class="d-flex justify-content-between mb-2">
+      <span class="text-muted">
+        {% if payment_breakdown.payment_date %}
+        {{ payment_breakdown.payment_date.strftime('%b %Y') }} payment
+        {% else %}
+        Next payment
+        {% endif %}
+      </span>
+      <span class="fw-bold font-mono" style="color: var(--shekel-accent);">
+        ${{ "{:,.2f}".format(payment_breakdown.total|float) }}
+      </span>
+    </div>
+    <div class="progress mb-3" style="height: 22px;">
+      {% if payment_breakdown.principal_pct > 0 %}
+      <div class="progress-bar bg-success" role="progressbar"
+           style="width: {{ payment_breakdown.principal_pct }}%"
+           title="Principal: ${{ '{:,.2f}'.format(payment_breakdown.principal|float) }}">
+        {% if payment_breakdown.principal_pct >= 8 %}{{ payment_breakdown.principal_pct }}%{% endif %}
+      </div>
+      {% endif %}
+      {% if payment_breakdown.interest_pct > 0 %}
+      <div class="progress-bar bg-warning text-dark" role="progressbar"
+           style="width: {{ payment_breakdown.interest_pct }}%"
+           title="Interest: ${{ '{:,.2f}'.format(payment_breakdown.interest|float) }}">
+        {% if payment_breakdown.interest_pct >= 8 %}{{ payment_breakdown.interest_pct }}%{% endif %}
+      </div>
+      {% endif %}
+      {% if payment_breakdown.escrow_pct > 0 %}
+      <div class="progress-bar bg-info" role="progressbar"
+           style="width: {{ payment_breakdown.escrow_pct }}%"
+           title="Escrow: ${{ '{:,.2f}'.format(payment_breakdown.escrow|float) }}">
+        {% if payment_breakdown.escrow_pct >= 8 %}{{ payment_breakdown.escrow_pct }}%{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <ul class="list-unstyled mb-0 small">
+      <li class="mb-1">
+        <span class="badge bg-success">&nbsp;</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.principal|float) }}</span>
+        to principal ({{ payment_breakdown.principal_pct }}%)
+      </li>
+      <li class="mb-1">
+        <span class="badge bg-warning">&nbsp;</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.interest|float) }}</span>
+        to interest ({{ payment_breakdown.interest_pct }}%)
+      </li>
+      {% if payment_breakdown.escrow > 0 %}
+      <li class="mb-1">
+        <span class="badge bg-info">&nbsp;</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.escrow|float) }}</span>
+        to escrow ({{ payment_breakdown.escrow_pct }}%)
+      </li>
+      {% endif %}
+    </ul>
+    {% if payment_breakdown.next_year_escrow %}
+    <div class="mt-2 small text-muted">
+      <i class="bi bi-graph-up-arrow"></i>
+      Escrow may increase to ~${{ "{:,.2f}".format(payment_breakdown.next_year_escrow|float) }}/month
+      next year based on inflation estimates.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
