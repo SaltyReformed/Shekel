@@ -11,6 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import pytest
 
 from app.services.growth_engine import (
+    ContributionRecord,
     ProjectedBalance,
     calculate_employer_contribution,
     generate_projection_periods,
@@ -480,3 +481,441 @@ class TestGenerateProjectionPeriods:
         years = [p.start_date.year for p in periods]
         assert 2026 in years
         assert 2027 in years
+
+
+# ── Tests: Contribution-Aware Projection ──────────────────────
+
+
+class TestContributionAwareProjection:
+    """Tests for contribution-list-aware projections.
+
+    Verifies that project_balance() correctly uses per-period contribution
+    amounts from ContributionRecord instances, with proper fallback to
+    periodic_contribution, annual limit capping, employer match computation,
+    YTD tracking, and is_confirmed propagation.
+    """
+
+    def test_no_contributions_unchanged(self, biweekly_periods):
+        """contributions=None produces identical output to omitting the parameter."""
+        kwargs = {
+            "current_balance": Decimal("10000"),
+            "assumed_annual_return": Decimal("0.07"),
+            "periods": biweekly_periods[:3],
+            "periodic_contribution": Decimal("500"),
+        }
+        baseline = project_balance(**kwargs)
+        with_none = project_balance(**kwargs, contributions=None)
+        assert baseline == with_none
+
+    def test_empty_contributions_unchanged(self, biweekly_periods):
+        """contributions=[] produces identical output to contributions=None."""
+        kwargs = {
+            "current_balance": Decimal("10000"),
+            "assumed_annual_return": Decimal("0.07"),
+            "periods": biweekly_periods[:3],
+            "periodic_contribution": Decimal("500"),
+        }
+        baseline = project_balance(**kwargs, contributions=None)
+        with_empty = project_balance(**kwargs, contributions=[])
+        assert baseline == with_empty
+
+    def test_contributions_applied_per_period(self, biweekly_periods):
+        """Explicit contributions for all periods override periodic_contribution.
+
+        0% return, start=$10,000.
+        P0: +$300 = $10,300
+        P1: +$500 = $10,800
+        P2: +$200 = $11,000
+        """
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("500"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("200"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("999"),  # Should NOT be used.
+            contributions=contributions,
+        )
+        assert result[0].contribution == Decimal("300")
+        assert result[1].contribution == Decimal("500")
+        assert result[2].contribution == Decimal("200")
+        assert result[0].end_balance == Decimal("10300")
+        assert result[1].end_balance == Decimal("10800")
+        assert result[2].end_balance == Decimal("11000")
+
+    def test_contributions_partial_with_fallback(self, biweekly_periods):
+        """Periods without contributions fall back to periodic_contribution.
+
+        0% return, start=$10,000, periodic=$200.
+        P0: +$300 (record) = $10,300
+        P1: +$500 (record) = $10,800
+        P2: +$100 (record) = $10,900
+        P3: +$200 (fallback) = $11,100
+        P4: +$200 (fallback) = $11,300
+        """
+        periods = biweekly_periods[:5]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("500"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("100"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("200"),
+            contributions=contributions,
+        )
+        assert result[0].contribution == Decimal("300")
+        assert result[1].contribution == Decimal("500")
+        assert result[2].contribution == Decimal("100")
+        assert result[3].contribution == Decimal("200")
+        assert result[4].contribution == Decimal("200")
+        assert result[4].end_balance == Decimal("11300")
+
+    def test_zero_contribution_does_not_fallback(self, biweekly_periods):
+        """A $0 contribution record means no contribution -- not a fallback.
+
+        0% return, start=$10,000, periodic=$500.
+        P0: +$500 (record) = $10,500
+        P1: +$0 (explicit zero, NOT fallback) = $10,500
+        P2: +$500 (record) = $11,000
+        """
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("500"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("0"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("500"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("500"),
+            contributions=contributions,
+        )
+        assert result[1].contribution == Decimal("0")
+        assert result[1].end_balance == Decimal("10500")
+        assert result[2].end_balance == Decimal("11000")
+
+    def test_annual_limit_caps_contributions(self, biweekly_periods):
+        """Contributions capped at annual limit.
+
+        0% return, start=$10,000, limit=$1,000.
+        P0: min($300, $1,000) = $300, remaining=$700
+        P1: min($300, $700) = $300, remaining=$400
+        P2: min($300, $400) = $300, remaining=$100
+        P3: min($300, $100) = $100, remaining=$0
+        Total: $1,000.
+        """
+        periods = biweekly_periods[:4]
+        contributions = [
+            ContributionRecord(p.start_date, Decimal("300"), True)
+            for p in periods
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+            annual_contribution_limit=Decimal("1000"),
+        )
+        total = sum(pb.contribution for pb in result)
+        assert total == Decimal("1000")
+        assert result[0].contribution == Decimal("300")
+        assert result[1].contribution == Decimal("300")
+        assert result[2].contribution == Decimal("300")
+        assert result[3].contribution == Decimal("100")
+
+    def test_year_boundary_resets_with_contributions(self, cross_year_periods):
+        """Annual limit resets at year boundary with contribution records.
+
+        0% return, start=$10,000, limit=$5,000.
+        P0 (2026): min($3,000, $5,000) = $3,000, remaining=$2,000
+        P1 (2026): min($3,000, $2,000) = $2,000, remaining=$0
+        Year boundary -- remaining resets to $5,000.
+        P2 (2027): min($3,000, $5,000) = $3,000, remaining=$2,000
+        P3 (2027): min($3,000, $2,000) = $2,000, remaining=$0
+        Total: $10,000.
+        """
+        contributions = [
+            ContributionRecord(p.start_date, Decimal("3000"), True)
+            for p in cross_year_periods
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=cross_year_periods,
+            contributions=contributions,
+            annual_contribution_limit=Decimal("5000"),
+        )
+        assert result[0].contribution == Decimal("3000")
+        assert result[1].contribution == Decimal("2000")
+        assert result[2].contribution == Decimal("3000")
+        assert result[3].contribution == Decimal("2000")
+        total = sum(pb.contribution for pb in result)
+        assert total == Decimal("10000")
+
+    def test_employer_match_uses_period_contribution(self, biweekly_periods):
+        """Employer match computed from per-period contribution, not static.
+
+        Match: 100% up to 6% of $2,500 gross = $150 matchable.
+        Record contribution=$100 -- match=min($100, $150) * 1.0 = $100.
+        Static periodic=$150 would give match=$150 -- must NOT be used.
+        """
+        periods = biweekly_periods[:1]
+        employer_params = {
+            "type": "match",
+            "match_percentage": Decimal("1.0"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("150"),
+            employer_params=employer_params,
+            contributions=contributions,
+        )
+        # Match is on $100 (from record), not $150 (static).
+        assert result[0].employer_contribution == Decimal("100.00")
+        assert result[0].contribution == Decimal("100")
+
+    def test_employer_match_with_varying_contributions(self, biweekly_periods):
+        """Employer match varies with different per-period contributions.
+
+        Match: 100% up to 6% of $2,500 = $150 matchable.
+        P0: $100 -- match=$100
+        P1: $200 -- match=min($200, $150) = $150
+        P2: $50 -- match=$50
+        """
+        periods = biweekly_periods[:3]
+        employer_params = {
+            "type": "match",
+            "match_percentage": Decimal("1.0"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("50"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=employer_params,
+            contributions=contributions,
+        )
+        assert result[0].employer_contribution == Decimal("100.00")
+        assert result[1].employer_contribution == Decimal("150.00")
+        assert result[2].employer_contribution == Decimal("50.00")
+
+    def test_is_confirmed_propagated(self, biweekly_periods):
+        """is_confirmed flag matches input records; fallback periods are False."""
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), False),
+            # P2 has no record -- fallback.
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("300"),
+            contributions=contributions,
+        )
+        assert result[0].is_confirmed is True
+        assert result[1].is_confirmed is False
+        assert result[2].is_confirmed is False
+
+    def test_is_confirmed_all_confirmed_same_date(self, biweekly_periods):
+        """Multiple confirmed contributions on same date -- is_confirmed=True."""
+        periods = biweekly_periods[:1]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+        )
+        assert result[0].is_confirmed is True
+        assert result[0].contribution == Decimal("500")
+
+    def test_is_confirmed_mixed_same_date(self, biweekly_periods):
+        """Confirmed + projected on same date -- is_confirmed=False."""
+        periods = biweekly_periods[:1]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 2), Decimal("300"), False),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+        )
+        assert result[0].is_confirmed is False
+        assert result[0].contribution == Decimal("500")
+
+    def test_multiple_contributions_same_date_summed(self, biweekly_periods):
+        """Two contributions on the same period are summed.
+
+        P0: $200 + $300 = $500.
+        End: $10,000 + $500 = $10,500.
+        """
+        periods = biweekly_periods[:1]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+        )
+        assert result[0].contribution == Decimal("500")
+        assert result[0].end_balance == Decimal("10500")
+
+    def test_unsorted_contributions_handled(self, biweekly_periods):
+        """Non-chronological contributions produce the same result as sorted."""
+        periods = biweekly_periods[:3]
+        sorted_contribs = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("300"), True),
+        ]
+        unsorted_contribs = list(reversed(sorted_contribs))
+
+        kwargs = {
+            "current_balance": Decimal("10000"),
+            "assumed_annual_return": Decimal("0"),
+            "periods": periods,
+        }
+        sorted_result = project_balance(**kwargs, contributions=sorted_contribs)
+        unsorted_result = project_balance(
+            **kwargs, contributions=unsorted_contribs
+        )
+        assert sorted_result == unsorted_result
+
+    def test_contribution_record_validation_negative(self):
+        """Negative contribution amount raises ValueError."""
+        with pytest.raises(ValueError, match="amount must be >= 0"):
+            ContributionRecord(date(2026, 1, 2), Decimal("-100"), True)
+
+    def test_contribution_record_validation_types(self):
+        """Wrong types raise TypeError for each field."""
+        with pytest.raises(TypeError, match="contribution_date must be a date"):
+            ContributionRecord("2026-01-02", Decimal("100"), True)
+        with pytest.raises(TypeError, match="amount must be a Decimal"):
+            ContributionRecord(date(2026, 1, 2), 100.0, True)
+        with pytest.raises(TypeError, match="is_confirmed must be a bool"):
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), "yes")
+
+    def test_ytd_tracking_uses_actual_amounts(self, biweekly_periods):
+        """YTD contributions reflect actual per-period amounts, not static.
+
+        P0: $100 -- ytd=$100
+        P1: $200 -- ytd=$300
+        P2: $300 -- ytd=$600
+        """
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=Decimal("999"),
+            contributions=contributions,
+        )
+        assert result[0].ytd_contributions == Decimal("100")
+        assert result[1].ytd_contributions == Decimal("300")
+        assert result[2].ytd_contributions == Decimal("600")
+
+    def test_contribution_limit_remaining_reflects_actuals(self, biweekly_periods):
+        """contribution_limit_remaining computed from actual per-period amounts.
+
+        Limit=$1,000.
+        P0: $100 -- remaining=$900
+        P1: $200 -- remaining=$700
+        P2: $300 -- remaining=$400
+        """
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+            annual_contribution_limit=Decimal("1000"),
+        )
+        assert result[0].contribution_limit_remaining == Decimal("900")
+        assert result[1].contribution_limit_remaining == Decimal("700")
+        assert result[2].contribution_limit_remaining == Decimal("400")
+
+    def test_zero_return_rate_with_contributions(self, biweekly_periods):
+        """0% return: balance grows only by contributions.
+
+        Start=$10,000.
+        P0: +$100 = $10,100
+        P1: +$200 = $10,300
+        P2: +$300 = $10,600
+        """
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            contributions=contributions,
+        )
+        for pb in result:
+            assert pb.growth == ZERO
+        assert result[0].end_balance == Decimal("10100")
+        assert result[1].end_balance == Decimal("10300")
+        assert result[2].end_balance == Decimal("10600")
+
+    def test_no_employer_params_with_contributions(self, biweekly_periods):
+        """employer_params=None with contributions: no employer match applied."""
+        periods = biweekly_periods[:3]
+        contributions = [
+            ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
+            ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
+            ContributionRecord(date(2026, 1, 30), Decimal("300"), True),
+        ]
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=None,
+            contributions=contributions,
+        )
+        for pb in result:
+            assert pb.employer_contribution == ZERO
+        assert result[2].end_balance == Decimal("10600")

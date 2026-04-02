@@ -11,7 +11,7 @@ All functions are pure (no DB access) -- data is passed in as arguments.
 import logging
 from collections import namedtuple
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,61 @@ class ProjectedBalance:
     end_balance: Decimal
     ytd_contributions: Decimal
     contribution_limit_remaining: Decimal  # None if no limit
+    is_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class ContributionRecord:
+    """A single contribution to an investment account.
+
+    Used to replay actual or committed contributions through the growth
+    projection so projections reflect real contribution history rather
+    than assuming the same amount every period.
+
+    Attributes:
+        contribution_date: The pay period start date this contribution
+            maps to.  Matched to periods by exact start_date.
+        amount: The contribution amount.  Must be >= 0.  A zero amount
+            represents a period where no contribution was made (only
+            growth accrues) -- not the same as a missing entry, which
+            falls back to periodic_contribution.
+        is_confirmed: True if the contribution is Paid/Settled
+            (historical fact).  False if Projected (future commitment).
+    """
+
+    contribution_date: date
+    amount: Decimal
+    is_confirmed: bool
+
+    def __post_init__(self):
+        """Validate contribution record fields at construction time.
+
+        Catches invalid data immediately rather than producing wrong
+        results deep in the projection loop.
+
+        Raises:
+            TypeError: If contribution_date is not a date, amount is not
+                a Decimal, or is_confirmed is not a bool.
+            ValueError: If amount is negative.
+        """
+        if not isinstance(self.contribution_date, date):
+            raise TypeError(
+                f"contribution_date must be a date, "
+                f"got {type(self.contribution_date).__name__}"
+            )
+        if not isinstance(self.amount, Decimal):
+            raise TypeError(
+                f"amount must be a Decimal, got {type(self.amount).__name__}"
+            )
+        if self.amount < 0:
+            raise ValueError(
+                f"amount must be >= 0, got {self.amount}"
+            )
+        if not isinstance(self.is_confirmed, bool):
+            raise TypeError(
+                f"is_confirmed must be a bool, "
+                f"got {type(self.is_confirmed).__name__}"
+            )
 
 
 def calculate_employer_contribution(employer_params, employee_contribution):
@@ -72,6 +127,40 @@ def calculate_employer_contribution(employer_params, employee_contribution):
     return ZERO
 
 
+def _build_contribution_lookup(contributions):
+    """Build lookup dict mapping contribution_date to (amount, is_confirmed).
+
+    Groups contributions by date, summing amounts.  is_confirmed is True
+    only if ALL records on that date are confirmed.
+
+    Args:
+        contributions: Optional list of ContributionRecord instances.
+            None or empty list returns None.
+
+    Returns:
+        dict mapping date to (Decimal amount, bool is_confirmed), or None
+        if contributions is None or empty.
+    """
+    if not contributions:
+        return None
+    sorted_contribs = sorted(
+        contributions, key=lambda c: c.contribution_date
+    )
+    lookup = {}
+    for record in sorted_contribs:
+        d = record.contribution_date
+        if d in lookup:
+            existing_amount, existing_confirmed = lookup[d]
+            lookup[d] = (
+                existing_amount + record.amount,
+                # Confirmed only if ALL records on this date are confirmed.
+                existing_confirmed and record.is_confirmed,
+            )
+        else:
+            lookup[d] = (record.amount, record.is_confirmed)
+    return lookup
+
+
 def project_balance(
     current_balance,
     assumed_annual_return,
@@ -80,6 +169,7 @@ def project_balance(
     employer_params=None,
     annual_contribution_limit=None,
     ytd_contributions_start=ZERO,
+    contributions=None,
 ):
     """Project investment balance forward across pay periods.
 
@@ -91,10 +181,19 @@ def project_balance(
         current_balance:          Decimal starting balance.
         assumed_annual_return:    Decimal annual return rate (e.g. 0.07 for 7%).
         periods:                  List of period objects with .id, .start_date, .end_date.
-        periodic_contribution:    Decimal employee contribution per period.
+        periodic_contribution:    Decimal employee contribution per period.  Used as the
+                                  fallback when contributions is None or a period has no
+                                  matching ContributionRecord.
         employer_params:          dict for employer contribution calculation (see above).
         annual_contribution_limit: Decimal annual limit (None for no limit).
         ytd_contributions_start:  Decimal contributions already made this year.
+        contributions:            Optional list of ContributionRecord instances providing
+                                  per-period contribution amounts.  When provided, each
+                                  period looks up its amount by start_date; periods without
+                                  a matching record fall back to periodic_contribution.
+                                  A record with amount=0 is an explicit "no contribution" --
+                                  distinct from a missing entry.  None or [] uses the static
+                                  periodic_contribution for all periods.
 
     Returns:
         List of ProjectedBalance, one per period.
@@ -110,6 +209,12 @@ def project_balance(
         remaining_limit = max(remaining_limit, ZERO)
     else:
         remaining_limit = None
+
+    # Build contribution lookup from contribution records.  When provided,
+    # each period looks up its amount from the dict; periods without an
+    # entry fall back to periodic_contribution.  A $0 entry is an explicit
+    # "no contribution" -- distinct from a missing entry.
+    contribution_lookup = _build_contribution_lookup(contributions)
 
     results = []
     prev_year = None
@@ -139,11 +244,21 @@ def project_balance(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
 
+        # Determine this period's contribution and confirmed status.
+        if (contribution_lookup is not None
+                and period.start_date in contribution_lookup):
+            period_contrib_amount, period_is_confirmed = (
+                contribution_lookup[period.start_date]
+            )
+        else:
+            period_contrib_amount = periodic_contribution
+            period_is_confirmed = False
+
         # Step 2: Cap contribution at remaining limit.
         if remaining_limit is not None:
-            contribution = min(periodic_contribution, remaining_limit)
+            contribution = min(period_contrib_amount, remaining_limit)
         else:
-            contribution = periodic_contribution
+            contribution = period_contrib_amount
         contribution = max(contribution, ZERO)
 
         # Step 3: Employer contribution.
@@ -173,6 +288,7 @@ def project_balance(
             end_balance=current_balance,
             ytd_contributions=ytd_contributions,
             contribution_limit_remaining=remaining_limit,
+            is_confirmed=period_is_confirmed,
         ))
 
     return results
