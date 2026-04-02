@@ -4,6 +4,15 @@ Shekel Budget App -- Amortization Engine
 Pure-function service for loan amortization calculations.
 Generates amortization schedules, summary metrics, and payoff analysis.
 No database access -- operates only on values passed in.
+
+Supports payment-aware projections: when a list of PaymentRecord
+instances is provided, the schedule replays actual/committed payments
+month-by-month instead of assuming the contractual amount.  This
+enables three projection scenarios from the same engine:
+
+  1. Original schedule -- payments=None, extra_monthly=0
+  2. Committed schedule -- payments=confirmed+projected transfers
+  3. What-if schedule -- payments=confirmed, extra_monthly=user input
 """
 
 import calendar
@@ -12,6 +21,59 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 TWO_PLACES = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class PaymentRecord:
+    """A single payment applied to a loan.
+
+    Used to replay actual or committed payments through the amortization
+    schedule so projections reflect real payment history rather than
+    assuming the contractual amount every month.
+
+    Attributes:
+        payment_date: The date the payment was made or is projected.
+            Matched to the schedule by year-month, not exact day, so
+            biweekly payment dates (e.g. 2026-03-06) correctly map to
+            the monthly schedule period (2026-03).
+        amount: The total payment amount (principal + interest).  Must
+            be >= 0.  A zero amount represents a missed payment where
+            only interest accrues (negative amortization).
+        is_confirmed: True if the payment is Paid/Settled (historical
+            fact).  False if Projected (future commitment).
+    """
+
+    payment_date: date
+    amount: Decimal
+    is_confirmed: bool
+
+    def __post_init__(self):
+        """Validate payment record fields at construction time.
+
+        Catches invalid data immediately rather than producing wrong
+        results deep in the schedule loop.
+
+        Raises:
+            TypeError: If payment_date is not a date, amount is not a
+                Decimal, or is_confirmed is not a bool.
+            ValueError: If amount is negative.
+        """
+        if not isinstance(self.payment_date, date):
+            raise TypeError(
+                f"payment_date must be a date, got {type(self.payment_date).__name__}"
+            )
+        if not isinstance(self.amount, Decimal):
+            raise TypeError(
+                f"amount must be a Decimal, got {type(self.amount).__name__}"
+            )
+        if self.amount < 0:
+            raise ValueError(
+                f"amount must be >= 0, got {self.amount}"
+            )
+        if not isinstance(self.is_confirmed, bool):
+            raise TypeError(
+                f"is_confirmed must be a bool, got {type(self.is_confirmed).__name__}"
+            )
 
 
 def calculate_remaining_months(
@@ -33,7 +95,14 @@ def calculate_remaining_months(
 
 @dataclass
 class AmortizationRow:
-    """A single month in an amortization schedule."""
+    """A single month in an amortization schedule.
+
+    The is_confirmed flag distinguishes historical fact from projection:
+    True when the row's payment came from a confirmed PaymentRecord
+    (Paid/Settled status), False when projected or computed from the
+    contractual payment formula.
+    """
+
     month: int
     payment_date: date
     payment: Decimal
@@ -41,6 +110,7 @@ class AmortizationRow:
     interest: Decimal
     extra_payment: Decimal
     remaining_balance: Decimal
+    is_confirmed: bool = False
 
 
 @dataclass
@@ -87,6 +157,51 @@ def _advance_month(year: int, month: int, day: int) -> date:
     return date(year, month, min(day, max_day))
 
 
+def _build_payment_lookups(
+    payments: list[PaymentRecord],
+    origination_date: date | None,
+) -> tuple[dict[tuple[int, int], Decimal], dict[tuple[int, int], bool]]:
+    """Build year-month lookup dicts from a list of PaymentRecord instances.
+
+    Sums multiple payments in the same month.  For the is_confirmed flag,
+    a month is considered confirmed only when ALL payments in that month
+    are confirmed -- a mix of confirmed and projected means the month's
+    total is not fully confirmed.
+
+    Payments dated before origination_date are silently filtered (they
+    may exist as data artifacts from before the loan started).
+
+    Args:
+        payments: Non-empty list of PaymentRecord instances.
+        origination_date: Loan origination date.  Payments before this
+            date are excluded.  If None, no filtering is applied.
+
+    Returns:
+        (amount_by_month, confirmed_by_month) where:
+            amount_by_month: dict mapping (year, month) -> total Decimal
+            confirmed_by_month: dict mapping (year, month) -> bool
+    """
+    sorted_payments = sorted(payments, key=lambda p: p.payment_date)
+
+    amount_by_month: dict[tuple[int, int], Decimal] = {}
+    confirmed_by_month: dict[tuple[int, int], bool] = {}
+
+    for payment in sorted_payments:
+        # Filter pre-origination payments.
+        if origination_date is not None and payment.payment_date < origination_date:
+            continue
+
+        key = (payment.payment_date.year, payment.payment_date.month)
+        amount_by_month[key] = amount_by_month.get(key, Decimal("0")) + payment.amount
+        # A month is confirmed only if ALL its payments are confirmed.
+        if key in confirmed_by_month:
+            confirmed_by_month[key] = confirmed_by_month[key] and payment.is_confirmed
+        else:
+            confirmed_by_month[key] = payment.is_confirmed
+
+    return amount_by_month, confirmed_by_month
+
+
 def generate_schedule(
     current_principal: Decimal,
     annual_rate: Decimal,
@@ -96,14 +211,28 @@ def generate_schedule(
     payment_day: int = 1,
     original_principal: Decimal | None = None,
     term_months: int | None = None,
+    payments: list[PaymentRecord] | None = None,
 ) -> list[AmortizationRow]:
     """Generate month-by-month amortization schedule.
+
+    When *payments* is provided, the schedule replays those payments
+    month-by-month instead of assuming the contractual amount.  Months
+    without a matching payment use the standard contractual payment
+    plus *extra_monthly*.  This enables three projection scenarios:
+
+      1. Original schedule -- payments=None, extra_monthly=0
+      2. Committed schedule -- payments=confirmed+projected transfers
+      3. What-if schedule -- payments=confirmed only, extra_monthly=X
+
+    Payment matching is by year-month of ``payment_date``, not exact
+    day, so biweekly payment dates correctly map to monthly periods.
 
     Args:
         current_principal: Current outstanding balance.
         annual_rate: Annual interest rate as a decimal (e.g. 0.065 for 6.5%).
         remaining_months: Number of months remaining on the loan.
-        extra_monthly: Additional principal payment per month.
+        extra_monthly: Additional principal payment per month.  Applied
+            only to months where no PaymentRecord exists.
         origination_date: Loan origination date (used for payment date calc).
         payment_day: Day of month payments are due.
         original_principal: Original loan amount at origination.  When
@@ -112,12 +241,26 @@ def generate_schedule(
             from current_principal.
         term_months: Original loan term in months.  Used with
             *original_principal* to derive the contractual payment.
+        payments: Optional list of PaymentRecord instances.  When
+            provided, each month checks for a matching payment (by
+            year-month) and uses that amount instead of the contractual
+            payment.
 
     Returns:
         List of AmortizationRow objects.
     """
     if current_principal <= 0 or remaining_months <= 0:
         return []
+
+    # Build payment lookup dicts if payments are provided.
+    has_payments = payments is not None and len(payments) > 0
+    if has_payments:
+        amount_by_month, confirmed_by_month = _build_payment_lookups(
+            payments, origination_date,
+        )
+    else:
+        amount_by_month = {}
+        confirmed_by_month = {}
 
     # Compute the monthly payment.  When original loan terms are provided,
     # use them for the contractual payment (what the borrower actually pays).
@@ -173,32 +316,70 @@ def generate_schedule(
         # Calculate interest for this month.
         interest = (balance * monthly_rate).quantize(TWO_PLACES, ROUND_HALF_UP)
 
-        # Calculate principal portion.
-        principal_portion = monthly_payment - interest
+        # Check for a payment record matching this month.
+        month_key = (pay_year, pay_month)
+        has_payment_record = month_key in amount_by_month
 
-        # Cap payment at remaining balance + interest.
-        # When principal would exceed balance or we've hit the loop cap,
-        # absorb the remaining balance exactly to avoid rounding residue.
-        is_final = (principal_portion >= balance) or (month_num == max_months)
-        if is_final:
-            principal_portion = balance
-            actual_payment = principal_portion + interest
-            extra = Decimal("0.00")
-            balance = Decimal("0.00")
-        else:
-            actual_payment = monthly_payment
+        if has_payment_record:
+            # Payment record exists: use the recorded amount as the
+            # total payment for this month.  extra_monthly is NOT added
+            # on top -- the payment record IS the total payment.
+            total_payment = amount_by_month[month_key]
+            row_confirmed = confirmed_by_month[month_key]
 
-            # Apply extra payment.
-            extra = min(extra_monthly, balance - principal_portion)
-            extra = max(extra, Decimal("0.00"))
+            # Split into interest and principal.
+            principal_portion = total_payment - interest
+            # Negative principal_portion is valid: it represents a
+            # partial payment below the interest due (negative
+            # amortization -- the principal increases).  This correctly
+            # models missed or underpaid months.
 
-            balance -= principal_portion + extra
-            balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
+            # The "extra" portion is any amount beyond the standard
+            # contractual payment (P&I).
+            extra = max(total_payment - monthly_payment, Decimal("0.00"))
 
-            # Guard against negative balance from rounding.
-            if balance < 0:
-                extra += balance
+            # Overpayment cap: if principal exceeds remaining balance,
+            # cap it to avoid negative balance.
+            if principal_portion >= balance:
+                principal_portion = balance
+                actual_payment = principal_portion + interest
+                extra = max(actual_payment - monthly_payment, Decimal("0.00"))
                 balance = Decimal("0.00")
+            else:
+                actual_payment = principal_portion + interest
+                balance -= principal_portion
+                balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
+        else:
+            # No payment record: use standard contractual logic.
+            row_confirmed = False
+
+            # Calculate principal portion.
+            principal_portion = monthly_payment - interest
+
+            # Cap payment at remaining balance + interest.
+            # When principal would exceed balance or we've hit the loop
+            # cap, absorb the remaining balance exactly to avoid
+            # rounding residue.
+            is_final = (principal_portion >= balance) or (month_num == max_months)
+            if is_final:
+                principal_portion = balance
+                actual_payment = principal_portion + interest
+                extra = Decimal("0.00")
+                balance = Decimal("0.00")
+            else:
+                actual_payment = monthly_payment
+
+                # Apply extra payment.
+                extra = min(extra_monthly, balance - principal_portion)
+                extra = max(extra, Decimal("0.00"))
+
+                balance -= principal_portion + extra
+                balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
+
+                # Guard against negative balance from rounding.
+                if balance < 0:
+                    extra += balance
+                    balance = Decimal("0.00")
 
         rows.append(AmortizationRow(
             month=month_num,
@@ -208,6 +389,7 @@ def generate_schedule(
             interest=interest,
             extra_payment=extra.quantize(TWO_PLACES, ROUND_HALF_UP),
             remaining_balance=balance,
+            is_confirmed=row_confirmed,
         ))
 
         if balance <= 0:
@@ -231,14 +413,22 @@ def calculate_summary(
     term_months: int,
     extra_monthly: Decimal = Decimal("0.00"),
     original_principal: Decimal | None = None,
+    payments: list[PaymentRecord] | None = None,
 ) -> AmortizationSummary:
     """Compute summary metrics: payoff date, interest saved, etc.
+
+    When *payments* is provided, both the standard and accelerated
+    schedules incorporate the payment data.  The standard schedule uses
+    payments with no extra_monthly; the accelerated schedule adds
+    extra_monthly on top.
 
     Args:
         original_principal: Original loan amount at origination.  When
             provided, the contractual monthly payment is computed from
             (original_principal, annual_rate, term_months) instead of
             re-amortizing from current_principal.
+        payments: Optional list of PaymentRecord instances passed
+            through to generate_schedule().
     """
     if original_principal is not None:
         monthly_payment = calculate_monthly_payment(
@@ -257,6 +447,7 @@ def calculate_summary(
         payment_day=payment_day,
         original_principal=original_principal,
         term_months=term_months,
+        payments=payments,
     )
 
     total_interest_standard = sum((r.interest for r in standard), Decimal("0.00"))
@@ -271,6 +462,7 @@ def calculate_summary(
             payment_day=payment_day,
             original_principal=original_principal,
             term_months=term_months,
+            payments=payments,
         )
         total_interest_extra = sum((r.interest for r in accelerated), Decimal("0.00"))
         payoff_date_extra = accelerated[-1].payment_date if accelerated else origination_date
@@ -391,7 +583,7 @@ class LoanProjection:
     schedule: list  # list[AmortizationRow]
 
 
-def get_loan_projection(params, schedule_start=None):
+def get_loan_projection(params, schedule_start=None, payments=None):
     """Compute remaining months, summary, and schedule for a loan in one call.
 
     The contractual monthly payment is computed from ``original_principal``
@@ -406,6 +598,8 @@ def get_loan_projection(params, schedule_start=None):
                 (e.g. a LoanParams model instance).
         schedule_start: Date to use as schedule start.  Defaults to the
                         first day of the current month.
+        payments: Optional list of PaymentRecord instances passed
+                  through to generate_schedule() and calculate_summary().
 
     Returns:
         LoanProjection with remaining_months, summary, and schedule.
@@ -429,6 +623,7 @@ def get_loan_projection(params, schedule_start=None):
         payment_day=params.payment_day,
         term_months=params.term_months,
         original_principal=original,
+        payments=payments,
     )
 
     schedule = generate_schedule(
@@ -436,6 +631,7 @@ def get_loan_projection(params, schedule_start=None):
         payment_day=params.payment_day,
         original_principal=original,
         term_months=params.term_months,
+        payments=payments,
     )
 
     return LoanProjection(

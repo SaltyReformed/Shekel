@@ -11,6 +11,7 @@ from app.services.amortization_engine import (
     AmortizationRow,
     AmortizationSummary,
     LoanProjection,
+    PaymentRecord,
     calculate_monthly_payment,
     calculate_payoff_by_date,
     calculate_remaining_months,
@@ -915,3 +916,676 @@ class TestAmortizationEngineRegression:
                 f"Balance increased from row {i} to row {i + 1}: "
                 f"{schedule[i - 1].remaining_balance} -> {schedule[i].remaining_balance}"
             )
+
+
+# ── Payment-Aware Schedule Tests (Commit 5.1-1) ─────────────────────
+
+
+class TestPaymentAwareSchedule:
+    """Tests for payment-aware amortization schedule generation.
+
+    Verifies that generate_schedule() correctly handles the optional
+    payments parameter: year-month matching, overpayment caps,
+    zero-balance termination, negative amortization, and is_confirmed
+    propagation.  Uses a $10,000 loan at 6% for 12 months as the
+    standard scenario -- small enough to verify every row by hand.
+
+    Monthly payment (amortization formula):
+        M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        = 10000 * [0.005 * 1.005^12] / [1.005^12 - 1]
+        = $860.66
+    """
+
+    # ── Standard test scenario ─────────────────────────────────────
+    PRINCIPAL = Decimal("10000.00")
+    RATE = Decimal("0.06")
+    MONTHS = 12
+    ORIGINATION = date(2026, 1, 1)
+    PAYMENT_DAY = 15
+    # $860.66 per the amortization formula.
+    MONTHLY_PAYMENT = Decimal("860.66")
+
+    # ── Backward compatibility ────────────────────────────────────
+
+    def test_no_payments_unchanged(self):
+        """payments=None produces identical output to pre-change behavior.
+
+        Verifies backward compatibility: the new parameter does not
+        alter existing behavior when omitted.
+        """
+        schedule_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        schedule_explicit_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=None,
+        )
+        assert len(schedule_none) == len(schedule_explicit_none)
+        for row_a, row_b in zip(schedule_none, schedule_explicit_none):
+            assert row_a.payment == row_b.payment
+            assert row_a.principal == row_b.principal
+            assert row_a.interest == row_b.interest
+            assert row_a.remaining_balance == row_b.remaining_balance
+            assert row_a.extra_payment == row_b.extra_payment
+            assert row_a.is_confirmed is False
+            assert row_b.is_confirmed is False
+
+    def test_empty_payments_unchanged(self):
+        """payments=[] is identical to payments=None.
+
+        An empty list must not alter the schedule.
+        """
+        schedule_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        schedule_empty = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=[],
+        )
+        assert len(schedule_none) == len(schedule_empty)
+        for row_a, row_b in zip(schedule_none, schedule_empty):
+            assert row_a.payment == row_b.payment
+            assert row_a.principal == row_b.principal
+            assert row_a.interest == row_b.interest
+            assert row_a.remaining_balance == row_b.remaining_balance
+
+    def test_exact_standard_payments_match_standard_schedule(self):
+        """Payments at exactly the standard P&I amount produce the same
+        schedule as the no-payments default.
+
+        This verifies the payment-aware path computes identical interest
+        and principal splits when the total payment equals the standard
+        contractual amount.
+        """
+        # Generate the standard schedule to get exact payment amounts.
+        standard = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        # Build PaymentRecords at exactly the standard payment for each month.
+        payments = [
+            PaymentRecord(
+                payment_date=row.payment_date,
+                amount=row.payment,
+                is_confirmed=True,
+            )
+            for row in standard
+        ]
+        schedule_with = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule_with) == len(standard)
+        for row_std, row_pay in zip(standard, schedule_with):
+            assert row_pay.interest == row_std.interest
+            assert row_pay.principal == row_std.principal
+            assert row_pay.remaining_balance == row_std.remaining_balance
+
+    # ── Extra payments ────────────────────────────────────────────
+
+    def test_extra_payment_reduces_principal_faster(self):
+        """Payment exceeding standard P&I reduces principal faster.
+
+        Month 2: standard payment is $860.66, we pay $1,060.66 ($200 extra).
+        Interest on $9,189.34 = $45.95.  Principal = $1,060.66 - $45.95 = $1,014.71.
+        Extra = $1,060.66 - $860.66 = $200.00.
+        Balance = $9,189.34 - $1,014.71 = $8,174.63.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 3, 15),  # Month 2 of schedule
+                amount=self.MONTHLY_PAYMENT + Decimal("200.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # Month 1: standard (no payment record).
+        assert schedule[0].interest == Decimal("50.00")
+        assert schedule[0].principal == Decimal("810.66")
+        assert schedule[0].remaining_balance == Decimal("9189.34")
+
+        # Month 2: extra payment.
+        assert schedule[1].interest == Decimal("45.95")
+        assert schedule[1].principal == Decimal("1014.71")
+        assert schedule[1].extra_payment == Decimal("200.00")
+        assert schedule[1].remaining_balance == Decimal("8174.63")
+
+        # Month 3: standard (no payment record), but lower balance.
+        # Interest on $8,174.63 = $40.87.
+        assert schedule[2].interest == Decimal("40.87")
+        assert schedule[2].remaining_balance == Decimal("7354.84")
+
+        # Total interest should be less than standard due to the extra.
+        standard = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        total_interest_extra = sum(r.interest for r in schedule)
+        total_interest_std = sum(r.interest for r in standard)
+        assert total_interest_extra < total_interest_std
+
+    # ── Partial and missed payments ───────────────────────────────
+
+    def test_partial_payment_slower_payoff(self):
+        """Payment below standard P&I: principal decreases slower.
+
+        Month 1: pay $430.33 (half of $860.66).
+        Interest = $50.00.  Principal = $430.33 - $50.00 = $380.33.
+        Balance = $10,000.00 - $380.33 = $9,619.67.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1
+                amount=Decimal("430.33"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # Month 1: partial payment.
+        assert schedule[0].interest == Decimal("50.00")
+        assert schedule[0].principal == Decimal("380.33")
+        assert schedule[0].remaining_balance == Decimal("9619.67")
+        # Extra is $0 since payment < standard.
+        assert schedule[0].extra_payment == Decimal("0.00")
+
+        # Total interest should be higher than standard (slower principal
+        # reduction means more interest accrues over the term).
+        standard = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        total_interest_partial = sum(r.interest for r in schedule)
+        total_interest_std = sum(r.interest for r in standard)
+        assert total_interest_partial > total_interest_std
+        # The final payment must be larger to absorb the shortfall.
+        assert schedule[-1].payment > standard[-1].payment
+
+    def test_zero_payment_negative_amortization(self):
+        """$0 payment: interest accrues, principal increases.
+
+        Month 1: pay $0.  Interest = $50.00.
+        Principal = $0 - $50.00 = -$50.00 (negative amortization).
+        Balance = $10,000 - (-$50) = $10,050.00.
+
+        This correctly models a missed payment where only interest accrues.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1
+                amount=Decimal("0.00"),
+                is_confirmed=False,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert schedule[0].interest == Decimal("50.00")
+        # Negative principal = negative amortization.
+        assert schedule[0].principal == Decimal("-50.00")
+        assert schedule[0].remaining_balance == Decimal("10050.00")
+        assert schedule[0].extra_payment == Decimal("0.00")
+
+    # ── is_confirmed flag ─────────────────────────────────────────
+
+    def test_mixed_confirmed_projected_propagation(self):
+        """is_confirmed flag propagates correctly to AmortizationRow.
+
+        Months with confirmed payments get is_confirmed=True.
+        Months with projected payments get is_confirmed=False.
+        Months without any payment record get is_confirmed=False.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1 -- confirmed
+                amount=self.MONTHLY_PAYMENT,
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 3, 15),  # Month 2 -- projected
+                amount=self.MONTHLY_PAYMENT,
+                is_confirmed=False,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert schedule[0].is_confirmed is True   # Month 1: confirmed payment
+        assert schedule[1].is_confirmed is False   # Month 2: projected payment
+        assert schedule[2].is_confirmed is False   # Month 3: no payment record
+
+    def test_all_confirmed_in_same_month(self):
+        """Two confirmed payments in the same month: is_confirmed=True.
+
+        Two payments of $430.33 each = $860.66 total (standard amount).
+        Both confirmed, so the month is fully confirmed.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 1),
+                amount=Decimal("430.33"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 2, 20),
+                amount=Decimal("430.33"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # Both payments in Feb 2026 -> month 1 (Feb) is confirmed.
+        assert schedule[0].is_confirmed is True
+
+    def test_mixed_confirmed_in_same_month(self):
+        """One confirmed + one projected in the same month: is_confirmed=False.
+
+        A mix means the month's total is not fully confirmed -- one
+        payment is still projected and could change.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 1),
+                amount=Decimal("430.33"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 2, 20),
+                amount=Decimal("430.33"),
+                is_confirmed=False,  # This one is projected.
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert schedule[0].is_confirmed is False
+
+    # ── Multiple payments per month ───────────────────────────────
+
+    def test_multiple_payments_same_month_summed(self):
+        """Two payments in the same year-month are summed.
+
+        Two payments of $500 each = $1,000 total for the month.
+        Interest = $50.00.  Principal = $1,000 - $50 = $950.
+        Balance = $10,000 - $950 = $9,050.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 5),
+                amount=Decimal("500.00"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 2, 19),
+                amount=Decimal("500.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert schedule[0].interest == Decimal("50.00")
+        assert schedule[0].principal == Decimal("950.00")
+        assert schedule[0].remaining_balance == Decimal("9050.00")
+
+    # ── Pre-origination filtering ─────────────────────────────────
+
+    def test_payments_before_origination_filtered(self):
+        """Payments dated before origination_date are silently ignored.
+
+        These may exist as data artifacts from before the loan started.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2025, 12, 1),  # Before 2026-01-01 origination.
+                amount=Decimal("1000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule_with = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        schedule_none = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+        )
+        # Pre-origination payment was filtered; schedules should match.
+        assert len(schedule_with) == len(schedule_none)
+        for row_a, row_b in zip(schedule_with, schedule_none):
+            assert row_a.interest == row_b.interest
+            assert row_a.remaining_balance == row_b.remaining_balance
+
+    # ── Overpayment and zero-balance termination ──────────────────
+
+    def test_overpayment_caps_principal_at_remaining(self):
+        """Payment exceeding remaining balance + interest: principal capped.
+
+        Month 1 balance is $10,000, interest is $50.  A $20,000 payment
+        should cap principal at $10,000 (remaining balance), not produce
+        a negative balance.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("20000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+        assert schedule[0].principal == self.PRINCIPAL
+        assert schedule[0].interest == Decimal("50.00")
+
+    def test_lump_sum_terminates_schedule_early(self):
+        """Large lump sum in month 3 of a 12-month loan: schedule stops early.
+
+        Months 1-2 standard, month 3 pays off remaining balance.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 4, 15),  # Month 3 of schedule
+                amount=Decimal("50000.00"),       # Far exceeds remaining
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # Should terminate at month 3.
+        assert len(schedule) == 3
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    def test_zero_principal_returns_empty(self):
+        """current_principal=0: empty schedule returned immediately."""
+        schedule = generate_schedule(
+            Decimal("0.00"), self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 2, 15),
+                    amount=Decimal("500.00"),
+                    is_confirmed=True,
+                ),
+            ],
+        )
+        assert schedule == []
+
+    def test_payments_after_payoff_ignored(self):
+        """Payments for months after the loan reaches zero are not included.
+
+        A huge payment in month 1 pays off the loan.  Payments in months
+        2-3 should not appear in the schedule.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1 -- massive overpay
+                amount=Decimal("50000.00"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 3, 15),  # Month 2 -- after payoff
+                amount=Decimal("500.00"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 4, 15),  # Month 3 -- after payoff
+                amount=Decimal("500.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        assert len(schedule) == 1
+        assert schedule[0].remaining_balance == Decimal("0.00")
+
+    # ── Unsorted payments ─────────────────────────────────────────
+
+    def test_unsorted_payments_handled(self):
+        """Payments passed in non-chronological order produce the same
+        result as sorted payments.
+
+        The engine must sort internally before processing.
+        """
+        payment_list = [
+            PaymentRecord(
+                payment_date=date(2026, 3, 15),  # Month 2
+                amount=self.MONTHLY_PAYMENT + Decimal("100.00"),
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1
+                amount=self.MONTHLY_PAYMENT,
+                is_confirmed=True,
+            ),
+        ]
+        schedule_unsorted = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payment_list,
+        )
+        schedule_sorted = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=sorted(payment_list, key=lambda p: p.payment_date),
+        )
+        assert len(schedule_unsorted) == len(schedule_sorted)
+        for row_a, row_b in zip(schedule_unsorted, schedule_sorted):
+            assert row_a.payment == row_b.payment
+            assert row_a.principal == row_b.principal
+            assert row_a.interest == row_b.interest
+            assert row_a.remaining_balance == row_b.remaining_balance
+
+    # ── Year-month matching ───────────────────────────────────────
+
+    def test_payment_on_different_day_matches_month(self):
+        """Payment dated 2026-02-05 matches schedule month 2026-02
+        (payment_day=15), not an exact day match.
+
+        Year-month matching is critical because payments come from
+        biweekly pay periods with arbitrary dates.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 5),  # Day 5, not day 15
+                amount=self.MONTHLY_PAYMENT + Decimal("300.00"),
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            payments=payments,
+        )
+        # The $300 extra should appear in month 1 (Feb 2026).
+        assert schedule[0].extra_payment == Decimal("300.00")
+        assert schedule[0].is_confirmed is True
+
+    # ── extra_monthly interaction with payments ───────────────────
+
+    def test_extra_monthly_not_added_when_payment_exists(self):
+        """extra_monthly is NOT added to months with a payment record.
+
+        The payment record IS the total payment for that month.
+        extra_monthly applies only to months without payment records.
+        Double-counting would be a financial error.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),  # Month 1
+                amount=self.MONTHLY_PAYMENT,      # Exactly standard
+                is_confirmed=True,
+            ),
+        ]
+        schedule = generate_schedule(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
+            extra_monthly=Decimal("500.00"),
+            payments=payments,
+        )
+        # Month 1: payment record exists, extra_monthly NOT added.
+        assert schedule[0].extra_payment == Decimal("0.00")
+        # Month 2: no payment record, extra_monthly IS applied.
+        assert schedule[1].extra_payment > Decimal("0.00")
+
+    # ── Summary and projection passthrough ────────────────────────
+
+    def test_calculate_summary_with_payments_passthrough(self):
+        """calculate_summary with payments returns summary reflecting
+        the payment-aware schedule.
+
+        An extra payment in month 1 should reduce total interest
+        compared to the standard no-payments summary.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=self.MONTHLY_PAYMENT + Decimal("2000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        summary_standard = calculate_summary(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
+        )
+        summary_with = calculate_summary(
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
+            payments=payments,
+        )
+        # Extra payment reduces total interest.
+        assert summary_with.total_interest < summary_standard.total_interest
+
+    def test_get_loan_projection_with_payments_passthrough(self):
+        """get_loan_projection with payments returns consistent results.
+
+        Note: get_loan_projection uses schedule_start as origination_date
+        for the schedule.  When schedule_start=None it defaults to
+        today's 1st.  The payment must fall in a schedule month to have
+        any effect.  We use a fixed schedule_start and a matching
+        payment date.
+        """
+        schedule_start = date(2026, 1, 1)
+        params = type("P", (), {
+            "origination_date": schedule_start,
+            "term_months": self.MONTHS,
+            "original_principal": self.PRINCIPAL,
+            "current_principal": self.PRINCIPAL,
+            "interest_rate": self.RATE,
+            "payment_day": self.PAYMENT_DAY,
+        })()
+
+        # The schedule starts at Feb 2026 (month after schedule_start).
+        # Place a large lump-sum payment in Feb 2026 (month 1).
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("5000.00"),
+                is_confirmed=True,
+            ),
+        ]
+        proj_std = get_loan_projection(params, schedule_start=schedule_start)
+        proj_pay = get_loan_projection(
+            params, schedule_start=schedule_start, payments=payments,
+        )
+        # Lump-sum payment should reduce total interest.
+        assert proj_pay.summary.total_interest < proj_std.summary.total_interest
+
+
+class TestPaymentRecordValidation:
+    """Tests for PaymentRecord dataclass validation.
+
+    Validates that invalid inputs are caught at construction time
+    with clear error messages rather than producing silent wrong
+    results in the schedule loop.
+    """
+
+    def test_negative_amount_raises_value_error(self):
+        """Negative payment amount is nonsensical and must be rejected."""
+        with pytest.raises(ValueError, match="amount must be >= 0"):
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("-100.00"),
+                is_confirmed=True,
+            )
+
+    def test_float_amount_raises_type_error(self):
+        """Float amount is a precision bug and must be rejected."""
+        with pytest.raises(TypeError, match="amount must be a Decimal"):
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=100.00,
+                is_confirmed=True,
+            )
+
+    def test_string_date_raises_type_error(self):
+        """String date must be rejected -- only date instances accepted."""
+        with pytest.raises(TypeError, match="payment_date must be a date"):
+            PaymentRecord(
+                payment_date="2026-02-15",
+                amount=Decimal("100.00"),
+                is_confirmed=True,
+            )
+
+    def test_int_confirmed_raises_type_error(self):
+        """Integer is_confirmed must be rejected -- only bool accepted."""
+        with pytest.raises(TypeError, match="is_confirmed must be a bool"):
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                amount=Decimal("100.00"),
+                is_confirmed=1,
+            )
+
+    def test_zero_amount_valid(self):
+        """Zero amount is valid -- represents a missed payment."""
+        record = PaymentRecord(
+            payment_date=date(2026, 2, 15),
+            amount=Decimal("0.00"),
+            is_confirmed=False,
+        )
+        assert record.amount == Decimal("0.00")
+
+    def test_valid_construction(self):
+        """Valid PaymentRecord construction succeeds."""
+        record = PaymentRecord(
+            payment_date=date(2026, 2, 15),
+            amount=Decimal("1500.00"),
+            is_confirmed=True,
+        )
+        assert record.payment_date == date(2026, 2, 15)
+        assert record.amount == Decimal("1500.00")
+        assert record.is_confirmed is True
