@@ -1812,22 +1812,34 @@ class TestPeriodHeaderDateFormat:
         return periods
 
     def test_period_header_compact_for_current_year(self, app, auth_client, seed_user):
-        """Current-year periods display paycheck date without year suffix."""
+        """Current-year periods display paycheck date without year suffix.
+
+        The grid starts at the current period (the one containing today),
+        so we must check the current period's header, not the first
+        generated period.
+        """
         with app.app_context():
             today = date.today()
             start = today - timedelta(days=28)
             periods = self._make_periods(db, seed_user, start)
 
+            # The grid starts at the current period -- find it.
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current is not None, "No period covers today"
+
             resp = auth_client.get("/")
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Only the start date (paycheck date), no range, no year.
-            expected = start.strftime("%-m/%-d")
+            # The current period's start_date should appear in compact
+            # format (no year suffix) since it's in the current year.
+            expected = current.start_date.strftime("%-m/%-d")
             assert expected in html
             # Should NOT contain a range separator for this period.
-            end = start + timedelta(days=13)
-            range_str = f"{start.strftime('%-m/%-d')} - {end.strftime('%-m/%-d')}"
+            end = current.start_date + timedelta(days=13)
+            range_str = f"{current.start_date.strftime('%-m/%-d')} - {end.strftime('%-m/%-d')}"
             assert range_str not in html
 
     def test_period_header_full_format_for_cross_year(self, app, auth_client, seed_user):

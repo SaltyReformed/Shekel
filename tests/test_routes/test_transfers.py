@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
@@ -70,6 +71,7 @@ def _create_transfer(seed_user, seed_periods, savings_acct, template=None):
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("200.00"),
         status_id=projected.id,
+        category_id=seed_user["categories"]["Rent"].id,
         transfer_template_id=template.id if template else None,
         name="Monthly Savings",
     )
@@ -113,6 +115,13 @@ def _create_other_user_with_template():
     db.session.add(scenario)
     db.session.flush()
 
+    category = Category(
+        user_id=other_user.id,
+        group_name="Home",
+        item_name="Rent",
+    )
+    db.session.add(category)
+
     template = TransferTemplate(
         user_id=other_user.id,
         from_account_id=checking.id,
@@ -142,6 +151,7 @@ def _create_other_user_with_template():
         scenario_id=scenario.id,
         amount=Decimal("100.00"),
         status_id=projected.id,
+        category_id=category.id,
         transfer_template_id=template.id,
         name="Other Transfer",
     )
@@ -221,6 +231,7 @@ class TestTemplateCreate:
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "recurrence_pattern": str(every_period.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -254,6 +265,7 @@ class TestTemplateCreate:
                 "default_amount": "100.00",
                 "from_account_id": acct_id,
                 "to_account_id": acct_id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -274,6 +286,7 @@ class TestTemplateCreate:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "recurrence_pattern": str(every_period.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
             }
 
             # -- First submission: succeeds --
@@ -685,6 +698,7 @@ class TestAdHoc:
                 "amount": "50.00",
                 "scenario_id": seed_user["scenario"].id,
                 "name": "Quick Transfer",
+                "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
             assert response.status_code == 201
@@ -732,6 +746,7 @@ class TestAdHoc:
                 "to_account_id": savings.id,
                 "amount": "50.00",
                 "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
             assert response.status_code == 404
@@ -762,6 +777,7 @@ class TestAdHoc:
                 "amount": "50.00",
                 "scenario_id": seed_user["scenario"].id,
                 "name": "Double Transfer",
+                "category_id": str(seed_user["categories"]["Rent"].id),
             }
 
             response1 = auth_client.post("/transfers/ad-hoc", data=data)
@@ -991,6 +1007,7 @@ class TestTransferNegativePaths:
                 "to_account_id": savings.id,
                 "amount": "0.00",
                 "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
             # TransferCreateSchema requires amount > 0 (min_inclusive=False).
@@ -1017,6 +1034,7 @@ class TestTransferNegativePaths:
                 "to_account_id": savings.id,
                 "amount": "-100.00",
                 "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
             assert resp.status_code == 400
@@ -1310,3 +1328,229 @@ class TestUnarchiveUsesService:
             for s in shadows:
                 assert s.is_deleted is False
                 assert s.estimated_amount == Decimal("200.00")
+
+
+# ── One-Time Transfer Tests ────────────────────────────────────────────
+
+
+class TestOneTimeTransfer:
+    """Tests for one-time transfer creation via the template form.
+
+    One-time transfers can be created two ways:
+      1. Pattern dropdown set to "None (one-time / manual)" (no rule).
+      2. Pattern dropdown set to "Once" (ONCE rule).
+
+    Both paths must create a Transfer with two shadow transactions when
+    a start_period_id is provided.  This was a known bug (design doc
+    section 1.4) where the recurrence engine returned [] for ONCE and
+    the route skipped transfer creation entirely for no-pattern.
+    """
+
+    def test_once_pattern_creates_shadows(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """POST /transfers with the ONCE recurrence pattern creates a
+        template AND a single Transfer with exactly two shadow transactions.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            once = db.session.query(RecurrencePattern).filter_by(
+                name="Once"
+            ).one()
+
+            response = auth_client.post("/transfers", data={
+                "name": "Once Payment",
+                "default_amount": "500.00",
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "recurrence_pattern": str(once.id),
+                "start_period_id": str(seed_periods[1].id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"created" in response.data.lower()
+
+            # Template was created with a ONCE recurrence rule.
+            tmpl = (
+                db.session.query(TransferTemplate)
+                .filter_by(
+                    user_id=seed_user["user"].id,
+                    name="Once Payment",
+                )
+                .one()
+            )
+            assert tmpl.recurrence_rule is not None
+            assert tmpl.recurrence_rule.pattern_id == once.id
+
+            # Transfer was created via the service.
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=tmpl.id)
+                .one()
+            )
+            assert xfer.amount == Decimal("500.00")
+            assert xfer.pay_period_id == seed_periods[1].id
+
+            # Exactly two shadow transactions exist.
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            assert len(shadows) == 2
+
+            types = {s.transaction_type.name for s in shadows}
+            assert types == {"Expense", "Income"}
+
+    def test_once_pattern_shadow_accounts(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """ONCE transfer shadows are linked to the correct accounts:
+        expense shadow on from_account, income shadow on to_account.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            checking_id = seed_user["account"].id
+            once = db.session.query(RecurrencePattern).filter_by(
+                name="Once"
+            ).one()
+
+            auth_client.post("/transfers", data={
+                "name": "Account Check",
+                "default_amount": "300.00",
+                "from_account_id": str(checking_id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": str(once.id),
+                "start_period_id": str(seed_periods[0].id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            tmpl = (
+                db.session.query(TransferTemplate)
+                .filter_by(name="Account Check")
+                .one()
+            )
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=tmpl.id)
+                .one()
+            )
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+
+            expense_shadow = [
+                s for s in shadows if s.transaction_type.name == "Expense"
+            ][0]
+            income_shadow = [
+                s for s in shadows if s.transaction_type.name == "Income"
+            ][0]
+
+            # Expense drains the from_account (checking).
+            assert expense_shadow.account_id == checking_id
+            # Income fills the to_account (savings).
+            assert income_shadow.account_id == savings.id
+
+    def test_once_pattern_balance_impact(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """ONCE transfer shadow transactions affect balance calculations.
+
+        The checking balance should decrease and savings balance should
+        increase by the transfer amount.
+        """
+        from app.services import balance_calculator  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            savings.current_anchor_period_id = seed_periods[0].id
+            savings.current_anchor_balance = Decimal("0.00")
+            db.session.commit()
+
+            once = db.session.query(RecurrencePattern).filter_by(
+                name="Once"
+            ).one()
+
+            auth_client.post("/transfers", data={
+                "name": "Balance Test",
+                "default_amount": "250.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": str(once.id),
+                "start_period_id": str(seed_periods[1].id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            # Get shadow transactions for checking account.
+            checking_shadows = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == seed_user["account"].id,
+                    Transaction.transfer_id.isnot(None),
+                    Transaction.is_deleted.is_(False),
+                )
+                .all()
+            )
+            checking_balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods[:3],
+                transactions=checking_shadows,
+            )
+            # Checking decreased by 250 in period 2.
+            assert checking_balances[seed_periods[1].id] == Decimal("750.00")
+
+            # Get shadow transactions for savings account.
+            savings_shadows = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == savings.id,
+                    Transaction.transfer_id.isnot(None),
+                    Transaction.is_deleted.is_(False),
+                )
+                .all()
+            )
+            savings_balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("0.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods[:3],
+                transactions=savings_shadows,
+            )
+            # Savings increased by 250 in period 2.
+            assert savings_balances[seed_periods[1].id] == Decimal("250.00")
+
+    def test_one_time_transfer_idor_period(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_second_user, seed_second_periods,
+    ):
+        """POST /transfers with another user's period is rejected."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            once = db.session.query(RecurrencePattern).filter_by(
+                name="Once"
+            ).one()
+
+            response = auth_client.post("/transfers", data={
+                "name": "IDOR Attempt",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_pattern": str(once.id),
+                # Use second user's period.
+                "start_period_id": str(seed_second_periods[0].id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid pay period" in response.data
+
+            # No transfer was created.
+            xfer_count = (
+                db.session.query(Transfer)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            )
+            assert xfer_count == 0

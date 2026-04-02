@@ -329,6 +329,7 @@ def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("200.00"),
         status_id=projected.id,
+        category_id=seed_user["categories"]["Rent"].id,
         name="CF Transfer",
     )
     db.session.flush()
@@ -530,6 +531,7 @@ class TestCarryForwardShadowTransactions:
                 scenario_id=seed_user["scenario"].id,
                 amount=Decimal("150.00"),
                 status_id=projected.id,
+                category_id=seed_user["categories"]["Rent"].id,
                 name="CF Transfer 2",
             )
             reg = _create_transaction(seed_user, seed_periods, name="Reg")

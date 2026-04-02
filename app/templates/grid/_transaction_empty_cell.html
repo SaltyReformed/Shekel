@@ -2,11 +2,12 @@
    Clicking opens a Tier 1 quick-create input inline.
 
    Expected context:
-     category      -- Category object for this row
+     category      -- Category object for this row (may be None for uncategorized)
      period        -- PayPeriod object for this column
      account       -- Account object for the viewed account
      txn_type_id   -- integer transaction type ID (TXN_TYPE_INCOME or TXN_TYPE_EXPENSE)
 #}
+{% if category %}
 <div class="txn-cell txn-empty-cell"
      hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period.id, transaction_type_id=txn_type_id, account_id=account.id) }}"
      hx-trigger="click"
@@ -18,3 +19,8 @@
      title="Click to add a transaction">
   <span class="text-muted">&mdash;</span>
 </div>
+{% else %}
+{# Uncategorized row (e.g. transfer shadow with missing category).
+   No quick-create -- the transaction is managed via the transfer form. #}
+<span class="text-muted">&mdash;</span>
+{% endif %}

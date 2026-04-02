@@ -78,9 +78,8 @@
       </div>
 
       <div class="mb-3">
-        <label for="category_id" class="form-label">Category (optional)</label>
-        <select id="category_id" name="category_id" class="form-select">
-          <option value="">-- None --</option>
+        <label for="category_id" class="form-label">Category</label>
+        <select id="category_id" name="category_id" class="form-select" required>
           {% for cat in categories %}
           <option value="{{ cat.id }}"
             {{ 'selected' if template and template.category_id == cat.id else '' }}>
@@ -88,7 +87,7 @@
           </option>
           {% endfor %}
         </select>
-        <div class="form-text">Expense category for this transfer (used in charts and grid grouping).</div>
+        <div class="form-text">Category for this transfer (used in charts and grid grouping).</div>
       </div>
 
       {# Recurrence rule fields #}
@@ -104,10 +103,9 @@
                 data-semi-annual="{{ REC_SEMI_ANNUAL }}"
                 data-annual="{{ REC_ANNUAL }}"
                 data-once="{{ REC_ONCE }}">
-          <option value="">None (one-time / manual)</option>
           {% for p in patterns %}
           <option value="{{ p.id }}"
-            {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.pattern_id == p.id else '' }}>
+            {{ 'selected' if (template and template.recurrence_rule and template.recurrence_rule.pattern_id == p.id) or (not template and p.id == REC_ONCE) else '' }}>
             {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
           </option>
           {% endfor %}
@@ -142,20 +140,6 @@
           </div>
         </div>
 
-        {% if not template %}
-        <div class="mb-3 d-none" id="field-start-period">
-          <label class="form-label">First paycheck</label>
-          <select name="start_period_id" class="form-select" aria-describedby="start-period-help">
-            {% for p in periods %}
-            <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
-              {{ p.label }}
-            </option>
-            {% endfor %}
-          </select>
-          <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
-        </div>
-        {% endif %}
-
         <div class="mb-3 d-none" id="field-end-date">
           <label for="end_date" class="form-label">End Date</label>
           <input type="date" id="end_date" name="end_date" class="form-control"
@@ -164,6 +148,24 @@
           <div id="end-date-help" class="form-text">Leave blank for indefinite. Transfers won't be generated after this date.</div>
         </div>
       </div>
+
+      {# Pay period selector: shown for one-time transfers (no pattern) and
+         recurring transfers (as "First paycheck").  Placed outside the
+         recurrence-fields container so it remains visible when no pattern
+         is selected. #}
+      {% if not template %}
+      <div class="mb-3" id="field-start-period">
+        <label class="form-label" id="start-period-label">Pay period</label>
+        <select name="start_period_id" class="form-select" aria-describedby="start-period-help">
+          {% for p in periods %}
+          <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
+            {{ p.label }}
+          </option>
+          {% endfor %}
+        </select>
+        <div id="start-period-help" class="form-text">Which pay period should this transfer appear in?</div>
+      </div>
+      {% endif %}
 
       {% if template %}
       <div class="mb-3">

@@ -148,6 +148,7 @@ class TestTransferToBalance:
                 scenario_id=seed_user["scenario"].id,
                 amount=Decimal("200.00"),
                 status_id=projected.id,
+                category_id=seed_user["categories"]["Rent"].id,
                 name="Save $200",
             )
             db.session.commit()

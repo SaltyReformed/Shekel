@@ -2145,6 +2145,7 @@ class TestTransferInvariantsBalanceRegression:
                 scenario_id=scenario.id,
                 amount=Decimal("200.00"),
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
             db.session.commit()
 
@@ -2198,6 +2199,7 @@ class TestTransferInvariantsBalanceRegression:
                 scenario_id=scenario.id,
                 amount=transfer_amount,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
             db.session.commit()
 
@@ -2251,6 +2253,7 @@ class TestTransferInvariantsBalanceRegression:
                 scenario_id=scenario.id,
                 amount=Decimal("100.00"),
                 status_id=projected_id,
+                category_id=seed_user["categories"]["Rent"].id,
             )
             db.session.commit()
 
@@ -2313,6 +2316,7 @@ class TestTransferInvariantsBalanceRegression:
                 scenario_id=scenario.id,
                 amount=transfer_amount,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
             db.session.commit()
 

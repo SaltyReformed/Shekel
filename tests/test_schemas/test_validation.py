@@ -257,6 +257,7 @@ class TestTransferTemplateCreateSchema:
             "default_amount": "500.00",
             "from_account_id": "1",
             "to_account_id": "2",
+            "category_id": "1",
         })
         assert data["default_amount"] == Decimal("500.00")
 
@@ -268,6 +269,7 @@ class TestTransferTemplateCreateSchema:
                 "default_amount": "100.00",
                 "from_account_id": "1",
                 "to_account_id": "1",
+                "category_id": "1",
             })
         assert "_schema" in exc.value.messages
 
@@ -297,6 +299,7 @@ class TestTransferCreateSchema:
             "amount": "300.00",
             "pay_period_id": "1",
             "scenario_id": "1",
+            "category_id": "1",
         })
         assert data["amount"] == Decimal("300.00")
 
@@ -309,6 +312,7 @@ class TestTransferCreateSchema:
                 "amount": "100.00",
                 "pay_period_id": "1",
                 "scenario_id": "1",
+                "category_id": "1",
             })
         assert "_schema" in exc.value.messages
 
@@ -829,6 +833,7 @@ class TestTransferCreateSchemaBoundary:
             "amount": "100.00",
             "pay_period_id": "1",
             "scenario_id": "1",
+            "category_id": "1",
         }
         data.update(overrides)
         return data

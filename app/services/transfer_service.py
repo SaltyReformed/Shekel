@@ -40,11 +40,6 @@ from app.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
 
-# Category constants for shadow transaction defaults.
-TRANSFER_IN_GROUP = "Transfers"
-TRANSFER_IN_ITEM = "Incoming"
-TRANSFER_OUT_GROUP = "Transfers"
-TRANSFER_OUT_ITEM = "Outgoing"
 
 
 # ── Private helpers ────────────────────────────────────────────────
@@ -162,48 +157,6 @@ def _get_owned_transfer_template(template_id, user_id):
     return tpl
 
 
-def _lookup_transfer_categories(user_id):
-    """Look up the default Transfers: Incoming and Transfers: Outgoing
-    categories for a user.
-
-    Returns:
-        Tuple (incoming_cat_id, outgoing_cat_id).  Either may be None
-        if the user deleted the default category.
-    """
-    incoming = (
-        db.session.query(Category)
-        .filter_by(
-            user_id=user_id,
-            group_name=TRANSFER_IN_GROUP,
-            item_name=TRANSFER_IN_ITEM,
-        )
-        .first()
-    )
-    outgoing = (
-        db.session.query(Category)
-        .filter_by(
-            user_id=user_id,
-            group_name=TRANSFER_OUT_GROUP,
-            item_name=TRANSFER_OUT_ITEM,
-        )
-        .first()
-    )
-    if incoming is None:
-        logger.warning(
-            "User %d is missing the '%s: %s' default category.  "
-            "Income-side shadows will have category_id=NULL.",
-            user_id, TRANSFER_IN_GROUP, TRANSFER_IN_ITEM,
-        )
-    if outgoing is None:
-        logger.warning(
-            "User %d is missing the '%s: %s' default category.  "
-            "Uncategorized expense-side shadows will have category_id=NULL.",
-            user_id, TRANSFER_OUT_GROUP, TRANSFER_OUT_ITEM,
-        )
-    return (
-        incoming.id if incoming else None,
-        outgoing.id if outgoing else None,
-    )
 
 
 def _get_transfer_or_raise(transfer_id, user_id, allow_deleted=False):
@@ -323,7 +276,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     scenario_id,
     amount,
     status_id,
-    category_id=None,
+    category_id,
     notes=None,
     transfer_template_id=None,
     name=None,
@@ -383,19 +336,11 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    incoming_cat_id, outgoing_cat_id = _lookup_transfer_categories(user_id)
 
     # ── Determine names ────────────────────────────────────────────
     transfer_name = name or f"{from_account.name} to {to_account.name}"
     expense_shadow_name = f"Transfer to {to_account.name}"
     income_shadow_name = f"Transfer from {from_account.name}"
-
-    # ── Determine shadow categories ────────────────────────────────
-    # Expense shadow: use the transfer's category if set, otherwise
-    # fall back to "Transfers: Outgoing" default.
-    expense_cat_id = category_id if category_id is not None else outgoing_cat_id
-    # Income shadow: always uses "Transfers: Incoming" default.
-    income_cat_id = incoming_cat_id
 
     # ── Create transfer record ─────────────────────────────────────
     xfer = Transfer(
@@ -427,7 +372,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         scenario_id=scenario_id,
         status_id=status_id,
         name=expense_shadow_name,
-        category_id=expense_cat_id,
+        category_id=category_id,
         transaction_type_id=expense_type_id,
         estimated_amount=amount,
         actual_amount=None,
@@ -447,7 +392,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         scenario_id=scenario_id,
         status_id=status_id,
         name=income_shadow_name,
-        category_id=income_cat_id,
+        category_id=category_id,
         transaction_type_id=income_type_id,
         estimated_amount=amount,
         actual_amount=None,
@@ -528,19 +473,15 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.pay_period_id = new_period_id
 
     # ── category_id ────────────────────────────────────────────────
-    # Category updates apply to the expense shadow only.  The income
-    # shadow retains its "Transfers: Incoming" category.
+    # Category updates apply to both shadows so the transaction
+    # appears under the user-selected category in both account grids.
     if "category_id" in kwargs:
         new_cat_id = kwargs["category_id"]
         if new_cat_id is not None:
             _get_owned_category(new_cat_id, user_id)
-            xfer.category_id = new_cat_id
-            expense_shadow.category_id = new_cat_id
-        else:
-            # Explicitly setting category to None -- use Outgoing fallback.
-            _, outgoing_cat_id = _lookup_transfer_categories(user_id)
-            xfer.category_id = None
-            expense_shadow.category_id = outgoing_cat_id
+        xfer.category_id = new_cat_id
+        expense_shadow.category_id = new_cat_id
+        income_shadow.category_id = new_cat_id
 
     # ── name ───────────────────────────────────────────────────────
     # Name is display metadata on the transfer only.  Shadow names

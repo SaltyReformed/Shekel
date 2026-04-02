@@ -45,6 +45,7 @@ def _create_test_transfer(seed_user, seed_periods):
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("300.00"),
         status_id=projected.id,
+        category_id=seed_user["categories"]["Rent"].id,
         name="Test Transfer",
     )
     db.session.commit()

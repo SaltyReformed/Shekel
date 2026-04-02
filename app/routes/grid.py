@@ -103,11 +103,13 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
             if not is_income_section and not txn.is_expense:
                 continue
 
-            # Skip transactions whose category doesn't belong to this user
-            # (should never happen, but defensive).
+            # Look up the category.  Transactions may have category_id=NULL
+            # (e.g. transfer shadow transactions when the user's default
+            # "Transfers: Incoming/Outgoing" categories are missing).
+            # These must still appear in the grid -- use a fallback group.
             cat = cat_by_id.get(txn.category_id)
-            if cat is None:
-                continue
+            group_name = cat.group_name if cat else "Uncategorized"
+            item_name = cat.item_name if cat else ""
 
             key = (txn.category_id, txn.template_id, txn.name)
             if key not in seen:
@@ -116,8 +118,8 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
                     category_id=txn.category_id,
                     template_id=txn.template_id,
                     txn_name=txn.name,
-                    group_name=cat.group_name,
-                    item_name=cat.item_name,
+                    group_name=group_name,
+                    item_name=item_name,
                     display_name=_short_display_name(txn.name),
                     category=cat,
                 ))

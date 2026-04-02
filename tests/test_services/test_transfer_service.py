@@ -70,6 +70,7 @@ def _create_basic_transfer(td):
         scenario_id=td["scenario"].id,
         amount=Decimal("250.00"),
         status_id=td["projected_status"].id,
+        category_id=td["categories"]["Rent"].id,
     )
 
 
@@ -131,7 +132,7 @@ class TestCreateTransfer:
             assert td["account"].name in income.name
 
     def test_with_category(self, app, db, transfer_data):
-        """Expense shadow uses the provided category; income uses Incoming."""
+        """Both shadows use the user-selected category when provided."""
         with app.app_context():
             td = transfer_data
             rent_cat = td["categories"]["Rent"]
@@ -154,22 +155,7 @@ class TestCreateTransfer:
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
 
             assert expense.category_id == rent_cat.id
-            assert income.category_id == td["incoming_cat"].id
-
-    def test_without_category_uses_outgoing_default(self, app, db, transfer_data):
-        """No category falls back to Transfers: Outgoing for expense shadow."""
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
-
-            assert expense.category_id == td["outgoing_cat"].id
-            assert income.category_id == td["incoming_cat"].id
+            assert income.category_id == rent_cat.id
 
     def test_with_template_id(self, app, db, transfer_data):
         """Template-linked transfer has template_id; shadows have template_id=None."""
@@ -183,6 +169,7 @@ class TestCreateTransfer:
                 scenario_id=td["scenario"].id,
                 amount=Decimal("200.00"),
                 status_id=td["projected_status"].id,
+                category_id=td["categories"]["Rent"].id,
                 transfer_template_id=td["transfer_template"].id,
             )
 
@@ -203,6 +190,7 @@ class TestCreateTransfer:
                 scenario_id=td["scenario"].id,
                 amount=Decimal("300.00"),
                 status_id=td["projected_status"].id,
+                category_id=td["categories"]["Rent"].id,
                 name="Mortgage Payment",
             )
 
@@ -226,23 +214,6 @@ class TestCreateTransfer:
             assert td["account"].name in xfer.name
             assert td["savings_account"].name in xfer.name
 
-    def test_missing_incoming_category_degrades_gracefully(self, app, db, transfer_data):
-        """If Transfers: Incoming category is deleted, income shadow gets NULL."""
-        with app.app_context():
-            td = transfer_data
-            # Re-query the category in the current session to avoid cross-session issues.
-            incoming = db.session.get(Category, td["incoming_cat"].id)
-            db.session.delete(incoming)
-            db.session.flush()
-
-            xfer = _create_basic_transfer(td)
-
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
-            assert income.category_id is None
-
-
 # ── Validation Tests ───────────────────────────────────────────────
 
 
@@ -262,6 +233,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("0"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_negative_amount_rejected(self, app, db, transfer_data):
@@ -277,6 +249,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("-100"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_same_account_rejected(self, app, db, transfer_data):
@@ -292,6 +265,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("100"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_wrong_user_account_rejected(self, app, db, transfer_data, second_user):
@@ -307,6 +281,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("100"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_nonexistent_account_rejected(self, app, db, transfer_data):
@@ -322,6 +297,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("100"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_wrong_user_period_rejected(self, app, db, transfer_data, second_user):
@@ -348,6 +324,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount=Decimal("100"),
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
     def test_wrong_user_category_rejected(self, app, db, transfer_data, second_user):
@@ -381,6 +358,7 @@ class TestCreateTransferValidation:
                     scenario_id=td["scenario"].id,
                     amount="not-a-number",
                     status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
                 )
 
 
@@ -437,30 +415,25 @@ class TestUpdateTransfer:
             for s in shadows:
                 assert s.pay_period_id == new_period.id
 
-    def test_category_updates_expense_shadow_only(self, app, db, transfer_data):
-        """Category update changes expense shadow only; income is unchanged."""
+    def test_category_updates_both_shadows(self, app, db, transfer_data):
+        """Category update propagates to both expense and income shadows."""
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             rent_cat = td["categories"]["Rent"]
-
-            # Record the income shadow's initial category.
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            income_before = [s for s in shadows if s.transaction_type_id == income_type.id][0]
-            original_income_cat = income_before.category_id
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, category_id=rent_cat.id
             )
 
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
 
             assert expense.category_id == rent_cat.id
-            assert income.category_id == original_income_cat
+            assert income.category_id == rent_cat.id
 
     def test_notes_does_not_touch_shadows(self, app, db, transfer_data):
         """Notes update changes only the transfer, not shadows."""
@@ -564,8 +537,8 @@ class TestUpdateTransfer:
                     xfer.id, td["user"].id, pay_period_id=other_periods[0].id
                 )
 
-    def test_category_set_to_none_uses_outgoing_fallback(self, app, db, transfer_data):
-        """Setting category_id=None falls back to Outgoing for expense shadow."""
+    def test_category_set_to_none_propagates_none(self, app, db, transfer_data):
+        """Setting category_id=None propagates None to both shadow transactions."""
         with app.app_context():
             td = transfer_data
             rent_cat = td["categories"]["Rent"]
@@ -585,10 +558,10 @@ class TestUpdateTransfer:
                 xfer.id, td["user"].id, category_id=None
             )
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            assert xfer.category_id is None
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            assert expense.category_id == td["outgoing_cat"].id
+            for shadow in shadows:
+                assert shadow.category_id is None
 
     def test_actual_amount_none_clears_shadows(self, app, db, transfer_data):
         """Setting actual_amount=None clears it on both shadows."""

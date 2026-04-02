@@ -175,6 +175,7 @@ def _create_transfer(seed_user, seed_periods, savings_acct):
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("100.00"),
         status_id=projected.id,
+        category_id=seed_user["categories"]["Rent"].id,
         name="Test Transfer",
     )
     db.session.commit()
@@ -364,12 +365,14 @@ class TestXSSPrevention:
                 .filter_by(name="Every Period").one()
             )
 
+            category = seed_user["categories"]["Rent"]
             auth_client.post("/transfers", data={
                 "name": payload,
                 "default_amount": "100.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings_acct.id,
                 "recurrence_pattern": str(every_period.id),
+                "category_id": category.id,
             })
 
             resp = auth_client.get("/transfers")

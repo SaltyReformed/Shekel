@@ -213,6 +213,7 @@ class TestTransferAccountOwnership:
             "from_account_id": str(other["account"].id),  # foreign account
             "to_account_id": str(savings_acct.id),
             "recurrence_pattern": "",
+            "category_id": str(seed_user["categories"]["Rent"].id),
         }, follow_redirects=True)
 
         assert b"Invalid source account" in resp.data
@@ -234,6 +235,7 @@ class TestTransferAccountOwnership:
             "from_account_id": str(seed_user["account"].id),
             "to_account_id": str(other["account"].id),  # foreign account
             "recurrence_pattern": "",
+            "category_id": str(seed_user["categories"]["Rent"].id),
         }, follow_redirects=True)
 
         assert b"Invalid destination account" in resp.data
@@ -251,6 +253,7 @@ class TestTransferAccountOwnership:
             "amount": "50.00",
             "pay_period_id": str(seed_periods[0].id),
             "scenario_id": str(seed_user["scenario"].id),
+            "category_id": str(seed_user["categories"]["Rent"].id),
         })
 
         assert resp.status_code == 404
@@ -470,6 +473,7 @@ class TestBalanceWithTransfers:
             scenario_id=seed_user["scenario"].id,
             amount=Decimal("200.00"),
             status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
             name="To Savings",
         )
         db.session.commit()
@@ -508,6 +512,7 @@ class TestBalanceWithTransfers:
             scenario_id=seed_user["scenario"].id,
             amount=Decimal("300.00"),
             status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
             name="From Savings",
         )
         db.session.commit()
@@ -545,6 +550,7 @@ class TestBalanceWithTransfers:
             scenario_id=seed_user["scenario"].id,
             amount=Decimal("500.00"),
             status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
             name="Cancelled",
         )
         # Cancel the transfer (updates both shadows to cancelled).

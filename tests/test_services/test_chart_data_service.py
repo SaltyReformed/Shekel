@@ -1742,6 +1742,7 @@ class TestBalanceOverTimeWithTransfers:
                 scenario_id=seed_user["scenario"].id,
                 amount=Decimal("1000.00"),
                 status_id=projected.id,
+                category_id=outgoing.id,
             )
             db.session.commit()
 

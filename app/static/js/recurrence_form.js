@@ -26,11 +26,25 @@
   var endDate = document.getElementById('field-end-date');
   var preview = document.getElementById('recurrence-preview');
 
+  var startPeriodLabel = document.getElementById('start-period-label');
+  var startPeriodHelp = document.getElementById('start-period-help');
+
   function toggleFields(pattern) {
-    if (!pattern) {
+    var isOneTime = !pattern || pattern === ONCE;
+
+    if (isOneTime) {
+      // One-time transfer: hide recurrence-specific fields, show
+      // period selector so the user picks where it lands.
       container.classList.add('d-none');
+      if (startPeriod) {
+        startPeriod.classList.remove('d-none');
+        if (startPeriodLabel) startPeriodLabel.textContent = 'Pay period';
+        if (startPeriodHelp) startPeriodHelp.textContent = 'Which pay period should this transfer appear in?';
+      }
       return;
     }
+
+    // Recurring transfer: show recurrence fields.
     container.classList.remove('d-none');
 
     interval.classList.toggle('d-none', pattern !== EVERY_N);
@@ -38,11 +52,13 @@
     moy.classList.toggle('d-none', [QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) === -1);
 
     if (startPeriod) {
-      startPeriod.classList.toggle('d-none', pattern === ONCE);
+      startPeriod.classList.remove('d-none');
+      if (startPeriodLabel) startPeriodLabel.textContent = 'First paycheck';
+      if (startPeriodHelp) startPeriodHelp.textContent = 'When should this first appear on the grid?';
     }
 
     if (endDate) {
-      endDate.classList.toggle('d-none', pattern === ONCE);
+      endDate.classList.remove('d-none');
     }
 
     fetchPreview();

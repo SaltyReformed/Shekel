@@ -153,13 +153,10 @@ def create_transfer_template():
         )
         db.session.add(rule)
         db.session.flush()
-    else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
-            data.pop(key, None)
 
     template = TransferTemplate(
         user_id=current_user.id,
-        recurrence_rule_id=rule.id if rule else None,
+        recurrence_rule_id=rule.id,
         **data,
     )
     db.session.add(template)
@@ -168,11 +165,52 @@ def create_transfer_template():
         db.session.flush()
     except IntegrityError:
         db.session.rollback()
-        flash("A recurring transfer with that name already exists.", "warning")
+        flash("A transfer with that name already exists.", "warning")
         return redirect(url_for("transfers.list_transfer_templates"))
 
-    # Auto-generate transfers from the rule into future periods.
-    if rule:
+    # Determine whether this is a one-time transfer.  The ONCE pattern
+    # is skipped by the recurrence engine ("once items are manually
+    # placed; no auto-generation"), so we create the single Transfer
+    # instance directly via the service.
+    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
+    is_one_time = rule.pattern_id == once_id
+
+    if is_one_time and start_period_id:
+        # One-time transfer: create a single Transfer in the selected
+        # period via the transfer service so shadow transactions are
+        # generated atomically.
+        period = db.session.get(PayPeriod, start_period_id)
+        if not period or period.user_id != current_user.id:
+            db.session.rollback()
+            flash("Invalid pay period for one-time transfer.", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
+
+        scenario = (
+            db.session.query(Scenario)
+            .filter_by(user_id=current_user.id, is_baseline=True)
+            .first()
+        )
+        if scenario:
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            try:
+                transfer_service.create_transfer(
+                    user_id=current_user.id,
+                    from_account_id=template.from_account_id,
+                    to_account_id=template.to_account_id,
+                    pay_period_id=period.id,
+                    scenario_id=scenario.id,
+                    amount=template.default_amount,
+                    status_id=projected_id,
+                    category_id=template.category_id,
+                    name=template.name,
+                    transfer_template_id=template.id,
+                )
+            except (NotFoundError, ShekelValidationError) as exc:
+                db.session.rollback()
+                flash(f"Could not create transfer: {exc}", "danger")
+                return redirect(url_for("transfers.new_transfer_template"))
+    elif rule:
+        # Recurring transfer: delegate to the recurrence engine.
         scenario = (
             db.session.query(Scenario)
             .filter_by(user_id=current_user.id, is_baseline=True)
@@ -185,7 +223,7 @@ def create_transfer_template():
             )
 
     db.session.commit()
-    flash(f"Recurring transfer '{template.name}' created.", "success")
+    flash(f"Transfer '{template.name}' created.", "success")
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
@@ -525,7 +563,7 @@ def create_ad_hoc():
             scenario_id=data["scenario_id"],
             amount=data["amount"],
             status_id=projected_id,
-            category_id=data.get("category_id"),
+            category_id=data["category_id"],
             name=data.get("name"),
             notes=data.get("notes"),
         )

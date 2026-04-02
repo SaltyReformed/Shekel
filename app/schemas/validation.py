@@ -365,7 +365,7 @@ class TransferTemplateCreateSchema(BaseSchema):
     )
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
-    category_id = fields.Integer(load_default=None, allow_none=True)
+    category_id = fields.Integer(required=True)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
     # The value is the integer primary key of a ref.recurrence_patterns row,
@@ -417,7 +417,7 @@ class TransferCreateSchema(BaseSchema):
     pay_period_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
     name = fields.String(validate=validate.Length(max=200))
-    category_id = fields.Integer(load_default=None, allow_none=True)
+    category_id = fields.Integer(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
     @validates_schema
