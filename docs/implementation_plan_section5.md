@@ -1,11 +1,12 @@
 # Implementation Plan: Section 5 -- Debt and Account Improvements
 
-**Version:** 1.0
-**Date:** March 30, 2026
-**Prerequisite:** All Sections 3, 3A, 4, 4A, and 4B are implemented, tested, and merged.
-**Scope:** Tasks 5.1, 5.4, 5.5, 5.7--5.16 from `docs/project_roadmap_v4-2.md`. Tasks 5.2 and
-5.3 were removed (resolved by sections 3.2 and 3.10). Task 5.6 is already complete (see
-Discrepancies section).
+**Version:** 1.1
+**Date:** April 1, 2026
+**Prerequisite:** All Sections 3, 3A, 4, 4A, 4B, and 5A are implemented, tested, and merged.
+**Scope:** Tasks 5.1--5.5, 5.7--5.16 from `docs/project_roadmap_v4-3.md`. Tasks 5.2 and 5.3
+were previously removed (resolved by sections 3.2 and 3.10) but are now reassigned to new
+work: Investment Contribution Linkage (5.2) and Investment What-If Calculator (5.3). Task 5.6
+is already complete (see Discrepancies section).
 
 ---
 
@@ -64,6 +65,48 @@ Market and CD are not fully enabled, that is a Section 4A follow-up, not a Secti
 
 **Impact:** None for this plan.
 
+### D-5: Roadmap v4-3 stale note about implementation_plan_section5.md
+
+**Roadmap says:** "The existing `docs/implementation_plan_section5.md` predates the transfer
+rework, Section 4 implementation, account parameter architecture changes, and adversarial audit.
+Its assumptions about file structures, line numbers, dispatch patterns, and parameter table
+layouts are stale. A new implementation plan must be written from scratch using a fresh codebase
+inventory before starting this section." (Section 5 narrative, line ~579 of
+`project_roadmap_v4-3.md`.)
+
+**Code says:** The implementation plan WAS rewritten on March 30, 2026 (commit `00b2319`),
+AFTER the transfer rework, Section 4, Section 4A, and Section 4B were all completed. The plan
+uses the correct table names (`InterestParams`, `LoanParams`, `InvestmentParams`), references
+the shadow transaction architecture, and has a codebase inventory built from reading the actual
+files at their March 30 state.
+
+**Impact:** The roadmap note is stale and should be updated in a future roadmap revision. This
+plan is current and does not need to be rewritten from scratch. This version (1.1) reconciles
+with v4-3 and Section 5A.
+
+### D-6: Codebase inventory line counts changed by Section 5A implementation
+
+**Plan says (v1.0):** Line counts for several files from March 30, 2026.
+
+**Code says (April 1, 2026):** Section 5A tasks (5A.1 effective_amount fix, 5A.2 grid
+sub-headers, 5A.3 salary button cleanup, 5A.4 category management, 5A.5 archive/unarchive
+pattern) and Section 5 regression baseline (Commit #0) have changed file sizes.
+
+Key changes:
+
+- `app/models/transaction.py`: 149 -> 158 (+9, 5A.1 effective_amount simplification)
+- `app/services/balance_calculator.py`: 332 -> 340 (+8, 5A.1 effective_amount usage)
+- `app/schemas/validation.py`: 999 -> 1006 (+7, 5A.4 category schemas)
+- `app/services/transfer_service.py`: 766 -> 707 (-59, post-audit cleanup)
+- `app/models/__init__.py`: 58 -> 57 (-1)
+- `tests/test_services/test_amortization_engine.py`: 595 -> 917 (+322, regression baseline)
+- `tests/test_services/test_balance_calculator.py`: 1362 -> 2358 (+996, regression + 5A.1 tests)
+- `tests/test_routes/test_loan.py`: 744 -> 892 (+148, regression baseline)
+- `tests/test_routes/test_savings.py`: 1592 -> 1825 (+233, regression + 5A tests)
+
+**Impact:** Line counts in the codebase inventory below are updated to April 1, 2026 values.
+File paths and purposes are unchanged.
+
 ---
 
 ## Codebase Inventory
@@ -80,27 +123,30 @@ actual files, not from documentation assumptions.
 | `app/models/loan_params.py` | 80 | LoanParams (principal, rate, term, ARM fields, payment_day) | 5.1 depends |
 | `app/models/loan_features.py` | 84 | RateHistory, EscrowComponent | 5.7 depends |
 | `app/models/recurrence_rule.py` | 66 | RecurrenceRule (end_date column, nullable) | 5.9 |
-| `app/models/transaction.py` | 149 | Transaction (transfer_id, status, effective_amount) | 5.1 depends |
+| `app/models/transaction.py` | 158 | Transaction (transfer_id, status, effective_amount) | 5.1 depends, 5.2 depends |
 | `app/models/transfer.py` | 104 | Transfer model | 5.1 depends |
-| `app/models/transfer_template.py` | 75 | TransferTemplate (recurrence_rule_id) | 5.1 depends |
+| `app/models/transfer_template.py` | 75 | TransferTemplate (recurrence_rule_id) | 5.1 depends, 5.2 depends |
+| `app/models/investment_params.py` | 58 | InvestmentParams (return rate, limits, employer fields) | 5.2 depends, 5.3 depends |
 | `app/models/ref.py` | 208 | All ref table models (AccountType flags, Status booleans) | 5.4 |
-| `app/models/__init__.py` | 58 | Model registry for Alembic | 5.4, 5.9 |
+| `app/models/__init__.py` | 57 | Model registry for Alembic | 5.4, 5.9 |
 
 ### Services
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
 | `app/services/amortization_engine.py` | 445 | Loan projection, schedule generation, payoff calculation. Pure function. | 5.1, 5.7, 5.8 |
-| `app/services/balance_calculator.py` | 332 | Balance projection from anchor forward. Includes shadow transactions. | 5.1 depends |
-| `app/services/savings_dashboard_service.py` | 549 | Savings dashboard orchestrator. Loads accounts, params, goals, emergency metrics. | 5.4, 5.15 |
+| `app/services/balance_calculator.py` | 340 | Balance projection from anchor forward. Includes shadow transactions. | 5.1 depends |
+| `app/services/savings_dashboard_service.py` | 548 | Savings dashboard orchestrator. Loads accounts, params, goals, emergency metrics. | 5.4, 5.15 |
 | `app/services/savings_goal_service.py` | 206 | Goal calculations: required contribution, savings metrics, committed monthly. Pure function. | 5.4, 5.15 |
 | `app/services/chart_data_service.py` | 720 | Chart data assembly. Calls amortization_engine for loan charts. | 5.5, 5.10 |
 | `app/services/paycheck_calculator.py` | 462 | Net pay computation. Needed for 5.4 income-relative goals and 5.12 DTI. | 5.4 depends, 5.12 depends |
-| `app/services/transfer_service.py` | 766 | Transfer CRUD with shadow transaction invariant enforcement. | 5.1 depends, 5.9 |
-| `app/services/transfer_recurrence.py` | 261 | Transfer recurrence generation via transfer_service. | 5.1 depends |
+| `app/services/transfer_service.py` | 707 | Transfer CRUD with shadow transaction invariant enforcement. | 5.1 depends, 5.9 |
+| `app/services/transfer_recurrence.py` | 261 | Transfer recurrence generation via transfer_service. | 5.1 depends, 5.2 depends |
 | `app/services/recurrence_engine.py` | 552 | Transaction recurrence generation. | 5.9 depends |
 | `app/services/escrow_calculator.py` | 115 | Monthly escrow and total payment calculation. | 5.14 depends |
-| `app/services/growth_engine.py` | 210 | Investment growth projection. | -- |
+| `app/services/growth_engine.py` | 210 | Investment growth projection. Pure function. | 5.2, 5.3 |
+| `app/services/investment_projection.py` | 130 | Investment contribution/employer/YTD input calculation. Pure function. | 5.2 |
+| `app/services/retirement_dashboard_service.py` | 436 | Retirement gap analysis orchestrator. Calls growth_engine. | 5.2 (backward compat) |
 | `app/services/interest_projection.py` | 73 | Interest calculation. Pattern reference for pure functions. | -- |
 
 ### Services (new files to create)
@@ -114,11 +160,12 @@ actual files, not from documentation assumptions.
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
 | `app/routes/loan.py` | 487 | Loan dashboard, setup, params, escrow, rate history, payoff calculator. | 5.1, 5.5, 5.7, 5.9, 5.10, 5.13, 5.14 |
+| `app/routes/investment.py` | 481 | Investment dashboard, growth chart, params. | 5.2, 5.3 |
 | `app/routes/savings.py` | 152 | Savings dashboard (thin layer), goal CRUD. | 5.4 |
 | `app/routes/accounts.py` | 811 | Account CRUD, type management, anchor true-up, interest/checking detail. | 5.9, 5.12 |
 | `app/routes/transfers.py` | 695 | Transfer template CRUD, grid cell endpoints. | 5.1 depends |
 | `app/routes/charts.py` | 202 | Chart dashboard with HTMX fragments. | 5.5 |
-| `app/routes/grid.py` | 394 | Budget grid with balance row. | -- |
+| `app/routes/grid.py` | 396 | Budget grid with balance row. | -- |
 
 ### Routes (new files to create)
 
@@ -131,7 +178,7 @@ actual files, not from documentation assumptions.
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
-| `app/schemas/validation.py` | 999 | All Marshmallow validation schemas. | 5.1, 5.4, 5.9, 5.10 |
+| `app/schemas/validation.py` | 1006 | All Marshmallow validation schemas. | 5.1, 5.2, 5.4, 5.9, 5.10 |
 
 ### Enums and Cache
 
@@ -144,10 +191,11 @@ actual files, not from documentation assumptions.
 
 | File | Purpose | Affected by |
 |------|---------|-------------|
-| `app/templates/loan/dashboard.html` | Loan dashboard with tabs (Overview, Escrow, Rate History, Payoff Calculator). 286 lines. | 5.1, 5.5, 5.10, 5.13, 5.14 |
+| `app/templates/loan/dashboard.html` | Loan dashboard with tabs (Overview, Escrow, Rate History, Payoff Calculator). 285 lines. | 5.1, 5.5, 5.10, 5.13, 5.14 |
 | `app/templates/loan/setup.html` | Loan parameter setup form. | 5.1 |
 | `app/templates/loan/_payoff_results.html` | Payoff calculator results partial. | 5.5 |
-| `app/templates/savings/dashboard.html` | Accounts dashboard with category groups, goals, emergency fund. 284 lines. | 5.4, 5.9, 5.12, 5.15 |
+| `app/templates/investment/dashboard.html` | Investment dashboard with params, chart, employer info. 237 lines. | 5.2, 5.3 |
+| `app/templates/savings/dashboard.html` | Accounts dashboard with category groups, goals, emergency fund. 283 lines. | 5.4, 5.9, 5.12, 5.15 |
 | `app/templates/savings/goal_form.html` | Savings goal create/edit form. 86 lines. | 5.4 |
 
 ### Templates (new files to create)
@@ -164,17 +212,19 @@ actual files, not from documentation assumptions.
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
-| `tests/test_services/test_amortization_engine.py` | 595 | Amortization engine unit tests. | 5.1, 5.7, 5.8 |
-| `tests/test_services/test_balance_calculator.py` | 1362 | Balance calculator tests. | 5.1 regression |
+| `tests/test_services/test_amortization_engine.py` | 917 | Amortization engine unit tests. | 5.1, 5.7, 5.8 |
+| `tests/test_services/test_balance_calculator.py` | 2358 | Balance calculator tests. | 5.1 regression |
 | `tests/test_services/test_balance_calculator_debt.py` | exists | Debt-specific balance calculator tests. | 5.1 regression |
 | `tests/test_services/test_transfer_service.py` | 1101 | Transfer service invariant tests. | 5.1 regression |
+| `tests/test_services/test_growth_engine.py` | 482 | Growth engine unit tests. | 5.2 |
 | `tests/test_services/test_savings_goal_service.py` | 288 | Savings goal service tests. | 5.4, 5.15 |
 | `tests/test_services/test_savings_dashboard_service.py` | 197 | Savings dashboard service tests. | 5.4, 5.15 |
 | `tests/test_services/test_chart_data.py` | exists | Chart data service tests. | 5.5 |
 | `tests/test_services/test_escrow_calculator.py` | 246 | Escrow calculator tests. | 5.14 regression |
 | `tests/test_services/test_paycheck_calculator.py` | 2895 | Paycheck calculator tests. | 5.12 regression |
-| `tests/test_routes/test_loan.py` | 744 | Loan route tests (dashboard, setup, params, escrow, rate, payoff). | 5.1, 5.5, 5.7, 5.9, 5.10, 5.13, 5.14 |
-| `tests/test_routes/test_savings.py` | 1592 | Savings route tests (dashboard, goals). | 5.4, 5.15 |
+| `tests/test_routes/test_loan.py` | 892 | Loan route tests (dashboard, setup, params, escrow, rate, payoff). | 5.1, 5.5, 5.7, 5.9, 5.10, 5.13, 5.14 |
+| `tests/test_routes/test_investment.py` | 428 | Investment route tests (dashboard, params, growth chart). | 5.2, 5.3 |
+| `tests/test_routes/test_savings.py` | 1825 | Savings route tests (dashboard, goals). | 5.4, 5.15 |
 | `tests/test_routes/test_transfers.py` | 1312 | Transfer route tests. | 5.1 regression |
 | `tests/test_routes/test_accounts_dashboard.py` | 278 | Accounts dashboard tests. | 5.9, 5.12 |
 | `tests/conftest.py` | 1035 | Test fixtures (seed_user, auth_client, seed_periods, etc.) | 5.4 (new ref tables) |
@@ -205,24 +255,28 @@ actual files, not from documentation assumptions.
 
 ### Dependency Graph
 
-```
+```text
 5.6 (ALREADY COMPLETE)
  |
  +---> 5.4 (Income-Relative Goals) ---> 5.15 (Goal Trajectory)
  |
-5.1 (Payment Linkage) ---> 5.7 (ARM Rates) ---> 5.8 (Edge Cases)
- |                                                     |
- +---> 5.5 (Multi-Scenario Viz) <---------------------+
- |                                                     |
- +---> 5.14 (Payment Breakdown)                        |
- |                                                     |
- +---> 5.13 (Full Schedule)                            |
- |                                                     |
- +---> 5.12 (Debt Summary/DTI)                         |
- |                                                     |
- +---> 5.10 (Refinance Calculator)                     |
- |                                                     |
- +---> 5.9 (Payoff Lifecycle) <------------------------+
+5.1 (Payment Linkage) ---> 5.2 (Investment Contribution Linkage)
+ |                              |
+ |                              +---> 5.3 (Investment What-If Calculator)
+ |
+ +---> 5.7 (ARM Rates) ---> 5.8 (Edge Cases)
+ |                                |
+ +---> 5.5 (Multi-Scenario Viz) <-+
+ |                                |
+ +---> 5.14 (Payment Breakdown)   |
+ |                                |
+ +---> 5.13 (Full Schedule)       |
+ |                                |
+ +---> 5.12 (Debt Summary/DTI)    |
+ |                                |
+ +---> 5.10 (Refinance Calc)      |
+ |                                |
+ +---> 5.9 (Payoff Lifecycle) <---+
  |         |
  |         +---> 5.11 (Snowball/Avalanche) <--- 5.8
  |
@@ -231,26 +285,40 @@ actual files, not from documentation assumptions.
 
 ### Commit Order Rationale
 
-The ordering follows four principles from the prompt:
+The ordering follows five principles:
 
 1. **Refactor-before-feature:** 5.6 is already complete, so no refactor is needed.
-2. **Foundation-before-visualization:** 5.1 (data pipeline) comes before 5.5 (chart lines).
-3. **Edge cases alongside the work that creates them:** 5.8 immediately follows 5.1 and 5.7.
-4. **Dependency-ordered:** Each task's prerequisites are satisfied before it begins.
+2. **Foundation-before-visualization:** 5.1 (debt data pipeline) and 5.2 (investment data
+   pipeline) come before their respective visualization tasks (5.5 and 5.3).
+3. **Mirror tasks grouped:** 5.2 immediately follows 5.1 because they share the same pattern
+   (engine extension + route integration + recurring transfer prompt). Doing them consecutively
+   minimizes context switching and allows 5.2 to directly reference the patterns 5.1 establishes.
+4. **Edge cases alongside the work that creates them:** 5.8 immediately follows 5.7.
+5. **Dependency-ordered:** Each task's prerequisites are satisfied before it begins.
 
 **Phase 1 -- Regression Baseline:** Commit #0
-**Phase 2 -- Amortization Engine Foundation:** 5.1, 5.7, 5.8
-**Phase 3 -- Loan Visualization:** 5.5, 5.14, 5.13
-**Phase 4 -- Loan Lifecycle:** 5.9
-**Phase 5 -- Savings Goals:** 5.4, 5.15
-**Phase 6 -- Aggregate Metrics:** 5.12
-**Phase 7 -- Advanced Calculators:** 5.10, 5.11
-**Phase 8 -- Standalone Views:** 5.16
+**Phase 2 -- Engine Foundations:** 5.1, 5.2 (data pipeline work for both engines)
+**Phase 3 -- Investment Visualization:** 5.3
+**Phase 4 -- Amortization Engine Extensions:** 5.7, 5.8
+**Phase 5 -- Loan Visualization:** 5.5, 5.14, 5.13
+**Phase 6 -- Loan Lifecycle:** 5.9
+**Phase 7 -- Savings Goals:** 5.4, 5.15
+**Phase 8 -- Aggregate Metrics:** 5.12
+**Phase 9 -- Advanced Calculators:** 5.10, 5.11
+**Phase 10 -- Standalone Views:** 5.16
+
+Tasks 5.2 and 5.3 (investment contribution linkage and what-if calculator) are placed in
+Phases 2 and 3, immediately after 5.1. This groups all engine data pipeline work together and
+delivers the investment contribution feature early, before the loan-specific extensions begin.
+Task 5.3 follows 5.2 rather than waiting for 5.5 because the investment what-if chart is
+simpler than the loan multi-scenario visualization (two lines vs. four elements) and can use
+existing Chart.js patterns in `investment/dashboard.html` without needing 5.5's chart styling
+as a precedent.
 
 Tasks 5.4/5.15 (savings goals) and 5.12 (debt summary) are independent of the loan
-visualization chain (5.5/5.14/5.13). They are placed after Phase 4 because 5.12 benefits from
+visualization chain (5.5/5.14/5.13). They are placed after Phase 6 because 5.12 benefits from
 accurate current principal values established by 5.1, and to keep the loan-related commits
-grouped together for easier review. However, 5.4/5.15 could be reordered before Phase 3 if
+grouped together for easier review. However, 5.4/5.15 could be reordered before Phase 5 if
 the developer prefers to interleave loan and savings work.
 
 ---
@@ -259,7 +327,7 @@ the developer prefers to interleave loan and savings work.
 
 ### A. Commit message
 
-```
+```text
 test(section5): add regression baseline for loan dashboard and savings goals
 ```
 
@@ -338,6 +406,7 @@ timeline -- confirmed payments, committed future payments, and extra payments --
 balance projections and payoff dates.
 
 This task has three sub-commits:
+
 1. Extend the amortization engine input contract.
 2. Integrate payment data into the loan dashboard.
 3. Add the recurring transfer creation prompt to the loan parameter page.
@@ -348,7 +417,7 @@ This task has three sub-commits:
 
 ### A. Commit message
 
-```
+```text
 feat(amortization): extend engine to accept payment history for projection scenarios
 ```
 
@@ -395,6 +464,7 @@ def generate_schedule(
 **Behavior when `payments` is provided:**
 
 For each month in the schedule:
+
 1. Calculate the standard monthly payment (contractual P&I) as today.
 2. Check if a payment exists for this month (match by year-month of `payment_date`).
 3. If a matching payment exists: use `payment.amount` as the total payment for this month.
@@ -430,6 +500,7 @@ class AmortizationRow:
 `payments` parameter.
 
 **Edge cases handled in this commit:**
+
 - Empty payment list (same as None -- standard schedule).
 - Payments with dates before `origination_date` (skip -- these predate the loan).
 - Multiple payments in the same month (sum them for that month).
@@ -471,7 +542,7 @@ No migration. Service-only change with backward-compatible interface. Trivially 
 
 ### A. Commit message
 
-```
+```text
 feat(loan): pass payment history from shadow transactions to amortization engine
 ```
 
@@ -535,12 +606,14 @@ def _get_payment_history(account_id, scenario_id):
 
 **Payoff calculator integration:** In `payoff_calculate()`, also load payment data. For the
 "extra payment" mode:
+
 - Standard schedule: `generate_schedule(..., payments=None)` (contractual baseline).
 - Accelerated schedule: `generate_schedule(..., payments=confirmed_only, extra_monthly=extra)`
   where `confirmed_only` is the subset of payments with `is_confirmed=True`, plus the extra
   monthly amount applied from today forward.
 
 For the "target date" mode:
+
 - `calculate_payoff_by_date(...)` operates from the current real principal (derived from
   confirmed payments).
 
@@ -590,6 +663,7 @@ transfer invariant #5: the balance calculator and related services never query
 - Balance calculator is NOT affected -- it already handles shadow transactions correctly.
 
 **Transfer invariant verification:**
+
 1. Every transfer has exactly two shadows -- verified by query filtering on income type only.
 2. Shadows never orphaned -- not affected (read-only query).
 3. Shadow amounts = transfer amount -- used as payment amount.
@@ -606,7 +680,7 @@ No migration. Route-only change. Revert reverts to static projections.
 
 ### A. Commit message
 
-```
+```text
 feat(loan): prompt recurring transfer creation after loan parameter save
 ```
 
@@ -656,6 +730,7 @@ The prompt includes a dropdown of the user's checking/savings accounts as the so
 "Create Transfer" button.
 
 **New route:** `POST /accounts/<id>/loan/create-payment-transfer` that:
+
 1. Validates ownership of both accounts.
 2. Creates a RecurrenceRule with pattern=MONTHLY, day_of_month=params.payment_day.
 3. Creates a TransferTemplate with from_account=selected, to_account=loan_account,
@@ -712,13 +787,607 @@ affected.
 
 ---
 
+## Task 5.2: Investment Contribution Linkage
+
+### Overview
+
+Connect investment and retirement account contributions (transfers and paycheck deductions)
+to the compound growth engine so that the full contribution timeline -- confirmed
+contributions, committed future contributions, and employer contributions -- is reflected in
+balance projections and growth charts. This is the investment/retirement equivalent of
+task 5.1 (Debt Account Payment Linkage).
+
+Two contribution paths:
+
+1. **Transfer-based (IRA, Roth IRA, Brokerage):** Contributions arrive via transfers from
+   checking. The shadow transaction architecture (Section 3A) already creates income-side
+   shadows on the investment account. Contribution discovery follows the same pattern as debt
+   payment discovery in task 5.1: query shadow income transactions on the target account,
+   categorize by status (confirmed vs. projected).
+2. **Paycheck-deduction-based (401(k), Roth 401(k)):** Contributions arrive via paycheck
+   deductions linked by `target_account_id` on `salary.paycheck_deductions`. The deduction
+   amount per period is computed from the deduction record. Employer contributions (flat
+   percentage or match) are calculated by
+   `growth_engine.calculate_employer_contribution()`.
+
+This task has three sub-commits:
+
+1. Extend the growth engine input contract.
+2. Build contribution timeline and integrate into the investment dashboard.
+3. Add the recurring transfer/deduction linkage prompt.
+
+---
+
+### Commit 5.2-1: Extend growth engine to accept contribution list
+
+### A. Commit message
+
+```text
+feat(growth): extend engine to accept contribution timeline for projection scenarios
+```
+
+### B. Problem statement
+
+The growth engine (`app/services/growth_engine.py:project_balance`, line 75) currently projects
+the entire timeline using a static `periodic_contribution` Decimal. It has no concept of
+individual contributions with dates or confirmed/projected status. After this change, the engine
+accepts an optional list of contributions so it can incorporate the actual contribution timeline
+into projections, distinguishing confirmed from projected contributions. This mirrors the
+`PaymentRecord` approach added to the amortization engine in task 5.1 commit 5.1-1.
+
+### C. Files modified
+
+- `app/services/growth_engine.py` -- Add `ContributionRecord` dataclass, add `contributions`
+  parameter to `project_balance()`, add `is_confirmed` field to `ProjectedBalance`.
+- `tests/test_services/test_growth_engine.py` -- Add tests for contribution-list-aware
+  projections.
+
+### D. Implementation approach
+
+**New dataclass** (at top of `growth_engine.py`, after the existing `ProjectedBalance`):
+
+```python
+@dataclass(frozen=True)
+class ContributionRecord:
+    """A single contribution to an investment account."""
+    contribution_date: date  # Pay period start_date
+    amount: Decimal
+    is_confirmed: bool  # True = Paid/Settled; False = Projected
+```
+
+**Extend `project_balance()` signature:**
+
+Current signature (line 75):
+
+```python
+def project_balance(
+    current_balance,
+    assumed_annual_return,
+    periods,
+    periodic_contribution=ZERO,
+    employer_params=None,
+    annual_contribution_limit=None,
+    ytd_contributions_start=ZERO,
+):
+```
+
+Extended to:
+
+```python
+def project_balance(
+    current_balance,
+    assumed_annual_return,
+    periods,
+    periodic_contribution=ZERO,
+    employer_params=None,
+    annual_contribution_limit=None,
+    ytd_contributions_start=ZERO,
+    contributions=None,  # Optional[list[ContributionRecord]]
+):
+```
+
+**Add `is_confirmed` to `ProjectedBalance`:**
+
+```python
+@dataclass
+class ProjectedBalance:
+    """A single period's projected investment balance."""
+    period_id: int
+    start_balance: Decimal
+    growth: Decimal
+    contribution: Decimal
+    employer_contribution: Decimal
+    end_balance: Decimal
+    ytd_contributions: Decimal
+    contribution_limit_remaining: Decimal
+    is_confirmed: bool = False  # New field, defaults False for backward compat
+```
+
+**Behavior when `contributions` is provided:**
+
+Build a lookup dict mapping `contribution_date` -> `(total_amount, is_confirmed)` at the top
+of the function. For each period in the main loop:
+
+1. Check if a contribution exists for this period's `start_date` in the lookup.
+2. If found: use the contribution's amount as the employee contribution for this period.
+   Set `is_confirmed` on the `ProjectedBalance` from the contribution record.
+3. If not found: use `periodic_contribution` (static fallback for periods beyond the
+   contribution timeline). Set `is_confirmed = False`.
+4. Apply the annual contribution limit cap using the period-specific contribution amount
+   (same capping logic as today, lines 143-147).
+5. Calculate employer contribution using the period's actual contribution amount (same
+   `calculate_employer_contribution` call, line 150, but with the period-specific amount).
+
+**Multiple contributions on the same date:** Sum the amounts. Use `is_confirmed = True` only
+if ALL contributions on that date are confirmed; otherwise `is_confirmed = False`.
+
+**Backward compatibility:** When `contributions` is `None`, behavior is identical to today.
+The `is_confirmed` field defaults to `False` for all rows. All existing callers pass no
+arguments for `contributions` and are unaffected.
+
+**Edge cases handled in this commit:**
+
+- Empty contribution list (same as None -- static fallback).
+- Multiple contributions on the same date (summed).
+- Contribution of $0 (zero contribution for that period -- only growth accrues).
+- Contribution exceeding annual limit (capped at remaining limit, same as today).
+- Year boundary with contributions (limit resets, same as today).
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C-5.2-1 | test_project_balance_no_contributions_unchanged | $10K balance, 7% return, 10 periods | project_balance(contributions=None) | Identical output to current behavior | New |
+| C-5.2-2 | test_project_balance_with_contributions | $10K, 7%, 5 periods, contribution for each | project_balance(contributions=list) | Contributions applied per-period | New |
+| C-5.2-3 | test_contributions_with_static_fallback | Contributions for 3 of 5 periods | project_balance(contributions=partial, periodic_contribution=200) | First 3 use list amounts, last 2 use $200 | New |
+| C-5.2-4 | test_contribution_limit_with_contributions | $7000 limit, contributions totaling $8000 | project_balance(contributions=over_limit) | Capped at $7000 total | New |
+| C-5.2-5 | test_year_boundary_reset_with_contributions | Contributions spanning two calendar years | project_balance(contributions=cross_year) | Limit resets at year boundary | New |
+| C-5.2-6 | test_employer_uses_period_contribution | Employer match 100% up to 6%, varying contributions | project_balance(contributions=varying) | Employer match computed per-period from actual amount | New |
+| C-5.2-7 | test_is_confirmed_propagated | Mix of confirmed and projected contributions | project_balance(contributions=mixed) | is_confirmed flag matches input records | New |
+| C-5.2-8 | test_empty_contribution_list | contributions=[] | project_balance(contributions=[]) | Same as contributions=None | New |
+
+### F. Manual verification steps
+
+No UI changes in this commit. Verify via tests only.
+
+### G. Downstream effects
+
+- `project_balance()` gains a new optional parameter. All existing callers pass no arguments
+  for `contributions`, so they are unaffected.
+- `retirement_dashboard_service.py` calls `project_balance()` -- unaffected (no contributions
+  passed; backward compatibility maintained).
+- `app/routes/investment.py:dashboard()` and `growth_chart()` call `project_balance()` --
+  unaffected (contributions passed in commit 5.2-2).
+
+### H. Rollback notes
+
+No migration. Service-only change with backward-compatible interface. Trivially revertable.
+
+---
+
+### Commit 5.2-2: Build contribution timeline and integrate into investment dashboard
+
+### A. Commit message
+
+```text
+feat(investment): pass contribution timeline from transactions and deductions to growth engine
+```
+
+### B. Problem statement
+
+The investment dashboard (`app/routes/investment.py:dashboard`, line 40) calls
+`calculate_investment_inputs()` (from `app/services/investment_projection.py`) which averages
+all contributions into a static `periodic_contribution`. After this change, the dashboard
+builds a per-period contribution timeline and passes it to the growth engine as
+`ContributionRecord` instances.
+
+### C. Files modified
+
+- `app/services/investment_projection.py` -- Add `build_contribution_timeline()` function.
+- `app/routes/investment.py` -- Call `build_contribution_timeline()` and pass `contributions`
+  to `project_balance()` in both `dashboard()` and `growth_chart()`.
+- `tests/test_services/test_growth_engine.py` -- Add integration tests.
+- `tests/test_routes/test_investment.py` -- Add tests for contribution-aware dashboard.
+
+### D. Implementation approach
+
+**New function in `investment_projection.py`:**
+
+```python
+def build_contribution_timeline(
+    deductions,
+    contribution_transactions,
+    periods,
+    salary_gross_biweekly=None,
+):
+    """Build a list of ContributionRecords from deductions and shadow transactions.
+
+    Combines paycheck deduction contributions and transfer-based contributions
+    into a unified per-period timeline for the growth engine.
+
+    Args:
+        deductions:              List of deduction objects targeting this account.
+                                 Each has .amount, .calc_method_id,
+                                 .annual_salary, .pay_periods_per_year.
+        contribution_transactions: List of shadow income transactions (transfer_id
+                                   IS NOT NULL) on this account. Each has
+                                   .estimated_amount, .actual_amount,
+                                   .pay_period_id, .status.
+        periods:                 List of period objects with .id, .start_date.
+        salary_gross_biweekly:   Decimal or None -- gross pay per period.
+
+    Returns:
+        list[ContributionRecord] sorted by contribution_date.
+    """
+```
+
+**Logic:**
+
+1. Build a period lookup: `{period.id: period}` for fast access.
+
+2. **Paycheck deduction contributions:** For each deduction, compute the per-period amount
+   (flat or percentage of salary, same logic as `calculate_investment_inputs()` lines 67-75).
+   For each period in `periods`, create a `ContributionRecord` with:
+   - `contribution_date = period.start_date`
+   - `amount = deduction_amount`
+   - `is_confirmed = period.start_date < date.today()` (past periods are confirmed)
+
+3. **Transfer-based contributions:** For each shadow income transaction, create a
+   `ContributionRecord` with:
+   - `contribution_date = period.start_date` (looked up from the transaction's pay_period_id)
+   - `amount = txn.effective_amount` (prefers actual over estimated)
+   - `is_confirmed = txn.status.is_settled`
+
+4. **Sum contributions on the same date:** Aggregate by `contribution_date`. Sum amounts.
+   Mark as confirmed only if all contributions for that date are confirmed.
+
+5. Return sorted by `contribution_date`.
+
+**Dashboard integration (`investment.py:dashboard()`):**
+
+After loading params and contribution data (existing queries already load deductions and
+shadow income transactions):
+
+```python
+from app.services.investment_projection import build_contribution_timeline
+
+contributions = build_contribution_timeline(
+    deductions=deductions,
+    contribution_transactions=contribution_txns,
+    periods=all_periods,
+    salary_gross_biweekly=gross_biweekly,
+)
+```
+
+Pass to the growth engine alongside existing parameters:
+
+```python
+projections = growth_engine.project_balance(
+    current_balance=current_balance,
+    assumed_annual_return=params.assumed_annual_return,
+    periods=projection_periods,
+    periodic_contribution=inputs.periodic_contribution,  # Fallback
+    employer_params=inputs.employer_params,
+    annual_contribution_limit=inputs.annual_contribution_limit,
+    ytd_contributions_start=inputs.ytd_contributions,
+    contributions=contributions,
+)
+```
+
+**Growth chart integration:** The `growth_chart()` route (line 251) also calls
+`project_balance()`. Update it to pass the contribution timeline.
+
+**Callers NOT updated:** `retirement_dashboard_service.py` continues to use the static
+`periodic_contribution` via `calculate_investment_inputs()`. The growth engine's backward
+compatibility ensures this works. Updating the retirement dashboard to use contribution
+timelines is a future enhancement.
+
+**Transfer invariant check:** This query reads only from `budget.transactions` (shadow income
+transactions). It does NOT query `budget.transfers`. Consistent with transfer invariant #5.
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C-5.2-9 | test_build_timeline_deduction_only | 401(k) with paycheck deduction, no transfers | build_contribution_timeline | One record per period from deduction | New |
+| C-5.2-10 | test_build_timeline_transfer_only | IRA with recurring transfer shadows | build_contribution_timeline | One record per period from shadow txns | New |
+| C-5.2-11 | test_build_timeline_both_paths | Account with deduction AND transfer | build_contribution_timeline | Amounts summed per period | New |
+| C-5.2-12 | test_build_timeline_confirmed_vs_projected | Past and future periods | build_contribution_timeline | Past = confirmed, future = projected | New |
+| C-5.2-13 | test_dashboard_with_contributions | Investment account with contributions | GET dashboard | Projection reflects contribution timeline | New |
+| C-5.2-14 | test_dashboard_no_contributions_unchanged | No transfers, no deductions | GET dashboard | Same as current (static fallback) | New |
+| C-5.2-15 | test_growth_chart_uses_contributions | Investment account with contributions | GET growth-chart (HTMX) | Chart reflects contribution timeline | New |
+| C-5.2-16 | test_contribution_query_idor | Second user's investment account | GET dashboard as user 1 | 404 | New |
+
+### F. Manual verification steps
+
+1. Create a Roth IRA account with InvestmentParams (7% return, $7,000 limit).
+2. Create a recurring transfer from checking to the Roth IRA for $269.23/period.
+3. Mark the first 3 transfers as "Paid" (confirmed).
+4. Visit the investment dashboard.
+5. Verify the growth projection reflects actual contributions: confirmed for the first 3
+   periods, projected for subsequent periods, static fallback beyond the recurrence horizon.
+6. Verify the YTD contribution tracker uses actual contribution amounts.
+
+### G. Downstream effects
+
+- The investment dashboard now depends on shadow transactions for accurate contribution data.
+  Accounts with no transfers or deductions continue to work (empty list = static fallback).
+- The growth chart reflects per-period contributions instead of an averaged static rate.
+- Retirement dashboard is NOT affected (backward compatibility).
+
+### H. Rollback notes
+
+No migration. Route + service change. Revert reverts to static contribution projections.
+
+---
+
+### Commit 5.2-3: Add recurring transfer/deduction linkage prompt
+
+### A. Commit message
+
+```text
+feat(investment): prompt contribution setup after investment parameter save
+```
+
+### B. Problem statement
+
+After investment parameters are saved, the user should be guided to set up their contribution
+mechanism. For transfer-path accounts (IRA, Roth IRA, Brokerage), this means creating a
+recurring transfer from checking. For paycheck-deduction-path accounts (401(k), Roth 401(k)),
+this means verifying a paycheck deduction is linked to the account via `target_account_id`.
+Same pattern as task 5.1 commit 5.1-3.
+
+### C. Files modified
+
+- `app/routes/investment.py` -- Add contribution prompt check; add transfer creation route.
+- `app/templates/investment/dashboard.html` -- Add prompt section.
+- `app/schemas/validation.py` -- Add schema for the recurring transfer creation form.
+- `tests/test_routes/test_investment.py` -- Add tests for the prompt and transfer creation.
+
+### D. Implementation approach
+
+**Prompt detection in `dashboard()`:**
+
+After loading params, check for existing contribution mechanisms:
+
+```python
+# Check for linked paycheck deductions (already queried for dashboard)
+has_linked_deduction = bool(deductions)
+
+# Check for recurring transfer templates targeting this account
+existing_transfer = (
+    db.session.query(TransferTemplate)
+    .filter(
+        TransferTemplate.user_id == current_user.id,
+        TransferTemplate.to_account_id == account.id,
+        TransferTemplate.is_active.is_(True),
+        TransferTemplate.recurrence_rule_id.isnot(None),
+    )
+    .first()
+)
+
+needs_contribution_prompt = not has_linked_deduction and not existing_transfer
+```
+
+**Prompt content varies by account type:**
+
+```python
+is_paycheck_deduction_type = account.account_type_id in (
+    ref_cache.acct_type_id(AcctTypeEnum.K401),
+    ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K),
+)
+```
+
+- **For 401(k)/Roth 401(k):** Display: "Link a paycheck deduction to this account. Go to
+  your Salary Profile to configure a deduction targeting this account." With a link to the
+  salary profile edit page. This is a prompt only -- deduction linking is done on the salary
+  page (the deduction model has a `target_account_id` FK that the salary edit form sets).
+
+- **For IRA/Roth IRA/Brokerage:** Display: "Create a recurring transfer of $X from [source] to this
+  account?" where X is calculated:
+
+  ```python
+  if params.annual_contribution_limit:
+      remaining_periods = _count_remaining_periods_this_year(all_periods)
+      suggested = (params.annual_contribution_limit / max(remaining_periods, 1)).quantize(TWO_PLACES)
+  else:
+      suggested = Decimal("500.00")  # Reasonable default for brokerage
+  ```
+
+  Include a source account dropdown and "Create Transfer" button.
+.
+
+**New route:** `POST /accounts/<id>/investment/create-contribution-transfer`:
+
+1. Validate ownership of both accounts.
+2. Create a RecurrenceRule with pattern=EVERY_PERIOD (biweekly contributions match paycheck
+   cadence).
+3. Create a TransferTemplate with from_account=selected, to_account=investment_account,
+   default_amount=contribution_amount, recurrence_rule_id=rule.id.
+4. Generate transfers for existing periods via
+   `transfer_recurrence.generate_for_template(template, periods, scenario.id)`.
+5. Redirect to the investment dashboard with a success flash.
+
+**Source account selection:** Same pattern as 5.1-3: dropdown of user's active accounts
+excluding the current investment account. Default to checking account.
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C-5.2-17 | test_prompt_shown_no_contribution | IRA with params, no transfer or deduction | GET dashboard | Transfer prompt visible | New |
+| C-5.2-18 | test_prompt_shown_401k_no_deduction | 401(k) with params, no linked deduction | GET dashboard | Deduction linkage prompt visible | New |
+| C-5.2-19 | test_prompt_hidden_transfer_exists | IRA + active recurring transfer template | GET dashboard | No prompt | New |
+| C-5.2-20 | test_prompt_hidden_deduction_linked | 401(k) + linked paycheck deduction | GET dashboard | No prompt | New |
+| C-5.2-21 | test_create_transfer_success | IRA + checking account | POST create-contribution-transfer | TransferTemplate created, redirect | New |
+| C-5.2-22 | test_create_transfer_idor | Other user's IRA | POST create-contribution-transfer | 404 | New |
+
+### F. Manual verification steps
+
+1. Create a Roth IRA account; save investment parameters ($7,000 annual limit).
+2. Verify the dashboard shows a prompt: "Create a recurring transfer of $X..."
+3. Select checking account and click "Create Transfer."
+4. Verify: redirect, success flash, prompt disappears.
+5. Navigate to Transfers page; verify the recurring transfer template exists.
+6. Navigate to the budget grid; verify shadow transactions appear.
+7. For a 401(k): create the account, save params, verify the prompt links to salary profile.
+
+### G. Downstream effects
+
+- The recurring transfer creates shadow transactions that flow into the balance calculator
+  (checking balance decreases, investment account receives income).
+- The transfers appear in the grid as shadow transactions.
+- The investment dashboard shows the contribution-aware projection (commit 5.2-2).
+
+### H. Rollback notes
+
+No migration. Route + template + schema change. Revert removes the prompt; existing transfers
+and deductions are not affected.
+
+---
+
+## Task 5.3: Investment What-If Contribution Calculator
+
+### Commit 5.3-1: Add what-if contribution input and dual-projection growth chart
+
+### A. Commit message
+
+```text
+feat(investment): add what-if contribution calculator with dual-projection chart
+```
+
+### B. Problem statement
+
+The investment dashboard growth chart (`app/routes/investment.py:growth_chart`, line 251) shows
+a single projection line based on the current contribution plan. The user has no way to
+visualize the impact of changing their contribution amount. This mirrors task 5.5 (Payoff
+Calculator Multi-Scenario Visualization) but for investment accounts. After this change, a
+what-if input allows the user to enter a hypothetical contribution amount, and the chart
+overlays both the committed projection and the hypothetical projection.
+
+### C. Files modified
+
+- `app/routes/investment.py` -- Modify `growth_chart()` to accept `what_if_contribution`
+  parameter; compute dual projections.
+- `app/templates/investment/dashboard.html` -- Add what-if input field; update chart rendering
+  for dual datasets with distinct styling.
+- `tests/test_routes/test_investment.py` -- Add what-if tests.
+
+### D. Implementation approach
+
+**What-if input:** Add an input field on the investment dashboard below the existing horizon
+slider. Label: "What if I contributed $____ per period?" Default value: empty (no what-if line
+shown). Same slider/input two-way binding pattern used by the payoff calculator in
+`loan/dashboard.html` (lines 203-276).
+
+**HTMX integration:** The what-if amount is included in the growth chart HTMX request:
+
+```html
+<input type="number" name="what_if_contribution" step="0.01"
+       data-slider-group="whatif"
+       hx-get="{{ url_for('investment.growth_chart', account_id=account.id) }}"
+       hx-trigger="change, slider-changed from:closest .slider-group"
+       hx-target="#growth-chart-container"
+       hx-include="[name='horizon_years'],[name='what_if_contribution']">
+```
+
+**Growth chart route modification (`growth_chart()`):**
+
+Read the optional `what_if_contribution` parameter:
+
+```python
+what_if_raw = request.args.get("what_if_contribution", type=str)
+what_if_amount = Decimal(what_if_raw) if what_if_raw else None
+```
+
+If provided:
+
+1. Call `project_balance()` twice:
+   - **Committed projection:** With the actual contribution timeline (from 5.2-2).
+   - **What-if projection:** With `periodic_contribution=what_if_amount` and
+     `contributions=None` (pure hypothetical at constant rate). If the account has employer
+     match, build new `employer_params` with the hypothetical contribution for correct match
+     calculation.
+2. Return both datasets to the template.
+
+If not provided: single projection as today (backward compatible).
+
+**Chart rendering (`investment/dashboard.html`):**
+
+The growth chart template (`investment/_growth_chart.html`) currently renders a single dataset.
+Update to support two datasets via `data-*` attributes (CSP-compliant pattern):
+
+- **Committed line:** Solid primary color (existing style).
+- **What-if line:** Dashed line in a distinct color (e.g., `borderDash: [5, 5]`).
+
+Both lines use the same x-axis (periods). The chart legend distinguishes them: "Current Plan"
+vs. "What-If ($X/period)".
+
+**Balance comparison card:** Below the chart, show a comparison card when what-if is active:
+
+```text
+At Year 30:
+  Current plan: $1,245,000
+  What-if:      $1,567,000
+  Difference:   +$322,000
+```
+
+Use the last period's `end_balance` from each projection.
+
+**Employer match adjustment:** When the what-if amount differs from the current contribution,
+the employer match (if configured) changes accordingly. The what-if projection builds
+`employer_params` with the what-if amount so `calculate_employer_contribution()` computes
+the match on the hypothetical contribution.
+
+**Contribution limit enforcement:** The what-if projection respects the annual contribution
+limit. If the hypothetical amount would exceed the limit, contributions are capped (same
+engine behavior as commit 5.2-1).
+
+**Clearing what-if:** If the input is cleared (empty or zero), the chart reverts to showing
+only the committed line and the comparison card is hidden.
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C-5.3-1 | test_chart_no_what_if | Investment account with params | GET growth-chart | Single line, no what-if | New |
+| C-5.3-2 | test_chart_with_what_if | Investment, what_if_contribution=500 | GET growth-chart?what_if_contribution=500 | Two lines on chart | New |
+| C-5.3-3 | test_what_if_exceeds_limit | $7000 limit, what_if=$500/period (>$7000/yr) | GET growth-chart?what_if_contribution=500 | Contributions capped at limit | New |
+| C-5.3-4 | test_what_if_with_employer_match | Employer match 100% up to 6%, what_if=300 | GET growth-chart?what_if_contribution=300 | Employer match recalculated for hypothetical | New |
+| C-5.3-5 | test_what_if_zero | what_if_contribution=0 | GET growth-chart?what_if_contribution=0 | What-if shows growth only, no contributions | New |
+| C-5.3-6 | test_what_if_brokerage_no_limit | Brokerage (no limit), what_if=1000 | GET growth-chart?what_if_contribution=1000 | No capping, full contribution projected | New |
+| C-5.3-7 | test_what_if_idor | Other user's account | GET growth-chart?what_if_contribution=500 | 404 | New |
+
+### F. Manual verification steps
+
+1. Create a Roth IRA with $7,000 annual limit, 7% return.
+2. Set up a recurring transfer of $269/period.
+3. Visit the investment dashboard.
+4. Verify the growth chart shows one projection line.
+5. Enter $500 in the "What if" input.
+6. Verify the chart shows two lines: committed (solid) and what-if (dashed).
+7. Verify the comparison card shows projected balances and the difference.
+8. Verify the what-if line respects the contribution limit.
+9. Clear the input; verify the chart reverts to one line.
+
+### G. Downstream effects
+
+- Chart rendering changes affect only the investment dashboard growth chart.
+- The retirement dashboard is NOT affected (it does not show per-account what-if inputs).
+
+### H. Rollback notes
+
+Route + template change. No migration. Revertable.
+
+---
+
 ## Task 5.7: ARM Rate Adjustment Support in Amortization Engine
 
 ### Commit 5.7-1: Extend amortization engine to accept rate change history
 
 ### A. Commit message
 
-```
+```text
 feat(amortization): incorporate ARM rate change history into schedule projections
 ```
 
@@ -860,7 +1529,7 @@ No migration. Service-only change with backward-compatible interface. Revertable
 
 ### A. Commit message
 
-```
+```text
 fix(amortization): handle overpayment and zero-balance termination edge cases
 ```
 
@@ -951,7 +1620,7 @@ No migration. Service-only change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(loan): add multi-scenario visualization to payoff calculator and balance chart
 ```
 
@@ -1012,6 +1681,7 @@ def get_amortization_breakdown(user_id, account_id=None):
 Return a dict with separate datasets for each line, plus a floor marker point.
 
 **Chart styling:** Use distinct visual styles per the roadmap:
+
 - Original: lighter dashed line (reference baseline).
 - Committed: solid primary-color line (the user's plan).
 - What-if: distinct dashed line (hypothetical, shown only when user enters a value).
@@ -1023,6 +1693,7 @@ as a separate `data-*` attribute for CSP-compliant rendering.
 **Payoff calculator display changes:**
 
 The `_payoff_results.html` partial is updated to show:
+
 - **Committed payoff:** date, months saved vs. original, interest saved vs. original.
 - **Floor payoff:** date, months saved vs. original (based on confirmed payments only).
 - **What-if payoff:** (when entered) date, months saved vs. committed, interest saved vs.
@@ -1082,7 +1753,7 @@ template restoration.
 
 ### A. Commit message
 
-```
+```text
 feat(loan): add payment allocation breakdown showing principal/interest/escrow split
 ```
 
@@ -1116,7 +1787,8 @@ In `loan.py:dashboard()`:
 **Template (`_payment_breakdown.html`):**
 
 A card in the Loan Summary section showing:
-```
+
+```text
 Of your $1,910.95 payment:
   $395.12 to principal (20.7%)
   $898.84 to interest (47.0%)
@@ -1126,6 +1798,7 @@ Of your $1,910.95 payment:
 With a horizontal stacked bar (Bootstrap progress bar) visualizing the proportions.
 
 **Edge cases:**
+
 - No escrow components: show only principal/interest split.
 - Loan with zero remaining balance: show "Loan paid off -- no payment due."
 - No schedule available (params incomplete): hide the breakdown card.
@@ -1160,7 +1833,7 @@ Template-only addition. Trivially revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(loan): add full month-by-month amortization schedule view
 ```
 
@@ -1240,7 +1913,7 @@ Three components: (1) auto-update recurrence rule end date to projected payoff d
 
 ### A. Commit message
 
-```
+```text
 feat(loan): auto-set recurring transfer end date to projected payoff date
 ```
 
@@ -1270,6 +1943,7 @@ In `loan.py:dashboard()`, after computing the projection:
 3. If no template exists, do nothing.
 
 **Trigger mechanism:** The update happens on dashboard load. This is simple and reliable:
+
 - The payoff date changes only when payment behavior changes (extra payment, missed payment).
 - The user visits the dashboard to check their loan status, which is when they would care
   about the payoff date.
@@ -1320,7 +1994,7 @@ data corruption -- the end_date is simply not updated anymore).
 
 ### A. Commit message
 
-```
+```text
 feat(accounts): display paid-off badge on debt accounts with zero principal
 ```
 
@@ -1384,7 +2058,7 @@ Service + template change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(accounts): add account archival for paid-off loans and inactive accounts
 ```
 
@@ -1428,6 +2102,7 @@ Add `is_archived = db.Column(db.Boolean, nullable=False, default=False, server_d
 **Route changes (`accounts.py`):**
 
 Add two routes:
+
 - `POST /accounts/<id>/archive` -- Sets `is_archived=True`. Guards: ownership check, cannot
   archive an account that has active transfer templates (warn user to deactivate them first).
 - `POST /accounts/<id>/unarchive` -- Sets `is_archived=False`.
@@ -1435,11 +2110,13 @@ Add two routes:
 **Dashboard filtering (`savings_dashboard_service.py`):**
 
 In `compute_dashboard_data()`, filter the initial account query:
+
 ```python
 accounts = Account.query.filter_by(user_id=user_id, is_archived=False).all()
 ```
 
 Add a separate query for archived accounts:
+
 ```python
 archived_accounts = Account.query.filter_by(user_id=user_id, is_archived=True).all()
 ```
@@ -1449,6 +2126,7 @@ Return both in the dashboard data dict.
 **Template changes:**
 
 In `savings/dashboard.html`:
+
 - Active accounts render as they do now.
 - Below the active accounts, a collapsed "Archived Accounts" section shows archived accounts
   with an "Unarchive" button. Collapsed by default.
@@ -1503,6 +2181,7 @@ visible. No data loss.
 
 Add an income-relative goal mode alongside fixed-amount goals. Two new ref tables, three new
 columns on the savings goal model, and UI changes. Four sub-commits:
+
 1. Add ref tables, enums, ref_cache.
 2. Add columns to savings goal model (migration).
 3. Update service layer.
@@ -1514,7 +2193,7 @@ columns on the savings goal model, and UI changes. Four sub-commits:
 
 ### A. Commit message
 
-```
+```text
 feat(savings): add ref tables for goal modes and income units
 ```
 
@@ -1598,6 +2277,7 @@ they persist across tests -- so no truncate change needed; they are seeded once 
 `setup_database`).
 
 **App factory (`__init__.py`):** Add Jinja globals for goal mode and income unit IDs:
+
 ```python
 app.jinja_env.globals["GOAL_MODE_FIXED"] = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
 app.jinja_env.globals["GOAL_MODE_INCOME_RELATIVE"] = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
@@ -1630,7 +2310,7 @@ yet (FK columns added in 5.4-2).
 
 ### A. Commit message
 
-```
+```text
 feat(savings): add goal_mode_id, income_unit_id, income_multiplier to savings_goals
 ```
 
@@ -1706,6 +2386,7 @@ assert row and row[0] == "Fixed", "Expected goal_mode ID 1 to be 'Fixed'"
 **Schema updates:**
 
 In `SavingsGoalCreateSchema`:
+
 ```python
 goal_mode_id = fields.Integer(load_default=1)  # Default to Fixed
 income_unit_id = fields.Integer(load_default=None, allow_none=True)
@@ -1754,7 +2435,7 @@ data but the `target_amount` field (if populated) remains usable as a fixed amou
 
 ### A. Commit message
 
-```
+```text
 feat(savings): resolve income-relative goal targets from paycheck calculator
 ```
 
@@ -1830,6 +2511,7 @@ In `savings_dashboard_service.py:_compute_goal_progress()`:
 4. Include `resolved_target` and `goal_mode` in the goal data dict for display.
 
 **Edge cases:**
+
 - No salary profile: `net_biweekly_pay = Decimal("0.00")`. Income-relative target resolves
   to $0.00. Display a warning: "No salary profile configured."
 - Zero net pay: Same behavior. The goal target is $0.00, which means any balance meets it.
@@ -1853,7 +2535,7 @@ In `savings_dashboard_service.py:_compute_goal_progress()`:
 1. Create a salary profile with known net pay.
 2. Create an income-relative savings goal: 3 months of salary.
 3. Visit the accounts dashboard.
-4. Verify the goal card shows the calculated target: 3 * (net_biweekly * 26 / 12).
+4. Verify the goal card shows the calculated target: 3 *(net_biweekly* 26 / 12).
 5. Add a raise to the salary profile.
 6. Revisit the dashboard; verify the target updates.
 
@@ -1873,7 +2555,7 @@ Service-only change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(savings): add income-relative mode toggle to savings goal form
 ```
 
@@ -1897,11 +2579,13 @@ target_amount field. It needs a mode toggle and conditional fields for income-re
 Add a dropdown or radio group for Goal Mode (Fixed / Income-Relative).
 
 When "Income-Relative" is selected (via HTMX or JavaScript):
+
 - Hide the `target_amount` field.
 - Show: Unit dropdown (Paychecks / Months) and Multiplier input.
 - Show a read-only calculated value: "Target: $X,XXX.XX" based on the current salary.
 
 When "Fixed" is selected:
+
 - Show the `target_amount` field.
 - Hide Unit and Multiplier fields.
 
@@ -1910,11 +2594,13 @@ The form toggles can use simple JavaScript (no HTMX needed for client-side show/
 **Route changes (`savings.py`):**
 
 In `create_goal()` and `update_goal()`:
+
 - Load and validate the new fields from the schema.
 - For income-relative goals, set `target_amount=None` (calculated on read).
 - For fixed goals, ensure `income_unit_id=None` and `income_multiplier=None`.
 
 Pass `goal_modes` and `income_units` to the template context:
+
 ```python
 goal_modes = GoalMode.query.all()
 income_units = IncomeUnit.query.all()
@@ -1923,6 +2609,7 @@ income_units = IncomeUnit.query.all()
 **Dashboard display:**
 
 On the goal card, show:
+
 - Fixed: "Target: $5,000.00"
 - Income-relative: "Target: $13,000.00 (3 months of salary)"
 
@@ -1959,7 +2646,7 @@ Template + route change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(savings): add goal completion trajectory and pace indicator
 ```
 
@@ -2000,6 +2687,7 @@ def calculate_trajectory(
 ```
 
 **Logic:**
+
 - `months_to_goal = ceil((target - balance) / monthly_contribution)` if contribution > 0.
 - `projected_completion_date = today + months_to_goal months`.
 - If `target_date` is set: compare projected_completion_date to target_date.
@@ -2017,6 +2705,7 @@ periodic shadow income from ad-hoc transfers and average them.
 **Dashboard display:**
 
 On the goal card:
+
 - Progress bar (already exists or implied).
 - Projected completion date: "On track to reach goal by Dec 2027" or "Behind pace -- increase
   monthly contribution from $500 to $650."
@@ -2056,7 +2745,7 @@ Service + template change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(accounts): add debt summary metrics and debt-to-income ratio
 ```
 
@@ -2091,6 +2780,7 @@ def _compute_debt_summary(loan_accounts, loan_params_map, payments_map, scenario
 ```
 
 **Logic:**
+
 - For each loan account with LoanParams:
   - Compute current real principal by replaying confirmed payments through the engine
     (or use LoanParams.current_principal if no payments exist).
@@ -2112,6 +2802,7 @@ Gross monthly income comes from the paycheck calculator (active salary profile's
 projections, so this data is available.
 
 **DTI thresholds (hardcoded, per roadmap):**
+
 - Below 36%: "Healthy" (green badge)
 - 36--43%: "Moderate" (yellow badge)
 - Above 43%: "High" (red badge)
@@ -2119,7 +2810,8 @@ projections, so this data is available.
 **Template display:**
 
 In the liability section of `savings/dashboard.html`, add a summary card:
-```
+
+```text
 Total Debt: $312,450.00
 Monthly Payments: $2,847.92
 Weighted Avg Rate: 5.82%
@@ -2127,7 +2819,8 @@ Debt-Free Date: January 2054
 ```
 
 Below the emergency fund metrics, add:
-```
+
+```text
 Debt-to-Income: 34.2% [Healthy]
 ```
 
@@ -2167,7 +2860,7 @@ Service + template change. No migration. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(loan): add refinance what-if calculator with side-by-side comparison
 ```
 
@@ -2203,6 +2896,7 @@ class RefinanceSchema(BaseSchema):
 **New route (`loan.py`):**
 
 `POST /accounts/<id>/loan/refinance` (HTMX):
+
 1. Validate input via `RefinanceSchema`.
 2. Load current loan params and payment history.
 3. Compute current schedule (committed if payments exist, otherwise original).
@@ -2259,6 +2953,7 @@ Route + template + schema change. No migration. Revertable.
 ### Overview
 
 A cross-account debt payoff strategy calculator. Three sub-commits:
+
 1. Create the strategy service.
 2. Create the route and template.
 3. Add multi-line chart.
@@ -2269,7 +2964,7 @@ A cross-account debt payoff strategy calculator. Three sub-commits:
 
 ### A. Commit message
 
-```
+```text
 feat(debt): add snowball/avalanche/custom strategy service
 ```
 
@@ -2350,6 +3045,7 @@ class AccountPayoff:
 ```
 
 **Edge cases:**
+
 - Single debt account: strategy is trivial -- all extra goes to the one debt.
 - Extra monthly = 0: minimum payments only. Payoff follows standard amortization for each debt.
 - Debt already paid off (principal = 0): skip it.
@@ -2387,7 +3083,7 @@ New file. Revertable by deletion.
 
 ### A. Commit message
 
-```
+```text
 feat(debt): add snowball/avalanche strategy page with comparison table
 ```
 
@@ -2407,6 +3103,7 @@ The strategy service needs a user-facing page.
 **New blueprint: `debt_strategy.py`**
 
 `GET /debt-strategy` -- Dashboard page:
+
 1. Load all active, non-archived debt accounts (has_amortization=True).
 2. For each, load LoanParams and compute current real principal (from confirmed payments).
 3. Compute minimum payment via `amortization_engine.calculate_monthly_payment()`.
@@ -2414,6 +3111,7 @@ The strategy service needs a user-facing page.
 5. Render the form.
 
 `POST /debt-strategy/calculate` (HTMX):
+
 1. Parse: `extra_monthly`, `strategy` (avalanche/snowball/custom), optional `custom_order`.
 2. Call `debt_strategy_service.calculate_strategy()` for each strategy.
 3. Return comparison partial: avalanche vs. snowball vs. current (no extra).
@@ -2424,6 +3122,7 @@ Form: extra monthly amount input, strategy selector (radio: Avalanche / Snowball
 For custom: sortable list of debt accounts (drag-and-drop or numbered inputs).
 
 Results: comparison table:
+
 | Metric | No Extra | Avalanche | Snowball |
 |--------|----------|-----------|----------|
 | Debt-free date | ... | ... | ... |
@@ -2436,6 +3135,7 @@ Per-account payoff timeline table showing when each debt reaches $0 under the se
 each loan dashboard.
 
 **Blueprint registration (`__init__.py`):**
+
 ```python
 from app.routes.debt_strategy import debt_strategy_bp
 app.register_blueprint(debt_strategy_bp)
@@ -2472,7 +3172,7 @@ New files. Revertable by deletion and unregistering the blueprint.
 
 ### A. Commit message
 
-```
+```text
 feat(debt): add multi-line balance chart to debt strategy visualization
 ```
 
@@ -2520,7 +3220,7 @@ Template change. Revertable.
 
 ### A. Commit message
 
-```
+```text
 feat(obligations): add recurring obligation summary page
 ```
 
@@ -2543,6 +3243,7 @@ view showing all recurring financial obligations.
 `GET /obligations` -- Summary page:
 
 1. Load active transaction templates with recurrence rules:
+
    ```python
    expense_templates = (
        TransactionTemplate.query
@@ -2554,6 +3255,7 @@ view showing all recurring financial obligations.
    ```
 
 2. Load active transfer templates with recurrence rules:
+
    ```python
    transfer_templates = (
        TransferTemplate.query
@@ -2588,6 +3290,7 @@ Summary bar at top: Total Committed Monthly Outflows, Total Committed Monthly In
 **Next occurrence date:** Use `recurrence_engine._match_periods()` to find the next matching
 period for each template's rule. This function is already public enough to be imported. If not,
 compute it from the rule's pattern and the current date:
+
 - EVERY_PERIOD: next period start_date.
 - MONTHLY: next occurrence of day_of_month.
 - ANNUAL: next occurrence of month/day.
@@ -2716,6 +3419,7 @@ Total new test cases across all commits: approximately 85-90.
 ### Integration tests
 
 After 5.1 is complete, add an integration test verifying that:
+
 1. Creating a transfer to a debt account creates shadow transactions.
 2. The loan dashboard reads those shadow transactions as payment data.
 3. The amortization engine produces a schedule incorporating those payments.
@@ -2724,8 +3428,8 @@ After 5.1 is complete, add an integration test verifying that:
 
 ### Full suite gate
 
-The full test suite (currently ~1258 tests, expected to grow to ~1350) must pass after every
-commit. Use `timeout 660 pytest -v --tb=short` as the final gate before reporting done.
+The full test suite (currently ~2300 tests, expected to grow to ~2450) must pass after every
+commit. Use `timeout 720 pytest -v --tb=short` as the final gate before reporting done.
 
 ### Expected test count increase per phase
 
@@ -2733,6 +3437,8 @@ commit. Use `timeout 660 pytest -v --tb=short` as the final gate before reportin
 |-------|---------|-------------------|
 | Regression | 1 | 5 |
 | 5.1 (3 commits) | 3 | 21 |
+| 5.2 (3 commits) | 3 | 22 |
+| 5.3 | 1 | 7 |
 | 5.7 | 1 | 8 |
 | 5.8 | 1 | 7 |
 | 5.5 | 1 | 6 |
@@ -2745,4 +3451,45 @@ commit. Use `timeout 660 pytest -v --tb=short` as the final gate before reportin
 | 5.10 | 1 | 5 |
 | 5.11 (3 commits) | 3 | 14 |
 | 5.16 | 1 | 5 |
-| **Total** | **25** | **~123** |
+| **Total** | **27** | **~152** |
+
+---
+
+## Commit Checklist
+
+This is the complete list of commits in dependency order. Each commit must be implemented,
+tested, and verified before moving to the next. Run the full test suite before marking any
+commit as done.
+
+| # | Commit ID | Commit Message | Summary |
+|---|-----------|---------------|---------|
+| 1 | #0 | test(section5): add regression baseline for loan dashboard and savings goals | Lock down existing amortization engine, loan dashboard, savings goal, and balance calculator behavior |
+| 2 | 5.1-1 | feat(amortization): extend engine to accept payment history for projection scenarios | Add PaymentRecord dataclass and payments parameter to generate_schedule(), calculate_summary(), get_loan_projection() |
+| 3 | 5.1-2 | feat(loan): pass payment history from shadow transactions to amortization engine | Query shadow income transactions on debt accounts, pass as PaymentRecord list to amortization engine |
+| 4 | 5.1-3 | feat(loan): prompt recurring transfer creation after loan parameter save | Add prompt on loan dashboard to create recurring monthly transfer when none exists |
+| 5 | 5.2-1 | feat(growth): extend engine to accept contribution timeline for projection scenarios | Add ContributionRecord dataclass and contributions parameter to project_balance() |
+| 6 | 5.2-2 | feat(investment): pass contribution timeline from transactions and deductions to growth engine | Build per-period contribution timeline from shadow transactions and paycheck deductions |
+| 7 | 5.2-3 | feat(investment): prompt contribution setup after investment parameter save | Add prompt for recurring transfer (IRA/brokerage) or deduction linkage (401(k)) |
+| 8 | 5.3-1 | feat(investment): add what-if contribution calculator with dual-projection chart | Add what-if input, compute dual projections, overlay on growth chart with comparison card |
+| 9 | 5.7-1 | feat(amortization): incorporate ARM rate change history into schedule projections | Add RateChangeRecord and rate_changes parameter; re-amortize at each rate adjustment |
+| 10 | 5.8-1 | fix(amortization): handle overpayment and zero-balance termination edge cases | Cap principal at remaining balance, stop schedule at payoff |
+| 11 | 5.5-1 | feat(loan): add multi-scenario visualization to payoff calculator and balance chart | Add original/committed/what-if chart lines and floor marker to loan dashboard |
+| 12 | 5.14-1 | feat(loan): add payment allocation breakdown showing principal/interest/escrow split | Display current period principal/interest/escrow breakdown on loan dashboard |
+| 13 | 5.13-1 | feat(loan): add full month-by-month amortization schedule view | Add collapsible schedule table with confirmed/projected row distinction |
+| 14 | 5.9-1 | feat(loan): auto-set recurring transfer end date to projected payoff date | Update recurrence rule end_date on dashboard load when payoff date changes |
+| 15 | 5.9-2 | feat(accounts): display paid-off badge on debt accounts with zero principal | Show "Paid Off" badge when confirmed payments reduce principal to zero |
+| 16 | 5.9-3 | feat(accounts): add account archival for paid-off loans and inactive accounts | Add is_archived column, archive/unarchive routes, filter from active views |
+| 17 | 5.4-1 | feat(savings): add ref tables for goal modes and income units | Create ref.goal_modes and ref.income_units tables with enums and ref_cache |
+| 18 | 5.4-2 | feat(savings): add goal_mode_id, income_unit_id, income_multiplier to savings_goals | Add income-relative columns with FK constraints and cross-field validation |
+| 19 | 5.4-3 | feat(savings): resolve income-relative goal targets from paycheck calculator | Add resolve_goal_target() function and integrate into savings dashboard service |
+| 20 | 5.4-4 | feat(savings): add income-relative mode toggle to savings goal form | Add mode selector, conditional fields, and resolved target display |
+| 21 | 5.15-1 | feat(savings): add goal completion trajectory and pace indicator | Compute months-to-goal, projected completion date, and on-track/behind/ahead pace |
+| 22 | 5.12-1 | feat(accounts): add debt summary metrics and debt-to-income ratio | Add aggregate debt card (total debt, monthly payments, weighted rate) and DTI ratio |
+| 23 | 5.10-1 | feat(loan): add refinance what-if calculator with side-by-side comparison | Add refinance tab with form, comparison table, and break-even calculation |
+| 24 | 5.11-1 | feat(debt): add snowball/avalanche/custom strategy service | Create pure-function debt_strategy_service with iterative payoff algorithm |
+| 25 | 5.11-2 | feat(debt): add snowball/avalanche strategy page with comparison table | Create debt_strategy blueprint, route, and template with strategy comparison |
+| 26 | 5.11-3 | feat(debt): add multi-line balance chart to debt strategy visualization | Add Chart.js per-account balance lines to debt strategy page |
+| 27 | 5.16-1 | feat(obligations): add recurring obligation summary page | Create obligations blueprint with grouped listing and monthly totals |
+
+**Totals:** 26 implementation commits + 1 regression baseline = **27 commits**. Approximately
+**~152 new test cases** across all tasks.
