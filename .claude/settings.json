@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "scripts/hooks/guard-migrations.sh \"$TOOL_INPUT_PATH\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "scripts/hooks/post-edit-python.sh \"$TOOL_INPUT_PATH\""
+          },
+          {
+            "type": "command",
+            "command": "scripts/hooks/post-edit-template.sh \"$TOOL_INPUT_PATH\""
+          },
+          {
+            "type": "command",
+            "command": "scripts/hooks/post-edit-deps.sh \"$TOOL_INPUT_PATH\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "scripts/hooks/stop-check.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
