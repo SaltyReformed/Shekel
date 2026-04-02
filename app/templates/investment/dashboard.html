@@ -210,11 +210,27 @@
         </div>
       </div>
     </div>
+    <div class="row align-items-center mb-3">
+      <div class="col-md-4">
+        <label for="what_if_contribution" class="form-label mb-0">What-If Contribution</label>
+      </div>
+      <div class="col-md-6">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">$</span>
+          <input type="number" class="form-control" id="what_if_contribution"
+                 name="what_if_contribution" min="0" step="0.01"
+                 placeholder="Enter amount per period">
+        </div>
+      </div>
+      <div class="col-md-2">
+        <span class="text-muted small">per period</span>
+      </div>
+    </div>
     <div id="growth-chart-container"
          hx-get="{{ url_for('investment.growth_chart', account_id=account.id) }}"
          hx-trigger="slider-changed"
          hx-swap="innerHTML"
-         hx-include="#horizon_years">
+         hx-include="#horizon_years, #what_if_contribution">
       {% include "investment/_growth_chart.html" %}
     </div>
   </div>

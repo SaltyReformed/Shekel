@@ -7,7 +7,7 @@ projection, contribution tracking, and employer contribution display.
 
 import logging
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -365,7 +365,22 @@ def dashboard(account_id):
 @investment_bp.route("/accounts/<int:account_id>/investment/growth-chart")
 @login_required
 def growth_chart(account_id):
-    """HTMX fragment: growth projection chart with adjustable horizon."""
+    """HTMX fragment: growth projection chart with adjustable horizon.
+
+    Accepts optional what_if_contribution query parameter to overlay
+    a hypothetical contribution scenario.  When provided, returns a
+    dual-dataset chart (committed vs. what-if) and a comparison card
+    showing the balance difference at the projection horizon.
+
+    The what-if projection uses contributions=None with a flat
+    periodic_contribution equal to the what-if amount.  Employer match
+    is automatically recalculated by the engine's per-period loop.
+    Annual contribution limits are enforced identically to the
+    committed projection.
+
+    Invalid or negative what-if values degrade gracefully to the
+    single-line chart.  Zero is a valid what-if (growth-only scenario).
+    """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("investment.dashboard", account_id=account_id))
 
@@ -528,11 +543,71 @@ def growth_chart(account_id):
             str((current_balance + cumulative_contrib).quantize(Decimal("0.01")))
         )
 
+    # --- What-If Contribution Calculator ---
+    # Parse optional what-if amount from query parameters.  Invalid
+    # or negative values degrade gracefully to single-line chart.
+    # Zero is valid (growth-only scenario: "what if I stop contributing?").
+    what_if_amount = None
+    what_if_raw = request.args.get("what_if_contribution", type=str)
+    if what_if_raw:
+        try:
+            what_if_amount = Decimal(what_if_raw)
+        except (InvalidOperation, ValueError):
+            what_if_amount = None
+        else:
+            if what_if_amount < Decimal("0"):
+                what_if_amount = None
+
+    what_if_balances = []
+    comparison = None
+
+    if what_if_amount is not None and periods:
+        # What-if projection: flat contribution at hypothetical rate.
+        # contributions=None means the engine uses periodic_contribution
+        # for every period.  Employer match is recalculated automatically
+        # because the engine passes each period's contribution to
+        # calculate_employer_contribution().  Same employer_params work
+        # unchanged -- they contain match percentages and gross salary,
+        # not the employee amount.
+        what_if_projection = growth_engine.project_balance(
+            current_balance=current_balance,
+            assumed_annual_return=params.assumed_annual_return,
+            periods=periods,
+            periodic_contribution=what_if_amount,
+            employer_params=inputs.employer_params,
+            annual_contribution_limit=params.annual_contribution_limit,
+            ytd_contributions_start=inputs.ytd_contributions,
+            contributions=None,
+        )
+
+        for pb in what_if_projection:
+            what_if_balances.append(
+                str(pb.end_balance.quantize(Decimal("0.01")))
+            )
+
+        # Comparison card: committed end vs. what-if end.
+        if projection and what_if_projection:
+            committed_end = projection[-1].end_balance.quantize(TWO_PLACES)
+            whatif_end = what_if_projection[-1].end_balance.quantize(
+                TWO_PLACES,
+            )
+            difference = (whatif_end - committed_end).quantize(TWO_PLACES)
+            comparison = {
+                "committed_end": committed_end,
+                "whatif_end": whatif_end,
+                "difference": difference,
+                "is_positive": difference > Decimal("0"),
+                "is_zero": difference == Decimal("0"),
+            }
+
     return render_template(
         "investment/_growth_chart.html",
         chart_labels=chart_labels,
         chart_balances=chart_balances,
         chart_contributions=chart_contributions,
+        what_if_balances=what_if_balances,
+        what_if_amount=what_if_amount,
+        comparison=comparison,
     )
 
 

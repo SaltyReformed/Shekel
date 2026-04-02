@@ -3,8 +3,36 @@
         data-labels='{{ chart_labels|tojson }}'
         data-balances='{{ chart_balances|tojson }}'
         data-contributions='{{ chart_contributions|tojson }}'
+        {% if what_if_balances is defined and what_if_balances %}
+        data-whatif-balances='{{ what_if_balances|tojson }}'
+        data-whatif-label="What-If (${{ '{:,.2f}'.format(what_if_amount|float) }}/period)"
+        {% endif %}
         style="max-height: 350px;">
 </canvas>
+{% if comparison is defined and comparison %}
+<div class="row text-center mt-3 py-2 border rounded">
+  <div class="col-md-4">
+    <div class="text-muted small">Current Plan</div>
+    <div class="fw-bold font-mono">${{ "{:,.2f}".format(comparison.committed_end|float) }}</div>
+  </div>
+  <div class="col-md-4">
+    <div class="text-muted small">What-If (${{ "{:,.2f}".format(what_if_amount|float) }}/period)</div>
+    <div class="fw-bold font-mono">${{ "{:,.2f}".format(comparison.whatif_end|float) }}</div>
+  </div>
+  <div class="col-md-4">
+    <div class="text-muted small">Difference</div>
+    <div class="fw-bold font-mono {% if comparison.is_zero %}text-muted{% elif comparison.is_positive %}text-success{% else %}text-danger{% endif %}">
+      {% if comparison.is_zero %}
+      $0.00 -- same as current plan
+      {% elif comparison.is_positive %}
+      +${{ "{:,.2f}".format(comparison.difference|float) }}
+      {% else %}
+      -${{ "{:,.2f}".format(comparison.difference|float|abs) }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
 {% else %}
 <div class="text-center py-4 text-muted">
   <i class="bi bi-graph-up fs-1"></i>
