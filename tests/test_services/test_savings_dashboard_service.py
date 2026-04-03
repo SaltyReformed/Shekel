@@ -415,6 +415,160 @@ class TestIncomeRelativeGoalDashboard:
             assert gd["required_contribution"] is None
 
 
+class TestGoalTrajectoryDashboard:
+    """Integration tests for trajectory calculation in the dashboard.
+
+    Verifies that the dashboard service correctly discovers monthly
+    contributions from transfer templates and includes trajectory
+    data in goal_data dicts.
+    """
+
+    def test_goal_data_includes_trajectory_keys(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Goal data dict contains trajectory and monthly_contribution keys."""
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Trajectory Account",
+                current_anchor_balance=Decimal("3000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Trajectory Goal",
+                target_amount=Decimal("6000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert "trajectory" in gd
+            assert "monthly_contribution" in gd
+            assert isinstance(gd["trajectory"], dict)
+            assert isinstance(gd["monthly_contribution"], Decimal)
+
+    def test_trajectory_with_no_transfer_template(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Goal with no recurring transfer shows zero monthly and None trajectory.
+
+        Without a transfer template targeting the account,
+        monthly_contribution is $0 and months_to_goal is None.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="No Transfer Account",
+                current_anchor_balance=Decimal("2000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="No Transfer Goal",
+                target_amount=Decimal("10000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["monthly_contribution"] == Decimal("0.00")
+            assert gd["trajectory"]["months_to_goal"] is None
+
+    def test_trajectory_with_transfer_template(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Goal with a recurring monthly transfer computes trajectory.
+
+        A $500/month recurring transfer into the savings account with
+        $3,000 balance and $6,000 target should produce months_to_goal=6.
+        """
+        from app.models.recurrence_rule import RecurrenceRule
+
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="With Transfer Account",
+                current_anchor_balance=Decimal("3000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            from app.enums import RecurrencePatternEnum
+            monthly_pattern_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=monthly_pattern_id,
+            )
+            db.session.add(rule)
+            db.session.flush()
+
+            from app.models.transfer_template import TransferTemplate
+            template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                name="Monthly Savings",
+                default_amount=Decimal("500.00"),
+                recurrence_rule_id=rule.id,
+                is_active=True,
+            )
+            db.session.add(template)
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Transfer Goal",
+                target_amount=Decimal("6000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            # Monthly transfer of $500 with $3,000 remaining
+            assert gd["monthly_contribution"] == Decimal("500.00")
+            # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
+            assert gd["trajectory"]["months_to_goal"] == 6
+
+
 class TestEmergencyFundMetrics:
     """Tests for emergency fund coverage computation."""
 

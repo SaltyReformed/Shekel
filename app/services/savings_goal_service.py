@@ -5,9 +5,10 @@ Pure functions for savings goal calculations. No database writes, no
 Flask imports -- called by the savings route to compute metrics.
 """
 
+import calendar
 import logging
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
 
@@ -300,3 +301,163 @@ def compute_committed_monthly(expense_templates, transfer_templates):
         total += monthly
 
     return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def calculate_trajectory(
+    current_balance: Decimal,
+    target_amount: Decimal,
+    monthly_contribution: Decimal,
+    target_date: date | None = None,
+) -> dict:
+    """Calculate savings goal completion trajectory and pace.
+
+    Computes how long it will take to reach the goal at the current
+    savings rate, and whether the user is on track relative to their
+    target date (if one is set).
+
+    This is a pure function -- it does not query the database.
+
+    Args:
+        current_balance: Current savings account balance.
+        target_amount: Resolved goal target (from resolve_goal_target()).
+        monthly_contribution: Monthly contribution amount toward this
+            goal. Zero if no recurring contribution exists.
+        target_date: Optional target completion date for pace comparison.
+
+    Returns:
+        Dict with keys:
+            months_to_goal: int or None -- months until balance reaches
+                target. None if monthly_contribution is zero or negative.
+                0 if goal is already met.
+            projected_completion_date: date or None -- the date the goal
+                will be met. None if months_to_goal is None.
+            pace: str or None -- 'ahead', 'on_track', or 'behind'.
+                None if no target_date is set or target_date is in the
+                past.
+            required_monthly: Decimal or None -- the monthly contribution
+                needed to hit target_date. None if no target_date or
+                target_date is in the past.
+    """
+    today = date.today()
+    remaining = target_amount - current_balance
+
+    # A target date is only actionable if it is strictly in the future.
+    actionable_target = target_date is not None and target_date > today
+
+    if remaining <= Decimal("0.00"):
+        # Goal already met.
+        return {
+            "months_to_goal": 0,
+            "projected_completion_date": today,
+            "pace": _compute_pace(today, target_date) if actionable_target else None,
+            "required_monthly": Decimal("0.00") if actionable_target else None,
+        }
+
+    if monthly_contribution <= Decimal("0.00"):
+        # No contribution -- cannot project a completion date.
+        return {
+            "months_to_goal": None,
+            "projected_completion_date": None,
+            "pace": "behind" if actionable_target else None,
+            "required_monthly": _compute_required_monthly(remaining, target_date),
+        }
+
+    # Ceiling division in Decimal land -- no float conversion.
+    months = int(
+        (remaining / monthly_contribution).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+    )
+
+    projected = _add_months(today, months)
+    pace = _compute_pace(projected, target_date) if actionable_target else None
+
+    return {
+        "months_to_goal": months,
+        "projected_completion_date": projected,
+        "pace": pace,
+        "required_monthly": _compute_required_monthly(remaining, target_date),
+    }
+
+
+def _compute_pace(projected_date: date, target_date: date) -> str:
+    """Compare projected completion to target date by year-month.
+
+    Returns 'ahead' if projected is before the target month,
+    'on_track' if the same month, 'behind' if projected is after.
+
+    Args:
+        projected_date: The projected completion date.
+        target_date: The user's target completion date.
+
+    Returns:
+        One of 'ahead', 'on_track', or 'behind'.
+    """
+    proj = (projected_date.year, projected_date.month)
+    tgt = (target_date.year, target_date.month)
+
+    if proj < tgt:
+        return "ahead"
+    if proj == tgt:
+        return "on_track"
+    return "behind"
+
+
+def _compute_required_monthly(
+    remaining: Decimal,
+    target_date: date | None,
+) -> Decimal | None:
+    """Compute the monthly contribution needed to hit target_date.
+
+    Returns None if target_date is None or in the past/present.
+    Uses ROUND_CEILING so the user contributes at least enough.
+
+    Args:
+        remaining: Dollar amount still needed (target - balance).
+        target_date: The user's target date, or None.
+
+    Returns:
+        Decimal monthly amount rounded up, or None.
+    """
+    if target_date is None:
+        return None
+
+    today = date.today()
+    if target_date <= today:
+        return None
+
+    months_available = (
+        (target_date.year - today.year) * 12
+        + (target_date.month - today.month)
+    )
+
+    if months_available <= 0:
+        return None
+
+    return (remaining / Decimal(str(months_available))).quantize(
+        _TWO_PLACES, rounding=ROUND_CEILING
+    )
+
+
+def _add_months(start: date, months: int) -> date:
+    """Add N months to a date, clamping day to the month's last day.
+
+    Returns date.max if the result would exceed year 9999 (Python's
+    maximum representable year).
+
+    Args:
+        start: The starting date.
+        months: Number of months to add (non-negative).
+
+    Returns:
+        A new date N months in the future, or date.max on overflow.
+    """
+    total_months = start.month - 1 + months
+    year = start.year + total_months // 12
+    month = total_months % 12 + 1
+
+    if year > 9999:
+        return date.max
+
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)

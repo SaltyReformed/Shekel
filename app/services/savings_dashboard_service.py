@@ -536,11 +536,15 @@ def _get_net_biweekly_pay(user_id, all_periods, current_period):
 
 
 def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):
-    """Compute savings goal progress and required contributions.
+    """Compute savings goal progress, contributions, and trajectory.
 
     For income-relative goals, the resolved target is calculated from
     the user's net biweekly pay and the goal's multiplier/unit.  For
     fixed goals, the stored target_amount is used directly.
+
+    Trajectory is computed for each goal by discovering the monthly
+    contribution from recurring transfer templates targeting the goal's
+    account, then projecting the completion date and pace.
 
     Args:
         user_id: Integer ID of the current user.
@@ -552,7 +556,8 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
     Returns:
         List of dicts with keys: goal, current_balance, progress_pct,
         remaining_periods, required_contribution, resolved_target,
-        goal_mode_id, income_descriptor, has_salary_data.
+        goal_mode_id, income_descriptor, has_salary_data, trajectory,
+        monthly_contribution.
     """
     goals = (
         db.session.query(SavingsGoal)
@@ -562,6 +567,27 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
 
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
     has_salary = net_biweekly_pay > Decimal("0.00")
+
+    # Batch-load recurring transfer templates targeting goal accounts
+    # to avoid N+1 queries.  compute_committed_monthly() handles the
+    # per-pattern normalization to monthly equivalents.
+    goal_account_ids = [goal.account_id for goal in goals]
+    if goal_account_ids:
+        to_account_templates = (
+            db.session.query(TransferTemplate)
+            .filter(
+                TransferTemplate.user_id == user_id,
+                TransferTemplate.to_account_id.in_(goal_account_ids),
+                TransferTemplate.is_active.is_(True),
+            )
+            .all()
+        )
+    else:
+        to_account_templates = []
+
+    templates_by_account = {}
+    for tmpl in to_account_templates:
+        templates_by_account.setdefault(tmpl.to_account_id, []).append(tmpl)
 
     goal_data = []
     for goal in goals:
@@ -603,6 +629,21 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
         else:
             income_descriptor = None
 
+        # Monthly contribution from recurring transfers into this account.
+        # Reuses compute_committed_monthly() for pattern normalization.
+        acct_templates = templates_by_account.get(goal.account_id, [])
+        monthly_contribution = savings_goal_service.compute_committed_monthly(
+            [], acct_templates,
+        )
+
+        # Trajectory: projected completion date and pace indicator.
+        trajectory = savings_goal_service.calculate_trajectory(
+            current_balance=acct_balance,
+            target_amount=resolved_target,
+            monthly_contribution=monthly_contribution,
+            target_date=goal.target_date,
+        )
+
         goal_data.append({
             "goal": goal,
             "current_balance": acct_balance,
@@ -613,6 +654,8 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
             "goal_mode_id": goal.goal_mode_id,
             "income_descriptor": income_descriptor,
             "has_salary_data": has_salary,
+            "trajectory": trajectory,
+            "monthly_contribution": monthly_contribution,
         })
 
     return goal_data

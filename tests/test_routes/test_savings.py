@@ -2576,6 +2576,180 @@ class TestIncomeRelativeGoalForm:
             html = resp.data.decode()
             assert "of salary" not in html
 
+
+# -- Goal Trajectory Display Tests (Commit 5.15-1) --------------------------
+
+
+class TestTrajectoryDisplay:
+    """Route-level tests for trajectory and pace display on goal cards.
+
+    Commit 5.15-1: the dashboard shows projected completion dates,
+    pace badges, and required monthly contribution when behind.
+    """
+
+    def test_dashboard_displays_trajectory(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.15-14: Goal with recurring transfer shows trajectory info.
+
+        A monthly transfer of $500 into a savings account with $5,000
+        balance and $10,000 target.  The dashboard should show the
+        projected completion text and the trajectory section.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+
+            monthly_pattern_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=monthly_pattern_id,
+            )
+            db.session.add(rule)
+            db.session.flush()
+
+            template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                name="Monthly Savings",
+                default_amount=Decimal("500.00"),
+                recurrence_rule_id=rule.id,
+                is_active=True,
+            )
+            db.session.add(template)
+
+            goal = _create_goal(seed_user, acct, name="Trajectory Goal")
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Projected completion" in html
+
+    def test_dashboard_no_contribution_message(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.15-15: Goal with no recurring transfer shows no-contribution message."""
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+            goal = _create_goal(seed_user, acct, name="No Transfer Goal")
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "No recurring contribution" in html
+
+    def test_dashboard_goal_met_message(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.15-16: Balance exceeds target shows 'Goal met!' text."""
+        with app.app_context():
+            # Default savings account has $5,000 balance.
+            acct = _create_savings_account(seed_user)
+            # Target is $3,000 -- already exceeded.
+            goal = _create_goal(
+                seed_user, acct, name="Met Goal",
+                target_amount=Decimal("3000.00"),
+            )
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Goal met!" in html
+
+    def test_dashboard_trajectory_with_income_relative_goal(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.15-17: Income-relative goal uses resolved target for trajectory.
+
+        With a salary profile, the income-relative target is resolved
+        to a dollar value.  Trajectory uses this resolved value, not
+        a NULL target_amount.
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Test Salary",
+                annual_salary=Decimal("75000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+
+            acct = _create_savings_account(seed_user)
+
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="IR Trajectory Goal",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            # Should not crash -- trajectory is computed on the resolved
+            # target, even though target_amount is NULL.
+            html = resp.data.decode()
+            # With no transfer template but salary data, we get the
+            # "No recurring contribution" message.
+            assert "No recurring contribution" in html
+
+    def test_dashboard_biweekly_transfer_normalization(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.15-19: Biweekly transfer normalized to monthly for trajectory.
+
+        A biweekly (EVERY_PERIOD) transfer of $500/period should yield
+        a monthly equivalent of $500 * 26 / 12 = $1,083.33.
+        With $5,000 balance and $10,000 target:
+            remaining = $5,000
+            months = ceil(5000 / 1083.33) = 5
+        Dashboard should show 'Projected completion' text.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+
+            biweekly_pattern_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=biweekly_pattern_id,
+            )
+            db.session.add(rule)
+            db.session.flush()
+
+            template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                name="Biweekly Savings",
+                default_amount=Decimal("500.00"),
+                recurrence_rule_id=rule.id,
+                is_active=True,
+            )
+            db.session.add(template)
+
+            goal = _create_goal(seed_user, acct, name="Biweekly Goal")
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Projected completion" in html
+
     def test_dashboard_no_salary_warning(
         self, app, auth_client, seed_user, seed_periods
     ):

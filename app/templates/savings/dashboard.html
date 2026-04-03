@@ -355,6 +355,46 @@
           <span class="font-mono">${{ "{:,.2f}".format(gd.goal.contribution_per_period|float) }}/period</span>
         </div>
         {% endif %}
+
+        {# Trajectory and pace indicator #}
+        {% if gd.trajectory %}
+        {% set traj = gd.trajectory %}
+        <div class="mt-2 pt-2 border-top">
+          {% if traj.months_to_goal == 0 %}
+          <p class="text-success fw-bold mb-1">Goal met!</p>
+
+          {% elif traj.months_to_goal is not none %}
+          <div class="small mb-1">
+            Projected completion:
+            <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
+            {% if traj.months_to_goal > 360 %}
+            (over 30 years)
+            {% else %}
+            ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
+            {% endif %}
+          </div>
+
+          {% if traj.pace == 'ahead' %}
+          <span class="badge bg-success">Ahead of schedule</span>
+          {% elif traj.pace == 'on_track' %}
+          <span class="badge bg-primary">On track</span>
+          {% elif traj.pace == 'behind' %}
+          <span class="badge bg-warning text-dark">Behind pace</span>
+          {% if traj.required_monthly %}
+          <p class="small text-muted mt-1 mb-0">
+            Increase to ${{ "{:,.2f}".format(traj.required_monthly|float) }}/mo
+            to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
+          </p>
+          {% endif %}
+          {% endif %}
+
+          {% else %}
+          <p class="text-muted small mb-1">
+            No recurring contribution -- trajectory cannot be calculated.
+          </p>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>

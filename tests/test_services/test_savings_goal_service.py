@@ -2,11 +2,11 @@
 Shekel Budget App -- Unit Tests for Savings Goal Service
 
 Tests the pure calculation functions in savings_goal_service.py:
-calculate_required_contribution, calculate_savings_metrics, and
-count_periods_until.
+calculate_required_contribution, calculate_savings_metrics,
+count_periods_until, resolve_goal_target, and calculate_trajectory.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +18,7 @@ from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.services.savings_goal_service import (
     calculate_required_contribution,
     calculate_savings_metrics,
+    calculate_trajectory,
     count_periods_until,
     resolve_goal_target,
 )
@@ -476,3 +477,332 @@ class TestResolveGoalTarget:
             net_biweekly_pay=Decimal("3500.00"),
         )
         assert result == Decimal("45500.00")
+
+
+# ── TestCalculateTrajectory ──────────────────────────────────────
+
+
+class TestCalculateTrajectory:
+    """Tests for calculate_trajectory() -- completion projection and pace.
+
+    All tests mock date.today() to ensure deterministic results.
+    Hand-calculated expected values are documented in comments.
+    """
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_on_track(self, mock_date):
+        """C-5.15-1: On track when projected month matches target month.
+
+        Setup: balance=$3,000, target=$6,000, $500/mo, target 6 months.
+        Hand-calculation:
+            remaining = 6000 - 3000 = 3000
+            months = ceil(3000 / 500) = 6
+            projected = 2026-04 + 6 months = 2026-10
+            target = 2026-10-03
+            pace = same month -> on_track
+            required = ceil(3000 / 6) = 500.00
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        target_date = date(2026, 10, 3)
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=target_date,
+        )
+        assert result["months_to_goal"] == 6
+        assert result["projected_completion_date"] == date(2026, 10, 3)
+        assert result["pace"] == "on_track"
+        assert result["required_monthly"] == Decimal("500.00")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_behind(self, mock_date):
+        """C-5.15-2: Behind when projected completion is after target.
+
+        Setup: balance=$1,000, target=$6,000, $500/mo, target 3 months.
+        Hand-calculation:
+            remaining = 6000 - 1000 = 5000
+            months = ceil(5000 / 500) = 10
+            projected = 2026-04 + 10 months = 2027-02
+            target = 2026-07-03
+            pace = 2027-02 > 2026-07 -> behind
+            required = ceil(5000 / 3) = 1666.67
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        target_date = date(2026, 7, 3)
+        result = calculate_trajectory(
+            current_balance=Decimal("1000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=target_date,
+        )
+        assert result["months_to_goal"] == 10
+        assert result["projected_completion_date"] == date(2027, 2, 3)
+        assert result["pace"] == "behind"
+        # required = ceil(5000 / 3) = 1666.666... -> 1666.67
+        assert result["required_monthly"] == Decimal("1666.67")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_ahead(self, mock_date):
+        """C-5.15-3: Ahead when projected completion is before target.
+
+        Setup: balance=$5,000, target=$6,000, $500/mo, target 12 months.
+        Hand-calculation:
+            remaining = 6000 - 5000 = 1000
+            months = ceil(1000 / 500) = 2
+            projected = 2026-04 + 2 months = 2026-06
+            target = 2027-04-03
+            pace = 2026-06 < 2027-04 -> ahead
+            required = ceil(1000 / 12) = 83.34
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        target_date = date(2027, 4, 3)
+        result = calculate_trajectory(
+            current_balance=Decimal("5000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=target_date,
+        )
+        assert result["months_to_goal"] == 2
+        assert result["projected_completion_date"] == date(2026, 6, 3)
+        assert result["pace"] == "ahead"
+        # required = ceil(1000 / 12) = 83.333... -> 83.34
+        assert result["required_monthly"] == Decimal("83.34")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_no_contribution(self, mock_date):
+        """C-5.15-4: No contribution yields None trajectory values.
+
+        With $0 monthly, no projected date or months can be computed.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("0.00"),
+            target_date=date(2027, 4, 3),
+        )
+        assert result["months_to_goal"] is None
+        assert result["projected_completion_date"] is None
+        assert result["pace"] == "behind"
+        # required = ceil(3000 / 12) = 250.00
+        assert result["required_monthly"] == Decimal("250.00")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_goal_already_met(self, mock_date):
+        """C-5.15-5: Balance exceeds target -- goal already met.
+
+        months_to_goal=0, projected_completion_date=today.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("7000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2027, 4, 3),
+        )
+        assert result["months_to_goal"] == 0
+        assert result["projected_completion_date"] == date(2026, 4, 3)
+        assert result["pace"] == "ahead"
+        assert result["required_monthly"] == Decimal("0.00")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_no_target_date(self, mock_date):
+        """C-5.15-6: No target_date -- pace and required_monthly are None.
+
+        months_to_goal and projected_completion_date are still computed.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=None,
+        )
+        assert result["months_to_goal"] == 6
+        assert result["projected_completion_date"] == date(2026, 10, 3)
+        assert result["pace"] is None
+        assert result["required_monthly"] is None
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_exact_boundary(self, mock_date):
+        """C-5.15-7: Exact division should not round up.
+
+        remaining=$500, $500/mo -> exactly 1 month, not 0.something.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 6000 - 5500 = 500, months = ceil(500/500) = 1
+        result = calculate_trajectory(
+            current_balance=Decimal("5500.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+        )
+        assert result["months_to_goal"] == 1
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_fractional_months_rounds_up(self, mock_date):
+        """C-5.15-8: Fractional months round up via ROUND_CEILING.
+
+        remaining=$3,000, $700/mo -> 3000/700 = 4.2857 -> ceil = 5.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 6000 - 3000 = 3000, months = ceil(3000/700) = 5
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("700.00"),
+        )
+        assert result["months_to_goal"] == 5
+        assert result["projected_completion_date"] == date(2026, 9, 3)
+
+    @patch("app.services.savings_goal_service.date")
+    def test_required_monthly_rounds_up(self, mock_date):
+        """C-5.15-9: required_monthly uses ROUND_CEILING.
+
+        remaining=$5,000, 3 months -> 5000/3 = 1666.666... -> 1666.67.
+        NOT 1666.66.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("1000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2026, 7, 3),
+        )
+        # remaining = 5000, months_available = 3 (Jul - Apr = 3)
+        # required = ceil(5000/3) = 1666.67
+        assert result["required_monthly"] == Decimal("1666.67")
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_target_date_past(self, mock_date):
+        """C-5.15-10: Target date in the past yields no pace or required.
+
+        A stale target date is not actionable -- pace and required_monthly
+        are None.  months_to_goal is still computed normally.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2026, 4, 2),  # yesterday
+        )
+        assert result["months_to_goal"] == 6
+        assert result["pace"] is None
+        assert result["required_monthly"] is None
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_zero_target(self, mock_date):
+        """C-5.15-11: Zero target amount means goal is met immediately.
+
+        remaining = 0 - balance = negative -> goal met.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("0.00"),
+            monthly_contribution=Decimal("500.00"),
+        )
+        assert result["months_to_goal"] == 0
+        assert result["projected_completion_date"] == date(2026, 4, 3)
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_negative_contribution(self, mock_date):
+        """C-5.15-12: Negative contribution treated as no contribution.
+
+        A withdrawal (negative amount) cannot drive progress toward the goal.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("-50.00"),
+        )
+        assert result["months_to_goal"] is None
+        assert result["projected_completion_date"] is None
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_very_small_contribution(self, mock_date):
+        """C-5.15-13: Very small contribution produces large months without overflow.
+
+        $1/mo toward $100,000 -> 100,000 months. Decimal must handle this
+        without precision loss or performance issues.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 100000 - 0 = 100000, months = ceil(100000/1) = 100000
+        result = calculate_trajectory(
+            current_balance=Decimal("0.00"),
+            target_amount=Decimal("100000.00"),
+            monthly_contribution=Decimal("1.00"),
+        )
+        assert result["months_to_goal"] == 100000
+        assert result["projected_completion_date"] is not None
+
+    @patch("app.services.savings_goal_service.date")
+    def test_pace_same_month_is_on_track(self, mock_date):
+        """C-5.15-18: Same year-month comparison yields on_track.
+
+        Projected on the 3rd, target on the 28th of the same month.
+        Same month = on_track, regardless of day.
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
+        # projected = 2026-10-03
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2026, 10, 28),
+        )
+        assert result["pace"] == "on_track"
+
+    @patch("app.services.savings_goal_service.date")
+    def test_trajectory_no_contribution_no_target_date(self, mock_date):
+        """No contribution and no target date -- fully None trajectory.
+
+        pace and required_monthly are None (no target date).
+        months_to_goal and projected_completion_date are None (no contribution).
+        """
+        mock_date.today.return_value = date(2026, 4, 3)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        result = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("0.00"),
+            target_date=None,
+        )
+        assert result["months_to_goal"] is None
+        assert result["projected_completion_date"] is None
+        assert result["pace"] is None
+        assert result["required_monthly"] is None
