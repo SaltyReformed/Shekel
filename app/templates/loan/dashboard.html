@@ -34,6 +34,10 @@
   </li>
   {% endif %}
   <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-schedule"
+            type="button" role="tab" aria-controls="tab-schedule" aria-selected="false">Amortization Schedule</button>
+  </li>
+  <li class="nav-item" role="presentation">
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-payoff"
             type="button" role="tab" aria-controls="tab-payoff" aria-selected="false">Payoff Calculator</button>
   </li>
@@ -239,6 +243,15 @@
     </div>
   </div>
   {% endif %}
+
+  {# === Amortization Schedule Tab === #}
+  <div class="tab-pane fade" id="tab-schedule" role="tabpanel">
+    {% if amortization_schedule %}
+      {% include "loan/_schedule.html" %}
+    {% else %}
+      <p class="text-muted mt-3">No schedule to display -- the loan may be paid off.</p>
+    {% endif %}
+  </div>
 
   {# === Payoff Calculator Tab === #}
   <div class="tab-pane fade" id="tab-payoff" role="tabpanel">

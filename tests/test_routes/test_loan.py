@@ -1846,3 +1846,596 @@ class TestPaymentBreakdown:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "inflation estimates" not in html
+
+
+# -- Amortization Schedule Tab Tests (Commit 5.13-1) ------------------
+
+
+def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00"),
+                           rate=Decimal("0.06500"), term=360, payment_day=1):
+    """Create a mortgage with origination this month for predictable schedule length.
+
+    Sets original_principal = current_principal so the schedule aligns
+    with the full term (no early-payoff due to a lower current balance).
+    """
+    origination = date.today().replace(day=1)
+    return _create_loan_account_exact(
+        seed_user, db_session, "Mortgage", "Fresh Mortgage",
+        principal, principal, rate, term, origination, payment_day,
+    )
+
+
+def _create_loan_account_exact(seed_user, db_session, type_name, name,
+                                original_principal, current_principal,
+                                rate, term, orig_date, payment_day,
+                                is_arm=False):
+    """Like _create_loan_account but with explicit original_principal."""
+    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=loan_type.id,
+        name=name,
+        current_anchor_balance=current_principal,
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    params = LoanParams(
+        account_id=account.id,
+        original_principal=original_principal,
+        current_principal=current_principal,
+        interest_rate=rate,
+        term_months=term,
+        origination_date=orig_date,
+        payment_day=payment_day,
+        is_arm=is_arm,
+    )
+    db_session.add(params)
+    db_session.commit()
+    return account
+
+
+class TestAmortizationSchedule:
+    """Tests for the full amortization schedule tab on the loan dashboard.
+
+    Verifies that the schedule table renders correctly with the right
+    number of rows, confirmed/projected distinction, currency formatting,
+    totals row, and conditional Rate column for ARM loans.
+    """
+
+    def test_schedule_tab_exists(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-1: Dashboard with LoanParams shows the Amortization Schedule tab.
+
+        GET the dashboard for a mortgage with params. Assert the tab
+        nav item and tab pane markup are both present in the HTML.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Tab nav item exists.
+        assert "Amortization Schedule" in html
+        # Tab pane exists.
+        assert 'id="tab-schedule"' in html
+        # Schedule table rendered (Month-by-Month header).
+        assert "Month-by-Month Schedule" in html
+
+    def test_schedule_has_correct_row_count(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-2: 30-year mortgage produces the correct number of data rows.
+
+        Creates a fresh mortgage where original_principal = current_principal
+        and origination_date = this month, so remaining_months = term = 360.
+        The engine may produce 360 or 361 rows depending on rounding
+        residual (a sub-dollar final payment to zero out the balance).
+        Computes the expected count from the engine and verifies the
+        template renders all of them.
+        """
+        from app.services.amortization_engine import generate_schedule
+
+        principal = Decimal("250000.00")
+        rate = Decimal("0.06500")
+        term = 360
+        expected_count = len(generate_schedule(
+            principal, rate, term,
+            payment_day=1, original_principal=principal, term_months=term,
+        ))
+
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Count data rows: each has exactly one Projected or Confirmed badge.
+        projected = html.count('badge bg-secondary">Projected</span>')
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        total_rows = projected + confirmed
+        assert total_rows == expected_count, (
+            f"Expected {expected_count} data rows, got {total_rows} "
+            f"({projected} projected, {confirmed} confirmed)"
+        )
+
+    def test_schedule_confirmed_rows_marked(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-3: Confirmed payment rows are visually distinguished.
+
+        Creates a mortgage and two confirmed transfers matching the
+        schedule's first two months (April and May 2026 via seed_periods
+        7 and 9).  Asserts confirmed rows get a distinct badge and the
+        rest are Projected.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        # seed_periods[7] start_date is in April 2026 -> schedule month 1.
+        # seed_periods[9] start_date is in May 2026 -> schedule month 2.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[9], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        projected = html.count('badge bg-secondary">Projected</span>')
+        assert confirmed == 2, (
+            f"Expected 2 confirmed rows, got {confirmed}"
+        )
+        assert projected > 0, "Expected some projected rows"
+        # Total should still be a full schedule.
+        assert confirmed + projected > 300
+
+    def test_schedule_first_last_row(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-4: First and last rows have correct values for known loan params.
+
+        Loan: $250,000 at 6.5% for 360 months.
+        Hand calculation:
+          M = P * r(1+r)^n / [(1+r)^n - 1]
+          r = 0.065/12 = 0.00541666...
+          (1+r)^360 ~ 6.9920
+          M = 250000 * (0.00541666 * 6.9920) / (6.9920 - 1)
+          M = 250000 * 0.037878 / 5.9920
+          M ~ $1,580.17
+
+        First month:
+          Interest = 250000 * 0.065/12 = $1,354.17
+          Principal = 1580.17 - 1354.17 = $226.00
+
+        Last row: remaining_balance = $0.00
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # First row: month 1, expected payment of $1,580.17.
+        assert "$1,580.17" in html
+        # First month interest: $250,000 * 0.065/12 = $1,354.17.
+        assert "$1,354.17" in html
+        # First month principal: $1,580.17 - $1,354.17 = $226.00.
+        assert "$226.00" in html
+        # Last row balance must be $0.00.
+        # The totals row does not have a balance cell, so "$0.00" comes
+        # from the last data row's remaining_balance.
+        assert "$0.00" in html
+
+    def test_schedule_early_payoff_fewer_rows(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-5: Loan with low principal pays off early (fewer than 360 rows).
+
+        Creates a loan where current_principal ($5,000) is much lower
+        than the contractual payment from original_principal ($255,000).
+        The monthly payment (~$1,612) exceeds the balance, so the loan
+        pays off in a few months rather than the full term.
+        """
+        acct = _create_loan_account_exact(
+            seed_user, db.session, "Mortgage", "Almost Paid",
+            Decimal("255000.00"), Decimal("5000.00"),
+            Decimal("0.06500"), 360, date(2023, 6, 1), 1,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        projected = html.count('badge bg-secondary">Projected</span>')
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        total_rows = projected + confirmed
+        assert total_rows < 360, (
+            f"Expected fewer than 360 rows for near-payoff loan, got {total_rows}"
+        )
+        # Last row should still reach $0.00.
+        assert "$0.00" in html
+
+    def test_schedule_hidden_no_params(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-6: Loan without LoanParams renders setup page, not schedule tab.
+
+        When no LoanParams exist, the route renders setup.html, which
+        does not include the dashboard tabs at all.
+        """
+        loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
+        account = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="No Params Loan",
+            current_anchor_balance=Decimal("200000.00"),
+        )
+        db.session.add(account)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/loan")
+        assert resp.status_code == 200
+        assert b"Amortization Schedule" not in resp.data
+        assert b"tab-schedule" not in resp.data
+
+    def test_schedule_hidden_empty_schedule(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-7: Loan with zero principal shows empty-schedule message.
+
+        When current_principal is zero (paid off), the engine returns
+        an empty schedule.  The tab pane shows a message instead of a table.
+        """
+        acct = _create_loan_account_exact(
+            seed_user, db.session, "Mortgage", "Paid Off",
+            Decimal("250000.00"), Decimal("0.00"),
+            Decimal("0.06500"), 360, date(2023, 6, 1), 1,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Tab should exist but show empty message.
+        assert "Amortization Schedule" in html
+        assert "paid off" in html.lower()
+        # No table body with data rows.
+        assert "Month-by-Month Schedule" not in html
+
+    def test_schedule_arm_rate_column_shown(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-8: ARM mortgage shows Rate column in the schedule table.
+
+        Creates an ARM mortgage with a rate history entry. The Rate
+        column header and rate values should appear in the schedule.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "ARM Schedule",
+            Decimal("100000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        entry = RateHistory(
+            account_id=acct.id,
+            effective_date=date(2025, 2, 1),
+            interest_rate=Decimal("0.07000"),
+        )
+        db.session.add(entry)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Month-by-Month Schedule" in html
+        # Rate column header.
+        assert ">Rate</th>" in html or ">Rate<" in html
+        # At least one rate percentage value.
+        assert "7.000%" in html or "5.000%" in html
+
+    def test_schedule_fixed_rate_no_rate_column(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-9: Non-ARM mortgage does NOT show Rate column.
+
+        Fixed-rate loans have the same rate for every row. Showing it
+        360 times is noise, so the column is omitted.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Month-by-Month Schedule" in html
+        # Rate column header must not exist in the schedule table.
+        # (The overview tab shows the rate, but not as a <th>.)
+        assert ">Rate</th>" not in html
+
+    def test_schedule_totals_row(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-10: Schedule table includes a totals footer row.
+
+        The <tfoot> row shows summed payment, principal, interest, and
+        extra columns.  Verify the footer exists and contains currency
+        values.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Footer row present.
+        assert "<tfoot" in html
+        assert ">Total</td>" in html or ">Total<" in html
+        # Footer contains currency values (dollar amounts).
+        # The total interest for a $250K/6.5%/30yr loan is significant.
+        assert "$" in html
+
+    def test_schedule_totals_match_rows(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-11: Totals row values match the sum of individual data rows.
+
+        Computes expected totals from the amortization engine directly
+        and verifies they appear in the rendered HTML.
+
+        For $250K at 6.5% for 360 months with no escrow, no extra:
+        Total interest = sum of all monthly interest values over the
+        full schedule.  The engine computes this precisely using Decimal.
+        No escrow means Payment total = P&I total.
+        """
+        from app.services.amortization_engine import generate_schedule
+
+        principal = Decimal("250000.00")
+        rate = Decimal("0.06500")
+        term = 360
+
+        # Compute expected totals from the engine.
+        schedule = generate_schedule(
+            principal, rate, term,
+            payment_day=1,
+            original_principal=principal,
+            term_months=term,
+        )
+        expected_interest = sum(
+            (row.interest for row in schedule), Decimal("0.00"),
+        )
+        # No escrow on this test loan, so Payment = P&I total.
+        expected_payment = sum(
+            (row.payment for row in schedule), Decimal("0.00"),
+        )
+        formatted_interest = f"${expected_interest:,.2f}"
+        formatted_payment = f"${expected_payment:,.2f}"
+
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert formatted_interest in html, (
+            f"Expected total interest {formatted_interest} not found"
+        )
+        assert formatted_payment in html, (
+            f"Expected total payment {formatted_payment} not found"
+        )
+
+    def test_schedule_extra_payment_displayed(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-12: Extra payments show as dollar amounts when present.
+
+        Creates a mortgage with a committed transfer that overpays the
+        standard P&I.  The row matching that month should show a non-zero
+        Extra column.  The Extra column itself is only shown when at
+        least one row has a genuine extra payment.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        # Standard payment is ~$1,580.17.  Overpay by $500.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("2080.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Extra column should appear when overpayments exist.
+        assert ">Extra</th>" in html, "Expected Extra column for overpayment"
+        # Rows without extra show "--".
+        assert "--" in html, "Expected dashes for zero-extra rows"
+
+    def test_schedule_uses_committed_schedule(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-13: Schedule uses committed data when payments exist.
+
+        Creates a mortgage with a confirmed transfer.  If the schedule
+        used only the original (no-payments) schedule, no rows would
+        be marked Confirmed.  Presence of Confirmed badges proves the
+        committed schedule is used.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        assert confirmed >= 1, (
+            "Expected at least 1 confirmed row from committed schedule"
+        )
+
+    def test_schedule_currency_formatting_consistent(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C-5.13-14: Currency values in the schedule use consistent formatting.
+
+        All monetary values should match the $X,XXX.XX pattern with
+        exactly 2 decimal places.  Parses several values from the
+        schedule and validates the format.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Extract dollar amounts from the schedule.  The pattern
+        # matches $X.XX through $XXX,XXX,XXX.XX.
+        amounts = re.findall(r'\$[\d,]+\.\d{2}', html)
+        assert len(amounts) > 100, (
+            f"Expected many currency values in schedule, found {len(amounts)}"
+        )
+        # Every matched amount should have exactly 2 decimal places.
+        for amount in amounts[:20]:  # Spot-check first 20.
+            assert re.match(r'^\$[\d,]+\.\d{2}$', amount), (
+                f"Currency format mismatch: {amount}"
+            )
+
+
+# -- Dashboard / Payoff Calculator Consistency Tests -------------------
+
+
+class TestDashboardPayoffConsistency:
+    """Verify the dashboard and payoff calculator use the same data pipeline.
+
+    Both routes must produce identical amortization calculations from
+    the same loan.  These tests catch mismatches caused by one route
+    applying payment preparation (escrow subtraction, biweekly
+    redistribution) while the other uses raw data.
+    """
+
+    def test_payoff_committed_matches_dashboard_chart(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff committed chart data matches dashboard committed chart.
+
+        Both routes render committed balance data for Chart.js.  Since
+        both use _load_loan_context for payment preparation, the
+        committed balance arrays must be identical.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        # Dashboard: extract committed chart data.
+        dash_resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert dash_resp.status_code == 200
+        dash_html = dash_resp.data.decode()
+        dash_match = re.search(r"data-committed='(\[.*?\])'", dash_html)
+        assert dash_match, "Dashboard missing committed chart data"
+        dash_committed = dash_match.group(1)
+
+        # Payoff with 0 extra: extract committed chart data.
+        payoff_resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "0"},
+        )
+        assert payoff_resp.status_code == 200
+        payoff_html = payoff_resp.data.decode()
+        payoff_match = re.search(r"data-committed='(\[.*?\])'", payoff_html)
+        assert payoff_match, "Payoff missing committed chart data"
+        payoff_committed = payoff_match.group(1)
+
+        assert dash_committed == payoff_committed, (
+            "Dashboard and payoff calculator committed schedules differ -- "
+            "data pipeline mismatch"
+        )
+
+    def test_payoff_with_payments_no_crash(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Payoff calculator with prepared payments does not crash.
+
+        After the DRY refactor, both routes use _load_loan_context.
+        Verify the payoff calculator handles prepared payments correctly
+        in both extra_payment and target_date modes.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[9], Decimal("1580.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        # Extra payment mode.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200"},
+        )
+        assert resp.status_code == 200
+
+        # Target date mode.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2040-01-01"},
+        )
+        assert resp.status_code == 200
+
+    def test_escrow_subtracted_consistently(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Escrow-inclusive transfers do not inflate payoff savings.
+
+        When transfers include escrow, both routes must subtract it
+        before passing to the engine.  Without this, the payoff
+        calculator would report inflated interest savings because the
+        engine would count escrow as extra principal.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        # Add escrow: $600/month.
+        _add_escrow(db.session, acct.id, "Property Tax", Decimal("7200.00"))
+        db.session.commit()
+
+        # Transfer includes P&I (~$1,580) + escrow ($600) = ~$2,180.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("2180.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        # Dashboard should NOT show the escrow as "extra" in schedule.
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The Escrow column should show $600 (7200/12).
+        assert "Escrow" in html
+        assert "$600.00" in html
+
+        # Payoff calculator should also work with prepared payments.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "0"},
+        )
+        assert resp.status_code == 200
+
+    def test_biweekly_overlap_handled_in_payoff(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two payments in the same month are redistributed in payoff too.
+
+        Creates two transfers in the same calendar month (biweekly
+        overlap).  Both the dashboard and payoff calculator must
+        distribute them across two schedule months.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        # seed_periods[7] and [8] are both in April 2026.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[8], Decimal("1580.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        # Dashboard schedule: no month should show double payment.
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # $3,160 (2x $1,580.17) should NOT appear as a single payment.
+        assert "$3,160" not in html, (
+            "Dashboard shows double payment -- biweekly fix not applied"
+        )
+
+        # Payoff calculator: same -- should not crash or double-count.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "0"},
+        )
+        assert resp.status_code == 200

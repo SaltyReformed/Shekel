@@ -1,0 +1,112 @@
+{# Full month-by-month amortization schedule table.
+   Renders the committed schedule (with real payment data and ARM rate
+   changes when available).  Included in the Amortization Schedule tab
+   pane only when amortization_schedule is non-empty.
+
+   The Payment column shows P&I + escrow (the user's total monthly
+   obligation).  The Escrow column is shown only when escrow > $0.
+   The Extra column is shown only when genuine extra principal payments
+   exist (after escrow has been separated out). #}
+{% set col_count = 7 + (1 if monthly_escrow|float > 0 else 0) + (1 if schedule_totals.has_extra else 0) + (1 if show_rate_column else 0) %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-table"></i> Month-by-Month Schedule
+      <span class="badge bg-secondary ms-1">{{ amortization_schedule|length }} months</span>
+    </h6>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Date</th>
+            <th class="text-end">Payment</th>
+            <th class="text-end">Principal</th>
+            <th class="text-end">Interest</th>
+            {% if monthly_escrow|float > 0 %}
+            <th class="text-end">Escrow</th>
+            {% endif %}
+            {% if schedule_totals.has_extra %}
+            <th class="text-end">Extra</th>
+            {% endif %}
+            <th class="text-end">Balance</th>
+            {% if show_rate_column %}
+            <th class="text-end">Rate</th>
+            {% endif %}
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set ns = namespace(prev_year=0, prev_rate=None) %}
+          {% for row in amortization_schedule %}
+          {% if row.payment_date.year != ns.prev_year %}
+          <tr class="border-top">
+            <td colspan="{{ col_count }}" class="fw-bold small text-muted py-1">
+              {{ row.payment_date.year }}
+            </td>
+          </tr>
+          {% set ns.prev_year = row.payment_date.year %}
+          {% endif %}
+          <tr class="{% if row.is_confirmed %}table-success{% endif %}">
+            <td>{{ row.month }}</td>
+            <td>{{ row.payment_date.strftime('%b %-d, %Y') }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format((row.payment|float) + (monthly_escrow|float) + (row.extra_payment|float)) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.principal|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.interest|float) }}</td>
+            {% if monthly_escrow|float > 0 %}
+            <td class="text-end font-mono">${{ "{:,.2f}".format(monthly_escrow|float) }}</td>
+            {% endif %}
+            {% if schedule_totals.has_extra %}
+            <td class="text-end font-mono">
+              {% if row.extra_payment|float != 0 %}
+              ${{ "{:,.2f}".format(row.extra_payment|float) }}
+              {% else %}
+              --
+              {% endif %}
+            </td>
+            {% endif %}
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.remaining_balance|float) }}</td>
+            {% if show_rate_column %}
+            {% set display_rate = row.interest_rate if row.interest_rate is not none else params.interest_rate %}
+            <td class="text-end font-mono{% if row.interest_rate is not none and row.interest_rate != ns.prev_rate and ns.prev_rate is not none %} fw-bold text-warning{% endif %}">
+              {{ "%.3f"|format(display_rate|float * 100) }}%
+            </td>
+            {% if row.interest_rate is not none %}
+            {% set ns.prev_rate = row.interest_rate %}
+            {% endif %}
+            {% endif %}
+            <td>
+              {% if row.is_confirmed %}
+              <span class="badge bg-success">Confirmed</span>
+              {% else %}
+              <span class="badge bg-secondary">Projected</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% if schedule_totals %}
+        <tfoot class="fw-bold border-top border-2">
+          <tr>
+            <td colspan="2">Total</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_payment|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_principal|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_interest|float) }}</td>
+            {% if monthly_escrow|float > 0 %}
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_escrow|float) }}</td>
+            {% endif %}
+            {% if schedule_totals.has_extra %}
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_extra|float) }}</td>
+            {% endif %}
+            <td></td>
+            {% if show_rate_column %}<td></td>{% endif %}
+            <td></td>
+          </tr>
+        </tfoot>
+        {% endif %}
+      </table>
+    </div>
+  </div>
+</div>

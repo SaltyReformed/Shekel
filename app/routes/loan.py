@@ -5,6 +5,7 @@ Unified dashboard, parameter updates, escrow management, rate history,
 and payoff calculator for all installment loan account types.
 """
 
+import calendar
 import logging
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
@@ -38,7 +39,7 @@ from app.services import (
     pay_period_service,
     transfer_recurrence,
 )
-from app.services.amortization_engine import RateChangeRecord
+from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_payment_service import get_payment_history
 from app.utils.formatting import pct_to_decimal
 
@@ -195,6 +196,246 @@ def _compute_payment_breakdown(schedule, escrow_components):
     }
 
 
+def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
+    """Sum payment, principal, interest, escrow, and extra from a schedule.
+
+    The Payment column in the schedule shows P&I + escrow for each month.
+    Totals are computed from the actual schedule rows so the footer row
+    matches the individual data rows exactly.
+
+    Args:
+        schedule: List of AmortizationRow objects.
+        monthly_escrow: Monthly escrow amount added to each row's
+            payment for display.
+
+    Returns:
+        dict with keys: total_payment, total_principal, total_interest,
+        total_escrow, total_extra, has_extra.  Empty dict if schedule
+        is empty.
+    """
+    if not schedule:
+        return {}
+    num_months = len(schedule)
+    total_pi = sum((row.payment for row in schedule), Decimal("0.00"))
+    total_principal = sum((row.principal for row in schedule), Decimal("0.00"))
+    total_interest = sum((row.interest for row in schedule), Decimal("0.00"))
+    total_extra = sum((row.extra_payment for row in schedule), Decimal("0.00"))
+    total_escrow = monthly_escrow * num_months
+    return {
+        "total_payment": total_pi + total_escrow + total_extra,
+        "total_principal": total_principal,
+        "total_interest": total_interest,
+        "total_escrow": total_escrow,
+        "total_extra": total_extra,
+        "has_extra": total_extra > Decimal("0.00"),
+    }
+
+
+def _compute_contractual_pi(params):
+    """Compute the standard monthly P&I payment from loan params.
+
+    For ARM loans, the payment is re-amortized from current balance at
+    the current rate.  For fixed-rate loans, use original terms.
+
+    Args:
+        params: LoanParams model instance.
+
+    Returns:
+        Decimal monthly P&I payment.
+    """
+    remaining = amortization_engine.calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+    if params.is_arm:
+        return amortization_engine.calculate_monthly_payment(
+            Decimal(str(params.current_principal)),
+            Decimal(str(params.interest_rate)),
+            remaining,
+        )
+    return amortization_engine.calculate_monthly_payment(
+        Decimal(str(params.original_principal)),
+        Decimal(str(params.interest_rate)),
+        params.term_months,
+    )
+
+
+def _prepare_payments_for_engine(payments, payment_day, monthly_escrow,
+                                contractual_pi):
+    """Prepare payment records for the amortization engine.
+
+    Corrects two mismatches between biweekly shadow transactions and
+    the monthly amortization schedule:
+
+    1. Escrow subtraction: Recurring transfers include escrow in their
+       total amount, but the engine handles P&I only.  Without this
+       correction, the engine treats escrow as extra principal, inflating
+       paydown speed and showing escrow as spurious "Extra" entries.
+       Only subtracts escrow from the portion that exceeds the standard
+       P&I payment, so payments that do not include escrow are unaffected.
+
+    2. Biweekly redistribution: Pay period start dates are biweekly and
+       sometimes place two mortgage payments in the same calendar month
+       (e.g., the Aug 1 payment falls in a Jul 29 pay period).  The
+       engine sums same-month payments, double-counting one month and
+       leaving the next empty.  This shifts extra same-month payments
+       to subsequent months to restore one-payment-per-month alignment.
+
+    Args:
+        payments: List of PaymentRecord from get_payment_history().
+        payment_day: Mortgage payment day of month (from LoanParams).
+        monthly_escrow: Monthly escrow amount from escrow_calculator.
+        contractual_pi: Standard monthly P&I payment (no escrow).
+
+    Returns:
+        Corrected list of PaymentRecord.
+    """
+    if not payments:
+        return payments
+
+    sorted_payments = sorted(payments, key=lambda p: p.payment_date)
+
+    # Step 1: Subtract escrow from payments that include it.
+    # Only subtract from the excess above contractual P&I so that
+    # payments equal to or below P&I (no escrow included) are untouched.
+    if monthly_escrow > Decimal("0.00"):
+        adjusted = []
+        for p in sorted_payments:
+            if p.amount > contractual_pi:
+                escrow_portion = min(monthly_escrow, p.amount - contractual_pi)
+                new_amount = p.amount - escrow_portion
+            else:
+                new_amount = p.amount
+            adjusted.append(PaymentRecord(
+                payment_date=p.payment_date,
+                amount=new_amount,
+                is_confirmed=p.is_confirmed,
+            ))
+        sorted_payments = adjusted
+
+    # Step 2: Redistribute same-month payments to consecutive months.
+    # Biweekly pay periods produce at most one extra payment per month
+    # (~2 times per year), so cascading collisions are not expected,
+    # but the while-loop handles them defensively.
+    result = []
+    allocated_months = set()
+
+    for p in sorted_payments:
+        ym = (p.payment_date.year, p.payment_date.month)
+        if ym not in allocated_months:
+            result.append(p)
+            allocated_months.add(ym)
+        else:
+            y, m = ym
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+            while (y, m) in allocated_months:
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+            max_day = calendar.monthrange(y, m)[1]
+            new_date = date(y, m, min(payment_day, max_day))
+            result.append(PaymentRecord(
+                payment_date=new_date,
+                amount=p.amount,
+                is_confirmed=p.is_confirmed,
+            ))
+            allocated_months.add((y, m))
+
+    return result
+
+
+def _load_loan_context(account, params):
+    """Load payment history, escrow, and rate changes for a loan.
+
+    Centralizes the data loading that both the dashboard and payoff
+    calculator need, ensuring consistent payment preparation (escrow
+    subtraction and biweekly redistribution) across all code paths.
+
+    Returns a dict with:
+        payments: Prepared PaymentRecord list (escrow-subtracted,
+            month-aligned).
+        rate_changes: List of RateChangeRecord or None.
+        rate_history: List of RateHistory ORM objects (for display).
+        escrow_components: List of active EscrowComponent objects.
+        monthly_escrow: Decimal monthly escrow amount.
+        principal: Decimal current principal.
+        rate: Decimal annual interest rate.
+        remaining: int remaining months on the loan.
+        original_for_engine: Decimal original principal, or None for ARM.
+
+    Args:
+        account: Account model instance.
+        params: LoanParams model instance.
+    """
+    # Escrow -- loaded first because payment preparation needs it.
+    escrow_components = (
+        db.session.query(EscrowComponent)
+        .filter_by(account_id=account.id, is_active=True)
+        .order_by(EscrowComponent.name)
+        .all()
+    )
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
+
+    # Payment history from shadow income transactions.
+    scenario = (
+        db.session.query(Scenario)
+        .filter_by(user_id=current_user.id, is_baseline=True)
+        .first()
+    )
+    raw_payments = get_payment_history(account.id, scenario.id) if scenario else []
+
+    # Prepare: subtract escrow and fix biweekly month overlaps.
+    payments = _prepare_payments_for_engine(
+        raw_payments, params.payment_day, monthly_escrow,
+        _compute_contractual_pi(params),
+    )
+
+    # Rate history for ARM loans.
+    rate_history = []
+    rate_changes = None
+    if params.is_arm:
+        rate_history = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=account.id)
+            .order_by(RateHistory.effective_date.desc())
+            .all()
+        )
+        if rate_history:
+            rate_changes = [
+                RateChangeRecord(
+                    effective_date=rh.effective_date,
+                    interest_rate=Decimal(str(rh.interest_rate)),
+                )
+                for rh in rate_history
+            ]
+
+    # Derived values used by both dashboard and payoff calculator.
+    principal = Decimal(str(params.current_principal))
+    rate = Decimal(str(params.interest_rate))
+    remaining = amortization_engine.calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+    original_for_engine = (
+        None if params.is_arm
+        else Decimal(str(params.original_principal))
+    )
+
+    return {
+        "payments": payments,
+        "rate_changes": rate_changes,
+        "rate_history": rate_history,
+        "escrow_components": escrow_components,
+        "monthly_escrow": monthly_escrow,
+        "principal": principal,
+        "rate": rate,
+        "remaining": remaining,
+        "original_for_engine": original_for_engine,
+    }
+
+
 def _compute_total_payment(params, escrow_components):
     """Compute total monthly payment (P&I + escrow) for OOB updates.
 
@@ -224,52 +465,18 @@ def dashboard(account_id):
             account_type=account_type,
         )
 
-    # Load payment history from shadow income transactions.
-    # When no transfers exist, payments is [] and the engine behaves
-    # identically to the pre-5.1 no-payments path.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
-    payments = get_payment_history(account.id, scenario.id) if scenario else []
-
-    # Load rate history for ARM loans and convert to engine-compatible
-    # RateChangeRecord instances.  Non-ARM loans pass rate_changes=None.
-    rate_history = []
-    rate_changes = None
-    if params.is_arm:
-        rate_history = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account.id)
-            .order_by(RateHistory.effective_date.desc())
-            .all()
-        )
-        if rate_history:
-            rate_changes = [
-                RateChangeRecord(
-                    effective_date=rh.effective_date,
-                    interest_rate=Decimal(str(rh.interest_rate)),
-                )
-                for rh in rate_history
-            ]
+    ctx = _load_loan_context(account, params)
+    payments = ctx["payments"]
+    rate_changes = ctx["rate_changes"]
+    rate_history = ctx["rate_history"]
+    escrow_components = ctx["escrow_components"]
+    monthly_escrow = ctx["monthly_escrow"]
 
     # Calculate projection (summary + schedule) in one call.
-    # This is the COMMITTED projection: all payments (confirmed +
-    # projected) plus ARM rate changes.
     proj = amortization_engine.get_loan_projection(
         params, payments=payments, rate_changes=rate_changes,
     )
     summary = proj.summary
-
-    # Load escrow components.
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
-    )
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
     total_payment = escrow_calculator.calculate_total_payment(
         summary.monthly_payment, escrow_components,
     )
@@ -280,21 +487,14 @@ def dashboard(account_id):
     )
 
     # --- Multi-scenario chart data ---
+    # Values from the shared loan context.
+    principal = ctx["principal"]
+    rate = ctx["rate"]
+    remaining = ctx["remaining"]
+    original_for_engine = ctx["original_for_engine"]
+
     # Original schedule: contractual baseline, no payments, no rate
     # changes.  "What the bank expects."
-    principal = Decimal(str(params.current_principal))
-    rate = Decimal(str(params.interest_rate))
-    remaining = proj.remaining_months
-
-    # For ARM loans, the contractual payment from original terms is
-    # meaningless -- params.interest_rate is the current rate, not the
-    # origination rate.  Pass None to force re-amortization from
-    # current_principal at the current rate.
-    original_for_engine = (
-        None if params.is_arm
-        else Decimal(str(params.original_principal))
-    )
-
     original_schedule = amortization_engine.generate_schedule(
         principal, rate, remaining,
         payment_day=params.payment_day,
@@ -366,6 +566,15 @@ def dashboard(account_id):
             default_source_id = acct.id
             break
 
+    # Amortization schedule: the committed projection is already computed
+    # as proj.schedule.  Pass it to the template along with totals for
+    # the footer row and flags for conditional columns.
+    amortization_schedule = proj.schedule
+    show_rate_column = bool(params.is_arm)
+    schedule_totals = _compute_schedule_totals(
+        amortization_schedule, monthly_escrow,
+    )
+
     return render_template(
         "loan/dashboard.html",
         account=account,
@@ -385,6 +594,9 @@ def dashboard(account_id):
         show_transfer_prompt=show_transfer_prompt,
         source_accounts=source_accounts,
         default_source_id=default_source_id,
+        amortization_schedule=amortization_schedule,
+        show_rate_column=show_rate_column,
+        schedule_totals=schedule_totals,
     )
 
 
@@ -643,48 +855,18 @@ def payoff_calculate(account_id):
 
     data = _payoff_schema.load(request.form)
     mode = data["mode"]
-    remaining_months = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
+
+    # Shared loan context: payments (escrow-adjusted, month-aligned),
+    # rate changes, principal, rate, remaining months.  Identical to
+    # the dashboard's data loading so calculations are consistent.
+    ctx = _load_loan_context(account, params)
+    payments = ctx["payments"]
+    rate_changes = ctx["rate_changes"]
+    principal = ctx["principal"]
+    rate = ctx["rate"]
+    remaining_months = ctx["remaining"]
+    original = ctx["original_for_engine"]
     schedule_start = date.today().replace(day=1)
-
-    principal = Decimal(str(params.current_principal))
-    rate = Decimal(str(params.interest_rate))
-
-    # For ARM loans, the contractual payment from original terms is
-    # meaningless -- params.interest_rate is the current rate, not the
-    # origination rate.  Pass None to force re-amortization from
-    # current_principal at the current rate.
-    original = (
-        None if params.is_arm
-        else Decimal(str(params.original_principal))
-    )
-
-    # Load payment history for payment-aware projections.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
-    payments = get_payment_history(account.id, scenario.id) if scenario else []
-
-    # Load rate changes for ARM loans (same pattern as dashboard).
-    rate_changes = None
-    if params.is_arm:
-        rate_history = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account.id)
-            .order_by(RateHistory.effective_date)
-            .all()
-        )
-        if rate_history:
-            rate_changes = [
-                RateChangeRecord(
-                    effective_date=rh.effective_date,
-                    interest_rate=Decimal(str(rh.interest_rate)),
-                )
-                for rh in rate_history
-            ]
 
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
@@ -782,18 +964,7 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
-        # For ARM loans, the displayed monthly payment is the re-amortized
-        # payment from current balance and remaining term.  For fixed-rate
-        # loans, use the contractual payment from original terms.
-        if params.is_arm:
-            monthly_payment = amortization_engine.calculate_monthly_payment(
-                principal, rate, remaining_months,
-            )
-        else:
-            monthly_payment = amortization_engine.calculate_monthly_payment(
-                Decimal(str(params.original_principal)), rate,
-                params.term_months,
-            )
+        monthly_payment = _compute_contractual_pi(params)
 
         return render_template(
             "loan/_payoff_results.html",
