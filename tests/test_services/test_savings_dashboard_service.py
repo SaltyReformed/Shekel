@@ -29,6 +29,7 @@ class TestComputeDashboardData:
                 "account_data", "grouped_accounts", "goal_data",
                 "emergency_metrics", "total_savings",
                 "avg_monthly_expenses", "savings_accounts",
+                "archived_accounts",
             }
             assert set(result.keys()) == expected_keys
 
@@ -411,3 +412,101 @@ class TestPaidOffFlag:
                 if ad["account"].id == acct.id
             )
             assert loan_ad["is_paid_off"] is False
+
+
+class TestArchivedAccounts:
+    """Tests for archived account loading in the dashboard service.
+
+    Commit 5.9-3: archived accounts (is_active=False) are loaded
+    separately with minimal data and no projections.
+    """
+
+    def test_archived_accounts_returned(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Archived accounts appear in the archived_accounts key."""
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Old Savings",
+                current_anchor_balance=Decimal("2000.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            assert "archived_accounts" in result
+            assert len(result["archived_accounts"]) == 1
+            assert result["archived_accounts"][0]["account"].name == "Old Savings"
+
+    def test_archived_excluded_from_active(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Archived account does not appear in account_data."""
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Hidden Savings",
+                current_anchor_balance=Decimal("500.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            active_names = [
+                ad["account"].name for ad in result["account_data"]
+            ]
+            assert "Hidden Savings" not in active_names
+
+    def test_no_archived_returns_empty_list(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No archived accounts yields an empty list."""
+        with app.app_context():
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            assert result["archived_accounts"] == []
+
+    def test_archived_has_balance_only(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Archived accounts carry current_balance but no projections."""
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Archived Savings",
+                current_anchor_balance=Decimal("3000.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ad = result["archived_accounts"][0]
+            assert "current_balance" in ad
+            assert ad["current_balance"] == Decimal("3000.00")
+            assert "projected" not in ad

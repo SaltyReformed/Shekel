@@ -111,6 +111,13 @@
             <i class="bi bi-graph-up"></i>
           </a>
           {% endif %}
+          <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
+                class="d-inline" data-confirm="Archive this account?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Archive">
+              <i class="bi bi-archive"></i>
+            </button>
+          </form>
           </div>
         </div>
         <div class="mt-3">
@@ -148,12 +155,76 @@
           {% endfor %}
         </div>
         {% endif %}
+        {% if ad.is_paid_off %}
+        <div class="mt-3 pt-2 border-top">
+          <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
+                class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <small class="text-muted me-2">This loan is paid off.</small>
+            <button type="submit" class="btn btn-sm btn-outline-success">
+              <i class="bi bi-archive me-1"></i>Archive
+            </button>
+          </form>
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
   {% endfor %}
 </div>
 {% endfor %}
+
+{# --- Archived Accounts (collapsed) --- #}
+{% if archived_accounts %}
+<div class="mb-4">
+  <a class="text-muted text-decoration-none" data-bs-toggle="collapse"
+     href="#archivedAccounts" role="button" aria-expanded="false"
+     aria-controls="archivedAccounts">
+    <i class="bi bi-archive me-1"></i>
+    Archived Accounts ({{ archived_accounts|length }})
+    <i class="bi bi-chevron-down ms-1 small"></i>
+  </a>
+  <div class="collapse mt-2" id="archivedAccounts">
+    <div class="row g-3">
+      {% for ad in archived_accounts %}
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100 border-secondary">
+          <div class="card-body text-muted">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <h6 class="card-title mb-1">
+                  <i class="bi bi-archive me-1"></i>
+                  {{ ad.account.name }}
+                  {% if ad.is_paid_off is defined and ad.is_paid_off %}
+                  <span class="badge bg-success ms-1">Paid Off</span>
+                  {% endif %}
+                </h6>
+                <small>
+                  {{ ad.account.account_type.name|format_account_type if ad.account.account_type else '--' }}
+                </small>
+              </div>
+              <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
+                    class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-success" title="Unarchive">
+                  <i class="bi bi-arrow-counterclockwise"></i>
+                </button>
+              </form>
+            </div>
+            <div class="mt-2">
+              <div class="small">Last Balance</div>
+              <div class="fs-5 fw-bold font-mono">
+                ${{ "{:,.2f}".format(ad.current_balance|float) }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {# --- Emergency Fund Metrics --- #}
 {% if total_savings > 0 %}

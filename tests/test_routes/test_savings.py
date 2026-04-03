@@ -2039,3 +2039,218 @@ class TestPaidOffBadge:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             assert b"Paid Off" not in resp.data
+
+
+# -- Account Archival on Savings Dashboard Tests (Commit 5.9-3) -----------
+
+
+class TestAccountArchivalDashboard:
+    """Tests for archive/unarchive behavior on the accounts dashboard.
+
+    Commit 5.9-3: archived accounts move to a collapsed section,
+    active accounts get an archive button, and paid-off loans get
+    a prominent archive prompt.
+    """
+
+    def test_archived_account_hidden_from_active_section(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Archived account does not appear in the active account cards."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Hidden Savings",
+                current_anchor_balance=Decimal("500.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The active section (before "Archived Accounts") should
+            # not contain the archived account name as a card title.
+            active_section = html.split("Archived Accounts")[0]
+            assert "Hidden Savings" not in active_section
+
+    def test_archived_section_shown_when_archived_exist(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When at least one account is archived, the collapsed section appears."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Old Account",
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Archived Accounts" in html
+            assert "archivedAccounts" in html
+
+    def test_archived_section_hidden_when_none_archived(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When no accounts are archived, the section does not render."""
+        with app.app_context():
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Archived Accounts" not in resp.data
+
+    def test_archived_account_shows_in_archived_section(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Archived account card appears in the collapsed section with
+        its name and an unarchive button.
+        """
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Closed Savings",
+                current_anchor_balance=Decimal("0.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The archived collapse div starts at id="archivedAccounts".
+            # Split on the id attribute to get content after it.
+            archived_section = html.split('id="archivedAccounts"')[1]
+            assert "Closed Savings" in archived_section
+            assert "unarchive" in archived_section
+
+    def test_unarchive_from_dashboard(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """POST unarchive returns the account to active state."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Restore Me",
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+            acct_id = archived.id
+
+            resp = auth_client.post(
+                f"/accounts/{acct_id}/unarchive",
+                follow_redirects=False,
+            )
+            assert resp.status_code == 302
+
+            refreshed = db.session.get(Account, acct_id)
+            assert refreshed.is_active is True
+
+    def test_active_cards_have_archive_button(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Each active account card includes an archive action button."""
+        with app.app_context():
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "bi-archive" in html
+            assert f"/accounts/{seed_user['account'].id}/archive" in html
+
+    def test_paid_off_shows_archive_prompt(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Paid-off loan card has a prominent 'Archive' prompt."""
+        with app.app_context():
+            acct = _create_small_loan(seed_user, name="Paid Off Archival")
+            _make_confirmed_transfer(
+                seed_user, acct, seed_periods[7], Decimal("1100.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "This loan is paid off" in html
+            assert f"/accounts/{acct.id}/archive" in html
+
+    def test_archived_account_no_projections(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Archived accounts show last balance, not projected balances."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            archived = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Old Savings",
+                current_anchor_balance=Decimal("5000.00"),
+                is_active=False,
+            )
+            db.session.add(archived)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            archived_section = html.split('id="archivedAccounts"')[1]
+            assert "Old Savings" in archived_section
+            assert "$5,000.00" in archived_section
+            assert "Projected" not in archived_section
+
+    def test_mixed_active_and_archived(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Two active accounts + one archived: correct separation."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            active_acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Active Savings",
+                current_anchor_balance=Decimal("3000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+                is_active=True,
+            )
+            archived_acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Archived Savings",
+                current_anchor_balance=Decimal("1000.00"),
+                is_active=False,
+            )
+            db.session.add_all([active_acct, archived_acct])
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "Active Savings" in html
+            assert "Checking" in html
+            assert "Archived Accounts (1)" in html
+            assert "Archived Savings" in html

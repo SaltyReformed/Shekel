@@ -137,6 +137,9 @@ def compute_dashboard_data(user_id):
 
     grouped_accounts = _group_accounts_by_category(account_data)
 
+    # ── Archived accounts (minimal data, no projections) ───────
+    archived_accounts = _load_archived_accounts(user_id)
+
     return {
         "account_data": account_data,
         "grouped_accounts": grouped_accounts,
@@ -145,6 +148,7 @@ def compute_dashboard_data(user_id):
         "total_savings": total_savings,
         "avg_monthly_expenses": avg_monthly_expenses,
         "savings_accounts": savings_accounts,
+        "archived_accounts": archived_accounts,
     }
 
 
@@ -607,6 +611,34 @@ def _compute_avg_monthly_expenses(
         avg_monthly_expenses = max(avg_monthly_expenses, committed_monthly)
 
     return avg_monthly_expenses
+
+
+def _load_archived_accounts(user_id: int) -> list[dict]:
+    """Load archived accounts with minimal data for the collapsed section.
+
+    Archived accounts do not receive balance projections, engine calls,
+    or goal calculations -- they are historical.  Each dict contains
+    the Account ORM object and its last known balance.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        List of dicts with keys: account, current_balance.
+    """
+    accounts = (
+        db.session.query(Account)
+        .filter_by(user_id=user_id, is_active=False)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+    result = []
+    for acct in accounts:
+        result.append({
+            "account": acct,
+            "current_balance": acct.current_anchor_balance or Decimal("0.00"),
+        })
+    return result
 
 
 def _group_accounts_by_category(account_data):
