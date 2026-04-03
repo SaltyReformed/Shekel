@@ -404,11 +404,16 @@ def generate_schedule(
     else:
         rate_schedule = []
 
-    # Compute the monthly payment.  When original loan terms are provided,
-    # use them for the contractual payment (what the borrower actually pays).
-    # Otherwise re-amortize from current_principal (backward compat).
+    # Compute the monthly payment.  For fixed-rate loans with original
+    # terms provided, use the contractual payment (what the borrower
+    # actually pays -- same for the life of the loan).  For ARM loans
+    # (indicated by non-empty rate_changes), the "contractual" payment
+    # changes at each rate adjustment, so re-amortize from
+    # current_principal and remaining_months at the current rate.
     using_contractual = (
-        original_principal is not None and term_months is not None
+        original_principal is not None
+        and term_months is not None
+        and not has_rate_changes
     )
     if using_contractual:
         monthly_payment = calculate_monthly_payment(
@@ -603,16 +608,25 @@ def calculate_summary(
     extra_monthly on top.
 
     Args:
-        original_principal: Original loan amount at origination.  When
-            provided, the contractual monthly payment is computed from
-            (original_principal, annual_rate, term_months) instead of
-            re-amortizing from current_principal.
+        original_principal: Original loan amount at origination.  For
+            fixed-rate loans, the contractual payment is computed from
+            (original_principal, annual_rate, term_months).  Ignored
+            when rate_changes is non-empty (ARM loans re-amortize from
+            current_principal at the current rate).
         payments: Optional list of PaymentRecord instances passed
             through to generate_schedule().
         rate_changes: Optional list of RateChangeRecord instances
             passed through to generate_schedule() for ARM loans.
+            When non-empty, forces re-amortization from
+            current_principal instead of using original terms.
     """
-    if original_principal is not None:
+    # For fixed-rate loans, the contractual payment from original terms
+    # is correct for the life of the loan.  For ARM loans (non-empty
+    # rate_changes), the payment is re-amortized at each rate adjustment,
+    # so the current payment must be derived from current_principal and
+    # remaining_months at the current rate.
+    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
+    if original_principal is not None and not has_rate_changes:
         monthly_payment = calculate_monthly_payment(
             original_principal, annual_rate, term_months,
         )
@@ -780,16 +794,20 @@ def get_loan_projection(
 ):
     """Compute remaining months, summary, and schedule for a loan in one call.
 
-    The contractual monthly payment is computed from ``original_principal``
-    and ``term_months`` (what the borrower actually pays each month), then
-    applied against ``current_principal`` over ``remaining_months`` to
-    project the payoff trajectory.
+    For fixed-rate loans, the contractual monthly payment is computed from
+    ``original_principal`` and ``term_months`` (what the borrower pays each
+    month for the life of the loan).  For ARM loans (``params.is_arm``),
+    the payment is always re-amortized from ``current_principal`` and
+    ``remaining_months`` at the current rate, since the "contractual"
+    payment changes at each rate adjustment.  This applies regardless of
+    whether *rate_changes* is populated -- a newly created ARM with no
+    rate history still uses the re-amortized path.
 
     Args:
         params: An object with ``origination_date``, ``term_months``,
                 ``original_principal``, ``current_principal``,
-                ``interest_rate``, and ``payment_day`` attributes
-                (e.g. a LoanParams model instance).
+                ``interest_rate``, ``payment_day``, and optionally
+                ``is_arm`` attributes (e.g. a LoanParams model instance).
         schedule_start: Date to use as schedule start.  Defaults to the
                         first day of the current month.
         payments: Optional list of PaymentRecord instances passed
@@ -808,8 +826,16 @@ def get_loan_projection(
     )
 
     principal = Decimal(str(params.current_principal))
-    original = Decimal(str(params.original_principal))
     rate = Decimal(str(params.interest_rate))
+
+    # For ARM loans, the "contractual" payment from original terms is
+    # meaningless -- params.interest_rate is the CURRENT rate (after
+    # adjustment), not the origination rate.  Computing
+    # M(original_principal, current_rate, term_months) produces a wrong
+    # number.  Pass original_principal=None to force re-amortization
+    # from current_principal at the current rate.
+    is_arm = getattr(params, "is_arm", False)
+    original = None if is_arm else Decimal(str(params.original_principal))
 
     summary = calculate_summary(
         current_principal=principal,

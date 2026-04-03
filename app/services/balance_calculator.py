@@ -199,7 +199,9 @@ def calculate_balances_with_amortization(
             balances: OrderedDict mapping period_id -> Decimal end balance
             principal_by_period: dict mapping period_id -> Decimal principal paid
     """
-    from app.services.amortization_engine import calculate_monthly_payment
+    from app.services.amortization_engine import (
+        calculate_monthly_payment, calculate_remaining_months,
+    )
 
     # First compute base balances (shadow transactions applied normally).
     base_balances, _ = calculate_balances(
@@ -212,13 +214,25 @@ def calculate_balances_with_amortization(
         return base_balances, principal_by_period
 
     annual_rate = loan_params.interest_rate  # Already Decimal from Numeric(7,5).
-    # Contractual payment: computed from original loan amount and full term,
-    # not from current balance.  This is what the borrower actually pays.
-    monthly_payment = calculate_monthly_payment(
-        loan_params.original_principal,  # Already Decimal from Numeric(12,2).
-        annual_rate,
-        loan_params.term_months,
-    )
+    # For ARM loans, the contractual payment from original terms is wrong --
+    # interest_rate is the current rate, not the origination rate.  Use the
+    # re-amortized payment from current balance and remaining term.
+    is_arm = getattr(loan_params, "is_arm", False)
+    if is_arm:
+        remaining = calculate_remaining_months(
+            loan_params.origination_date, loan_params.term_months,
+        )
+        monthly_payment = calculate_monthly_payment(
+            loan_params.current_principal,  # Already Decimal from Numeric(12,2).
+            annual_rate,
+            remaining,
+        )
+    else:
+        monthly_payment = calculate_monthly_payment(
+            loan_params.original_principal,  # Already Decimal from Numeric(12,2).
+            annual_rate,
+            loan_params.term_months,
+        )
 
     monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
 

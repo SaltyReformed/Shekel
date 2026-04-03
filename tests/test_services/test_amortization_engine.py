@@ -2558,3 +2558,521 @@ class TestEdgeCaseGuards:
             origination_date=self.ORIGINATION, payment_day=self.PAYMENT_DAY,
         )
         assert schedule == []
+
+
+# ── ARM Contractual Path Bug Regression Tests ─────────────────────────
+
+
+class TestARMContractualPaymentBug:
+    """Regression tests for the ARM contractual payment bug.
+
+    Prior to the fix, when a loan had both original_principal/term_months
+    (triggering the "contractual" path) AND rate_changes (indicating an
+    ARM), the monthly payment was incorrectly computed as:
+
+        M(original_principal, current_rate, term_months)
+
+    For an ARM, the rate stored in params.interest_rate is the CURRENT
+    rate (after adjustment), not the origination rate.  So the above
+    formula answers "what would the payment be if the original loan had
+    always been at this rate?" -- a meaningless number.
+
+    The correct ARM calculation re-amortizes from current_principal and
+    remaining_months at the current rate:
+
+        M(current_principal, current_rate, remaining_months)
+
+    These tests verify the fix across summary, schedule, and projection
+    layers using a scenario where original_principal != current_principal
+    and the rate has changed from the origination rate.
+    """
+
+    # ── Test scenario ─────────────────────────────────────────────
+    # An ARM mortgage: $100,000 original at (originally) 5%, 360 months.
+    # The rate has since adjusted to 7%.  Balance is now $90,000 with
+    # 300 months remaining.
+    #
+    # Correct monthly payment: M($90,000, 7%, 300) = $636.10
+    # Wrong contractual path:  M($100,000, 7%, 360) = $665.30
+    # Difference: $29.20/month
+
+    ORIGINAL_PRINCIPAL = Decimal("100000.00")
+    CURRENT_PRINCIPAL = Decimal("90000.00")
+    CURRENT_RATE = Decimal("0.07")
+    TERM_MONTHS = 360
+    REMAINING_MONTHS = 300
+    ORIGINATION = date(2019, 1, 1)
+    PAYMENT_DAY = 1
+
+    # Rate change record indicating the rate adjusted to 7%.
+    # Effective date is before the schedule start so the current rate
+    # applies from the first month.
+    RATE_CHANGES = [
+        RateChangeRecord(
+            effective_date=date(2024, 1, 1),
+            interest_rate=Decimal("0.07"),
+        ),
+    ]
+
+    CORRECT_PAYMENT = Decimal("636.10")
+    WRONG_PAYMENT = Decimal("665.30")
+
+    # ── Summary monthly_payment ──────────────────────────────────
+
+    def test_arm_summary_uses_current_balance_not_original(self):
+        """ARM summary.monthly_payment must use current_principal and
+        remaining_months, not original_principal and term_months.
+
+        This is THE bug that caused the $33/month discrepancy.
+        M($90,000, 7%, 300) = $636.10, not M($100,000, 7%, 360) = $665.30.
+        """
+        summary = calculate_summary(
+            current_principal=self.CURRENT_PRINCIPAL,
+            annual_rate=self.CURRENT_RATE,
+            remaining_months=self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            rate_changes=self.RATE_CHANGES,
+        )
+        assert summary.monthly_payment == self.CORRECT_PAYMENT, (
+            f"ARM summary payment should be {self.CORRECT_PAYMENT} "
+            f"(re-amortized from current balance), "
+            f"got {summary.monthly_payment}"
+        )
+        assert summary.monthly_payment != self.WRONG_PAYMENT, (
+            "ARM summary payment must NOT use the contractual path "
+            "(original_principal + term_months) when rate_changes exist"
+        )
+
+    def test_arm_summary_exact_penny_accuracy(self):
+        """Verify the ARM summary payment to the exact penny using the
+        standard amortization formula.
+
+        M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        P = $90,000, r = 0.07/12, n = 300
+
+        r = 0.00583333...
+        (1+r)^300 = 5.717924...
+        Numerator = 90000 * 0.00583333 * 5.717924 = 3001.926...
+        Denominator = 5.717924 - 1 = 4.717924...
+        M = 3001.926 / 4.717924 = 636.10
+        """
+        expected = calculate_monthly_payment(
+            self.CURRENT_PRINCIPAL,
+            self.CURRENT_RATE,
+            self.REMAINING_MONTHS,
+        )
+        assert expected == self.CORRECT_PAYMENT
+
+        summary = calculate_summary(
+            current_principal=self.CURRENT_PRINCIPAL,
+            annual_rate=self.CURRENT_RATE,
+            remaining_months=self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            rate_changes=self.RATE_CHANGES,
+        )
+        assert summary.monthly_payment == expected
+
+    # ── Schedule correctness ─────────────────────────────────────
+
+    def test_arm_schedule_uses_reamortized_payment(self):
+        """ARM schedule rows must use the re-amortized payment ($636.10),
+        not the contractual payment from original terms ($665.30).
+
+        Month 1: interest = $90,000 * 0.07/12 = $525.00
+                 principal = $636.10 - $525.00 = $111.10
+                 balance = $90,000 - $111.10 = $89,888.90
+
+        Month 2: interest = $89,888.90 * 0.07/12 = $524.35
+                 principal = $636.10 - $524.35 = $111.75
+                 balance = $89,888.90 - $111.75 = $89,777.15
+        """
+        schedule = generate_schedule(
+            self.CURRENT_PRINCIPAL, self.CURRENT_RATE,
+            self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            term_months=self.TERM_MONTHS,
+            rate_changes=self.RATE_CHANGES,
+        )
+        assert schedule[0].interest == Decimal("525.00"), (
+            f"Month 1 interest: expected 525.00, got {schedule[0].interest}"
+        )
+        assert schedule[0].principal == Decimal("111.10"), (
+            f"Month 1 principal: expected 111.10, got {schedule[0].principal}"
+        )
+        assert schedule[0].remaining_balance == Decimal("89888.90"), (
+            f"Month 1 balance: expected 89888.90, "
+            f"got {schedule[0].remaining_balance}"
+        )
+
+        assert schedule[1].interest == Decimal("524.35"), (
+            f"Month 2 interest: expected 524.35, got {schedule[1].interest}"
+        )
+        assert schedule[1].remaining_balance == Decimal("89777.15"), (
+            f"Month 2 balance: expected 89777.15, "
+            f"got {schedule[1].remaining_balance}"
+        )
+
+    def test_arm_schedule_terminates_at_remaining_months(self):
+        """ARM schedule must use remaining_months (300) as max_months,
+        not the inflated remaining + term (300 + 360 = 660).
+
+        With the correct payment of $636.10, the $90,000 balance should
+        amortize to zero in exactly 300 months.
+        """
+        schedule = generate_schedule(
+            self.CURRENT_PRINCIPAL, self.CURRENT_RATE,
+            self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            term_months=self.TERM_MONTHS,
+            rate_changes=self.RATE_CHANGES,
+        )
+        assert len(schedule) == self.REMAINING_MONTHS, (
+            f"ARM schedule should be {self.REMAINING_MONTHS} months, "
+            f"got {len(schedule)}"
+        )
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    def test_arm_schedule_total_principal_equals_current_balance(self):
+        """Sum of principal portions must equal the current principal.
+
+        This is the fundamental amortization invariant: every dollar of
+        the starting balance is accounted for in the schedule.
+        """
+        schedule = generate_schedule(
+            self.CURRENT_PRINCIPAL, self.CURRENT_RATE,
+            self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            term_months=self.TERM_MONTHS,
+            rate_changes=self.RATE_CHANGES,
+        )
+        total_principal = sum(
+            r.principal + r.extra_payment for r in schedule
+        )
+        assert total_principal == self.CURRENT_PRINCIPAL, (
+            f"Total principal repaid should equal current balance "
+            f"{self.CURRENT_PRINCIPAL}, got {total_principal}"
+        )
+
+    # ── get_loan_projection ──────────────────────────────────────
+
+    def test_arm_projection_with_rate_changes(self):
+        """get_loan_projection for a partially paid ARM with rate_changes
+        must return the re-amortized payment, not the contractual payment.
+
+        Tests the engine-level defense: rate_changes disables contractual.
+        """
+        params = type("P", (), {
+            "origination_date": self.ORIGINATION,
+            "term_months": self.TERM_MONTHS,
+            "original_principal": self.ORIGINAL_PRINCIPAL,
+            "current_principal": self.CURRENT_PRINCIPAL,
+            "interest_rate": self.CURRENT_RATE,
+            "payment_day": self.PAYMENT_DAY,
+            "is_arm": True,
+        })()
+
+        proj = get_loan_projection(
+            params,
+            schedule_start=self.ORIGINATION,
+            rate_changes=self.RATE_CHANGES,
+        )
+
+        expected_payment = calculate_monthly_payment(
+            self.CURRENT_PRINCIPAL,
+            self.CURRENT_RATE,
+            proj.remaining_months,
+        )
+        assert proj.summary.monthly_payment == expected_payment, (
+            f"ARM projection payment should be {expected_payment}, "
+            f"got {proj.summary.monthly_payment}"
+        )
+        wrong = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL,
+            self.CURRENT_RATE,
+            self.TERM_MONTHS,
+        )
+        assert proj.summary.monthly_payment != wrong, (
+            "ARM projection must not use contractual path"
+        )
+
+    def test_arm_projection_without_rate_changes(self):
+        """ARM loan with is_arm=True but NO rate_changes (newly created
+        loan with no rate history entered yet) must still use the
+        re-amortized payment.
+
+        This is the exact scenario that caused the reported bug: the user
+        created a new ARM mortgage and the displayed payment used
+        M(original_principal, current_rate, term_months) instead of
+        M(current_principal, current_rate, remaining_months).
+        """
+        params = type("P", (), {
+            "origination_date": self.ORIGINATION,
+            "term_months": self.TERM_MONTHS,
+            "original_principal": self.ORIGINAL_PRINCIPAL,
+            "current_principal": self.CURRENT_PRINCIPAL,
+            "interest_rate": self.CURRENT_RATE,
+            "payment_day": self.PAYMENT_DAY,
+            "is_arm": True,
+        })()
+
+        # No rate_changes -- simulating a new ARM with no history.
+        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
+
+        expected_payment = calculate_monthly_payment(
+            self.CURRENT_PRINCIPAL,
+            self.CURRENT_RATE,
+            proj.remaining_months,
+        )
+        assert proj.summary.monthly_payment == expected_payment, (
+            f"ARM projection (no rate history) should be {expected_payment}, "
+            f"got {proj.summary.monthly_payment}"
+        )
+        wrong = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL,
+            self.CURRENT_RATE,
+            self.TERM_MONTHS,
+        )
+        assert proj.summary.monthly_payment != wrong, (
+            "ARM projection without rate_changes must still use "
+            "re-amortized path when is_arm=True"
+        )
+
+    def test_arm_projection_is_arm_false_uses_contractual(self):
+        """A fixed-rate loan (is_arm=False) uses the contractual payment
+        from original terms, even if the params look like an ARM scenario.
+
+        This confirms is_arm is the controlling flag, not the principal
+        delta or rate value.
+        """
+        params = type("P", (), {
+            "origination_date": self.ORIGINATION,
+            "term_months": self.TERM_MONTHS,
+            "original_principal": self.ORIGINAL_PRINCIPAL,
+            "current_principal": self.CURRENT_PRINCIPAL,
+            "interest_rate": self.CURRENT_RATE,
+            "payment_day": self.PAYMENT_DAY,
+            "is_arm": False,
+        })()
+
+        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
+
+        contractual = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL,
+            self.CURRENT_RATE,
+            self.TERM_MONTHS,
+        )
+        assert proj.summary.monthly_payment == contractual, (
+            "Fixed-rate loan must use contractual payment from original terms"
+        )
+
+    def test_arm_projection_missing_is_arm_defaults_contractual(self):
+        """Params without an is_arm attribute default to fixed-rate behavior.
+
+        Backward compatibility: older params objects or test stubs without
+        is_arm should not break -- they get the contractual path.
+        """
+        params = type("P", (), {
+            "origination_date": self.ORIGINATION,
+            "term_months": self.TERM_MONTHS,
+            "original_principal": self.ORIGINAL_PRINCIPAL,
+            "current_principal": self.CURRENT_PRINCIPAL,
+            "interest_rate": self.CURRENT_RATE,
+            "payment_day": self.PAYMENT_DAY,
+        })()
+
+        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
+
+        contractual = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL,
+            self.CURRENT_RATE,
+            self.TERM_MONTHS,
+        )
+        assert proj.summary.monthly_payment == contractual
+
+    # ── Fixed-rate contractual path still works ──────────────────
+
+    def test_fixed_rate_contractual_path_unchanged(self):
+        """Fixed-rate loan (no rate_changes) still uses the contractual
+        payment from original_principal and term_months.
+
+        This ensures the ARM fix does not break fixed-rate behavior.
+        A $100k loan at 5%/360mo with $90k remaining and 300 months
+        left should still show M($100k, 5%, 360) = $536.82.
+        """
+        summary = calculate_summary(
+            current_principal=self.CURRENT_PRINCIPAL,
+            annual_rate=Decimal("0.05"),
+            remaining_months=self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+        )
+        expected_contractual = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL, Decimal("0.05"), self.TERM_MONTHS,
+        )
+        assert expected_contractual == Decimal("536.82")
+        assert summary.monthly_payment == expected_contractual, (
+            "Fixed-rate loan must use contractual payment from original terms"
+        )
+
+    # ── Regression: user's exact mortgage scenario ───────────────
+
+    def test_user_mortgage_exact_values(self):
+        """Regression lock for the specific mortgage that revealed the bug.
+
+        Loan summary:
+            Original principal:  $202,000.00
+            Current principal:   $178,103.41
+            Interest rate:       6.875% ARM
+            Term:                360 months
+            Origination:         Dec 1, 2018
+            Payment day:         1st
+            Remaining:           272 months (as of April 2026)
+
+        Correct P&I: M($178,103.41, 6.875%, 272) = $1,293.96
+        Bug produced: M($202,000, 6.875%, 360) = $1,327.00 (+$33.04)
+
+        The monthly payment must be $1,293.96 to the penny.
+        Tests both paths:
+          1. calculate_summary with rate_changes (engine-level guard)
+          2. get_loan_projection with is_arm=True, no rate_changes
+             (the actual user scenario -- new ARM, no history)
+        """
+        # Path 1: Engine-level guard via rate_changes.
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2025, 12, 1),
+                interest_rate=Decimal("0.06875"),
+            ),
+        ]
+        summary = calculate_summary(
+            current_principal=Decimal("178103.41"),
+            annual_rate=Decimal("0.06875"),
+            remaining_months=272,
+            origination_date=date(2018, 12, 1),
+            payment_day=1,
+            term_months=360,
+            original_principal=Decimal("202000.00"),
+            rate_changes=rate_changes,
+        )
+        assert summary.monthly_payment == Decimal("1293.96"), (
+            f"Expected $1,293.96, got {summary.monthly_payment}"
+        )
+
+        # Path 2: get_loan_projection with is_arm=True, no rate_changes.
+        # This is the exact scenario the user hit: new ARM loan, no
+        # rate history, displayed payment was $1,327.00 instead of $1,293.96.
+        params = type("P", (), {
+            "origination_date": date(2018, 12, 1),
+            "term_months": 360,
+            "original_principal": Decimal("202000.00"),
+            "current_principal": Decimal("178103.41"),
+            "interest_rate": Decimal("0.06875"),
+            "payment_day": 1,
+            "is_arm": True,
+        })()
+        proj = get_loan_projection(
+            params,
+            schedule_start=date(2018, 12, 1),
+        )
+        assert proj.summary.monthly_payment == Decimal("1293.96"), (
+            f"Projection expected $1,293.96, got "
+            f"{proj.summary.monthly_payment}"
+        )
+
+    # ── Edge cases ───────────────────────────────────────────────
+
+    def test_arm_empty_rate_changes_uses_contractual(self):
+        """rate_changes=[] (empty list) is equivalent to no rate changes.
+
+        An empty rate_changes list means no ARM adjustments occurred.
+        The contractual path should still be used for fixed-rate behavior.
+        """
+        summary_none = calculate_summary(
+            current_principal=self.CURRENT_PRINCIPAL,
+            annual_rate=Decimal("0.05"),
+            remaining_months=self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            rate_changes=None,
+        )
+        summary_empty = calculate_summary(
+            current_principal=self.CURRENT_PRINCIPAL,
+            annual_rate=Decimal("0.05"),
+            remaining_months=self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            rate_changes=[],
+        )
+        # Both should use the contractual path.
+        expected = calculate_monthly_payment(
+            self.ORIGINAL_PRINCIPAL, Decimal("0.05"), self.TERM_MONTHS,
+        )
+        assert summary_none.monthly_payment == expected
+        assert summary_empty.monthly_payment == expected
+
+    def test_arm_rate_change_mid_schedule_uses_correct_months_left(self):
+        """When a rate change occurs mid-schedule, the remaining months
+        for re-amortization must equal remaining_months - month_num + 1,
+        not an inflated value from the contractual max_months upper bound.
+
+        Scenario: $90,000 at 5%, 300 months remaining. Rate changes to
+        7% at month 13. At that point:
+          - Balance has been reduced by 12 months of payments at 5%.
+          - Re-amortization should use 300 - 12 = 288 remaining months.
+        """
+        # Rate starts at 5%, changes to 7% one year in.
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2020, 2, 1),
+                interest_rate=Decimal("0.07"),
+            ),
+        ]
+        schedule = generate_schedule(
+            self.CURRENT_PRINCIPAL, Decimal("0.05"),
+            self.REMAINING_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            term_months=self.TERM_MONTHS,
+            rate_changes=rate_changes,
+        )
+
+        # Month 12: last month at 5%.
+        balance_at_12 = schedule[11].remaining_balance
+
+        # Month 13: rate changes to 7%, re-amortize over 288 remaining.
+        # remaining_months=300, month_num=13, so months_left = 300-13+1 = 288.
+        expected_payment_13 = calculate_monthly_payment(
+            balance_at_12, Decimal("0.07"), 288,
+        )
+        assert schedule[12].payment == expected_payment_13, (
+            f"Month 13 re-amortized payment should be {expected_payment_13} "
+            f"(288 months left), got {schedule[12].payment}"
+        )
+
+        # Verify it uses 7% for interest.
+        expected_interest_13 = (
+            balance_at_12 * Decimal("0.07") / 12
+        ).quantize(Decimal("0.01"))
+        assert schedule[12].interest == expected_interest_13
+
+        # Schedule should still terminate cleanly.
+        assert schedule[-1].remaining_balance == Decimal("0.00")

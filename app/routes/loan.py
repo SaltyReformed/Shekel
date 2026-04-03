@@ -283,14 +283,22 @@ def dashboard(account_id):
     # Original schedule: contractual baseline, no payments, no rate
     # changes.  "What the bank expects."
     principal = Decimal(str(params.current_principal))
-    original_principal = Decimal(str(params.original_principal))
     rate = Decimal(str(params.interest_rate))
     remaining = proj.remaining_months
+
+    # For ARM loans, the contractual payment from original terms is
+    # meaningless -- params.interest_rate is the current rate, not the
+    # origination rate.  Pass None to force re-amortization from
+    # current_principal at the current rate.
+    original_for_engine = (
+        None if params.is_arm
+        else Decimal(str(params.original_principal))
+    )
 
     original_schedule = amortization_engine.generate_schedule(
         principal, rate, remaining,
         payment_day=params.payment_day,
-        original_principal=original_principal,
+        original_principal=original_for_engine,
         term_months=params.term_months,
     )
     chart_labels, chart_original = _build_chart_data(original_schedule)
@@ -310,7 +318,7 @@ def dashboard(account_id):
         floor_schedule = amortization_engine.generate_schedule(
             principal, rate, remaining,
             payment_day=params.payment_day,
-            original_principal=original_principal,
+            original_principal=original_for_engine,
             term_months=params.term_months,
             payments=confirmed_payments if confirmed_payments else None,
             rate_changes=rate_changes,
@@ -641,8 +649,16 @@ def payoff_calculate(account_id):
     schedule_start = date.today().replace(day=1)
 
     principal = Decimal(str(params.current_principal))
-    original = Decimal(str(params.original_principal))
     rate = Decimal(str(params.interest_rate))
+
+    # For ARM loans, the contractual payment from original terms is
+    # meaningless -- params.interest_rate is the current rate, not the
+    # origination rate.  Pass None to force re-amortization from
+    # current_principal at the current rate.
+    original = (
+        None if params.is_arm
+        else Decimal(str(params.original_principal))
+    )
 
     # Load payment history for payment-aware projections.
     scenario = (
@@ -766,9 +782,18 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
-        monthly_payment = amortization_engine.calculate_monthly_payment(
-            original, rate, params.term_months,
-        )
+        # For ARM loans, the displayed monthly payment is the re-amortized
+        # payment from current balance and remaining term.  For fixed-rate
+        # loans, use the contractual payment from original terms.
+        if params.is_arm:
+            monthly_payment = amortization_engine.calculate_monthly_payment(
+                principal, rate, remaining_months,
+            )
+        else:
+            monthly_payment = amortization_engine.calculate_monthly_payment(
+                Decimal(str(params.original_principal)), rate,
+                params.term_months,
+            )
 
         return render_template(
             "loan/_payoff_results.html",
@@ -829,11 +854,24 @@ def create_payment_transfer(account_id):
         transfer_amount = data["amount"]
     else:
         # Compute P&I + escrow as the full monthly payment.
-        monthly_pi = amortization_engine.calculate_monthly_payment(
-            Decimal(str(params.original_principal)),
-            Decimal(str(params.interest_rate)),
-            params.term_months,
-        )
+        # For ARM loans, use re-amortized payment from current balance
+        # and remaining term.  For fixed-rate, use contractual payment
+        # from original terms.
+        if params.is_arm:
+            remaining = amortization_engine.calculate_remaining_months(
+                params.origination_date, params.term_months,
+            )
+            monthly_pi = amortization_engine.calculate_monthly_payment(
+                Decimal(str(params.current_principal)),
+                Decimal(str(params.interest_rate)),
+                remaining,
+            )
+        else:
+            monthly_pi = amortization_engine.calculate_monthly_payment(
+                Decimal(str(params.original_principal)),
+                Decimal(str(params.interest_rate)),
+                params.term_months,
+            )
         escrow_components = (
             db.session.query(EscrowComponent)
             .filter_by(account_id=account.id, is_active=True)
