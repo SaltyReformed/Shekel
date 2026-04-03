@@ -9,9 +9,12 @@ independently of the Flask route layer.
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.ref import AccountType
+from app.models.ref import AccountType, FilingStatus
+from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.services import savings_dashboard_service, pay_period_service
 
@@ -170,6 +173,246 @@ class TestGoalProgress:
                 seed_user["user"].id
             )
             assert result["goal_data"] == []
+
+
+class TestIncomeRelativeGoalDashboard:
+    """Integration tests for income-relative goal resolution in the dashboard."""
+
+    def test_dashboard_fixed_goal_includes_resolved_target(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Fixed goal's resolved_target equals its stored target_amount.
+
+        Verifies that fixed goals pass through unmodified by the
+        resolution logic.
+        """
+        with app.app_context():
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="Fixed Goal",
+                target_amount=Decimal("5000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["resolved_target"] == Decimal("5000.00")
+            assert gd["income_descriptor"] is None
+
+    def test_dashboard_goal_data_includes_new_keys(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Goal data dict contains all new keys from 5.4-3.
+
+        Every goal entry must include: resolved_target, goal_mode_id,
+        income_descriptor, has_salary_data.
+        """
+        with app.app_context():
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="Key Check",
+                target_amount=Decimal("3000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert "resolved_target" in gd
+            assert "goal_mode_id" in gd
+            assert "income_descriptor" in gd
+            assert "has_salary_data" in gd
+
+    def test_dashboard_income_relative_goal_resolves_target(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Income-relative goal on the dashboard shows calculated target.
+
+        With a salary profile configured, an income-relative goal
+        resolves its target from net biweekly pay * multiplier.
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Test Salary",
+                annual_salary=Decimal("75000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="3 Paychecks",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            # The exact value depends on the salary profile's net pay.
+            # With a salary profile, resolved_target should be > 0.
+            assert gd["resolved_target"] > Decimal("0.00")
+            assert gd["has_salary_data"] is True
+            assert isinstance(gd["resolved_target"], Decimal)
+
+    def test_dashboard_income_relative_no_salary(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Income-relative goal with no salary profile shows $0.00 target.
+
+        Without a salary profile, net_biweekly_pay is $0 and the
+        resolved target is $0.  has_salary_data should be False.
+        """
+        with app.app_context():
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="No Salary Goal",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["resolved_target"] == Decimal("0.00")
+            assert gd["has_salary_data"] is False
+            assert gd["progress_pct"] == 0
+
+    def test_dashboard_income_descriptor_format(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Income descriptor uses the unit name and multiplier.
+
+        For a 3-month income-relative goal, income_descriptor should
+        be '3.00 months of salary'.
+        """
+        with app.app_context():
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="3 Months Buffer",
+                goal_mode_id=ir_id,
+                income_unit_id=months_id,
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["income_descriptor"] == "3.00 months of salary"
+
+    def test_progress_uses_resolved_target(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Progress percentage uses the resolved target, not raw target_amount.
+
+        An income-relative goal with target_amount=None must still
+        produce a valid progress percentage (not 0% or a crash).
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Test Salary",
+                annual_salary=Decimal("75000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+
+            # The seed user's checking account has $1,000 balance.
+            # Create a goal for 1 paycheck of savings.
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="1 Paycheck",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("1.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            # resolved_target = 1 * net_biweekly_pay > 0 (salary exists).
+            # progress_pct = 1000 / resolved_target * 100.
+            # The exact percentage depends on the salary amount,
+            # but it must be > 0 (balance is $1000 and target is > 0).
+            assert gd["progress_pct"] > 0
+            assert gd["resolved_target"] > Decimal("0.00")
+
+    def test_progress_zero_target_no_division_error(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Income-relative goal with $0 resolved target yields 0% progress.
+
+        When there is no salary profile, the resolved target is $0.
+        This must not cause a ZeroDivisionError.
+        """
+        with app.app_context():
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="Zero Target",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["progress_pct"] == 0
+            assert gd["required_contribution"] is None
 
 
 class TestEmergencyFundMetrics:

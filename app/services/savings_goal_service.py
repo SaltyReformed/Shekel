@@ -5,8 +5,104 @@ Pure functions for savings goal calculations. No database writes, no
 Flask imports -- called by the savings route to compute metrics.
 """
 
+import logging
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+
+logger = logging.getLogger(__name__)
+
+# Constants for Decimal arithmetic -- avoids constructing these per call.
+_TWO_PLACES = Decimal("0.01")
+_PAY_PERIODS_PER_YEAR = Decimal("26")
+_MONTHS_PER_YEAR = Decimal("12")
+
+
+def resolve_goal_target(
+    goal_mode_id: int,
+    target_amount: Decimal | None,
+    income_unit_id: int | None,
+    income_multiplier: Decimal | None,
+    net_biweekly_pay: Decimal,
+) -> Decimal:
+    """Resolve the dollar target for a savings goal.
+
+    For fixed-mode goals, returns target_amount directly.
+    For income-relative goals, computes the target from the income
+    multiplier and the user's current net biweekly pay.
+
+    This is a pure function -- it does not query the database.
+
+    Conversion factors:
+        Paychecks: target = multiplier * net_biweekly_pay
+        Months:    target = multiplier * (net_biweekly_pay * 26 / 12)
+
+    Intermediate results are NOT quantized -- only the final result
+    is rounded to 2 decimal places to avoid penny-level rounding
+    drift (e.g. 3 months at $2,000/paycheck = exactly $13,000.00,
+    not $12,999.99).
+
+    Args:
+        goal_mode_id: The goal's mode ID (from ref.goal_modes).
+        target_amount: The stored target amount (used for fixed goals;
+            may be None for income-relative goals).
+        income_unit_id: The income unit ID (from ref.income_units).
+            Required when mode is income-relative.
+        income_multiplier: The multiplier value.  Required when mode
+            is income-relative.
+        net_biweekly_pay: Current projected net biweekly pay from
+            the paycheck calculator.  Used only for income-relative
+            goals.
+
+    Returns:
+        The resolved dollar target as a Decimal, quantized to 2
+        decimal places.
+
+    Raises:
+        ValueError: If the goal is income-relative but income_unit_id
+            or income_multiplier is None.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import GoalModeEnum, IncomeUnitEnum  # pylint: disable=import-outside-toplevel
+
+    fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+
+    if goal_mode_id == fixed_id:
+        if target_amount is None:
+            return Decimal("0.00")
+        return target_amount
+
+    # Income-relative mode -- validate required fields.
+    if income_unit_id is None or income_multiplier is None:
+        raise ValueError(
+            "Income-relative goal requires income_unit_id and "
+            "income_multiplier."
+        )
+
+    multiplier = (
+        income_multiplier if isinstance(income_multiplier, Decimal)
+        else Decimal(str(income_multiplier))
+    )
+
+    paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+    months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+
+    if income_unit_id == paychecks_id:
+        result = multiplier * net_biweekly_pay
+    elif income_unit_id == months_id:
+        # Convert biweekly to monthly: 26 pay periods / 12 months.
+        # Quantize only the final result, not the intermediate.
+        monthly_net = net_biweekly_pay * _PAY_PERIODS_PER_YEAR / _MONTHS_PER_YEAR
+        result = multiplier * monthly_net
+    else:
+        # Unknown unit -- defensive fallback with warning.
+        logger.warning(
+            "Unknown income_unit_id=%d for income-relative goal; "
+            "falling back to target_amount.",
+            income_unit_id,
+        )
+        return target_amount if target_amount is not None else Decimal("0.00")
+
+    return result.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def calculate_required_contribution(current_balance, target_amount, remaining_periods):

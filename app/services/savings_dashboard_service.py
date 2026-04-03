@@ -15,7 +15,7 @@ from collections import OrderedDict
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, AcctTypeEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum, GoalModeEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
@@ -110,8 +110,13 @@ def compute_dashboard_data(user_id):
         current_period, params,
     )
 
+    # ── Net biweekly pay (for income-relative goals) ─────────
+    net_biweekly_pay = _get_net_biweekly_pay(user_id, all_periods, current_period)
+
     # ── Savings goals ───────────────────────────────────────────
-    goal_data = _compute_goal_progress(user_id, account_data, all_periods)
+    goal_data = _compute_goal_progress(
+        user_id, account_data, all_periods, net_biweekly_pay,
+    )
 
     # ── Emergency fund metrics ──────────────────────────────────
     avg_monthly_expenses = _compute_avg_monthly_expenses(
@@ -495,17 +500,68 @@ def _project_investment(
     return projected
 
 
-def _compute_goal_progress(user_id, account_data, all_periods):
+def _get_net_biweekly_pay(user_id, all_periods, current_period):
+    """Load the user's current net biweekly pay from the paycheck calculator.
+
+    Returns Decimal("0.00") if no active salary profile exists or if
+    there is no current period.
+
+    Args:
+        user_id: Integer ID of the current user.
+        all_periods: All pay periods for the user.
+        current_period: The current PayPeriod, or None.
+
+    Returns:
+        Decimal -- net biweekly pay, or Decimal("0.00") if unavailable.
+    """
+    if current_period is None:
+        return Decimal("0.00")
+
+    profile = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .first()
+    )
+    if profile is None:
+        return Decimal("0.00")
+
+    from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
+    from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
+
+    tax_configs = load_tax_configs(user_id, profile)
+    breakdown = paycheck_calculator.calculate_paycheck(
+        profile, current_period, all_periods, tax_configs,
+    )
+    return breakdown.net_pay
+
+
+def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):
     """Compute savings goal progress and required contributions.
 
-    Returns a list of dicts with goal, current_balance, progress_pct,
-    remaining_periods, and required_contribution.
+    For income-relative goals, the resolved target is calculated from
+    the user's net biweekly pay and the goal's multiplier/unit.  For
+    fixed goals, the stored target_amount is used directly.
+
+    Args:
+        user_id: Integer ID of the current user.
+        account_data: List of per-account dicts from _compute_account_projections.
+        all_periods: All pay periods for the user.
+        net_biweekly_pay: Current net biweekly pay (Decimal).  Used to
+            resolve income-relative goal targets.
+
+    Returns:
+        List of dicts with keys: goal, current_balance, progress_pct,
+        remaining_periods, required_contribution, resolved_target,
+        goal_mode_id, income_descriptor, has_salary_data.
     """
     goals = (
         db.session.query(SavingsGoal)
         .filter_by(user_id=user_id, is_active=True)
         .all()
     )
+
+    fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+    has_salary = net_biweekly_pay > Decimal("0.00")
 
     goal_data = []
     for goal in goals:
@@ -515,19 +571,37 @@ def _compute_goal_progress(user_id, account_data, all_periods):
                 acct_balance = ad["current_balance"] or Decimal("0.00")
                 break
 
+        resolved_target = savings_goal_service.resolve_goal_target(
+            goal.goal_mode_id,
+            goal.target_amount,
+            goal.income_unit_id,
+            goal.income_multiplier,
+            net_biweekly_pay,
+        )
+
         remaining_periods = savings_goal_service.count_periods_until(
             goal.target_date, all_periods
         )
         required = savings_goal_service.calculate_required_contribution(
-            acct_balance, goal.target_amount, remaining_periods,
-        )
+            acct_balance, resolved_target, remaining_periods,
+        ) if resolved_target and resolved_target > 0 else None
 
         progress_pct = 0
-        if goal.target_amount and goal.target_amount > 0:
+        if resolved_target and resolved_target > Decimal("0.00"):
             progress_pct = min(
                 100,
-                int(acct_balance / goal.target_amount * 100),
+                int(acct_balance / resolved_target * 100),
             )
+
+        # Build human-readable descriptor for income-relative goals.
+        if goal.goal_mode_id != fixed_id:
+            unit_name = (
+                goal.income_unit.name.lower()
+                if goal.income_unit else "units"
+            )
+            income_descriptor = f"{goal.income_multiplier} {unit_name} of salary"
+        else:
+            income_descriptor = None
 
         goal_data.append({
             "goal": goal,
@@ -535,6 +609,10 @@ def _compute_goal_progress(user_id, account_data, all_periods):
             "progress_pct": progress_pct,
             "remaining_periods": remaining_periods,
             "required_contribution": required,
+            "resolved_target": resolved_target,
+            "goal_mode_id": goal.goal_mode_id,
+            "income_descriptor": income_descriptor,
+            "has_salary_data": has_salary,
         })
 
     return goal_data

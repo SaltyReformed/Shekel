@@ -13,10 +13,13 @@ from unittest.mock import patch
 
 import pytest
 
+from app import ref_cache
+from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.services.savings_goal_service import (
     calculate_required_contribution,
     calculate_savings_metrics,
     count_periods_until,
+    resolve_goal_target,
 )
 
 
@@ -286,3 +289,190 @@ class TestNegativeAndBoundaryPaths:
         )
         # gap = 0.01, contribution = 0.01 / 1 = 0.01
         assert result == Decimal("0.01")
+
+
+# ── TestResolveGoalTarget ──────────────────────────────────────
+
+
+class TestResolveGoalTarget:
+    """Tests for resolve_goal_target() -- the income-relative target resolver.
+
+    All tests use ref_cache IDs (not hardcoded integers) for goal modes
+    and income units.  Hand-calculated expected values are documented
+    in comments.
+    """
+
+    def test_resolve_fixed_goal(self):
+        """Fixed goal returns target_amount directly, unmodified."""
+        fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+        result = resolve_goal_target(
+            goal_mode_id=fixed_id,
+            target_amount=Decimal("5000.00"),
+            income_unit_id=None,
+            income_multiplier=None,
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert result == Decimal("5000.00")
+
+    def test_resolve_fixed_goal_null_target_defensive(self):
+        """Fixed goal with target_amount=None returns Decimal("0.00").
+
+        This is a defensive case -- schema validation should prevent
+        None target_amount for fixed goals, but the function must not
+        crash if it reaches here.
+        """
+        fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+        result = resolve_goal_target(
+            goal_mode_id=fixed_id,
+            target_amount=None,
+            income_unit_id=None,
+            income_multiplier=None,
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert result == Decimal("0.00")
+
+    def test_resolve_income_relative_paychecks(self):
+        """3 paychecks at $2,000/paycheck = $6,000.00.
+
+        Hand-calculation: 3 * 2000 = 6000.
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=paychecks_id,
+            income_multiplier=Decimal("3.00"),
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert result == Decimal("6000.00")
+
+    def test_resolve_income_relative_months(self):
+        """3 months at $2,000/paycheck = exactly $13,000.00.
+
+        Hand-calculation:
+            monthly_net = 2000 * 26 / 12 = 4333.333...
+            target = 3 * 4333.333... = 13000.00 (exact)
+
+        This MUST be $13,000.00, NOT $12,999.99.  Premature
+        quantization of the intermediate monthly_net would yield
+        3 * 4333.33 = 12999.99.
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=months_id,
+            income_multiplier=Decimal("3.00"),
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert result == Decimal("13000.00"), (
+            f"Expected exactly $13,000.00 but got {result} -- "
+            "check for premature quantization of intermediate results"
+        )
+
+    def test_resolve_months_odd_net_pay(self):
+        """3 months at $1,234.56/paycheck = $8,024.64.
+
+        Hand-calculation:
+            1234.56 * 26 = 32098.56
+            32098.56 / 12 = 2674.88
+            2674.88 * 3 = 8024.64
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=months_id,
+            income_multiplier=Decimal("3.00"),
+            net_biweekly_pay=Decimal("1234.56"),
+        )
+        assert result == Decimal("8024.64")
+
+    def test_resolve_fractional_multiplier(self):
+        """0.5 paychecks at $2,000/paycheck = $1,000.00.
+
+        Hand-calculation: 0.5 * 2000 = 1000.
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=paychecks_id,
+            income_multiplier=Decimal("0.50"),
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert result == Decimal("1000.00")
+
+    def test_resolve_no_salary_returns_zero(self):
+        """Income-relative goal with net_biweekly_pay=$0 returns $0.00."""
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=paychecks_id,
+            income_multiplier=Decimal("3.00"),
+            net_biweekly_pay=Decimal("0.00"),
+        )
+        assert result == Decimal("0.00")
+
+    def test_resolve_income_relative_missing_fields_raises(self):
+        """Income-relative mode with None income_unit_id raises ValueError."""
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        with pytest.raises(ValueError, match="income_unit_id"):
+            resolve_goal_target(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=None,
+                income_multiplier=Decimal("3.00"),
+                net_biweekly_pay=Decimal("2000.00"),
+            )
+
+    def test_resolve_income_relative_missing_multiplier_raises(self):
+        """Income-relative mode with None income_multiplier raises ValueError."""
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        with pytest.raises(ValueError, match="income_multiplier"):
+            resolve_goal_target(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=paychecks_id,
+                income_multiplier=None,
+                net_biweekly_pay=Decimal("2000.00"),
+            )
+
+    def test_resolve_returns_decimal_type(self):
+        """Return type is Decimal, never float."""
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=paychecks_id,
+            income_multiplier=Decimal("3.00"),
+            net_biweekly_pay=Decimal("2000.00"),
+        )
+        assert isinstance(result, Decimal)
+
+    def test_resolve_six_months_at_3500(self):
+        """6 months at $3,500/paycheck = $45,500.00.
+
+        Hand-calculation:
+            3500 * 26 = 91000
+            91000 / 12 = 7583.333...
+            7583.333... * 6 = 45500.00 (exact)
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+        result = resolve_goal_target(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=months_id,
+            income_multiplier=Decimal("6.00"),
+            net_biweekly_pay=Decimal("3500.00"),
+        )
+        assert result == Decimal("45500.00")
