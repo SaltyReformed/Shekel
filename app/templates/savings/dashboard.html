@@ -290,11 +290,24 @@
           </div>
         </div>
 
+        {# No-salary warning for income-relative goals #}
+        {% if gd.income_descriptor and not gd.has_salary_data %}
+        <div class="alert alert-warning py-1 px-2 small mb-2">
+          <i class="bi bi-exclamation-triangle"></i>
+          No salary profile configured -- income target cannot be calculated.
+        </div>
+        {% endif %}
+
         {# Progress bar #}
         <div class="mb-2">
           <div class="d-flex justify-content-between small mb-1">
             <span class="font-mono">${{ "{:,.0f}".format(gd.current_balance|float) }}</span>
-            <span class="font-mono">${{ "{:,.0f}".format(gd.goal.target_amount|float) }}</span>
+            <span class="font-mono">
+              ${{ "{:,.0f}".format(gd.resolved_target|float) }}
+              {% if gd.income_descriptor %}
+              <span class="text-muted">({{ gd.income_descriptor }})</span>
+              {% endif %}
+            </span>
           </div>
           <div class="progress" style="height: 8px;">
             <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"

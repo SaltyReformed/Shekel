@@ -42,12 +42,60 @@
       </div>
 
       <div class="mb-3">
-        <label for="target_amount" class="form-label">Target Amount</label>
-        <div class="input-group">
-          <span class="input-group-text">$</span>
-          <input type="number" step="0.01" min="0.01" id="target_amount" name="target_amount"
-                 class="form-control" required
-                 value="{{ goal.target_amount if goal else '' }}">
+        <label for="goal_mode_id" class="form-label">Goal Type</label>
+        <select id="goal_mode_id" name="goal_mode_id" class="form-select"
+                data-fixed-mode-id="{{ GOAL_MODE_FIXED }}">
+          {% for mode in goal_modes %}
+          <option value="{{ mode.id }}"
+            {% if goal and goal.goal_mode_id == mode.id %}selected{% endif %}
+            {% if not goal and mode.id == GOAL_MODE_FIXED %}selected{% endif %}>
+            {{ mode.name }}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">
+          Fixed: set a specific dollar target.
+          Income-Relative: target is a multiple of your income.
+        </div>
+      </div>
+
+      {# --- Fixed mode fields --- #}
+      <div id="fixed-fields">
+        <div class="mb-3">
+          <label for="target_amount" class="form-label">Target Amount</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" step="0.01" min="0.01" id="target_amount" name="target_amount"
+                   class="form-control"
+                   value="{{ goal.target_amount if goal and goal.target_amount else '' }}">
+          </div>
+        </div>
+      </div>
+
+      {# --- Income-relative mode fields --- #}
+      <div id="income-fields" style="display: none;">
+        <div class="mb-3">
+          <label for="income_unit_id" class="form-label">Income Unit</label>
+          <select id="income_unit_id" name="income_unit_id" class="form-select">
+            <option value="">Select unit...</option>
+            {% for unit in income_units %}
+            <option value="{{ unit.id }}"
+              {% if goal and goal.income_unit_id == unit.id %}selected{% endif %}>
+              {{ unit.name }}
+            </option>
+            {% endfor %}
+          </select>
+          <div class="form-text">Measure your target in paychecks or months of income.</div>
+        </div>
+        <div class="mb-3">
+          <label for="income_multiplier" class="form-label">Multiplier</label>
+          <input type="number" step="0.01" min="0.01" id="income_multiplier"
+                 name="income_multiplier" class="form-control"
+                 value="{{ goal.income_multiplier if goal and goal.income_multiplier else '' }}"
+                 placeholder="e.g. 3 for three months of income">
+          <div class="form-text">
+            Number of paychecks or months of income for your target.
+          </div>
         </div>
       </div>
 
@@ -82,4 +130,5 @@
     </form>
   </div>
 </div>
+<script src="{{ url_for('static', filename='js/goal_mode_toggle.js') }}"></script>
 {% endblock %}
