@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_DOWN
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, RecurrencePatternEnum
@@ -39,9 +39,15 @@ from app.services import (
     pay_period_service,
     transfer_recurrence,
 )
-from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.services.amortization_engine import (
+    AmortizationRow,
+    AmortizationSummary,
+    PaymentRecord,
+    RateChangeRecord,
+)
 from app.services.loan_payment_service import get_payment_history
 from app.utils.formatting import pct_to_decimal
+from app.utils.log_events import BUSINESS, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +235,88 @@ def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
         "total_extra": total_extra,
         "has_extra": total_extra > Decimal("0.00"),
     }
+
+
+def _update_transfer_end_date(
+    template: TransferTemplate,
+    summary: AmortizationSummary,
+    schedule: list[AmortizationRow],
+    account_id: int,
+) -> None:
+    """Update the recurring transfer's end date to match the projected payoff.
+
+    Sets the recurrence rule end_date to the committed schedule's payoff
+    date so the recurrence engine stops generating transfers beyond
+    payoff.  The update is idempotent -- if the end_date already matches,
+    no write occurs.
+
+    Three cases:
+      - Normal payoff: end_date = last scheduled payment date.
+      - Already paid off (empty schedule): end_date = summary fallback
+        date (first of current month), stopping future generation.
+      - No payoff within term (negative amortization, remaining balance
+        > 0 at schedule end): end_date = None (indefinite recurrence).
+
+    This is a write on a GET request (Risk R-4). Acknowledged as a
+    pragmatic trade-off: the dashboard is the natural place where the
+    payoff date is computed with full payment context, the write is
+    idempotent, and the alternative (hooks in the transfer service)
+    was rejected for coupling complexity.
+
+    Args:
+        template: The active recurring transfer template targeting
+            this debt account.  Only the first matching template is
+            updated -- multiple recurring transfers to the same debt
+            account is unusual and likely a user configuration issue.
+        summary: The committed schedule summary.  Used as a fallback
+            payoff date when the schedule is empty (already paid off).
+        schedule: The committed amortization schedule.  Used to
+            determine payoff status and exact payoff date.
+        account_id: The debt account ID, for logging.
+    """
+    rule = template.recurrence_rule
+
+    # Determine the projected payoff date from the committed schedule.
+    if not schedule:
+        # Loan already paid off (zero principal).  Use the summary's
+        # fallback payoff date (first of current month) to prevent
+        # the recurrence engine from generating future transfers.
+        projected_payoff = summary.payoff_date
+    elif schedule[-1].remaining_balance > Decimal("0.00"):
+        # Schedule ends with outstanding balance -- the loan does not
+        # pay off within the projected term (e.g., payments less than
+        # monthly interest).  Leave recurrence indefinite so transfers
+        # continue until the user adjusts payments.
+        projected_payoff = None
+    else:
+        # Normal payoff at the last scheduled payment date.
+        projected_payoff = schedule[-1].payment_date
+
+    current_end_date = rule.end_date
+
+    if projected_payoff == current_end_date:
+        return
+
+    rule.end_date = projected_payoff
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        logger.exception(
+            "Failed to update recurrence rule end_date for template %d",
+            template.id,
+        )
+        db.session.rollback()
+        return
+
+    log_event(
+        logger, logging.INFO,
+        "loan.recurrence_end_date_updated", BUSINESS,
+        "Updated recurrence rule end date to projected payoff",
+        account_id=account_id,
+        template_id=template.id,
+        old_end_date=str(current_end_date),
+        new_end_date=str(projected_payoff),
+    )
 
 
 def _compute_contractual_pi(params):
@@ -527,7 +615,8 @@ def dashboard(account_id):
 
     # Recurring payment transfer prompt: show when LoanParams exist
     # but no active recurring transfer template targets this account.
-    has_recurring_transfer = (
+    # The template object is also used by the 5.9-1 end_date update.
+    existing_template = (
         db.session.query(TransferTemplate)
         .filter(
             TransferTemplate.user_id == current_user.id,
@@ -536,9 +625,18 @@ def dashboard(account_id):
             TransferTemplate.recurrence_rule_id.isnot(None),
         )
         .first()
-    ) is not None
+    )
 
-    show_transfer_prompt = not has_recurring_transfer
+    show_transfer_prompt = existing_template is None
+
+    # --- Auto-update recurrence rule end date (5.9-1) ---
+    # When a recurring transfer exists, sync its recurrence rule
+    # end_date to the projected payoff date so shadow transactions
+    # are not generated beyond payoff.
+    if existing_template is not None and existing_template.recurrence_rule is not None:
+        _update_transfer_end_date(
+            existing_template, summary, proj.schedule, account.id,
+        )
 
     # Source accounts for the transfer prompt dropdown: active accounts
     # excluding the current debt account and other amortizing accounts.
