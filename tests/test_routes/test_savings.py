@@ -1823,3 +1823,219 @@ class TestSavingsGoalRegression:
                 name="Negative Goal"
             ).count()
             assert count == 0
+
+
+# ── Paid-Off Badge Tests (Commit 5.9-2) ──────────────────────────────
+
+
+def _create_small_loan(seed_user, name="Test Loan",
+                       principal=Decimal("1000.00"),
+                       rate=Decimal("0.05000"), term=24):
+    """Create a small loan with LoanParams for paid-off badge testing.
+
+    Origination is Jan 2026 with term=24 so remaining months is
+    comfortably positive (~21 from April 2026).
+    """
+    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
+
+    loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=loan_type.id,
+        name=name,
+        current_anchor_balance=principal,
+    )
+    db.session.add(account)
+    db.session.flush()
+
+    params = LoanParams(
+        account_id=account.id,
+        original_principal=principal,
+        current_principal=principal,
+        interest_rate=rate,
+        term_months=term,
+        origination_date=date(2026, 1, 1),
+        payment_day=1,
+    )
+    db.session.add(params)
+    db.session.commit()
+    return account
+
+
+def _make_confirmed_transfer(seed_user, to_account, period, amount):
+    """Create a confirmed (Paid) transfer to a loan account."""
+    from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+    return transfer_service.create_transfer(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=to_account.id,
+        pay_period_id=period.id,
+        scenario_id=seed_user["scenario"].id,
+        amount=amount,
+        status_id=ref_cache.status_id(StatusEnum.DONE),
+        category_id=seed_user["categories"]["Rent"].id,
+    )
+
+
+class TestPaidOffBadge:
+    """Tests for the Paid Off badge on the accounts dashboard.
+
+    Commit 5.9-2: a green "Paid Off" badge appears on debt account
+    cards when confirmed payments bring the remaining balance to zero.
+    """
+
+    def test_paid_off_badge_shown(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Loan fully paid by a confirmed payment: badge appears.
+
+        A $1,000 loan at 5% for 12 months.  A single confirmed
+        payment of $1,100 covers the full balance + interest.
+        """
+        with app.app_context():
+            acct = _create_small_loan(seed_user)
+            _make_confirmed_transfer(
+                seed_user, acct, seed_periods[7], Decimal("1100.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Paid Off" in resp.data
+
+    def test_no_badge_when_balance_remaining(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Partial confirmed payment: no badge."""
+        with app.app_context():
+            acct = _create_small_loan(seed_user)
+            _make_confirmed_transfer(
+                seed_user, acct, seed_periods[7], Decimal("500.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Paid Off" not in resp.data
+
+    def test_no_badge_when_no_payments(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Loan with no payments at all: no badge."""
+        with app.app_context():
+            _create_small_loan(seed_user)
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Paid Off" not in resp.data
+
+    def test_no_badge_projected_only(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Projected payment covering full balance: no badge.
+
+        Projections do not equal payoff.  Only confirmed (Paid/Settled)
+        payments count toward the paid-off determination.
+        """
+        with app.app_context():
+            from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+            acct = _create_small_loan(seed_user)
+            transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Paid Off" not in resp.data
+
+    def test_paid_off_lump_sum(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Single lump-sum payment on a small loan: badge appears.
+
+        A $1,000 loan paid off with a single $1,100 confirmed
+        payment triggers the 5.8 overpayment guard, capping the
+        payment at remaining balance + interest.
+        """
+        with app.app_context():
+            acct = _create_small_loan(
+                seed_user, name="Lump Sum Loan",
+                principal=Decimal("500.00"), rate=Decimal("0.06000"), term=6,
+            )
+            _make_confirmed_transfer(
+                seed_user, acct, seed_periods[7], Decimal("600.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Paid Off" in html
+
+    def test_paid_off_multiple_accounts_mixed(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Two loans: one paid off, one not.  Badge on the right one only."""
+        with app.app_context():
+            paid_off = _create_small_loan(
+                seed_user, name="Paid Loan",
+                principal=Decimal("1000.00"),
+            )
+            _make_confirmed_transfer(
+                seed_user, paid_off, seed_periods[7], Decimal("1100.00"),
+            )
+
+            _unpaid = _create_small_loan(
+                seed_user, name="Unpaid Loan",
+                principal=Decimal("5000.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # The paid-off loan's card should have the badge.
+            assert "Paid Off" in html
+            # Only one badge should appear (for the paid-off loan).
+            assert html.count("Paid Off") == 1
+
+    def test_sub_penny_not_paid_off(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Payment leaving $0.01 remaining: not paid off.
+
+        Only exact zero qualifies.  This tests that the comparison
+        uses == Decimal("0.00"), not a threshold.
+        """
+        with app.app_context():
+            # A $100 loan at 5% for 12 months.  Monthly payment
+            # is ~$8.56.  First month interest is ~$0.42.
+            # A payment of $100.41 leaves $0.01 remaining
+            # ($100 - ($100.41 - $0.42) = $0.01).
+            acct = _create_small_loan(
+                seed_user, name="Sub Penny Loan",
+                principal=Decimal("100.00"), rate=Decimal("0.05000"), term=12,
+            )
+            # Pay slightly less than principal + interest to leave a
+            # sub-penny balance.  $100 at 5% = $0.42 monthly interest.
+            # Payment of $100.41 -> principal_portion = $100.41 - $0.42
+            # = $99.99, remaining = $0.01.
+            _make_confirmed_transfer(
+                seed_user, acct, seed_periods[7], Decimal("100.41"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Paid Off" not in resp.data

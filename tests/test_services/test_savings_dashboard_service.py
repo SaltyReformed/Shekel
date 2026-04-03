@@ -199,3 +199,215 @@ class TestEmergencyFundMetrics:
             # Both Checking ($1000, liquid) and Savings ($8000, liquid)
             # contribute to total_savings.
             assert result["total_savings"] == Decimal("9000.00")
+
+
+# ── Paid-Off Flag Tests (Commit 5.9-2) ──────────────────────────────
+
+
+def _create_small_loan(seed_user, db_session, name="Test Loan",
+                       principal=Decimal("1000.00"),
+                       rate=Decimal("0.05000"), term=24):
+    """Create a small loan account with LoanParams for paid-off testing.
+
+    Uses a small principal for fast engine replay and easy verification.
+    Origination is Jan 2026 with term=24 so remaining months is
+    comfortably positive (~21 from April 2026).
+    """
+    loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=loan_type.id,
+        name=name,
+        current_anchor_balance=principal,
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    from app.models.loan_params import LoanParams as LP  # pylint: disable=import-outside-toplevel
+    params = LP(
+        account_id=account.id,
+        original_principal=principal,
+        current_principal=principal,
+        interest_rate=rate,
+        term_months=term,
+        origination_date=date(2026, 1, 1),
+        payment_day=1,
+    )
+    db_session.add(params)
+    db_session.commit()
+    return account
+
+
+class TestPaidOffFlag:
+    """Tests for the is_paid_off flag in account data.
+
+    Commit 5.9-2: the savings dashboard service determines whether a
+    loan is paid off by replaying only confirmed (Paid/Settled) payments
+    through the amortization engine.  Projected payments are excluded.
+    """
+
+    def test_paid_off_true_when_confirmed_covers_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Confirmed payment covering the full balance sets is_paid_off=True.
+
+        A $1,000 loan at 5% for 12 months.  A single confirmed payment
+        of $1,100 exceeds principal + first-month interest (~$1,004.17).
+        The engine's overpayment guard caps the payment at the remaining
+        balance + interest, resulting in remaining_balance = $0.00.
+        """
+        from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=rc.status_id(StatusEnum.DONE),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            assert loan_ad["is_paid_off"] is True
+
+    def test_paid_off_false_no_confirmed_payments(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Loan with no payments at all: is_paid_off=False."""
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            assert loan_ad["is_paid_off"] is False
+
+    def test_paid_off_false_partial_confirmed_payments(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Partial confirmed payment leaving balance > 0: is_paid_off=False.
+
+        A $500 payment on a $1,000 loan leaves ~$504 (principal minus
+        payment plus interest).
+        """
+        from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("500.00"),
+                status_id=rc.status_id(StatusEnum.DONE),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            assert loan_ad["is_paid_off"] is False
+
+    def test_paid_off_false_projected_only(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected payment that would pay off the loan: is_paid_off=False.
+
+        The critical semantic test -- projections do not equal payoff.
+        A projected transfer of $1,100 covers the full balance, but
+        since it has Projected status (is_settled=False), the paid-off
+        flag must remain False.
+        """
+        from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=rc.status_id(StatusEnum.PROJECTED),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            assert loan_ad["is_paid_off"] is False
+
+    def test_paid_off_false_for_non_loan_account(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Non-loan accounts (checking, savings) have is_paid_off=False."""
+        with app.app_context():
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            # The seed user's checking account is non-amortizing.
+            checking_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].name == "Checking"
+            )
+            assert checking_ad["is_paid_off"] is False
+
+    def test_paid_off_false_no_loan_params(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Loan account with no LoanParams: is_paid_off=False, no crash."""
+        with app.app_context():
+            loan_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Auto Loan").one()
+            )
+            acct = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            assert loan_ad["is_paid_off"] is False

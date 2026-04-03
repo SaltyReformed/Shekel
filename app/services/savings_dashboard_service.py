@@ -37,6 +37,7 @@ from app.services import (
     savings_goal_service,
 )
 from app.services.investment_projection import calculate_investment_inputs
+from app.services.loan_payment_service import get_payment_history
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ def compute_dashboard_data(user_id):
     params = _load_account_params(user_id, accounts)
 
     # ── Compute per-account projections ─────────────────────────
+    params["scenario_id"] = scenario.id if scenario else None
     account_data = _compute_account_projections(
         accounts, all_transactions, all_shadow_income, all_periods,
         current_period, params,
@@ -244,8 +246,17 @@ def _compute_account_projections(
     balance calculator for everything else.
 
     Returns a list of dicts, one per account, with keys: account,
-    current_balance, projected, needs_setup, and optional type-specific
-    params.
+    current_balance, projected, needs_setup, is_paid_off, and
+    optional type-specific params.
+
+    Args:
+        accounts: List of Account model instances.
+        all_transactions: Pre-loaded transactions for all accounts.
+        all_shadow_income: Pre-loaded shadow income transactions.
+        all_periods: All pay periods for the user.
+        current_period: The current PayPeriod, or None.
+        params: Dict from _load_account_params with type-specific
+            parameter maps and scenario_id.
     """
     account_data = []
 
@@ -316,11 +327,21 @@ def _compute_account_projections(
             else:
                 needs_setup = acct_investment_params is None
 
+        # Paid-off determination: replay confirmed-only payments
+        # through the amortization engine to check if the remaining
+        # balance reaches exactly zero.
+        is_paid_off = False
+        if acct_loan_params:
+            is_paid_off = _check_loan_paid_off(
+                acct_loan_params, acct.id, params["scenario_id"],
+            )
+
         ad = {
             "account": acct,
             "current_balance": current_bal,
             "projected": projected,
             "needs_setup": needs_setup,
+            "is_paid_off": is_paid_off,
         }
         if acct_interest_params:
             ad["interest_params"] = acct_interest_params
@@ -334,6 +355,79 @@ def _compute_account_projections(
         account_data.append(ad)
 
     return account_data
+
+
+def _check_loan_paid_off(
+    loan_params: LoanParams,
+    account_id: int,
+    scenario_id: int | None,
+) -> bool:
+    """Determine if a loan is paid off based on confirmed payments.
+
+    Replays only confirmed (Paid/Settled) payments through the
+    amortization engine and checks whether the remaining balance
+    reaches exactly zero.  Projected payments are excluded -- a loan
+    is "paid off" only when actual payments have retired the balance.
+
+    Rate changes for ARM loans are omitted from the replay.  This is
+    a minor simplification: rate changes affect the interest/principal
+    split within each payment but do not change whether a fixed-amount
+    payment sequence reaches zero balance.
+
+    Args:
+        loan_params: LoanParams model instance for the debt account.
+        account_id: The debt account ID for the payment query.
+        scenario_id: The baseline scenario ID, or None if no scenario
+            exists (returns False immediately).
+
+    Returns:
+        True if confirmed payments bring the remaining balance to
+        exactly Decimal("0.00").
+    """
+    if scenario_id is None:
+        return False
+
+    all_payments = get_payment_history(account_id, scenario_id)
+    confirmed = [p for p in all_payments if p.is_confirmed]
+
+    if not confirmed:
+        return False
+
+    principal = Decimal(str(loan_params.current_principal))
+    rate = Decimal(str(loan_params.interest_rate))
+    remaining = amortization_engine.calculate_remaining_months(
+        loan_params.origination_date, loan_params.term_months,
+    )
+
+    # For ARM loans, pass original_principal=None to force
+    # re-amortization from current state.
+    is_arm = getattr(loan_params, "is_arm", False)
+    original = None if is_arm else Decimal(str(loan_params.original_principal))
+
+    schedule = amortization_engine.generate_schedule(
+        principal, rate, remaining,
+        payment_day=loan_params.payment_day,
+        original_principal=original,
+        term_months=loan_params.term_months,
+        payments=confirmed,
+    )
+
+    if not schedule:
+        # Empty schedule means current_principal <= 0 or
+        # remaining_months <= 0 -- the engine cannot verify payoff
+        # through payment replay.
+        return False
+
+    # Check the balance at the last CONFIRMED row, not the last row
+    # overall.  The engine fills non-confirmed months with standard
+    # contractual payments that would eventually bring any loan to
+    # zero.  Only a confirmed payment driving the balance to zero
+    # means the user has actually paid off the loan.
+    confirmed_rows = [r for r in schedule if r.is_confirmed]
+    if not confirmed_rows:
+        return False
+
+    return confirmed_rows[-1].remaining_balance == Decimal("0.00")
 
 
 def _project_investment(

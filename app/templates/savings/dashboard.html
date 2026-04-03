@@ -64,6 +64,9 @@
               {% if ad.needs_setup %}
               <span class="badge bg-warning text-dark ms-1">Setup Required</span>
               {% endif %}
+              {% if ad.is_paid_off %}
+              <span class="badge bg-success ms-1">Paid Off</span>
+              {% endif %}
             </h6>
             <small class="text-muted">
               {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
