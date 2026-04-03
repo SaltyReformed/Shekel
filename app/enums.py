@@ -127,3 +127,23 @@ class RecurrencePatternEnum(enum.Enum):
     SEMI_ANNUAL = "Semi-Annual"
     ANNUAL = "Annual"
     ONCE = "Once"
+
+
+class GoalModeEnum(enum.Enum):
+    """Savings goal amount mode values.
+
+    Values match ``ref.goal_modes.name`` in the database.
+    """
+
+    FIXED = "Fixed"
+    INCOME_RELATIVE = "Income-Relative"
+
+
+class IncomeUnitEnum(enum.Enum):
+    """Income multiplier unit values.
+
+    Values match ``ref.income_units.name`` in the database.
+    """
+
+    PAYCHECKS = "Paychecks"
+    MONTHS = "Months"

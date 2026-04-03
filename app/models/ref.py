@@ -206,3 +206,37 @@ class RaiseType(db.Model):
 
     def __repr__(self):
         return f"<RaiseType {self.name}>"
+
+
+class GoalMode(db.Model):
+    """Savings goal amount mode reference: 'Fixed', 'Income-Relative'.
+
+    Determines whether a savings goal target is a fixed dollar amount
+    or a multiple of the user's income (e.g. 3 months of paychecks).
+    """
+
+    __tablename__ = "goal_modes"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<GoalMode {self.name}>"
+
+
+class IncomeUnit(db.Model):
+    """Income multiplier unit reference: 'Paychecks', 'Months'.
+
+    Used with income-relative savings goals to specify whether the
+    multiplier is measured in paychecks or calendar months.
+    """
+
+    __tablename__ = "income_units"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<IncomeUnit {self.name}>"

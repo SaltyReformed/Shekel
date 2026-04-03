@@ -29,8 +29,8 @@ from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
-    FilingStatus, RaiseType, RecurrencePattern, Status, TaxType,
-    TransactionType,
+    FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
+    Status, TaxType, TransactionType,
 )
 from app.services.auth_service import hash_password
 
@@ -1015,6 +1015,8 @@ def _seed_ref_tables():
         (CalcMethod, ["flat", "percentage"]),
         (TaxType, ["flat", "none", "bracket"]),
         (RaiseType, ["merit", "cola", "custom"]),
+        (GoalMode, ["Fixed", "Income-Relative"]),
+        (IncomeUnit, ["Paychecks", "Months"]),
     ]
     for model_class, entries in ref_data:
         for entry in entries:

@@ -28,6 +28,8 @@ from app.enums import (
     AcctTypeEnum,
     CalcMethodEnum,
     DeductionTimingEnum,
+    GoalModeEnum,
+    IncomeUnitEnum,
     RecurrencePatternEnum,
     StatusEnum,
     TaxTypeEnum,
@@ -43,6 +45,8 @@ _recurrence_pattern_map = {}   # RecurrencePatternEnum member -> int (database P
 _deduction_timing_map = {}     # DeductionTimingEnum member -> int (database PK)
 _calc_method_map = {}          # CalcMethodEnum member -> int (database PK)
 _tax_type_map = {}             # TaxTypeEnum member -> int (database PK)
+_goal_mode_map = {}            # GoalModeEnum member -> int (database PK)
+_income_unit_map = {}          # IncomeUnitEnum member -> int (database PK)
 _acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
 _initialized = False
 
@@ -69,6 +73,8 @@ def init(db_session):
         AccountTypeCategory,
         CalcMethod,
         DeductionTiming,
+        GoalMode,
+        IncomeUnit,
         RecurrencePattern,
         Status,
         TaxType,
@@ -78,6 +84,7 @@ def init(db_session):
     global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
     global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
     global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
+    global _goal_mode_map, _income_unit_map  # pylint: disable=global-statement
     global _acct_type_meta, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
@@ -89,6 +96,8 @@ def init(db_session):
     _deduction_timing_map = {}
     _calc_method_map = {}
     _tax_type_map = {}
+    _goal_mode_map = {}
+    _income_unit_map = {}
     _acct_type_meta = {}
 
     # Build name -> id lookup from the database.
@@ -100,6 +109,8 @@ def init(db_session):
     deduction_timing_rows = {row.name: row.id for row in db_session.query(DeductionTiming).all()}
     calc_method_rows = {row.name: row.id for row in db_session.query(CalcMethod).all()}
     tax_type_rows = {row.name: row.id for row in db_session.query(TaxType).all()}
+    goal_mode_rows = {row.name: row.id for row in db_session.query(GoalMode).all()}
+    income_unit_rows = {row.name: row.id for row in db_session.query(IncomeUnit).all()}
 
     # Map each enum member to its database ID, collecting any misses.
     missing = []
@@ -159,6 +170,20 @@ def init(db_session):
             missing.append(f"TaxType.{member.name} (expected name={member.value!r})")
         else:
             _tax_type_map[member] = db_id
+
+    for member in GoalModeEnum:
+        db_id = goal_mode_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"GoalMode.{member.name} (expected name={member.value!r})")
+        else:
+            _goal_mode_map[member] = db_id
+
+    for member in IncomeUnitEnum:
+        db_id = income_unit_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"IncomeUnit.{member.name} (expected name={member.value!r})")
+        else:
+            _income_unit_map[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -322,3 +347,39 @@ def tax_type_id(member):
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     return _tax_type_map[member]
+
+
+def goal_mode_id(member):
+    """Return the integer primary key for a GoalModeEnum member.
+
+    Args:
+        member: A ``GoalModeEnum`` member (e.g. ``GoalModeEnum.FIXED``).
+
+    Returns:
+        int -- the ``ref.goal_modes.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid GoalModeEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _goal_mode_map[member]
+
+
+def income_unit_id(member):
+    """Return the integer primary key for an IncomeUnitEnum member.
+
+    Args:
+        member: An ``IncomeUnitEnum`` member (e.g. ``IncomeUnitEnum.PAYCHECKS``).
+
+    Returns:
+        int -- the ``ref.income_units.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid IncomeUnitEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _income_unit_map[member]

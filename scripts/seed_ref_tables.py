@@ -24,6 +24,8 @@ from app.models.ref import (
     CalcMethod,
     DeductionTiming,
     FilingStatus,
+    GoalMode,
+    IncomeUnit,
     RaiseType,
     RecurrencePattern,
     Status,
@@ -53,6 +55,8 @@ REF_DATA = [
     (CalcMethod, ["flat", "percentage"]),
     (TaxType, ["flat", "none", "bracket"]),
     (RaiseType, ["merit", "cola", "custom"]),
+    (GoalMode, ["Fixed", "Income-Relative"]),
+    (IncomeUnit, ["Paychecks", "Months"]),
 ]
 
 

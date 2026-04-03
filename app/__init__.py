@@ -130,8 +130,8 @@ def create_app(config_name=None):
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
         AcctCategoryEnum, AcctTypeEnum, CalcMethodEnum,
-        DeductionTimingEnum, RecurrencePatternEnum,
-        StatusEnum, TxnTypeEnum,
+        DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
+        RecurrencePatternEnum, StatusEnum, TxnTypeEnum,
     )
     try:
         with app.app_context():
@@ -192,6 +192,14 @@ def create_app(config_name=None):
         # Calc method IDs
         app.jinja_env.globals["CALC_PERCENTAGE"] = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
         app.jinja_env.globals["CALC_FLAT"] = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
+
+        # Goal mode IDs
+        app.jinja_env.globals["GOAL_MODE_FIXED"] = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+        app.jinja_env.globals["GOAL_MODE_INCOME_RELATIVE"] = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+
+        # Income unit IDs
+        app.jinja_env.globals["INCOME_UNIT_PAYCHECKS"] = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        app.jinja_env.globals["INCOME_UNIT_MONTHS"] = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
     except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as exc:
         app.logger.warning(
             "ref_cache initialization skipped (%s). "
@@ -412,8 +420,8 @@ def _seed_ref_tables():
     from sqlalchemy.exc import ProgrammingError
     from app.models.ref import (
         AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
-        FilingStatus, RaiseType, RecurrencePattern, Status, TaxType,
-        TransactionType,
+        FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
+        Status, TaxType, TransactionType,
     )
 
     try:
@@ -476,6 +484,8 @@ def _seed_ref_tables():
             CalcMethod: ["flat", "percentage"],
             TaxType: ["flat", "none", "bracket"],
             RaiseType: ["merit", "cola", "custom"],
+            GoalMode: ["Fixed", "Income-Relative"],
+            IncomeUnit: ["Paychecks", "Months"],
         }
 
         for model, entries in ref_data.items():

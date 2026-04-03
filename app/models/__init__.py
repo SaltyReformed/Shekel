@@ -14,6 +14,8 @@ from app.models.ref import (
     CalcMethod,
     DeductionTiming,
     FilingStatus,
+    GoalMode,
+    IncomeUnit,
     RaiseType,
     RecurrencePattern,
     Status,

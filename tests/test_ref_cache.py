@@ -10,6 +10,8 @@ to the Status model.  Verifies that:
     are correct for every status.
   - Transaction.effective_amount respects the boolean columns.
   - The grid shows "Paid" instead of "Done" for the mark-done button.
+  - GoalMode and IncomeUnit ref_cache accessors return valid IDs.
+  - GoalModeEnum and IncomeUnitEnum match their database rows exactly.
 """
 
 from decimal import Decimal
@@ -18,8 +20,8 @@ import pytest
 
 from app.extensions import db
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
-from app.models.ref import Status, TransactionType
+from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
+from app.models.ref import GoalMode, IncomeUnit, Status, TransactionType
 from app.models.transaction import Transaction
 
 
@@ -230,3 +232,91 @@ class TestGridShowsPaidNotDone:
             # "Done" should not appear as a button label (it may appear
             # in other contexts like status dropdown options).
             assert "> Done<" not in html
+
+
+class TestGoalModeRefCache:
+    """Tests for ref_cache goal mode ID resolution."""
+
+    def test_goal_mode_ref_cache(self, app, db):
+        """ref_cache.goal_mode_id() returns distinct positive integers
+        for both GoalModeEnum members (FIXED and INCOME_RELATIVE).
+        """
+        with app.app_context():
+            fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+            income_relative_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+
+            assert isinstance(fixed_id, int), (
+                f"goal_mode_id(FIXED) returned {type(fixed_id)}, expected int"
+            )
+            assert isinstance(income_relative_id, int), (
+                f"goal_mode_id(INCOME_RELATIVE) returned {type(income_relative_id)}, expected int"
+            )
+            assert fixed_id > 0, f"FIXED id should be positive, got {fixed_id}"
+            assert income_relative_id > 0, (
+                f"INCOME_RELATIVE id should be positive, got {income_relative_id}"
+            )
+            assert fixed_id != income_relative_id, (
+                f"FIXED and INCOME_RELATIVE should have different IDs, both are {fixed_id}"
+            )
+
+    def test_goal_mode_enum_matches_db(self, app, db):
+        """Every GoalModeEnum member has a corresponding database row,
+        and every database row has a corresponding enum member.
+        No extra rows, no missing rows.
+        """
+        with app.app_context():
+            db_rows = db.session.query(GoalMode).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in GoalModeEnum}
+
+            assert db_names == enum_values, (
+                f"GoalMode DB rows {db_names} do not match "
+                f"GoalModeEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(GoalModeEnum), (
+                f"GoalMode has {len(db_rows)} rows but GoalModeEnum has "
+                f"{len(GoalModeEnum)} members"
+            )
+
+
+class TestIncomeUnitRefCache:
+    """Tests for ref_cache income unit ID resolution."""
+
+    def test_income_unit_ref_cache(self, app, db):
+        """ref_cache.income_unit_id() returns distinct positive integers
+        for both IncomeUnitEnum members (PAYCHECKS and MONTHS).
+        """
+        with app.app_context():
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+            months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+
+            assert isinstance(paychecks_id, int), (
+                f"income_unit_id(PAYCHECKS) returned {type(paychecks_id)}, expected int"
+            )
+            assert isinstance(months_id, int), (
+                f"income_unit_id(MONTHS) returned {type(months_id)}, expected int"
+            )
+            assert paychecks_id > 0, f"PAYCHECKS id should be positive, got {paychecks_id}"
+            assert months_id > 0, f"MONTHS id should be positive, got {months_id}"
+            assert paychecks_id != months_id, (
+                f"PAYCHECKS and MONTHS should have different IDs, both are {paychecks_id}"
+            )
+
+    def test_income_unit_enum_matches_db(self, app, db):
+        """Every IncomeUnitEnum member has a corresponding database row,
+        and every database row has a corresponding enum member.
+        No extra rows, no missing rows.
+        """
+        with app.app_context():
+            db_rows = db.session.query(IncomeUnit).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in IncomeUnitEnum}
+
+            assert db_names == enum_values, (
+                f"IncomeUnit DB rows {db_names} do not match "
+                f"IncomeUnitEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(IncomeUnitEnum), (
+                f"IncomeUnit has {len(db_rows)} rows but IncomeUnitEnum has "
+                f"{len(IncomeUnitEnum)} members"
+            )
