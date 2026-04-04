@@ -12,7 +12,7 @@ plain dicts/lists.  No Flask imports.
 
 import logging
 from collections import OrderedDict
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum, GoalModeEnum, TxnTypeEnum
@@ -20,6 +20,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType
@@ -32,6 +33,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     amortization_engine,
     balance_calculator,
+    escrow_calculator,
     growth_engine,
     pay_period_service,
     savings_goal_service,
@@ -40,6 +42,11 @@ from app.services.investment_projection import calculate_investment_inputs
 from app.services.loan_payment_service import get_payment_history
 
 logger = logging.getLogger(__name__)
+
+_TWO_PLACES = Decimal("0.01")
+_RATE_PLACES = Decimal("0.00001")
+_DTI_HEALTHY_THRESHOLD = Decimal("36")
+_DTI_HIGH_THRESHOLD = Decimal("43")
 
 
 def compute_dashboard_data(user_id):
@@ -145,6 +152,28 @@ def compute_dashboard_data(user_id):
     # ── Archived accounts (minimal data, no projections) ───────
     archived_accounts = _load_archived_accounts(user_id)
 
+    # ── Debt summary and DTI ───────────────────────────────────
+    debt_summary = _compute_debt_summary(
+        account_data, params["escrow_map"],
+    )
+    if debt_summary is not None:
+        gross_biweekly = params["salary_gross_biweekly"]
+        if gross_biweekly > Decimal("0.00"):
+            gross_monthly = (
+                gross_biweekly * Decimal("26") / Decimal("12")
+            ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+            dti_ratio = (
+                debt_summary["total_monthly_payments"]
+                / gross_monthly * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            debt_summary["dti_ratio"] = dti_ratio
+            debt_summary["dti_label"] = _get_dti_label(dti_ratio)
+            debt_summary["gross_monthly_income"] = gross_monthly
+        else:
+            debt_summary["dti_ratio"] = None
+            debt_summary["dti_label"] = None
+            debt_summary["gross_monthly_income"] = None
+
     return {
         "account_data": account_data,
         "grouped_accounts": grouped_accounts,
@@ -154,6 +183,7 @@ def compute_dashboard_data(user_id):
         "avg_monthly_expenses": avg_monthly_expenses,
         "savings_accounts": savings_accounts,
         "archived_accounts": archived_accounts,
+        "debt_summary": debt_summary,
     }
 
 
@@ -235,12 +265,21 @@ def _load_account_params(user_id, accounts):
         ).all():
             loan_params_map[lp.account_id] = lp
 
+    # Escrow components for loan accounts (for debt summary PITI).
+    escrow_map = {}
+    if loan_account_ids:
+        for ec in db.session.query(EscrowComponent).filter(
+            EscrowComponent.account_id.in_(loan_account_ids),
+        ).all():
+            escrow_map.setdefault(ec.account_id, []).append(ec)
+
     return {
         "interest_params_map": interest_params_map,
         "investment_params_map": investment_params_map,
         "deductions_by_account": deductions_by_account,
         "salary_gross_biweekly": salary_gross_biweekly,
         "loan_params_map": loan_params_map,
+        "escrow_map": escrow_map,
     }
 
 
@@ -732,6 +771,102 @@ def _compute_avg_monthly_expenses(
         avg_monthly_expenses = max(avg_monthly_expenses, committed_monthly)
 
     return avg_monthly_expenses
+
+
+def _compute_debt_summary(
+    account_data: list,
+    escrow_map: dict,
+) -> dict | None:
+    """Compute aggregate debt metrics across active loan accounts.
+
+    Uses per-account data already computed by _compute_account_projections
+    (monthly_payment, payoff_date, loan_params, is_paid_off).  Escrow
+    components are loaded separately and included in the monthly total
+    so DTI reflects PITI (principal, interest, taxes, insurance).
+
+    Paid-off loans are excluded from all aggregate metrics.  Loans with
+    missing LoanParams are skipped with a warning.
+
+    Args:
+        account_data: List of per-account dicts from
+            _compute_account_projections.
+        escrow_map: Dict mapping account_id to list of EscrowComponent.
+
+    Returns:
+        Dict with keys: total_debt, total_monthly_payments,
+        weighted_avg_rate, projected_debt_free_date.
+        Returns None if no loan accounts with params exist.
+    """
+    loan_ads = [ad for ad in account_data if ad.get("loan_params")]
+    if not loan_ads:
+        return None
+
+    total_debt = Decimal("0.00")
+    total_monthly = Decimal("0.00")
+    weighted_rate_sum = Decimal("0.00")
+    payoff_dates = []
+
+    for ad in loan_ads:
+        if ad["is_paid_off"]:
+            continue
+
+        lp = ad["loan_params"]
+        principal = Decimal(str(lp.current_principal))
+
+        if principal <= Decimal("0.00"):
+            continue
+
+        rate = Decimal(str(lp.interest_rate))
+        monthly_pi = ad["monthly_payment"]
+
+        # Include escrow (property tax, insurance) for PITI total.
+        components = escrow_map.get(ad["account"].id, [])
+        monthly_escrow = escrow_calculator.calculate_monthly_escrow(components)
+        monthly_total = (monthly_pi + monthly_escrow).quantize(
+            _TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+
+        total_debt += principal
+        total_monthly += monthly_total
+        weighted_rate_sum += rate * principal
+
+        if ad.get("payoff_date"):
+            payoff_dates.append(ad["payoff_date"])
+
+    if total_debt > Decimal("0.00"):
+        weighted_avg_rate = (weighted_rate_sum / total_debt).quantize(
+            _RATE_PLACES, rounding=ROUND_HALF_UP
+        )
+    else:
+        weighted_avg_rate = Decimal("0.00000")
+
+    debt_free_date = max(payoff_dates) if payoff_dates else None
+
+    return {
+        "total_debt": total_debt.quantize(_TWO_PLACES),
+        "total_monthly_payments": total_monthly.quantize(_TWO_PLACES),
+        "weighted_avg_rate": weighted_avg_rate,
+        "projected_debt_free_date": debt_free_date,
+    }
+
+
+def _get_dti_label(dti_pct: Decimal) -> str:
+    """Return the DTI health label based on conventional thresholds.
+
+    Boundaries: < 36% is healthy, 36%--43% is moderate, > 43% is high.
+    36.0% is moderate (not healthy).  43.0% is moderate (not high).
+
+    Args:
+        dti_pct: DTI as a percentage (e.g. Decimal("34.2")).
+
+    Returns:
+        'healthy', 'moderate', or 'high'.
+    """
+    if dti_pct < _DTI_HEALTHY_THRESHOLD:
+        return "healthy"
+    if dti_pct > _DTI_HIGH_THRESHOLD:
+        return "high"
+    return "moderate"
 
 
 def _load_archived_accounts(user_id: int) -> list[dict]:

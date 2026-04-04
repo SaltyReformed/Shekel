@@ -2806,3 +2806,76 @@ class TestTrajectoryDisplay:
             html = resp.data.decode()
             # Must not show "None" where target should be.
             assert "None" not in html or "none" in html.lower()
+
+
+# -- Debt Summary Display Tests (Commit 5.12-1) ─────────────────────
+
+
+class TestDebtSummaryDisplay:
+    """Route-level tests for the debt summary card on the dashboard.
+
+    Commit 5.12-1: the dashboard shows aggregate debt metrics and
+    DTI ratio when loan accounts exist.
+    """
+
+    def test_dashboard_debt_summary_card_rendered(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.12-17: Dashboard shows debt summary card when loans exist."""
+        with app.app_context():
+            _create_small_loan(seed_user)
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Debt Summary" in html
+            assert "Total Debt" in html
+            assert "Monthly Payments" in html
+            assert "Weighted Avg Rate" in html
+
+    def test_dashboard_no_debt_summary_when_no_loans(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.12-19: No debt summary card when no loan accounts exist."""
+        with app.app_context():
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Debt Summary" not in html
+
+    def test_dashboard_dti_badge_rendered(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5.12-18: DTI badge appears when loans and salary exist."""
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            _create_small_loan(seed_user)
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Debt-to-Income" in html
+            # Small loan relative to $78K salary -> "Healthy" badge
+            assert "Healthy" in html
+
+    def test_dashboard_dti_no_salary_shows_na(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """DTI shows N/A when no salary profile configured."""
+        with app.app_context():
+            _create_small_loan(seed_user)
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "N/A" in html or "no salary profile" in html

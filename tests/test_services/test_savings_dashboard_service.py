@@ -32,7 +32,7 @@ class TestComputeDashboardData:
                 "account_data", "grouped_accounts", "goal_data",
                 "emergency_metrics", "total_savings",
                 "avg_monthly_expenses", "savings_accounts",
-                "archived_accounts",
+                "archived_accounts", "debt_summary",
             }
             assert set(result.keys()) == expected_keys
 
@@ -907,3 +907,469 @@ class TestArchivedAccounts:
             assert "current_balance" in ad
             assert ad["current_balance"] == Decimal("3000.00")
             assert "projected" not in ad
+
+
+# ── Debt Summary Tests (Commit 5.12-1) ────────────────────────────────
+
+
+class TestDebtSummary:
+    """Tests for the debt summary computation in the dashboard service.
+
+    Commit 5.12-1: aggregate debt metrics (total debt, monthly payments,
+    weighted average rate, debt-free date) and debt-to-income ratio.
+    """
+
+    def test_debt_summary_none_when_no_loans(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-3: No loan accounts yields debt_summary=None."""
+        with app.app_context():
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            assert result["debt_summary"] is None
+
+    def test_debt_summary_single_loan(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-1: Single loan produces a valid debt summary.
+
+        A $1,000 auto loan at 5% for 24 months.  The summary should
+        reflect this single loan's metrics.
+        """
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds is not None
+            assert ds["total_debt"] == Decimal("1000.00")
+            # weighted_avg_rate = single loan's rate = 0.05000
+            assert ds["weighted_avg_rate"] == Decimal("0.05000")
+            assert ds["total_monthly_payments"] > Decimal("0.00")
+            assert ds["projected_debt_free_date"] is not None
+
+    def test_debt_summary_multiple_loans_weighted_rate(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-2 / C-5.12-4: Two loans with hand-calculated weighted avg rate.
+
+        Loan A: $200,000 at 6.5%
+        Loan B: $25,000 at 4.9%
+        weighted_avg = (200000*0.065 + 25000*0.049) / (200000+25000)
+                     = (13000 + 1225) / 225000
+                     = 14225 / 225000
+                     = 0.06322...
+        """
+        with app.app_context():
+            mortgage_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Mortgage").one()
+            )
+            mortgage = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Mortgage",
+                current_anchor_balance=Decimal("200000.00"),
+            )
+            db.session.add(mortgage)
+            db.session.flush()
+
+            from app.models.loan_params import LoanParams as LP
+            lp1 = LP(
+                account_id=mortgage.id,
+                original_principal=Decimal("200000.00"),
+                current_principal=Decimal("200000.00"),
+                interest_rate=Decimal("0.06500"),
+                term_months=360,
+                origination_date=date(2024, 1, 1),
+                payment_day=1,
+            )
+            db.session.add(lp1)
+
+            auto_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Auto Loan").one()
+            )
+            auto = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=auto_type.id,
+                name="Auto",
+                current_anchor_balance=Decimal("25000.00"),
+            )
+            db.session.add(auto)
+            db.session.flush()
+
+            lp2 = LP(
+                account_id=auto.id,
+                original_principal=Decimal("25000.00"),
+                current_principal=Decimal("25000.00"),
+                interest_rate=Decimal("0.04900"),
+                term_months=60,
+                origination_date=date(2024, 6, 1),
+                payment_day=15,
+            )
+            db.session.add(lp2)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds["total_debt"] == Decimal("225000.00")
+            # Hand-calc: (200000*0.065 + 25000*0.049) / 225000
+            #          = 14225 / 225000 = 0.063222...
+            assert ds["weighted_avg_rate"] == Decimal("0.06322")
+
+    def test_debt_summary_excludes_paid_off(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-8: Paid-off loan excluded from debt summary.
+
+        One active loan ($1,000) plus one paid-off loan.  Total debt
+        should equal only the active loan's principal.
+        """
+        from app import ref_cache as rc
+        from app.enums import StatusEnum
+        from app.services.transfer_service import create_transfer
+
+        with app.app_context():
+            active = _create_small_loan(
+                seed_user, db.session, name="Active Loan",
+                principal=Decimal("2000.00"),
+            )
+            paid_off = _create_small_loan(
+                seed_user, db.session, name="Paid Off Loan",
+            )
+            # Pay off the second loan with a confirmed transfer.
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=paid_off.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=rc.status_id(StatusEnum.DONE),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            # Only the active $2,000 loan contributes.
+            assert ds["total_debt"] == Decimal("2000.00")
+
+    def test_debt_summary_all_paid_off(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-10: All loans paid off yields zero totals.
+
+        Debt summary exists (not None) but all aggregates are zero
+        and debt-free date is None.
+        """
+        from app import ref_cache as rc
+        from app.enums import StatusEnum
+        from app.services.transfer_service import create_transfer
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=rc.status_id(StatusEnum.DONE),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds is not None
+            assert ds["total_debt"] == Decimal("0.00")
+            assert ds["total_monthly_payments"] == Decimal("0.00")
+            assert ds["weighted_avg_rate"] == Decimal("0.00000")
+            assert ds["projected_debt_free_date"] is None
+
+    def test_debt_summary_missing_params(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-11: Loan with no LoanParams is skipped, no crash.
+
+        A loan account without params exists but another loan with
+        params also exists.  The summary should only include the
+        parameterized loan.
+        """
+        with app.app_context():
+            # Loan with params
+            _create_small_loan(seed_user, db.session, name="With Params")
+
+            # Loan without params
+            loan_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Auto Loan").one()
+            )
+            no_params = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params",
+            )
+            db.session.add(no_params)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds is not None
+            # Only the parameterized loan contributes.
+            assert ds["total_debt"] == Decimal("1000.00")
+
+    def test_debt_free_date_is_latest(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-12: Debt-free date is the latest payoff across loans.
+
+        A short-term loan (24 months) and a long-term mortgage (360
+        months).  The debt-free date should match the mortgage's payoff.
+        """
+        with app.app_context():
+            from app.models.loan_params import LoanParams as LP
+
+            # Short-term loan
+            _create_small_loan(
+                seed_user, db.session, name="Short Loan", term=24,
+            )
+
+            # Long-term mortgage
+            mortgage_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Mortgage").one()
+            )
+            mortgage = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Long Mortgage",
+            )
+            db.session.add(mortgage)
+            db.session.flush()
+            lp = LP(
+                account_id=mortgage.id,
+                original_principal=Decimal("200000.00"),
+                current_principal=Decimal("200000.00"),
+                interest_rate=Decimal("0.06500"),
+                term_months=360,
+                origination_date=date(2024, 1, 1),
+                payment_day=1,
+            )
+            db.session.add(lp)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            # The mortgage payoff is decades away; auto loan is < 2 years.
+            # Debt-free date should be the mortgage's later payoff.
+            assert ds["projected_debt_free_date"] is not None
+            # The auto loan payoff is within ~21 months of origination
+            # (Jan 2026 + 21 months ~ Oct 2027).  The mortgage payoff is
+            # 360 months from Jan 2024 ~ Jan 2054.  Debt-free = mortgage.
+            assert ds["projected_debt_free_date"].year > 2030
+
+    def test_debt_summary_includes_escrow(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-9: Escrow components are included in monthly total.
+
+        A mortgage with $7,200/year escrow ($600/month).  The monthly
+        total must include P&I + escrow.
+        """
+        with app.app_context():
+            from app.models.loan_params import LoanParams as LP
+            from app.models.loan_features import EscrowComponent
+
+            mortgage_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Mortgage").one()
+            )
+            mortgage = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Escrow Mortgage",
+            )
+            db.session.add(mortgage)
+            db.session.flush()
+
+            lp = LP(
+                account_id=mortgage.id,
+                original_principal=Decimal("200000.00"),
+                current_principal=Decimal("200000.00"),
+                interest_rate=Decimal("0.06500"),
+                term_months=360,
+                origination_date=date(2024, 1, 1),
+                payment_day=1,
+            )
+            db.session.add(lp)
+
+            ec = EscrowComponent(
+                account_id=mortgage.id,
+                name="Property Tax",
+                annual_amount=Decimal("7200.00"),
+            )
+            db.session.add(ec)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            # P&I for a $200K, 6.5%, 360-month loan is ~$1,264.
+            # With $600/month escrow, total should exceed $1,800.
+            assert ds["total_monthly_payments"] > Decimal("1800.00")
+            # Verify escrow is included: total > P&I alone.
+            from app.services import amortization_engine as ae
+            pi_only = ae.calculate_monthly_payment(
+                Decimal("200000.00"), Decimal("0.06500"),
+                ae.calculate_remaining_months(date(2024, 1, 1), 360),
+            )
+            assert ds["total_monthly_payments"] > pi_only
+
+
+class TestDTI:
+    """Tests for debt-to-income ratio computation.
+
+    DTI = total_monthly_payments / gross_monthly_income * 100.
+    Gross monthly = gross_biweekly * 26 / 12 (biweekly, not semi-monthly).
+    """
+
+    def test_dti_no_salary(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-6: Loans exist but no salary profile yields dti_ratio=None."""
+        with app.app_context():
+            _create_small_loan(seed_user, db.session)
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds is not None
+            assert ds["dti_ratio"] is None
+            assert ds["dti_label"] is None
+
+    def test_dti_with_salary(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-5: Known DTI from specific monthly debt and gross pay.
+
+        Gross biweekly = annual_salary / 26.
+        gross_monthly = gross_biweekly * 26 / 12 = annual_salary / 12.
+        $78,000 / 12 = $6,500.
+        A $1,000 loan at 5% for 24 months: monthly P&I ~ $43.87.
+        DTI = 43.87 / 6500 * 100 = ~0.7%.
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds["dti_ratio"] is not None
+            assert isinstance(ds["dti_ratio"], Decimal)
+            assert ds["dti_label"] == "healthy"
+            assert ds["gross_monthly_income"] == Decimal("6500.00")
+
+    def test_dti_zero_debt(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5.12-13: Salary exists, all loans paid off -> DTI = 0.0%."""
+        from app import ref_cache as rc
+        from app.enums import StatusEnum
+        from app.services.transfer_service import create_transfer
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            acct = _create_small_loan(seed_user, db.session)
+            create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=acct.id,
+                pay_period_id=seed_periods[7].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("1100.00"),
+                status_id=rc.status_id(StatusEnum.DONE),
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds["dti_ratio"] == Decimal("0.0")
+            assert ds["dti_label"] == "healthy"
+
+    def test_dti_thresholds(self, app):
+        """C-5.12-7 / C-5.12-14 / C-5.12-15: DTI threshold boundary values.
+
+        35.9% -> healthy (< 36)
+        36.0% -> moderate (not < 36)
+        43.0% -> moderate (not > 43)
+        43.1% -> high (> 43)
+        """
+        from app.services.savings_dashboard_service import _get_dti_label
+        assert _get_dti_label(Decimal("35.9")) == "healthy"
+        assert _get_dti_label(Decimal("36.0")) == "moderate"
+        assert _get_dti_label(Decimal("43.0")) == "moderate"
+        assert _get_dti_label(Decimal("43.1")) == "high"
+
+    def test_dti_over_100(self, app):
+        """C-5.12-16: DTI > 100% is valid and labeled 'high'."""
+        from app.services.savings_dashboard_service import _get_dti_label
+        assert _get_dti_label(Decimal("124.5")) == "high"
+
+    def test_gross_monthly_uses_26_not_24(self, app):
+        """C-5.12-20: Gross monthly = biweekly * 26 / 12, not * 24 / 12.
+
+        Biweekly $3,000:
+            Correct: 3000 * 26 / 12 = $6,500.00
+            Wrong:   3000 * 24 / 12 = $6,000.00
+
+        Hand-calculation:
+            26 biweekly periods per year / 12 months = 2.16667
+            3000 * 2.16667 = 6500.00
+        """
+        gross_biweekly = Decimal("3000.00")
+        gross_monthly = (
+            gross_biweekly * Decimal("26") / Decimal("12")
+        ).quantize(Decimal("0.01"))
+        assert gross_monthly == Decimal("6500.00")

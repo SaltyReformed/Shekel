@@ -39,6 +39,60 @@
   <i class="bi {{ category_icons.get(category_name, 'bi-wallet') }}"></i>
   {{ category_name|title }}
 </h5>
+
+{# --- Debt Summary Card (liability section only) --- #}
+{% if category_name == 'liability' and debt_summary %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Debt Summary</h6>
+  </div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-6">
+        <div class="d-flex justify-content-between small mb-1">
+          <span class="text-muted">Total Debt</span>
+          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_debt|float) }}</span>
+        </div>
+        <div class="d-flex justify-content-between small mb-1">
+          <span class="text-muted">Monthly Payments</span>
+          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_monthly_payments|float) }}</span>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="d-flex justify-content-between small mb-1">
+          <span class="text-muted">Weighted Avg Rate</span>
+          <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|float * 100) }}%</span>
+        </div>
+        {% if debt_summary.projected_debt_free_date %}
+        <div class="d-flex justify-content-between small mb-1">
+          <span class="text-muted">Debt-Free Date</span>
+          <span class="fw-bold">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {# DTI ratio #}
+    {% if debt_summary.dti_ratio is not none %}
+    <div class="mt-2 pt-2 border-top d-flex align-items-center">
+      <span class="text-muted small me-2">Debt-to-Income:</span>
+      <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
+      {% if debt_summary.dti_label == 'healthy' %}
+      <span class="badge bg-success">Healthy</span>
+      {% elif debt_summary.dti_label == 'moderate' %}
+      <span class="badge bg-warning text-dark">Moderate</span>
+      {% else %}
+      <span class="badge bg-danger">High</span>
+      {% endif %}
+    </div>
+    {% elif debt_summary %}
+    <div class="mt-2 pt-2 border-top">
+      <span class="text-muted small">Debt-to-Income: N/A (no salary profile)</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
   {% for ad in category_accounts %}
   <div class="col-md-6 col-lg-4">
