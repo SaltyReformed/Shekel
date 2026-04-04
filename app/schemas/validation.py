@@ -5,6 +5,8 @@ Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
 """
 
+from decimal import Decimal
+
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
 
 
@@ -882,6 +884,37 @@ class PayoffCalculatorSchema(BaseSchema):
     mode = fields.String(required=True, validate=validate.OneOf(["extra_payment", "target_date"]))
     extra_monthly = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     target_date = fields.Date()
+
+
+class RefinanceSchema(BaseSchema):
+    """Validates POST data for refinance what-if calculator input.
+
+    The new_rate field accepts a percentage (e.g. 5.0 for 5%);
+    the route converts to decimal (0.05) before passing to the engine.
+    The new_principal field is optional -- when omitted, the route
+    auto-calculates as current_real_principal + closing_costs.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields fall back to defaults."""
+        return {k: v for k, v in data.items() if v != ""}
+
+    new_rate = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=0, max=100),
+    )
+    new_term_months = fields.Integer(
+        required=True, validate=validate.Range(min=1, max=600),
+    )
+    closing_costs = fields.Decimal(
+        load_default=Decimal("0.00"), places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+    new_principal = fields.Decimal(
+        load_default=None, allow_none=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )
 
 
 class LoanPaymentTransferSchema(BaseSchema):

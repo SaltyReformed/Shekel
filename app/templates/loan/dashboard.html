@@ -41,6 +41,10 @@
     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-payoff"
             type="button" role="tab" aria-controls="tab-payoff" aria-selected="false">Payoff Calculator</button>
   </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-refinance"
+            type="button" role="tab" aria-controls="tab-refinance" aria-selected="false">Refinance Calculator</button>
+  </li>
 </ul>
 
 {% if show_transfer_prompt and source_accounts %}
@@ -327,6 +331,11 @@
         <div id="payoff-results" class="mt-3"></div>
       </div>
     </div>
+  </div>
+
+  {# === Refinance Calculator Tab === #}
+  <div class="tab-pane fade" id="tab-refinance" role="tabpanel">
+    {% include "loan/_refinance.html" %}
   </div>
 </div>
 {% endblock %}

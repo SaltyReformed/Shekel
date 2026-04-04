@@ -1,0 +1,107 @@
+{# HTMX fragment: refinance comparison results.
+
+   Swapped into #refinance-results by the refinance_calculate route.
+   Shows either an error message or a side-by-side comparison table
+   with break-even analysis.
+#}
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% elif comparison %}
+<div class="table-responsive">
+  <table class="table table-bordered">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>Current Loan</th>
+        <th>Refinanced</th>
+        <th>Difference</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Monthly Payment (P&I)</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_monthly|float) }}</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_monthly|float) }}</td>
+        <td class="font-mono {{ 'text-success' if comparison.monthly_savings|float > 0 else ('text-danger' if comparison.monthly_savings|float < 0 else '') }}">
+          {% if comparison.monthly_savings|float > 0 %}
+            +${{ "{:,.2f}".format(comparison.monthly_savings|float) }}/mo
+          {% elif comparison.monthly_savings|float < 0 %}
+            -${{ "{:,.2f}".format((-comparison.monthly_savings)|float) }}/mo
+          {% else %}
+            $0.00
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Total Interest</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_total_interest|float) }}</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_total_interest|float) }}</td>
+        <td class="font-mono {{ 'text-success' if comparison.interest_savings|float > 0 else ('text-danger' if comparison.interest_savings|float < 0 else '') }}">
+          {% if comparison.interest_savings|float > 0 %}
+            +${{ "{:,.2f}".format(comparison.interest_savings|float) }}
+          {% elif comparison.interest_savings|float < 0 %}
+            -${{ "{:,.2f}".format((-comparison.interest_savings)|float) }}
+          {% else %}
+            $0.00
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Remaining Term</td>
+        <td>{{ comparison.current_remaining_months }} months</td>
+        <td>{{ comparison.refi_term }} months</td>
+        <td>
+          {% set term_diff = comparison.refi_term - comparison.current_remaining_months %}
+          {% if term_diff > 0 %}+{{ term_diff }} months
+          {% elif term_diff < 0 %}{{ term_diff }} months
+          {% else %}No change{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Payoff Date</td>
+        <td>{{ comparison.current_payoff.strftime('%b %Y') }}</td>
+        <td>{{ comparison.refi_payoff.strftime('%b %Y') }}</td>
+        <td></td>
+      </tr>
+      {% if comparison.refi_principal != comparison.current_principal %}
+      <tr>
+        <td>Principal</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_principal|float) }}</td>
+        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_principal|float) }}</td>
+        <td class="font-mono text-muted">
+          {% set princ_diff = comparison.refi_principal - comparison.current_principal %}
+          {% if princ_diff|float > 0 %}
+            +${{ "{:,.2f}".format(princ_diff|float) }}
+          {% elif princ_diff|float < 0 %}
+            -${{ "{:,.2f}".format((-princ_diff)|float) }}
+          {% else %}
+            $0.00
+          {% endif %}
+          {% if comparison.closing_costs|float > 0 %}(includes closing costs){% endif %}
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if comparison.break_even_months is not none %}
+<div class="alert alert-info">
+  <strong>Break-even:</strong> {{ comparison.break_even_months }} months.
+  After {{ comparison.break_even_months }} months, your monthly savings
+  (${{ "{:,.2f}".format(comparison.monthly_savings|float) }}/mo) will exceed your
+  closing costs (${{ "{:,.2f}".format(comparison.closing_costs|float) }}).
+</div>
+{% elif comparison.closing_costs|float > 0 and comparison.monthly_savings|float <= 0 %}
+<div class="alert alert-warning">
+  Your monthly payment would increase.
+  {% if comparison.interest_savings|float > 0 %}
+  The benefit of this refinance is
+  ${{ "{:,.2f}".format(comparison.interest_savings|float) }} in total interest savings over
+  the life of the loan, not monthly cash flow improvement.
+  {% else %}
+  This refinance does not offer monthly payment or total interest savings with the given terms.
+  {% endif %}
+</div>
+{% endif %}
+{% endif %}

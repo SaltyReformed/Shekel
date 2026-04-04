@@ -1,0 +1,57 @@
+{# Refinance what-if calculator form and results container.
+
+   The form posts via HTMX to the refinance endpoint, which returns
+   comparison results that get swapped into #refinance-results below.
+   The form is always visible; results appear after submission.
+#}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-arrow-repeat"></i> Refinance Calculator</h6>
+  </div>
+  <div class="card-body">
+    <form hx-post="{{ url_for('loan.refinance_calculate', account_id=account.id) }}"
+          hx-target="#refinance-results" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3 mb-3">
+        <div class="col-md-3">
+          <label for="new_rate" class="form-label">New Interest Rate</label>
+          <div class="input-group">
+            <input type="number" name="new_rate" id="new_rate"
+                   class="form-control" step="0.001" min="0" max="100"
+                   placeholder="e.g., 5.0" required>
+            <span class="input-group-text">%</span>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label for="new_term_months" class="form-label">New Term (months)</label>
+          <input type="number" name="new_term_months" id="new_term_months"
+                 class="form-control" step="1" min="1" max="600"
+                 placeholder="e.g., 360" required>
+        </div>
+        <div class="col-md-3">
+          <label for="closing_costs" class="form-label">Closing Costs</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" name="closing_costs" id="closing_costs"
+                   class="form-control" step="0.01" min="0"
+                   placeholder="0.00" value="0">
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label for="new_principal" class="form-label">New Principal</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" name="new_principal" id="new_principal"
+                   class="form-control" step="0.01" min="0.01"
+                   placeholder="Auto-calculated">
+          </div>
+          <div class="form-text">Leave blank to use current balance + closing costs.</div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-calculator"></i> Compare
+      </button>
+    </form>
+    <div id="refinance-results" class="mt-3"></div>
+  </div>
+</div>

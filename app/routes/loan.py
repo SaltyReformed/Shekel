@@ -8,7 +8,7 @@ and payoff calculator for all installment loan account types.
 import calendar
 import logging
 from datetime import date
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -32,6 +32,7 @@ from app.schemas.validation import (
     LoanPaymentTransferSchema,
     PayoffCalculatorSchema,
     RateChangeSchema,
+    RefinanceSchema,
 )
 from app.services import (
     amortization_engine,
@@ -58,6 +59,7 @@ _update_schema = LoanParamsUpdateSchema()
 _rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
 _payoff_schema = PayoffCalculatorSchema()
+_refinance_schema = RefinanceSchema()
 _transfer_schema = LoanPaymentTransferSchema()
 
 
@@ -1074,6 +1076,153 @@ def payoff_calculate(account_id):
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",
+    )
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/refinance", methods=["POST"])
+@login_required
+def refinance_calculate(account_id):
+    """Compute refinance what-if comparison scenario (HTMX).
+
+    Compares the current committed loan trajectory against a
+    hypothetical refinance with user-specified rate, term, closing
+    costs, and optional principal override.  Returns a side-by-side
+    comparison partial with monthly savings, interest savings, and
+    break-even calculation.
+
+    The "current" baseline uses the committed schedule (with actual
+    payments) if a recurring transfer exists, otherwise the
+    contractual schedule.  This ensures the comparison reflects the
+    user's real trajectory, not just the original loan terms.
+
+    The refinance principal defaults to current_real_principal +
+    closing_costs.  The user may override for cash-out refinances.
+    """
+    account, params, account_type = _load_loan_account(account_id)
+    if account is None or params is None:
+        return "Account not found", 404
+
+    errors = _refinance_schema.validate(request.form)
+    if errors:
+        return render_template(
+            "loan/_refinance_results.html",
+            error="Please correct the highlighted errors and try again.",
+        )
+
+    data = _refinance_schema.load(request.form)
+
+    # Shared loan context: payments (escrow-adjusted, month-aligned),
+    # rate changes, principal, rate, remaining months.  Identical to
+    # the dashboard's data loading so calculations are consistent.
+    ctx = _load_loan_context(account, params)
+    payments = ctx["payments"]
+    rate_changes = ctx["rate_changes"]
+    principal = ctx["principal"]
+
+    # Compute committed projection (current baseline).
+    proj = amortization_engine.get_loan_projection(
+        params, payments=payments, rate_changes=rate_changes,
+    )
+    current_schedule = proj.schedule
+
+    # Paid-off loan: no refinance comparison is meaningful.
+    if not current_schedule or principal <= Decimal("0.00"):
+        return render_template(
+            "loan/_refinance_results.html",
+            error=(
+                "This loan is paid off. "
+                "No refinance comparison available."
+            ),
+        )
+
+    # Derive current real principal from confirmed payment replay.
+    # The remaining_balance of the last confirmed row reflects what
+    # the borrower actually owes right now.  If no confirmed payments
+    # exist, use the stored current_principal from LoanParams.
+    current_real_principal = principal
+    for row in reversed(current_schedule):
+        if row.is_confirmed:
+            current_real_principal = row.remaining_balance
+            break
+
+    # Determine refinance principal: user override or auto-calculated
+    # from current real balance + closing costs.
+    closing_costs = data["closing_costs"]
+    if data["new_principal"] is not None:
+        refi_principal = data["new_principal"]
+    else:
+        refi_principal = current_real_principal + closing_costs
+
+    # Convert rate from percentage (form input) to decimal (engine).
+    refi_rate = pct_to_decimal(data["new_rate"])
+    refi_term = data["new_term_months"]
+
+    # Compute refinance monthly P&I.
+    refi_monthly = amortization_engine.calculate_monthly_payment(
+        refi_principal, refi_rate, refi_term,
+    )
+
+    # Compute refinance schedule for total interest and payoff date.
+    schedule_start = date.today().replace(day=1)
+    refi_schedule = amortization_engine.generate_schedule(
+        refi_principal, refi_rate, refi_term,
+        origination_date=schedule_start,
+        payment_day=params.payment_day,
+    )
+    refi_total_interest = sum(
+        (row.interest for row in refi_schedule), Decimal("0.00"),
+    )
+    refi_payoff = (
+        refi_schedule[-1].payment_date if refi_schedule
+        else schedule_start
+    )
+
+    # Current metrics from committed projection.
+    current_summary = proj.summary
+    current_monthly = current_summary.monthly_payment
+    current_total_interest = current_summary.total_interest
+    current_payoff = current_summary.payoff_date
+    current_remaining_months = len(current_schedule)
+
+    # Comparison metrics.
+    monthly_savings = current_monthly - refi_monthly
+    interest_savings = current_total_interest - refi_total_interest
+
+    # Break-even: ceil(closing_costs / monthly_savings) when both > 0.
+    # This is the standard consumer-facing approximation assuming
+    # constant monthly savings.  A future enhancement could compute
+    # the crossover point month-by-month for greater precision.
+    break_even_months = None
+    if (
+        closing_costs > Decimal("0.00")
+        and monthly_savings > Decimal("0.00")
+    ):
+        break_even_months = int(
+            (closing_costs / monthly_savings).to_integral_value(
+                rounding=ROUND_CEILING,
+            )
+        )
+
+    comparison = {
+        "current_monthly": current_monthly,
+        "current_total_interest": current_total_interest,
+        "current_payoff": current_payoff,
+        "current_remaining_months": current_remaining_months,
+        "current_principal": current_real_principal,
+        "refi_monthly": refi_monthly,
+        "refi_total_interest": refi_total_interest,
+        "refi_payoff": refi_payoff,
+        "refi_term": refi_term,
+        "refi_principal": refi_principal,
+        "monthly_savings": monthly_savings,
+        "interest_savings": interest_savings,
+        "break_even_months": break_even_months,
+        "closing_costs": closing_costs,
+    }
+
+    return render_template(
+        "loan/_refinance_results.html",
+        comparison=comparison,
     )
 
 
