@@ -1,10 +1,12 @@
 /**
- * Debt Strategy page -- custom priority toggle and order serialization.
+ * Debt Strategy page.
  *
- * Shows/hides the custom priority section based on strategy radio
- * selection.  Before form submission, serializes the priority
- * dropdowns into the hidden custom_order input as a comma-separated
- * list of account IDs.
+ * 1. Custom priority toggle: shows/hides the custom priority section
+ *    based on strategy radio selection.
+ * 2. Order serialization: before form submission, serializes the
+ *    priority dropdowns into the hidden custom_order input.
+ * 3. Balance chart: renders a multi-line Chart.js chart from data-*
+ *    attributes after HTMX swaps in the results partial.
  */
 document.addEventListener("DOMContentLoaded", function () {
     var radios = document.querySelectorAll("[data-strategy-radio]");
@@ -61,4 +63,101 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         orderInput.value = ids.join(",");
     });
+});
+
+/**
+ * Render the multi-line balance-over-time chart.
+ *
+ * Reads JSON from the canvas data-chart-data attribute (set by the
+ * route via json.dumps -- no Decimals, only floats).  Uses the
+ * ShekelChart theme layer for consistent styling.
+ *
+ * @param {string} canvasId - The canvas element ID.
+ */
+function renderStrategyChart(canvasId) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    var raw = canvas.getAttribute("data-chart-data");
+    if (!raw) return;
+
+    var chartData;
+    try {
+        chartData = JSON.parse(raw);
+    } catch (e) {
+        return;
+    }
+
+    if (!chartData.labels || !chartData.datasets || chartData.datasets.length === 0) {
+        return;
+    }
+
+    // Build Chart.js datasets from the serialized data, assigning
+    // colors from the ShekelChart palette by index.
+    var datasets = [];
+    for (var i = 0; i < chartData.datasets.length; i++) {
+        var ds = chartData.datasets[i];
+        var color = ShekelChart.getColor(ds.colorIndex != null ? ds.colorIndex : i);
+        datasets.push({
+            label: ds.label,
+            data: ds.data,
+            borderColor: color,
+            backgroundColor: "transparent",
+            borderWidth: 2,
+            fill: false,
+            tension: 0.3,
+            pointRadius: 0
+        });
+    }
+
+    ShekelChart.create(canvasId, {
+        type: "line",
+        data: {
+            labels: chartData.labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: "index",
+                intersect: false
+            },
+            scales: {
+                x: {
+                    display: true,
+                    ticks: { maxTicksLimit: 12 }
+                },
+                y: {
+                    display: true,
+                    beginAtZero: true,
+                    ticks: {
+                        callback: function (value) {
+                            return "$" + value.toLocaleString();
+                        }
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function (context) {
+                            return context.dataset.label + ": $" +
+                                context.parsed.y.toLocaleString(undefined, {
+                                    minimumFractionDigits: 0,
+                                    maximumFractionDigits: 0
+                                });
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Render chart after HTMX swaps in the results partial.
+document.addEventListener("htmx:afterSwap", function () {
+    if (document.getElementById("strategy-chart")) {
+        renderStrategyChart("strategy-chart");
+    }
 });

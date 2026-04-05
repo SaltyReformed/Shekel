@@ -3,9 +3,12 @@ Tests for debt strategy routes.
 
 Covers the GET dashboard (multiple debts, single debt, empty state,
 auth), POST calculate (avalanche, snowball, custom, validation, IDOR),
-and navigation link on the accounts dashboard.
+chart data serialization, and navigation link on the accounts dashboard.
 """
 
+import html as html_mod
+import json
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -471,3 +474,184 @@ class TestDebtStrategyNavigation:
         html = resp.data.decode()
         assert "/debt-strategy" in html
         assert "Payoff Strategies" in html
+
+
+# ── Chart Data Tests ─────────────────────────────────────────────────
+
+
+def _extract_chart_data(response_html):
+    """Extract and parse chart JSON from the response HTML.
+
+    Finds the data-chart-data attribute on the strategy-chart canvas,
+    HTML-unescapes and JSON-parses it.
+
+    Args:
+        response_html: Decoded HTML string from the response.
+
+    Returns:
+        Parsed dict with 'labels' and 'datasets' keys, or None if
+        the chart canvas is not present.
+    """
+    match = re.search(
+        r"data-chart-data='([^']*)'",
+        response_html,
+    )
+    if not match:
+        return None
+    raw = html_mod.unescape(match.group(1))
+    return json.loads(raw)
+
+
+class TestDebtStrategyChart:
+    """Tests for the balance-over-time chart data in POST responses."""
+
+    def test_chart_data_included_in_response(self, auth_client, seed_user, db, seed_periods):
+        """POST with valid input includes a strategy-chart canvas with
+        well-formed JSON chart data.
+        """
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+        _create_mortgage(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert 'id="strategy-chart"' in html
+
+        chart = _extract_chart_data(html)
+        assert chart is not None
+        assert "labels" in chart
+        assert "datasets" in chart
+        assert isinstance(chart["labels"], list)
+        assert isinstance(chart["datasets"], list)
+        assert len(chart["datasets"]) == 2  # auto + mortgage
+
+    def test_chart_not_included_when_no_debts(self, auth_client, seed_user, db, seed_periods):
+        """POST with no debt accounts does not include the chart canvas."""
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "strategy-chart" not in html
+
+    def test_chart_data_values_are_floats(self, auth_client, seed_user, db, seed_periods):
+        """Every value in each dataset's data array is a float or int,
+        not a string representation of a Decimal.
+        """
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+        _create_mortgage(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+
+        for ds in chart["datasets"]:
+            for val in ds["data"]:
+                assert isinstance(val, (int, float)), (
+                    f"Expected int/float, got {type(val).__name__}: {val!r}"
+                )
+
+    def test_chart_labels_are_formatted_dates(self, auth_client, seed_user, db, seed_periods):
+        """Chart labels are formatted as 'Mon YYYY' strings."""
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "500",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+        assert len(chart["labels"]) > 0
+
+        date_pattern = re.compile(r"^[A-Z][a-z]{2} \d{4}$")
+        for label in chart["labels"]:
+            assert date_pattern.match(label), (
+                f"Label {label!r} does not match 'Mon YYYY' format"
+            )
+
+    def test_chart_dataset_count_matches_accounts(self, auth_client, seed_user, db, seed_periods):
+        """Number of chart datasets equals the number of debt accounts."""
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+        _create_mortgage(user, db.session)
+        _create_student_loan(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+        assert len(chart["datasets"]) == 3
+
+    def test_chart_dataset_labels_match_account_names(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Each dataset label matches one of the debt account names."""
+        user = seed_user["user"]
+        auto = _create_auto_loan(user, db.session)
+        mortgage = _create_mortgage(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+
+        ds_labels = {ds["label"] for ds in chart["datasets"]}
+        assert auto.name in ds_labels
+        assert mortgage.name in ds_labels
+
+    def test_chart_timeline_starts_at_principal(self, auth_client, seed_user, db, seed_periods):
+        """The first data point of each dataset is the starting principal.
+
+        The auto loan has $25,000 current_principal.  The chart's first
+        value should be close to that (may differ slightly due to
+        confirmed payment replay adjusting real principal).
+        """
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "500",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+        assert len(chart["datasets"]) == 1
+
+        first_balance = chart["datasets"][0]["data"][0]
+        # Real principal may differ from stored due to payment replay,
+        # but should be in the same ballpark as $25,000.
+        assert first_balance > 20000
+        assert first_balance <= 30000
+
+    def test_chart_timeline_ends_at_zero(self, auth_client, seed_user, db, seed_periods):
+        """Each dataset's balance reaches zero by the end of the timeline."""
+        user = seed_user["user"]
+        _create_auto_loan(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "500",
+            "strategy": "avalanche",
+        })
+        chart = _extract_chart_data(resp.data.decode())
+        assert chart is not None
+
+        for ds in chart["datasets"]:
+            last_balance = ds["data"][-1]
+            assert last_balance == 0.0 or abs(last_balance) < 0.01, (
+                f"Dataset {ds['label']!r} ends at {last_balance}, expected ~0"
+            )

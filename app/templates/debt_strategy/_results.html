@@ -197,18 +197,29 @@
 </div>
 {% endif %}
 
-{# --- Chart placeholder for commit 5.11-3 --- #}
-<div id="strategy-chart-container" class="card mb-4" style="display: none;">
+{# --- Balance Over Time Chart --- #}
+{% if chart_data_json %}
+<div class="card mb-4">
   <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-graph-up"></i> Balance Over Time</h6>
+    <h6 class="mb-0">
+      <i class="bi bi-graph-up"></i> Balance Over Time --
+      {% if selected_strategy == 'avalanche' %}Avalanche
+      {% elif selected_strategy == 'snowball' %}Snowball
+      {% else %}Custom
+      {% endif %}
+    </h6>
   </div>
   <div class="card-body">
-    <canvas id="strategy-chart"
-            data-chart-data='{{ selected_result.per_account|map(attribute="balance_timeline")|list|tojson }}'
-            data-chart-labels='{{ selected_result.per_account|map(attribute="name")|list|tojson }}'
-            style="max-height: 400px;"></canvas>
+    <div style="position: relative; min-height: 400px;">
+      <canvas id="strategy-chart"
+              data-chart-data='{{ chart_data_json }}'></canvas>
+    </div>
+    <p class="text-muted small mt-2 mb-0">
+      Projected balance for each debt under the selected strategy.
+      When a debt reaches $0, its freed payment rolls to the next target.
+    </p>
   </div>
 </div>
-{# Chart container hidden until commit 5.11-3 adds the JS to render it #}
+{% endif %}
 
 {% endif %}

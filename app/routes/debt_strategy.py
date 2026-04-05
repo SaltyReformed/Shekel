@@ -11,6 +11,7 @@ The GET endpoint renders the strategy form.  The POST endpoint
 per-account payoff timelines.
 """
 
+import json
 import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -327,6 +328,9 @@ def calculate():
     else:
         selected_result = avalanche
 
+    # --- Prepare chart data for the selected strategy ---
+    chart_data_json = _prepare_chart_data(selected_result, today)
+
     return render_template(
         "debt_strategy/_results.html",
         comparison=comparison,
@@ -339,6 +343,7 @@ def calculate():
         extra_monthly=extra_monthly,
         has_arm=has_arm,
         debt_accounts=debt_accounts,
+        chart_data_json=chart_data_json,
     )
 
 
@@ -391,3 +396,45 @@ def _build_comparison(baseline, avalanche, snowball, custom_result):
             "months_saved": baseline.total_months - custom_result.total_months,
         } if custom_result is not None else None,
     }
+
+
+def _prepare_chart_data(result, start_date):
+    """Serialize strategy balance timelines to JSON for Chart.js.
+
+    Converts Decimal balance_timeline values to floats (presentation
+    boundary -- matching loan.py _build_chart_data pattern) and
+    generates month labels from start_date.
+
+    Returns None if there are no accounts or no months to chart.
+
+    Args:
+        result: The StrategyResult for the selected strategy.
+        start_date: The first month of the projection.
+
+    Returns:
+        JSON string for embedding in a data-* attribute, or None.
+    """
+    if not result.per_account or result.total_months == 0:
+        return None
+
+    # Generate "Mon YYYY" labels for each month in the timeline.
+    # Index 0 = start_date (starting balance), index N = month N.
+    labels = []
+    for i in range(result.total_months + 1):
+        total = start_date.month - 1 + i
+        lbl_year = start_date.year + total // 12
+        lbl_month = total % 12 + 1
+        labels.append(date(lbl_year, lbl_month, 1).strftime("%b %Y"))
+
+    # Build one dataset per account with floats (not Decimals).
+    datasets = []
+    for idx, acct in enumerate(result.per_account):
+        # Presentation boundary: float() for Chart.js JSON serialization.
+        data = [float(b) for b in acct.balance_timeline]
+        datasets.append({
+            "label": acct.name,
+            "data": data,
+            "colorIndex": idx,
+        })
+
+    return json.dumps({"labels": labels, "datasets": datasets})
