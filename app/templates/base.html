@@ -76,6 +76,12 @@
             </a>
           </li>
           <li class="nav-item">
+            <a class="nav-link{{ ' active' if request.path.startswith('/obligations') else '' }}" href="{{ url_for('obligations.summary') }}"
+               {% if request.path.startswith('/obligations') %}aria-current="page"{% endif %}>
+              <i class="bi bi-file-earmark-text"></i> Obligations
+            </a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link{{ ' active' if request.path.startswith('/retirement') else '' }}" href="{{ url_for('retirement.dashboard') }}"
                {% if request.path.startswith('/retirement') %}aria-current="page"{% endif %}>
               <i class="bi bi-briefcase"></i> Retirement

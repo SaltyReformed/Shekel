@@ -196,13 +196,16 @@ def count_periods_until(target_date, periods):
     return count
 
 
-def compute_committed_monthly(expense_templates, transfer_templates):
-    """Calculate total committed monthly expenses from active templates.
+def amount_to_monthly(
+    amount: Decimal,
+    pattern_id: int,
+    interval_n: int = 1,
+) -> Decimal | None:
+    """Convert a per-occurrence amount to its monthly equivalent.
 
-    Sums the monthly-equivalent cost from each template based on its
-    recurrence pattern.  Both expense templates (direct debits from
-    checking) and transfer templates (money leaving checking to other
-    accounts) count toward the committed baseline.
+    Uses the biweekly pay period convention (26 periods per year) to
+    translate recurrence frequencies into monthly values.  Returns
+    None for one-time or unknown patterns.
 
     Conversion factors (biweekly-to-monthly: 26 pay periods / 12 months):
 
@@ -213,23 +216,23 @@ def compute_committed_monthly(expense_templates, transfer_templates):
       - quarterly:       amount / 3
       - semi_annual:     amount / 6
       - annual:          amount / 12
-      - once:            excluded (not a recurring commitment)
+      - once:            None (not a recurring commitment)
+
+    The result is NOT quantized -- callers are responsible for rounding
+    at their own aggregation boundary.
 
     Args:
-        expense_templates: List of TransactionTemplate objects (expenses
-            on checking).  Must already be filtered to is_active=True.
-        transfer_templates: List of TransferTemplate objects (debits from
-            checking).  Must already be filtered to is_active=True.
+        amount: The per-occurrence Decimal amount.
+        pattern_id: The recurrence pattern integer ID (from ref_cache).
+        interval_n: The interval for EVERY_N_PERIODS patterns.
+            Defaults to 1 (every period).
 
     Returns:
-        Decimal -- total committed monthly expense, rounded to 2 decimal
-        places with ROUND_HALF_UP.  Returns Decimal("0.00") if both
-        lists are empty or all templates are skipped.
+        Decimal monthly equivalent, or None for non-recurring patterns.
     """
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
 
-    # Resolve pattern IDs from the startup cache (no DB hit).
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD
     )
@@ -255,6 +258,53 @@ def compute_committed_monthly(expense_templates, transfer_templates):
         RecurrencePatternEnum.ONCE
     )
 
+    if pattern_id == once_id:
+        return None
+
+    if pattern_id == every_period_id:
+        return amount * _PAY_PERIODS_PER_YEAR / _MONTHS_PER_YEAR
+
+    if pattern_id == every_n_id:
+        n = Decimal(str(interval_n or 1))
+        return amount * _PAY_PERIODS_PER_YEAR / n / _MONTHS_PER_YEAR
+
+    if pattern_id in (monthly_id, monthly_first_id):
+        return amount
+
+    if pattern_id == quarterly_id:
+        return amount / Decimal("3")
+
+    if pattern_id == semi_annual_id:
+        return amount / Decimal("6")
+
+    if pattern_id == annual_id:
+        return amount / _MONTHS_PER_YEAR
+
+    # Unknown pattern.
+    return None
+
+
+def compute_committed_monthly(expense_templates, transfer_templates):
+    """Calculate total committed monthly expenses from active templates.
+
+    Sums the monthly-equivalent cost from each template based on its
+    recurrence pattern.  Both expense templates (direct debits from
+    checking) and transfer templates (money leaving checking to other
+    accounts) count toward the committed baseline.
+
+    Uses amount_to_monthly() for individual conversions.
+
+    Args:
+        expense_templates: List of TransactionTemplate objects (expenses
+            on checking).  Must already be filtered to is_active=True.
+        transfer_templates: List of TransferTemplate objects (debits from
+            checking).  Must already be filtered to is_active=True.
+
+    Returns:
+        Decimal -- total committed monthly expense, rounded to 2 decimal
+        places with ROUND_HALF_UP.  Returns Decimal("0.00") if both
+        lists are empty or all templates are skipped.
+    """
     total = Decimal("0")
 
     for template in list(expense_templates) + list(transfer_templates):
@@ -269,36 +319,11 @@ def compute_committed_monthly(expense_templates, transfer_templates):
             # No recurrence rule -- cannot determine frequency.
             continue
 
-        pattern_id = rule.pattern_id
-
-        if pattern_id == once_id:
-            # One-time templates are not recurring commitments.
-            continue
-
-        if pattern_id == every_period_id:
-            # Every biweekly period: 26 occurrences/year.
-            monthly = amount * Decimal("26") / Decimal("12")
-        elif pattern_id == every_n_id:
-            # Every N biweekly periods: 26/N occurrences/year.
-            n = Decimal(str(rule.interval_n or 1))
-            monthly = amount * Decimal("26") / n / Decimal("12")
-        elif pattern_id in (monthly_id, monthly_first_id):
-            # Already monthly -- 12 occurrences/year.
-            monthly = amount
-        elif pattern_id == quarterly_id:
-            # 4 occurrences/year: amount / 3 for monthly.
-            monthly = amount / Decimal("3")
-        elif pattern_id == semi_annual_id:
-            # 2 occurrences/year: amount / 6 for monthly.
-            monthly = amount / Decimal("6")
-        elif pattern_id == annual_id:
-            # 1 occurrence/year: amount / 12 for monthly.
-            monthly = amount / Decimal("12")
-        else:
-            # Unknown pattern -- skip to avoid incorrect calculation.
-            continue
-
-        total += monthly
+        monthly = amount_to_monthly(
+            amount, rule.pattern_id, rule.interval_n,
+        )
+        if monthly is not None:
+            total += monthly
 
     return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
