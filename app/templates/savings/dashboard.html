@@ -89,6 +89,11 @@
       <span class="text-muted small">Debt-to-Income: N/A (no salary profile)</span>
     </div>
     {% endif %}
+    <div class="mt-2 pt-2 border-top text-end">
+      <a href="{{ url_for('debt_strategy.dashboard') }}" class="btn btn-sm btn-outline-warning">
+        <i class="bi bi-graph-down-arrow"></i> Payoff Strategies
+      </a>
+    </div>
   </div>
 </div>
 {% endif %}

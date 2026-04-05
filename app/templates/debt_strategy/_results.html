@@ -1,0 +1,214 @@
+{# HTMX fragment: debt strategy comparison results.
+
+   Swapped into #results by the calculate endpoint.  Shows either
+   an error message or a comparison table + per-account timeline.
+#}
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+
+{% elif comparison %}
+
+{# --- Comparison Table --- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-table"></i> Strategy Comparison</h6>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Metric</th>
+            <th>No Extra</th>
+            <th>Avalanche</th>
+            <th>Snowball</th>
+            {% if comparison.custom %}
+            <th>Custom</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {# Row 1: Debt-free date #}
+          <tr>
+            <td class="fw-bold">Debt-Free Date</td>
+            <td>{{ comparison.baseline.debt_free_date.strftime('%b %Y') }}</td>
+            <td>{{ comparison.avalanche.debt_free_date.strftime('%b %Y') }}</td>
+            <td>{{ comparison.snowball.debt_free_date.strftime('%b %Y') }}</td>
+            {% if comparison.custom %}
+            <td>{{ comparison.custom.debt_free_date.strftime('%b %Y') }}</td>
+            {% endif %}
+          </tr>
+
+          {# Row 2: Total interest #}
+          <tr>
+            <td class="fw-bold">Total Interest</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_interest|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_interest|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_interest|float) }}</td>
+            {% if comparison.custom %}
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_interest|float) }}</td>
+            {% endif %}
+          </tr>
+
+          {# Row 3: Total paid #}
+          <tr>
+            <td class="fw-bold">Total Paid</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_paid|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_paid|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_paid|float) }}</td>
+            {% if comparison.custom %}
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_paid|float) }}</td>
+            {% endif %}
+          </tr>
+
+          {# Row 4: Total months #}
+          <tr>
+            <td class="fw-bold">Months to Debt-Free</td>
+            <td>{{ comparison.baseline.total_months }}</td>
+            <td>{{ comparison.avalanche.total_months }}</td>
+            <td>{{ comparison.snowball.total_months }}</td>
+            {% if comparison.custom %}
+            <td>{{ comparison.custom.total_months }}</td>
+            {% endif %}
+          </tr>
+
+          {# Row 5: Interest saved #}
+          <tr>
+            <td class="fw-bold">Interest Saved</td>
+            <td class="text-muted">--</td>
+            {% for key in ['avalanche', 'snowball'] %}
+            {% set saved = comparison[key].interest_saved %}
+            <td class="font-mono {{ 'text-success' if saved|float > 0 else '' }}">
+              {% if saved|float > 0 %}
+              ${{ "{:,.2f}".format(saved|float) }}
+              {% else %}
+              $0.00
+              {% endif %}
+            </td>
+            {% endfor %}
+            {% if comparison.custom %}
+            {% set saved = comparison.custom.interest_saved %}
+            <td class="font-mono {{ 'text-success' if saved|float > 0 else '' }}">
+              {% if saved|float > 0 %}
+              ${{ "{:,.2f}".format(saved|float) }}
+              {% else %}
+              $0.00
+              {% endif %}
+            </td>
+            {% endif %}
+          </tr>
+
+          {# Row 6: Months saved #}
+          <tr>
+            <td class="fw-bold">Months Saved</td>
+            <td class="text-muted">--</td>
+            {% for key in ['avalanche', 'snowball'] %}
+            {% set ms = comparison[key].months_saved %}
+            <td class="{{ 'text-success' if ms > 0 else '' }}">
+              {% if ms > 0 %}{{ ms }}{% else %}0{% endif %}
+            </td>
+            {% endfor %}
+            {% if comparison.custom %}
+            {% set ms = comparison.custom.months_saved %}
+            <td class="{{ 'text-success' if ms > 0 else '' }}">
+              {% if ms > 0 %}{{ ms }}{% else %}0{% endif %}
+            </td>
+            {% endif %}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# --- Strategy explanation --- #}
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="alert alert-light border mb-0">
+      <strong><i class="bi bi-graph-down-arrow"></i> Avalanche</strong> targets the
+      highest interest rate first, minimizing total interest paid. Best for
+      saving money over the life of all loans.
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="alert alert-light border mb-0">
+      <strong><i class="bi bi-snow2"></i> Snowball</strong> targets the smallest
+      balance first, giving you faster "wins." Best for motivation and
+      building momentum.
+    </div>
+  </div>
+</div>
+
+{# --- Per-Account Payoff Timeline (selected strategy) --- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-list-ol"></i>
+      Payoff Timeline --
+      {% if selected_strategy == 'avalanche' %}Avalanche
+      {% elif selected_strategy == 'snowball' %}Snowball
+      {% else %}Custom
+      {% endif %}
+    </h6>
+  </div>
+  <div class="card-body p-0">
+    {% if selected_result.horizon_reached %}
+    <div class="alert alert-warning m-3 mb-0">
+      <i class="bi bi-exclamation-triangle"></i>
+      Some debts were not fully paid off within the 50-year projection horizon.
+      Consider increasing the extra monthly amount.
+    </div>
+    {% endif %}
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width: 50px;">#</th>
+            <th>Account</th>
+            <th>Payoff Month</th>
+            <th>Payoff Date</th>
+            <th>Total Interest</th>
+            <th>Total Paid</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for acct in selected_result.per_account %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ acct.name }}</td>
+            <td>{{ acct.payoff_month }}</td>
+            <td>{{ acct.payoff_date.strftime('%b %Y') }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(acct.total_interest|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(acct.total_paid|float) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# --- ARM limitation note (R-5) --- #}
+{% if has_arm %}
+<div class="alert alert-info mb-4">
+  <i class="bi bi-info-circle"></i>
+  <strong>Note:</strong> ARM rate adjustments are not reflected in these projections.
+  Current rates are used for all future periods.
+</div>
+{% endif %}
+
+{# --- Chart placeholder for commit 5.11-3 --- #}
+<div id="strategy-chart-container" class="card mb-4" style="display: none;">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-graph-up"></i> Balance Over Time</h6>
+  </div>
+  <div class="card-body">
+    <canvas id="strategy-chart"
+            data-chart-data='{{ selected_result.per_account|map(attribute="balance_timeline")|list|tojson }}'
+            data-chart-labels='{{ selected_result.per_account|map(attribute="name")|list|tojson }}'
+            style="max-height: 400px;"></canvas>
+  </div>
+</div>
+{# Chart container hidden until commit 5.11-3 adds the JS to render it #}
+
+{% endif %}
