@@ -54,8 +54,8 @@ feature development.
 | ~~2~~    | ~~UX/Grid Overhaul~~          | ~~Done.~~ All 16 tasks completed. Completed March 2026.                                                                     |
 | ~~2A~~   | ~~Account Parameter Arch.~~   | ~~Done.~~ Metadata-driven dispatch, unified interest params, enhanced settings UI. Completed March 2026.                    |
 | ~~2B~~   | ~~Audit Remediation~~         | ~~Done.~~ Critical, high, and medium findings addressed. Completed March 2026.                                              |
-| 3A       | Cleanup Sprint                | Estimated-vs-actual grid fix, grid category item sub-headers, salary button fix, category management overhaul, CRUD consistency (two-step delete pattern) |
-| 3        | Debt and Account Improvements | Payment linkage, ARM support, payoff lifecycle, multi-scenario and cross-account payoff visualization, refinance calculator, debt snowball/avalanche, DTI ratio, income-relative savings goals |
+| ~~3A~~   | ~~Cleanup Sprint~~            | ~~Done.~~ Estimated-vs-actual fix, grid sub-headers, salary button, category management, archive pattern. Completed April 2026.  |
+| ~~3~~    | ~~Debt and Account Improvements~~ | ~~Done.~~ Payment linkage, ARM support, payoff lifecycle, multi-scenario visualization, refinance calculator, debt snowball/avalanche, DTI ratio, income-relative savings goals, obligations summary. Completed April 2026. |
 | 4        | Phase 9: Smart Features       | Seasonal expense forecasting, smart estimates, expense inflation, deduction inflation, budget variance analysis, annual expense calendar, spending trend detection |
 | 5        | Phase 10: Notifications       | In-app alerts (low balance, large expenses, payday reminders, missed payments, ARM rate reminders, goal pace alerts), email delivery added later |
 | 6        | Visualization and Reporting   | Chart bug fixes, chart redesign/overhaul, summary dashboard, financial calendar, year-end financial summary, display layers for Smart Features engine output |

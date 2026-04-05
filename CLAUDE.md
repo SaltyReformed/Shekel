@@ -40,7 +40,7 @@ These are requirements, not suggestions. Violating them is never acceptable.
 # Dev server
 flask run
 
-# Tests -- full suite: ~9 minutes (1258 tests), always use timeout
+# Tests -- full suite: ~11 minutes (2822 tests), always use timeout
 timeout 720 pytest -v --tb=short              # full suite
 pytest tests/path/test_file.py -v             # single file (fast feedback)
 pytest tests/path/test_file.py::test_name -v  # single test
@@ -88,11 +88,7 @@ A task is NOT complete until ALL of these are true:
 8. Commit message format: `<type>(<scope>): <what changed>`
 9. Developer asked if they want to commit and push.
 
-## Active Work -- Debt and Account Improvements (Section 5)
-
-**Before starting any task in this section**, read the supporting documents in full. They contain decisions and constraints not repeated here.
-
-**Docs:** `docs/project_roadmap_v4-3.md`, `docs/implementation_plan_section5.md`
+## Transfer Invariants
 
 **CRITICAL INVARIANTS (violating any one is a critical bug):**
 
@@ -102,11 +98,9 @@ A task is NOT complete until ALL of these are true:
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
 5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
 
-**When complete**, remove this section and update Development Status.
-
 ## Development Status
 
-Phases 1-8 complete. Currently executing Section 5 Debt and Account Improvements. See `docs/` for plans.
+Phases 1-8 complete. Section 5A (Cleanup Sprint) complete. Section 5 (Debt and Account Improvements) complete -- April 2026. See `docs/` for plans and roadmap.
 
 ## Deployment
 
