@@ -1324,3 +1324,281 @@ class TestArchiveHelpers:
             user_a_cat = seed_user["categories"]["Rent"]
             result = category_has_usage(user_a_cat.id, seed_user["user"].id)
             assert result is False
+
+
+# ── Category Archive/Delete Tests (5A.5-5) ─────────────────────────
+
+
+class TestCategoryArchiveDelete:
+    """Tests for archive, unarchive, and enhanced delete behavior."""
+
+    def test_archive_category(self, app, auth_client, seed_user):
+        """C-5A.5-29: Archiving a category sets is_active=False."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Archive",
+                item_name="TestItem",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/archive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.is_active is False
+
+    def test_unarchive_category(self, app, auth_client, seed_user):
+        """C-5A.5-30: Unarchiving a category sets is_active=True."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Archive",
+                item_name="Restore",
+                is_active=False,
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat.id}/unarchive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"unarchived" in resp.data
+
+            db.session.refresh(cat)
+            assert cat.is_active is True
+
+    def test_delete_category_no_usage(self, app, auth_client, seed_user):
+        """C-5A.5-31: Category with no usage is permanently deleted."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Unused",
+                item_name="Deletable",
+            )
+            db.session.add(cat)
+            db.session.commit()
+            cat_id = cat.id
+
+            resp = auth_client.post(
+                f"/categories/{cat_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+            assert db.session.get(Category, cat_id) is None
+
+    def test_delete_category_with_usage_archives(self, app, auth_client, seed_user, db):
+        """C-5A.5-32: Category in use by template is archived instead of deleted."""
+        with app.app_context():
+            category = seed_user["categories"]["Rent"]
+            cat_id = category.id
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=cat_id,
+                transaction_type_id=txn_type.id,
+                name="Blocks Delete",
+                default_amount=Decimal("1200.00"),
+            )
+            db.session.add(template)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"in use" in resp.data
+            assert b"archived instead" in resp.data
+
+            reloaded = db.session.get(Category, cat_id)
+            assert reloaded.is_active is False
+
+    def test_archived_categories_hidden_from_settings(
+        self, app, auth_client, seed_user, db,
+    ):
+        """C-5A.5-33: Settings page separates active and archived categories."""
+        with app.app_context():
+            # Seed categories are active. Archive one.
+            rent_cat = db.session.get(Category, seed_user["categories"]["Rent"].id)
+            rent_cat.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=categories")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Active categories in group cards (Rent is gone from active).
+            assert "Car Payment" in html  # Active Auto category.
+
+            # Archived section shows the archived category.
+            assert "Archived Categories (1)" in html
+            assert "Rent" in html
+
+    def test_archived_categories_hidden_from_grid_dropdown(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """C-5A.5-34: Archived categories do not appear in grid Add Transaction dropdown."""
+        with app.app_context():
+            # Archive one category.
+            rent = db.session.get(Category, seed_user["categories"]["Rent"].id)
+            rent.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Active categories in the dropdown.
+            salary = seed_user["categories"]["Salary"]
+            assert f'value="{salary.id}"' in html
+
+            # Archived category NOT in the dropdown.
+            assert f'value="{rent.id}"' not in html
+
+    def test_archived_category_transactions_still_render(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """C-5A.5-35: Transactions with archived categories still render in the grid."""
+        with app.app_context():
+            category = db.session.get(Category, seed_user["categories"]["Rent"].id)
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=category.id,
+                transaction_type_id=txn_type.id,
+                name="Rent Payment",
+                estimated_amount=Decimal("1200.00"),
+                status_id=projected.id,
+            )
+            db.session.add(txn)
+
+            # Archive the category AFTER creating the transaction.
+            category.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            # The transaction should still render with its name.
+            assert b"Rent Payment" in resp.data
+
+    def test_archive_category_idor(self, app, auth_client, seed_user):
+        """C-5A.5-36: Archiving another user's category returns 'not found'."""
+        with app.app_context():
+            other = _create_other_user_category()
+
+            resp = auth_client.post(
+                f"/categories/{other['category'].id}/archive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+            db.session.refresh(other["category"])
+            assert other["category"].is_active is True
+
+    def test_unarchive_category_idor(self, app, auth_client, seed_user):
+        """Unarchiving another user's archived category returns 'not found'."""
+        with app.app_context():
+            other = _create_other_user_category()
+            other["category"].is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{other['category'].id}/unarchive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+            db.session.refresh(other["category"])
+            assert other["category"].is_active is False
+
+    def test_delete_category_already_archived_with_usage(
+        self, app, auth_client, seed_user, db,
+    ):
+        """Already-archived category with usage stays archived, no double-archive."""
+        with app.app_context():
+            category = db.session.get(Category, seed_user["categories"]["Rent"].id)
+            cat_id = category.id
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=cat_id,
+                transaction_type_id=txn_type.id,
+                name="In-Use Template",
+                default_amount=Decimal("500.00"),
+            )
+            db.session.add(template)
+
+            category.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/categories/{cat_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"in use" in resp.data
+
+            reloaded = db.session.get(Category, cat_id)
+            assert reloaded.is_active is False
+
+    def test_delete_category_already_archived_no_usage(
+        self, app, auth_client, seed_user,
+    ):
+        """Archived category with no usage is permanently deleted (clean up archive)."""
+        with app.app_context():
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Old",
+                item_name="Cleanup",
+                is_active=False,
+            )
+            db.session.add(cat)
+            db.session.commit()
+            cat_id = cat.id
+
+            resp = auth_client.post(
+                f"/categories/{cat_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+            assert db.session.get(Category, cat_id) is None
+
+    def test_archived_categories_hidden_from_template_dropdown(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """Template creation form only shows active categories in dropdown."""
+        with app.app_context():
+            rent = db.session.get(Category, seed_user["categories"]["Rent"].id)
+            rent.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/templates/new")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Active category present.
+            salary = seed_user["categories"]["Salary"]
+            assert f'value="{salary.id}"' in html
+
+            # Archived category absent.
+            assert f'value="{rent.id}"' not in html

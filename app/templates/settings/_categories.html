@@ -2,6 +2,7 @@
 
 <div class="row">
   <div class="col-md-8">
+    {# ── Active Categories (grouped by group_name) ──────────────────── #}
     {% for group_name, cats in grouped.items() %}
     <div class="card mb-3">
       <div class="card-header fw-semibold category-group-header">{{ group_name }}</div>
@@ -19,9 +20,18 @@
                 <i class="bi bi-pencil"></i>
               </button>
               <form method="POST"
+                    action="{{ url_for('categories.archive_category', category_id=cat.id) }}"
+                    class="d-inline"
+                    data-confirm="Archive this category?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-warning" title="Archive">
+                  <i class="bi bi-archive"></i>
+                </button>
+              </form>
+              <form method="POST"
                     action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
                     class="d-inline"
-                    data-confirm="Delete this category?">
+                    data-confirm="Permanently delete this category? If it's in use, it will be archived instead.">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
                   <i class="bi bi-trash"></i>
@@ -78,8 +88,61 @@
       </ul>
     </div>
     {% else %}
-    <div class="alert alert-info">No categories yet.</div>
+    <div class="alert alert-info">No active categories.</div>
     {% endfor %}
+
+    {# ── Archived Categories ────────────────────────────────────────── #}
+    {% if archived_categories %}
+    <div class="mt-4">
+      <h6>
+        <a class="text-decoration-none text-muted" data-bs-toggle="collapse"
+           href="#archivedCategories" role="button" aria-expanded="false"
+           aria-controls="archivedCategories">
+          <i class="bi bi-chevron-right collapse-chevron"></i>
+          Archived Categories ({{ archived_categories|length }})
+        </a>
+      </h6>
+      <div class="collapse" id="archivedCategories">
+        <table class="table table-sm">
+          <caption class="visually-hidden">Archived categories</caption>
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Group</th>
+              <th scope="col">Item</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cat in archived_categories %}
+            <tr class="text-muted">
+              <td>{{ cat.group_name }}</td>
+              <td>{{ cat.item_name }}</td>
+              <td>
+                <form method="POST"
+                      action="{{ url_for('categories.unarchive_category', category_id=cat.id) }}"
+                      class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success" title="Unarchive">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                </form>
+                <form method="POST"
+                      action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
+                      class="d-inline"
+                      data-confirm="Permanently delete this category? If it's in use, it will be archived instead.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   <div class="col-md-4">

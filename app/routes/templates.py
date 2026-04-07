@@ -65,7 +65,7 @@ def new_template():
     """Display the template creation form."""
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
@@ -191,7 +191,7 @@ def edit_template(template_id):
 
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
