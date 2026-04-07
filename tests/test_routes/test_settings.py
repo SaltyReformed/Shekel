@@ -497,3 +497,134 @@ class TestSettingsNegativePaths:
                 user_id=seed_user["user"].id,
             ).one()
             assert settings.low_balance_threshold == original
+
+
+class TestSection8Settings:
+    """Tests for Section 8 settings columns (dashboard & analytics)."""
+
+    def test_save_large_txn_threshold(self, app, auth_client, seed_user):
+        """POST with valid large_transaction_threshold=1000 persists the value.
+
+        Verifies the integer threshold is stored directly (no conversion).
+        """
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "large_transaction_threshold": "1000",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Settings updated" in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.large_transaction_threshold == 1000
+
+    def test_save_trend_threshold(self, app, auth_client, seed_user):
+        """POST with trend threshold=15 (percent) stores as Decimal('0.1500').
+
+        User enters an integer percentage (e.g. 15 for 15%).  The route
+        divides by 100 before storing as a Numeric(5,4) decimal fraction.
+        """
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "trend_alert_threshold": "15",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Settings updated" in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.trend_alert_threshold == Decimal("0.1500")
+
+    def test_save_staleness_days(self, app, auth_client, seed_user):
+        """POST with anchor_staleness_days=7 persists the value."""
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "anchor_staleness_days": "7",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Settings updated" in resp.data
+
+            db.session.expire_all()
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            assert settings.anchor_staleness_days == 7
+
+    def test_settings_validation_rejects_negative_threshold(self, app, auth_client, seed_user):
+        """POST with negative large_transaction_threshold is rejected.
+
+        Schema validates min=0; negative values should produce a
+        validation error and redirect with flash.
+        """
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "large_transaction_threshold": "-1",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+    def test_settings_validation_rejects_zero_staleness(self, app, auth_client, seed_user):
+        """POST with anchor_staleness_days=0 is rejected.
+
+        Schema validates min=1; zero means the anchor is always stale,
+        which is nonsensical.
+        """
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "anchor_staleness_days": "0",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+    def test_settings_validation_rejects_trend_over_100(self, app, auth_client, seed_user):
+        """POST with trend_alert_threshold=101 (percent) is rejected.
+
+        Schema validates max=100; values above 100% are not meaningful.
+        """
+        with app.app_context():
+            resp = auth_client.post("/settings", data={
+                "trend_alert_threshold": "101",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Please correct the highlighted errors" in resp.data
+
+    def test_settings_defaults_rendered_on_get(self, app, auth_client, seed_user):
+        """GET /settings renders the three new fields with their default values.
+
+        Default values: large_transaction_threshold=500,
+        trend_alert_threshold=10 (displayed as integer percent),
+        anchor_staleness_days=14.
+        """
+        with app.app_context():
+            resp = auth_client.get("/settings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Large transaction threshold field with default 500.
+            assert 'name="large_transaction_threshold"' in html
+            assert 'value="500"' in html
+
+            # Trend alert threshold field with default 10 (10%).
+            assert 'name="trend_alert_threshold"' in html
+            assert 'value="10"' in html
+
+            # Anchor staleness days field with default 14.
+            assert 'name="anchor_staleness_days"' in html
+            assert 'value="14"' in html
+
+    def test_settings_page_includes_dashboard_analytics_section(self, app, auth_client, seed_user):
+        """GET /settings includes the Dashboard & Analytics section heading."""
+        with app.app_context():
+            resp = auth_client.get("/settings")
+            assert resp.status_code == 200
+            assert b"Dashboard &" in resp.data and b"Analytics" in resp.data

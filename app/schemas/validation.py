@@ -1196,6 +1196,15 @@ class UserSettingsSchema(BaseSchema):
     low_balance_threshold = fields.Integer(
         validate=validate.Range(min=0),
     )
+    large_transaction_threshold = fields.Integer(
+        validate=validate.Range(min=0),
+    )
+    trend_alert_threshold = fields.Integer(
+        validate=validate.Range(min=1, max=100),
+    )
+    anchor_staleness_days = fields.Integer(
+        validate=validate.Range(min=1),
+    )
     default_grid_account_id = fields.Integer(allow_none=True)
 
 

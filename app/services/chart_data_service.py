@@ -166,15 +166,23 @@ def _get_period_range(user_id, period_range):
     return [all_periods[current_idx]]
 
 
-def _format_period_label(period):
-    """Format a pay period as a short date label.
+def _format_period_label(period: PayPeriod, spans_multiple_years: bool = False) -> str:
+    """Format a pay period as a short date label for chart x-axes.
+
+    When chart data spans multiple calendar years, includes a two-digit
+    year suffix so users can distinguish e.g. "Jan 02 '26" from
+    "Jan 02 '27".  Single-year data omits the year to save label space.
 
     Args:
-        period (PayPeriod): Pay period object.
+        period: Pay period object whose start_date is used for the label.
+        spans_multiple_years: When True, append the two-digit year
+            (e.g. "Jan 02 '26").  When False, omit it (e.g. "Jan 02").
 
     Returns:
-        str: Formatted label like 'Jan 02'.
+        Formatted date string for chart display.
     """
+    if spans_multiple_years:
+        return period.start_date.strftime("%b %d '%y")
     return period.start_date.strftime("%b %d")
 
 
@@ -294,7 +302,12 @@ def get_balance_over_time(user_id, account_ids=None, start=None, end=None):
         if account_ids else all_accounts
     )
 
-    labels = [_format_period_label(p) for p in periods]
+    # Detect cross-year data so labels include the year for disambiguation.
+    spans_years = (
+        periods[0].start_date.year != periods[-1].start_date.year
+        if periods else False
+    )
+    labels = [_format_period_label(p, spans_years) for p in periods]
     datasets = []
     all_accounts_info = []
 

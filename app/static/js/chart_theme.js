@@ -215,6 +215,50 @@ var ShekelChart = (function () {
     rerenderAll();
   });
 
+  /**
+   * Build a Chart.js x-axis ticks callback for year-boundary awareness.
+   *
+   * When labels span multiple years (detected by the "'YY" suffix that
+   * the Python chart_data_service adds), the callback shows the year
+   * suffix only on the first tick and at each January boundary.  This
+   * avoids cluttering every tick with the year while still providing
+   * orientation.  When labels do not span years, returns null so the
+   * caller can skip applying a custom callback.
+   *
+   * @param {string[]} labels - Array of label strings from the chart data.
+   * @returns {function|null} A ticks.callback function, or null if not needed.
+   */
+  function yearBoundaryCallback(labels) {
+    if (!labels || labels.length === 0) return null;
+
+    // Detect whether any label has the 'YY suffix (e.g. "Jan 02 '26").
+    var hasYearSuffix = false;
+    for (var i = 0; i < labels.length; i++) {
+      if (/'\d{2}$/.test(labels[i])) {
+        hasYearSuffix = true;
+        break;
+      }
+    }
+    if (!hasYearSuffix) return null;
+
+    return function (value, index) {
+      var label = labels[index] || '';
+      var yearMatch = label.match(/'(\d{2})$/);
+      if (!yearMatch) return label;
+
+      var base = label.replace(/\s*'\d{2}$/, '');
+
+      // Always show year on the first tick.
+      if (index === 0) return label;
+
+      // Show year at January boundaries.
+      if (/^Jan\b/.test(label)) return label;
+
+      // Otherwise strip the year suffix to reduce clutter.
+      return base;
+    };
+  }
+
   // Public API.
   return {
     palette: palette,
@@ -223,6 +267,7 @@ var ShekelChart = (function () {
     create: create,
     destroyById: destroyById,
     destroyAll: destroyAll,
-    rerenderAll: rerenderAll
+    rerenderAll: rerenderAll,
+    yearBoundaryCallback: yearBoundaryCallback
   };
 })();

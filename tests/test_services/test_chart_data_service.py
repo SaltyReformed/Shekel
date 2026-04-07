@@ -7,7 +7,7 @@ Tests for the chart data orchestration service:
   - Edge cases (no periods, no accounts, no transactions)
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
@@ -1091,13 +1091,13 @@ class TestBalanceChart52Periods:
     def test_balance_chart_52_periods_label_format(
         self, app, seed_user, seed_periods_52,
     ):
-        """Labels match '%b %d' format and are in chronological order.
+        """Labels include year suffix and are in chronological order.
 
-        Each label should be the period's start_date.strftime('%b %d').
-        Verifies first, last, and every label against the period fixture.
-        Also verifies chronological order by period start_dates -- not by
-        alphabetical sort, since alphabetical != chronological for month
-        names (e.g. 'Apr' < 'Aug' < 'Dec' < 'Jan').
+        52 biweekly periods starting 2026-01-02 span into 2027, so the
+        year-awareness logic adds a "'YY" suffix to every label (format
+        '%b %d '%y' -- e.g. "Jan 02 '26").  Verifies first, last, and
+        every label against the period fixture.  Also verifies
+        chronological order by period start_dates.
         """
         with app.app_context():
             result = chart_data_service.get_balance_over_time(
@@ -1106,16 +1106,16 @@ class TestBalanceChart52Periods:
 
             assert len(result["labels"]) == 52
 
-            # First label: 2026-01-02 -> "Jan 02".
-            assert result["labels"][0] == "Jan 02"
+            # First label: 2026-01-02 -> "Jan 02 '26" (cross-year format).
+            assert result["labels"][0] == "Jan 02 '26"
 
-            # Last label: 52nd period's start date.
-            expected_last = seed_periods_52[51].start_date.strftime("%b %d")
+            # Last label: 52nd period's start date with year.
+            expected_last = seed_periods_52[51].start_date.strftime("%b %d '%y")
             assert result["labels"][51] == expected_last
 
-            # Every label matches its period's formatted start_date.
+            # Every label matches its period's formatted start_date with year.
             for i, period in enumerate(seed_periods_52):
-                expected_label = period.start_date.strftime("%b %d")
+                expected_label = period.start_date.strftime("%b %d '%y")
                 assert result["labels"][i] == expected_label, (
                     f"Label {i}: got '{result['labels'][i]}', "
                     f"expected '{expected_label}'"
@@ -1839,3 +1839,160 @@ class TestNetPayTrajectoryExceptions:
                 chart_data_service.get_net_pay_trajectory(
                     user_id=seed_user["user"].id,
                 )
+
+
+# ── X-Axis Label Format Tests ─────────────────────────────────────
+
+
+class TestFormatPeriodLabel:
+    """Tests for _format_period_label year-awareness logic."""
+
+    def test_format_label_single_year(self, app, seed_user):
+        """Single-year mode omits the year from the label.
+
+        A period starting 2026-01-02 with spans_multiple_years=False
+        should produce 'Jan 02' with no year suffix.
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                end_date=date(2026, 1, 15),
+                period_index=0,
+            )
+            result = chart_data_service._format_period_label(period, False)
+            assert result == "Jan 02"
+            # Verify no year suffix present.
+            assert "'" not in result
+            assert "26" not in result
+
+    def test_format_label_multi_year(self, app, seed_user):
+        """Multi-year mode includes a two-digit year suffix.
+
+        A period starting 2026-01-02 with spans_multiple_years=True
+        should produce "Jan 02 '26".
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                end_date=date(2026, 1, 15),
+                period_index=0,
+            )
+            result = chart_data_service._format_period_label(period, True)
+            assert result == "Jan 02 '26"
+
+    def test_format_label_multi_year_different_months(self, app, seed_user):
+        """Multi-year labels work correctly for various months and years.
+
+        Verify formatting for mid-year and end-of-year dates across
+        different years to ensure the strftime pattern is correct.
+        """
+        with app.app_context():
+            # March 2026
+            p_mar = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 3, 15),
+                end_date=date(2026, 3, 28),
+                period_index=0,
+            )
+            assert chart_data_service._format_period_label(p_mar, True) == "Mar 15 '26"
+
+            # December 2027
+            p_dec = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2027, 12, 1),
+                end_date=date(2027, 12, 14),
+                period_index=1,
+            )
+            assert chart_data_service._format_period_label(p_dec, True) == "Dec 01 '27"
+
+    def test_format_label_default_parameter(self, app, seed_user):
+        """Calling without spans_multiple_years defaults to no year suffix.
+
+        Backward compatibility: existing callers passing only the period
+        argument still get the original format.
+        """
+        with app.app_context():
+            period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 6, 10),
+                end_date=date(2026, 6, 23),
+                period_index=0,
+            )
+            result = chart_data_service._format_period_label(period)
+            assert result == "Jun 10"
+
+
+class TestBalanceLabelYearAwareness:
+    """Tests for year-aware labels in get_balance_over_time."""
+
+    def test_balance_labels_single_year(self, app, seed_user, seed_periods):
+        """All-2026 periods produce labels with no year suffix.
+
+        seed_periods creates 10 biweekly periods starting 2026-01-02,
+        all within 2026.  No label should contain a year suffix.
+        """
+        with app.app_context():
+            result = chart_data_service.get_balance_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert len(result["labels"]) == 10
+            for label in result["labels"]:
+                assert "'" not in label, (
+                    f"Single-year label should not contain year suffix: {label}"
+                )
+
+    def test_balance_labels_cross_year(self, app, seed_user, seed_periods_52):
+        """Periods spanning 2026-2027 produce labels with year suffixes.
+
+        seed_periods_52 creates 52 biweekly periods starting 2026-01-02,
+        extending into 2027.  Labels should include the 'YY suffix.
+        """
+        with app.app_context():
+            result = chart_data_service.get_balance_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert len(result["labels"]) == 52
+            # At least some labels should contain year suffixes.
+            labels_with_year = [
+                lbl for lbl in result["labels"] if "'" in lbl
+            ]
+            assert len(labels_with_year) == 52, (
+                "All labels should have year suffix when data spans years"
+            )
+            # Verify both years are represented.
+            has_26 = any("'26" in lbl for lbl in result["labels"])
+            has_27 = any("'27" in lbl for lbl in result["labels"])
+            assert has_26 and has_27, (
+                "Cross-year labels should include both '26 and '27"
+            )
+
+    def test_net_worth_labels_cross_year(self, app, seed_user, seed_periods_52):
+        """Net worth inherits cross-year labels from balance over time.
+
+        get_net_worth_over_time delegates to get_balance_over_time and
+        reuses its labels.  Verify the year suffix propagates.
+        """
+        with app.app_context():
+            result = chart_data_service.get_net_worth_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert len(result["labels"]) == 52
+            has_26 = any("'26" in lbl for lbl in result["labels"])
+            has_27 = any("'27" in lbl for lbl in result["labels"])
+            assert has_26 and has_27
+
+    def test_format_label_empty_periods_no_crash(self, app, seed_user):
+        """Empty period list does not crash the year-span computation.
+
+        When no periods exist, get_balance_over_time returns an empty
+        chart structure without attempting to index into an empty list.
+        """
+        with app.app_context():
+            # No periods seeded -- should return empty, not IndexError.
+            result = chart_data_service.get_balance_over_time(
+                user_id=seed_user["user"].id,
+            )
+            assert result["labels"] == []
+            assert result["datasets"] == []

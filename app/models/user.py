@@ -51,6 +51,18 @@ class UserSettings(db.Model):
         ),
         db.CheckConstraint("grid_default_periods > 0", name="ck_user_settings_positive_periods"),
         db.CheckConstraint("low_balance_threshold >= 0", name="ck_user_settings_positive_threshold"),
+        db.CheckConstraint(
+            "large_transaction_threshold >= 0",
+            name="ck_user_settings_large_txn_threshold",
+        ),
+        db.CheckConstraint(
+            "trend_alert_threshold >= 0 AND trend_alert_threshold <= 1",
+            name="ck_user_settings_valid_trend_threshold",
+        ),
+        db.CheckConstraint(
+            "anchor_staleness_days > 0",
+            name="ck_user_settings_positive_staleness_days",
+        ),
         {"schema": "auth"},
     )
 
@@ -65,6 +77,15 @@ class UserSettings(db.Model):
     safe_withdrawal_rate = db.Column(db.Numeric(5, 4), default=0.0400)
     planned_retirement_date = db.Column(db.Date, nullable=True)
     estimated_retirement_tax_rate = db.Column(db.Numeric(5, 4), nullable=True)
+    large_transaction_threshold = db.Column(
+        db.Integer, nullable=False, server_default="500",
+    )
+    trend_alert_threshold = db.Column(
+        db.Numeric(5, 4), nullable=False, server_default="0.1000",
+    )
+    anchor_staleness_days = db.Column(
+        db.Integer, nullable=False, server_default="14",
+    )
     default_grid_account_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
