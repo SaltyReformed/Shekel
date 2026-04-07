@@ -777,6 +777,39 @@ td.htmx-loading::after {
   .grid-wrapper {
     max-height: calc(100vh - 200px);
   }
+
+  /* Touch target: extra-small buttons (status actions in full-edit popover) */
+  .btn-xs {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  /* Touch target: transaction cell tap area */
+  .txn-cell {
+    padding: 0.35rem 0.4rem;
+  }
+
+  /* Touch target: expand button (three dots) */
+  .txn-expand-btn {
+    width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Touch target: period navigation quick-select buttons */
+  .period-btn-group .btn {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.8rem;
+  }
+
+  /* Touch target: form controls inside full-edit popover */
+  .txn-full-edit-popover .form-control-sm,
+  .txn-full-edit-popover .form-select-sm {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS Safari zoom on input focus */
+  }
 }
 
 @media (max-width: 575.98px) {
