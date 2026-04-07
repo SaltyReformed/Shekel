@@ -951,3 +951,25 @@ td.htmx-loading::after {
   border-color: var(--shekel-accent);
   color: #fff;
 }
+
+/* =============================================
+   MOBILE GRID CARD VIEW
+   ============================================= */
+.mobile-txn-card {
+  cursor: pointer;
+  transition: background-color 0.1s;
+  min-height: 44px;
+}
+
+.mobile-txn-card:active,
+.mobile-txn-card:focus-visible {
+  background-color: rgba(var(--shekel-accent-rgb), 0.10);
+}
+
+#mobile-grid .card-header[data-bs-toggle="collapse"] {
+  cursor: pointer;
+}
+
+#mobile-grid .card-header[data-bs-toggle="collapse"]:active {
+  opacity: 0.8;
+}

@@ -68,7 +68,8 @@
 </div>
 {% endif %}
 
-{# --- Budget Grid Table --- #}
+{# --- Desktop Grid (hidden on mobile) --- #}
+<div class="d-none d-md-block">
 <div class="table-responsive grid-wrapper grid-scroll-wrapper" style="position: relative;">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
@@ -264,10 +265,12 @@
     {% include "grid/_balance_row.html" %}
   </table>
 </div>
+</div>
 
-{# Popover container for the full edit form -- positioned fixed outside
-   the grid-scroll-wrapper so overflow:auto does not clip it.  The sticky
-   footer (tfoot) can no longer obscure the popover's action buttons. #}
+{# --- Mobile Grid (shown only on mobile) --- #}
+{% include "grid/_mobile_grid.html" %}
+
+{# Popover/bottom-sheet container -- outside both grid variants #}
 <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
 
 {# --- Add Transaction Modal --- #}
