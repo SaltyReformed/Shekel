@@ -17,6 +17,38 @@
 </nav>
 {% endblock %}
 
+{# Macro for the recurrence description column to avoid duplication between active/archived tables. #}
+{% macro recurrence_cell(t) %}
+{% if t.recurrence_rule %}
+  {% set rr = t.recurrence_rule %}
+  {% set pname = rr.pattern.name %}
+  {% if pname == 'Every Period' %}
+    Every paycheck
+  {% elif pname == 'Every N Periods' %}
+    Every {{ rr.interval_n }} paychecks
+  {% elif pname == 'Monthly' and rr.day_of_month %}
+    Monthly (day {{ rr.day_of_month }})
+  {% elif pname == 'Monthly First' %}
+    Monthly (first paycheck)
+  {% elif pname == 'Quarterly' %}
+    Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
+  {% elif pname == 'Semi-Annual' %}
+    Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
+  {% elif pname == 'Annual' %}
+    Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
+  {% elif pname == 'Once' %}
+    One-time
+  {% else %}
+    {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
+  {% endif %}
+  {% if rr.end_date %}
+    <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
+  {% endif %}
+{% else %}
+  <span class="text-muted">One-time</span>
+{% endif %}
+{% endmacro %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h4><i class="bi bi-arrow-repeat"></i> Recurring Transactions</h4>
@@ -25,9 +57,10 @@
   </a>
 </div>
 
-{% if templates %}
+{# ── Active Templates ─────────────────────────────────────────────── #}
+{% if active_templates %}
 <table class="table table-hover table-sm">
-  <caption class="visually-hidden">Recurring transactions with recurrence rules</caption>
+  <caption class="visually-hidden">Active recurring transactions with recurrence rules</caption>
   <thead class="table-light">
     <tr>
       <th scope="col">Name</th>
@@ -35,13 +68,12 @@
       <th scope="col">Type</th>
       <th scope="col" class="text-end">Amount</th>
       <th scope="col">Recurrence</th>
-      <th scope="col">Active</th>
       <th scope="col">Actions</th>
     </tr>
   </thead>
   <tbody>
-    {% for t in templates %}
-    <tr class="{{ 'text-muted' if not t.is_active else '' }}">
+    {% for t in active_templates %}
+    <tr>
       <td>{{ t.name }}</td>
       <td>{{ t.category.display_name if t.category else '--' }}</td>
       <td>
@@ -52,68 +84,28 @@
         {% endif %}
       </td>
       <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
-      <td>
-        {% if t.recurrence_rule %}
-          {% set rr = t.recurrence_rule %}
-          {% set pname = rr.pattern.name %}
-          {% if pname == 'Every Period' %}
-            Every paycheck
-          {% elif pname == 'Every N Periods' %}
-            Every {{ rr.interval_n }} paychecks
-          {% elif pname == 'Monthly' and rr.day_of_month %}
-            Monthly (day {{ rr.day_of_month }})
-          {% elif pname == 'Monthly First' %}
-            Monthly (first paycheck)
-          {% elif pname == 'Quarterly' %}
-            Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-          {% elif pname == 'Semi-Annual' %}
-            Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-          {% elif pname == 'Annual' %}
-            Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-          {% elif pname == 'Once' %}
-            One-time
-          {% else %}
-            {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
-          {% endif %}
-          {% if rr.end_date %}
-            <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
-          {% endif %}
-        {% else %}
-          <span class="text-muted">One-time</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if t.is_active %}
-          <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
-          <span class="visually-hidden">Active</span>
-        {% else %}
-          <i class="bi bi-x-circle text-muted" aria-hidden="true"></i>
-          <span class="visually-hidden">Inactive</span>
-        {% endif %}
-      </td>
+      <td>{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('templates.edit_template', template_id=t.id) }}"
            class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ t.name }}">
           <i class="bi bi-pencil"></i>
         </a>
-        {% if t.is_active %}
         <form method="POST" action="{{ url_for('templates.archive_template', template_id=t.id) }}"
               class="d-inline"
               data-confirm="Archive this template? All projected transactions will be removed.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Archive {{ t.name }}">
-            <i class="bi bi-x-circle"></i>
+          <button type="submit" class="btn btn-sm btn-outline-warning" aria-label="Archive {{ t.name }}">
+            <i class="bi bi-archive"></i>
           </button>
         </form>
-        {% else %}
-        <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
-              class="d-inline">
+        <form method="POST" action="{{ url_for('templates.hard_delete_template', template_id=t.id) }}"
+              class="d-inline"
+              data-confirm="Permanently delete this recurring transaction? This cannot be undone.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
-            <i class="bi bi-arrow-counterclockwise"></i>
+          <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
+            <i class="bi bi-trash"></i>
           </button>
         </form>
-        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -121,7 +113,70 @@
 </table>
 {% else %}
 <div class="alert alert-info">
-  No recurring transactions yet. Create one to auto-generate budget entries each pay period.
+  No active recurring transactions. Create one to auto-generate budget entries each pay period.
+</div>
+{% endif %}
+
+{# ── Archived Templates ─────────────────────────────────────���─────── #}
+{% if archived_templates %}
+<div class="mt-4">
+  <h6>
+    <a class="text-decoration-none text-muted" data-bs-toggle="collapse"
+       href="#archivedTemplates" role="button" aria-expanded="false"
+       aria-controls="archivedTemplates">
+      <i class="bi bi-chevron-right collapse-chevron"></i>
+      Archived ({{ archived_templates|length }})
+    </a>
+  </h6>
+  <div class="collapse" id="archivedTemplates">
+    <table class="table table-hover table-sm">
+      <caption class="visually-hidden">Archived recurring transactions</caption>
+      <thead class="table-light">
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Category</th>
+          <th scope="col">Type</th>
+          <th scope="col" class="text-end">Amount</th>
+          <th scope="col">Recurrence</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in archived_templates %}
+        <tr class="text-muted">
+          <td>{{ t.name }}</td>
+          <td>{{ t.category.display_name if t.category else '--' }}</td>
+          <td>
+            {% if t.transaction_type_id == TXN_TYPE_INCOME %}
+              <span class="badge bg-success">Income</span>
+            {% else %}
+              <span class="badge bg-danger">Expense</span>
+            {% endif %}
+          </td>
+          <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+          <td>{{ recurrence_cell(t) }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                <i class="bi bi-arrow-counterclockwise"></i>
+              </button>
+            </form>
+            <form method="POST" action="{{ url_for('templates.hard_delete_template', template_id=t.id) }}"
+                  class="d-inline"
+                  data-confirm="Permanently delete this recurring transaction? This cannot be undone.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endif %}
 {% endblock %}
