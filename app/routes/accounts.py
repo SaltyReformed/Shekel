@@ -13,12 +13,16 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
+from app.utils import archive_helpers
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
+from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.schemas.validation import (
@@ -29,7 +33,7 @@ from app.schemas.validation import (
     AnchorUpdateSchema,
     InterestParamsUpdateSchema,
 )
-from app.services import balance_calculator, pay_period_service
+from app.services import balance_calculator, pay_period_service, transfer_service
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +53,20 @@ _interest_params_schema = InterestParamsUpdateSchema()
 @accounts_bp.route("/accounts")
 @login_required
 def list_accounts():
-    """List all accounts and account types (two-section page)."""
+    """List all accounts and account types (two-section page).
+
+    Separates accounts into active and archived lists for the UI.
+    Both lists inherit the same ordering (sort_order, name).
+    """
     accounts = (
         db.session.query(Account)
         .filter_by(user_id=current_user.id)
         .order_by(Account.sort_order, Account.name)
         .all()
     )
+    active_accounts = [a for a in accounts if a.is_active]
+    archived_accounts = [a for a in accounts if not a.is_active]
+
     account_types = (
         db.session.query(AccountType)
         .order_by(AccountType.name)
@@ -73,7 +84,8 @@ def list_accounts():
 
     return render_template(
         "accounts/list.html",
-        accounts=accounts,
+        active_accounts=active_accounts,
+        archived_accounts=archived_accounts,
         account_types=account_types,
         types_in_use=types_in_use,
     )
@@ -257,7 +269,7 @@ def archive_account(account_id):
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
-    # Guard: prevent deactivation if active transfer templates reference this account.
+    # Guard: prevent archiving if active transfer templates reference this account.
     from app.models.transfer_template import TransferTemplate
 
     active_transfers = (
@@ -300,6 +312,129 @@ def unarchive_account(account_id):
     db.session.commit()
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' unarchived.", "success")
+    return redirect(url_for("accounts.list_accounts"))
+
+
+@accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
+@login_required
+def hard_delete_account(account_id):
+    """Permanently delete an account if it has no blocking dependents.
+
+    Guard chain (checked in order):
+      1. Ownership -- account exists and belongs to current user.
+      2. Transfer template guard -- any TransferTemplate (active or
+         archived) referencing this account blocks deletion because the
+         FK is ON DELETE RESTRICT.
+      3. Transaction template guard -- any TransactionTemplate (active
+         or archived) referencing this account blocks deletion for the
+         same FK reason.
+      4. History check -- any non-deleted Transaction referencing this
+         account triggers archive-instead-of-delete.
+
+    Permanent delete cleanup:
+      After all guards pass, remaining RESTRICT-FK rows must be
+      explicitly removed before the account row can be deleted:
+        - Transfer rows (soft-deleted or ghost ad-hoc) referencing this
+          account, deleted through transfer_service to maintain shadow
+          invariants.
+        - Transaction rows (soft-deleted ghosts) referencing this
+          account.
+      CASCADE-FK dependents (LoanParams, InterestParams,
+      InvestmentParams, AccountAnchorHistory, SavingsGoal, LoanFeatures)
+      are auto-deleted by PostgreSQL when the account row is removed.
+    """
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("accounts.list_accounts"))
+
+    # Guard 2: transfer templates with RESTRICT FK.
+    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+    blocking_xfer_template = (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == current_user.id,
+            db.or_(
+                TransferTemplate.from_account_id == account_id,
+                TransferTemplate.to_account_id == account_id,
+            ),
+        )
+        .first()
+    )
+    if blocking_xfer_template:
+        flash(
+            "Cannot delete this account -- it is used by recurring transfers. "
+            "Delete those recurring transfers first.",
+            "warning",
+        )
+        return redirect(url_for("accounts.list_accounts"))
+
+    # Guard 3: transaction templates with RESTRICT FK.
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+    blocking_txn_template = (
+        db.session.query(TransactionTemplate)
+        .filter_by(account_id=account_id, user_id=current_user.id)
+        .first()
+    )
+    if blocking_txn_template:
+        flash(
+            "Cannot delete this account -- it has recurring transactions. "
+            "Delete those recurring transactions first.",
+            "warning",
+        )
+        return redirect(url_for("accounts.list_accounts"))
+
+    # Guard 4: transaction history (any non-deleted transaction).
+    if archive_helpers.account_has_history(account.id):
+        flash(
+            f"'{account.name}' has transaction history and cannot be permanently "
+            "deleted. It has been archived instead.",
+            "warning",
+        )
+        if account.is_active:
+            account.is_active = False
+            db.session.commit()
+        return redirect(url_for("accounts.list_accounts"))
+
+    # All guards passed -- permanently delete.
+    # Step 1: delete remaining Transfer rows (soft-deleted or ghost
+    # ad-hoc) through the transfer service to maintain shadow invariants.
+    from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
+    remaining_transfers = (
+        db.session.query(Transfer)
+        .filter(db.or_(
+            Transfer.from_account_id == account_id,
+            Transfer.to_account_id == account_id,
+        ))
+        .all()
+    )
+    for xfer in remaining_transfers:
+        transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
+
+    # Step 2: delete remaining Transaction rows (soft-deleted ghosts
+    # whose RESTRICT FK would block the account deletion).
+    db.session.query(Transaction).filter(
+        Transaction.account_id == account_id,
+    ).delete(synchronize_session="fetch")
+
+    # Step 3: explicitly delete CASCADE-FK dependents that lack ORM
+    # relationships on Account.  Without explicit relationships,
+    # SQLAlchemy's unit of work tries to SET NULL on their account_id
+    # column before the DB-level CASCADE fires, violating NOT NULL.
+    db.session.query(LoanParams).filter_by(account_id=account_id).delete()
+    db.session.query(InterestParams).filter_by(account_id=account_id).delete()
+    db.session.query(InvestmentParams).filter_by(account_id=account_id).delete()
+    db.session.query(EscrowComponent).filter_by(account_id=account_id).delete()
+    db.session.query(RateHistory).filter_by(account_id=account_id).delete()
+    db.session.query(SavingsGoal).filter_by(account_id=account_id).delete()
+
+    # Step 4: delete the account.  AccountAnchorHistory is handled by
+    # the ORM relationship cascade="all, delete-orphan" on Account.
+    account_name = account.name
+    db.session.delete(account)
+    db.session.commit()
+
+    flash(f"Account '{account_name}' permanently deleted.", "info")
     return redirect(url_for("accounts.list_accounts"))
 
 
