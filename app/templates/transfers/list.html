@@ -68,7 +68,7 @@
       <th scope="col">From</th>
       <th scope="col">To</th>
       <th scope="col" class="text-end">Amount</th>
-      <th scope="col">Recurrence</th>
+      <th scope="col" class="d-none d-md-table-cell">Recurrence</th>
       <th scope="col">Actions</th>
     </tr>
   </thead>
@@ -79,7 +79,7 @@
       <td>{{ t.from_account.name if t.from_account else '--' }}</td>
       <td>{{ t.to_account.name if t.to_account else '--' }}</td>
       <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
-      <td>{{ recurrence_cell(t) }}</td>
+      <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
            class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ t.name }}">
@@ -133,7 +133,7 @@
           <th scope="col">From</th>
           <th scope="col">To</th>
           <th scope="col" class="text-end">Amount</th>
-          <th scope="col">Recurrence</th>
+          <th scope="col" class="d-none d-md-table-cell">Recurrence</th>
           <th scope="col">Actions</th>
         </tr>
       </thead>
@@ -144,7 +144,7 @@
           <td>{{ t.from_account.name if t.from_account else '--' }}</td>
           <td>{{ t.to_account.name if t.to_account else '--' }}</td>
           <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
-          <td>{{ recurrence_cell(t) }}</td>
+          <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
                   class="d-inline">
