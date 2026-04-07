@@ -23,51 +23,94 @@
   </div>
 </div>
 
-    {% if accounts %}
+{# ── Active Accounts ──────────────────────────────────────────────── #}
+{% if active_accounts %}
+<table class="table table-hover table-sm">
+  <caption class="visually-hidden">Active user accounts with type, balance, and actions</caption>
+  <thead class="table-light">
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Type</th>
+      <th scope="col" class="text-end">Current Balance</th>
+      <th scope="col">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for acct in active_accounts %}
+    <tr>
+      <td>{{ acct.name }}</td>
+      <td>{{ acct.account_type.name|format_account_type if acct.account_type else '--' }}</td>
+      <td class="text-end">
+        {% set editing = false %}
+        {% include "accounts/_anchor_cell.html" %}
+      </td>
+      <td>
+        <a href="{{ url_for('accounts.edit_account', account_id=acct.id) }}"
+           class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ acct.name }}">
+          <i class="bi bi-pencil"></i>
+        </a>
+        <form method="POST" action="{{ url_for('accounts.archive_account', account_id=acct.id) }}"
+              class="d-inline"
+              data-confirm="Archive this account?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-warning" aria-label="Archive {{ acct.name }}">
+            <i class="bi bi-archive"></i>
+          </button>
+        </form>
+        <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=acct.id) }}"
+              class="d-inline"
+              data-confirm="Permanently delete this account and all associated data? This cannot be undone.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ acct.name }}">
+            <i class="bi bi-trash"></i>
+          </button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  No active accounts. Create one to get started.
+</div>
+{% endif %}
+
+{# ── Archived Accounts ────────────────────────────────────────────── #}
+{% if archived_accounts %}
+<div class="mt-4">
+  <h6>
+    <a class="text-decoration-none text-muted" data-bs-toggle="collapse"
+       href="#archivedAccounts" role="button" aria-expanded="false"
+       aria-controls="archivedAccounts">
+      <i class="bi bi-chevron-right collapse-chevron"></i>
+      Archived ({{ archived_accounts|length }})
+    </a>
+  </h6>
+  <div class="collapse" id="archivedAccounts">
     <table class="table table-hover table-sm">
-      <caption class="visually-hidden">User accounts with type, balance, and status</caption>
+      <caption class="visually-hidden">Archived accounts</caption>
       <thead class="table-light">
         <tr>
           <th scope="col">Name</th>
           <th scope="col">Type</th>
-          <th scope="col" class="text-end">Current Balance</th>
-          <th scope="col">Active</th>
+          <th scope="col" class="text-end">Last Balance</th>
           <th scope="col">Actions</th>
         </tr>
       </thead>
       <tbody>
-        {% for acct in accounts %}
-        <tr class="{{ 'text-muted' if not acct.is_active else '' }}">
+        {% for acct in archived_accounts %}
+        <tr class="text-muted">
           <td>{{ acct.name }}</td>
           <td>{{ acct.account_type.name|format_account_type if acct.account_type else '--' }}</td>
           <td class="text-end">
-            {% set editing = false %}
-            {% include "accounts/_anchor_cell.html" %}
-          </td>
-          <td>
-            {% if acct.is_active %}
-              <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
-              <span class="visually-hidden">Active</span>
+            {% if acct.current_anchor_balance is not none %}
+              ${{ "%.2f"|format(acct.current_anchor_balance|float) }}
             {% else %}
-              <i class="bi bi-x-circle text-muted" aria-hidden="true"></i>
-              <span class="visually-hidden">Inactive</span>
+              --
             {% endif %}
           </td>
           <td>
-            <a href="{{ url_for('accounts.edit_account', account_id=acct.id) }}"
-               class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ acct.name }}">
-              <i class="bi bi-pencil"></i>
-            </a>
-            {% if acct.is_active %}
-            <form method="POST" action="{{ url_for('accounts.archive_account', account_id=acct.id) }}"
-                  class="d-inline"
-                  data-confirm="Archive this account?">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Archive {{ acct.name }}">
-                <i class="bi bi-x-circle"></i>
-              </button>
-            </form>
-            {% else %}
             <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=acct.id) }}"
                   class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -75,15 +118,20 @@
                 <i class="bi bi-arrow-counterclockwise"></i>
               </button>
             </form>
-            {% endif %}
+            <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=acct.id) }}"
+                  class="d-inline"
+                  data-confirm="Permanently delete this account and all associated data? This cannot be undone.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ acct.name }}">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <div class="alert alert-info">
-      No accounts yet. Create one to get started.
-    </div>
-    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}

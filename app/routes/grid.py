@@ -241,17 +241,20 @@ def index():
             "net": income - expense,
         }
 
-    # Load categories for grouping rows and for the Add Transaction modal.
-    categories = (
+    # Load ALL categories (including archived) for row key building so
+    # transactions with archived categories still render correctly.
+    all_categories = (
         db.session.query(Category)
         .filter_by(user_id=user_id)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
+    # Active-only categories for the Add Transaction modal dropdown.
+    active_categories = [c for c in all_categories if c.is_active]
 
     # Build row keys: one row per unique (category, template, name) tuple.
-    income_row_keys = _build_row_keys(txn_by_period, categories, is_income_section=True)
-    expense_row_keys = _build_row_keys(txn_by_period, categories, is_income_section=False)
+    income_row_keys = _build_row_keys(txn_by_period, all_categories, is_income_section=True)
+    expense_row_keys = _build_row_keys(txn_by_period, all_categories, is_income_section=False)
 
     # Load statuses for the edit form dropdowns.
     statuses = db.session.query(Status).all()
@@ -280,7 +283,7 @@ def index():
         balances=balances,
         txn_by_period=txn_by_period,
         subtotals=subtotals,
-        categories=categories,
+        categories=active_categories,
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,
         statuses=statuses,

@@ -152,7 +152,7 @@ class TestTemplateList:
         with app.app_context():
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
-            assert b"No recurring transactions yet" in resp.data
+            assert b"No active recurring transactions" in resp.data
             assert b"Car Payment" not in resp.data
 
 
@@ -860,3 +860,229 @@ class TestTemplateNegativePaths:
                 user_id=seed_user["user"].id, name="IDOR Account Test",
             ).count()
             assert count == 0
+
+
+# ── Hard Delete Tests (5A.5-2) ─────────────────────────────────────
+
+
+class TestTemplateHardDelete:
+    """Tests for POST /templates/<id>/hard-delete (permanent deletion)."""
+
+    def test_hard_delete_template_no_history(self, app, auth_client, seed_user, seed_periods):
+        """C-5A.5-11: Template with only Projected txns is permanently deleted."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="Every Period")
+
+            # Generate projected transactions.
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            db.session.commit()
+
+            template_id = template.id
+            txn_count = db.session.query(Transaction).filter_by(
+                template_id=template_id,
+            ).count()
+            assert txn_count == 10
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+
+            # Template is gone.
+            assert db.session.get(TransactionTemplate, template_id) is None
+
+            # All linked transactions are gone.
+            remaining = db.session.query(Transaction).filter_by(
+                template_id=template_id,
+            ).count()
+            assert remaining == 0
+
+    def test_hard_delete_template_no_transactions(self, app, auth_client, seed_user):
+        """C-5A.5-11b: Template with zero transactions is permanently deleted."""
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+            assert db.session.get(TransactionTemplate, template_id) is None
+
+    def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods):
+        """C-5A.5-12: Template with Paid txn is blocked and archived instead."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="Every Period")
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            db.session.commit()
+
+            # Mark one transaction as Paid.
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+            txn = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).first()
+            txn.status_id = paid_status.id
+            txn.actual_amount = txn.estimated_amount
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template.id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"has payment history" in resp.data
+            assert b"archived instead" in resp.data
+
+            # Template still exists but is archived.
+            db.session.refresh(template)
+            assert template.is_active is False
+
+            # The Paid transaction is untouched.
+            db.session.refresh(txn)
+            assert txn.status_id == paid_status.id
+            assert txn.is_deleted is False
+
+            # Projected transactions are soft-deleted.
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+            projected_remaining = db.session.query(Transaction).filter(
+                Transaction.template_id == template.id,
+                Transaction.status_id == projected_status.id,
+                Transaction.is_deleted.is_(False),
+            ).count()
+            assert projected_remaining == 0
+
+    def test_hard_delete_template_with_history_already_archived(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5A.5-12b: Already-archived template with Paid history stays archived without re-archiving."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="Every Period")
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            db.session.commit()
+
+            # Mark one transaction as Paid.
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+            txn = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).first()
+            txn.status_id = paid_status.id
+            txn.actual_amount = txn.estimated_amount
+
+            # Pre-archive the template.
+            template.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template.id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"has payment history" in resp.data
+
+            # Template still exists, still archived.
+            db.session.refresh(template)
+            assert template.is_active is False
+
+    def test_hard_delete_template_already_archived(self, app, auth_client, seed_user, seed_periods):
+        """C-5A.5-13: Pre-archived template with no history is permanently deleted."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="Every Period")
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            db.session.commit()
+
+            # Pre-archive via route (soft-deletes projected txns).
+            auth_client.post(f"/templates/{template.id}/archive")
+            db.session.refresh(template)
+            assert template.is_active is False
+
+            template_id = template.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+
+            # Template and all transactions are gone.
+            assert db.session.get(TransactionTemplate, template_id) is None
+            remaining = db.session.query(Transaction).filter_by(
+                template_id=template_id,
+            ).count()
+            assert remaining == 0
+
+    def test_hard_delete_template_idor(self, app, auth_client, seed_user):
+        """C-5A.5-14: Hard-deleting another user's template returns 'not found'."""
+        with app.app_context():
+            other = _create_other_user_with_template()
+            other_id = other["template"].id
+
+            resp = auth_client.post(
+                f"/templates/{other_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+            # Other user's template still exists.
+            assert db.session.get(TransactionTemplate, other_id) is not None
+
+    def test_list_separates_active_and_archived(self, app, auth_client, seed_user):
+        """C-5A.5-15: List page shows active and archived in separate sections."""
+        with app.app_context():
+            active_1 = _create_template(seed_user, name="Active One", amount="100.00")
+            active_2 = _create_template(seed_user, name="Active Two", amount="200.00")
+            archived = _create_template(seed_user, name="Archived One", amount="300.00")
+            archived.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Active templates appear in the main table.
+            assert "Active One" in html
+            assert "Active Two" in html
+
+            # Archived section exists with count indicator.
+            assert "Archived (1)" in html
+            assert "Archived One" in html
+
+    def test_archive_label_in_flash(self, app, auth_client, seed_user, seed_periods):
+        """C-5A.5-16: Archive flash message says 'archived' not 'deactivated'."""
+        with app.app_context():
+            template = _create_template(seed_user, pattern_name="Every Period")
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template.id}/archive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived" in resp.data
+            # Must NOT contain the old terminology.
+            assert b"deactivated" not in resp.data

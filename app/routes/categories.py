@@ -12,6 +12,7 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.category import Category
 from app.schemas.validation import CategoryCreateSchema, CategoryEditSchema
+from app.utils import archive_helpers
 
 logger = logging.getLogger(__name__)
 
@@ -137,48 +138,64 @@ def edit_category(category_id):
     return redirect(url_for("settings.show", section="categories"))
 
 
-@categories_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
+@categories_bp.route("/categories/<int:category_id>/archive", methods=["POST"])
 @login_required
-def delete_category(category_id):
-    """Delete a category (only if not in use by any template or transaction)."""
+def archive_category(category_id):
+    """Archive a category (hide from active views, preserve data)."""
     category = db.session.get(Category, category_id)
     if category is None or category.user_id != current_user.id:
         flash("Category not found.", "danger")
         return redirect(url_for("settings.show", section="categories"))
 
-    # Check if the category is referenced by this user's templates or
-    # active transactions.
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+    category.is_active = False
+    db.session.commit()
+    flash(f"Category '{category.display_name}' archived.", "info")
+    return redirect(url_for("settings.show", section="categories"))
 
-    # Scope by user_id to prevent other users' templates from
-    # blocking deletion.  See audit finding M6.
-    in_use = (
-        db.session.query(TransactionTemplate)
-        .filter_by(category_id=category_id, user_id=current_user.id)
-        .first()
-    )
-    if not in_use:
-        # Transaction has no direct user_id -- join through PayPeriod
-        # for correct ownership scoping.  Soft-deleted transactions
-        # are included because the DB FK constraint would block
-        # deletion regardless.
-        in_use = (
-            db.session.query(Transaction)
-            .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-            .filter(
-                PayPeriod.user_id == current_user.id,
-                Transaction.category_id == category_id,
-            )
-            .first()
-        )
 
-    if in_use:
-        flash("Cannot delete a category that is in use by templates or transactions.", "warning")
+@categories_bp.route("/categories/<int:category_id>/unarchive", methods=["POST"])
+@login_required
+def unarchive_category(category_id):
+    """Unarchive a category (return to active views)."""
+    category = db.session.get(Category, category_id)
+    if category is None or category.user_id != current_user.id:
+        flash("Category not found.", "danger")
         return redirect(url_for("settings.show", section="categories"))
 
+    category.is_active = True
+    db.session.commit()
+    flash(f"Category '{category.display_name}' unarchived.", "success")
+    return redirect(url_for("settings.show", section="categories"))
+
+
+@categories_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
+@login_required
+def delete_category(category_id):
+    """Permanently delete a category, or archive if in use.
+
+    Uses archive_helpers.category_has_usage() to check whether any
+    templates or transactions reference this category for the current
+    user.  If in use, the category is archived instead of deleted.
+    If not in use, it is permanently removed.
+    """
+    category = db.session.get(Category, category_id)
+    if category is None or category.user_id != current_user.id:
+        flash("Category not found.", "danger")
+        return redirect(url_for("settings.show", section="categories"))
+
+    if archive_helpers.category_has_usage(category_id, current_user.id):
+        flash(
+            f"'{category.display_name}' is in use and cannot be permanently "
+            "deleted. It has been archived instead.",
+            "warning",
+        )
+        if category.is_active:
+            category.is_active = False
+            db.session.commit()
+        return redirect(url_for("settings.show", section="categories"))
+
+    # No usage -- safe to permanently delete.
     db.session.delete(category)
     db.session.commit()
-    flash(f"Category '{category.display_name}' deleted.", "info")
+    flash(f"Category '{category.display_name}' permanently deleted.", "info")
     return redirect(url_for("settings.show", section="categories"))

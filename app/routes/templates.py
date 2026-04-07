@@ -23,6 +23,7 @@ from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, TransactionType
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
+from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.exceptions import RecurrenceConflict
@@ -38,14 +39,24 @@ _update_schema = TemplateUpdateSchema()
 @templates_bp.route("/templates")
 @login_required
 def list_templates():
-    """List all transaction templates for the current user."""
+    """List all transaction templates for the current user.
+
+    Separates templates into active and archived lists for the UI.
+    Both lists inherit the same ordering (sort_order, name).
+    """
     templates = (
         db.session.query(TransactionTemplate)
         .filter_by(user_id=current_user.id)
         .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
         .all()
     )
-    return render_template("templates/list.html", templates=templates)
+    active_templates = [t for t in templates if t.is_active]
+    archived_templates = [t for t in templates if not t.is_active]
+    return render_template(
+        "templates/list.html",
+        active_templates=active_templates,
+        archived_templates=archived_templates,
+    )
 
 
 @templates_bp.route("/templates/new", methods=["GET"])
@@ -54,7 +65,7 @@ def new_template():
     """Display the template creation form."""
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
@@ -180,7 +191,7 @@ def edit_template(template_id):
 
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
@@ -375,6 +386,63 @@ def unarchive_template(template_id):
         f"{restored_count} projected transaction(s) restored.",
         "success",
     )
+    return redirect(url_for("templates.list_templates"))
+
+
+@templates_bp.route("/templates/<int:template_id>/hard-delete", methods=["POST"])
+@login_required
+def hard_delete_template(template_id):
+    """Permanently delete a transaction template if it has no payment history.
+
+    Two-path logic:
+      1. If the template has Paid or Settled transactions, permanent deletion
+         is blocked.  The template is archived instead (if not already) and the
+         user is warned.
+      2. If no payment history exists, all linked transactions are deleted
+         first (to avoid FK constraint violations), then the template itself
+         is permanently removed.
+
+    Transactions are deleted before the template because
+    Transaction.template_id is a FK with ON DELETE SET NULL -- deleting the
+    template first would orphan transaction rows with NULL template_id
+    instead of removing them cleanly.
+    """
+    template = db.session.get(TransactionTemplate, template_id)
+    if template is None or template.user_id != current_user.id:
+        flash("Recurring transaction not found.", "danger")
+        return redirect(url_for("templates.list_templates"))
+
+    if archive_helpers.template_has_paid_history(template.id):
+        flash(
+            f"'{template.name}' has payment history and cannot be permanently "
+            "deleted. It has been archived instead.",
+            "warning",
+        )
+        if template.is_active:
+            template.is_active = False
+            # Soft-delete projected transactions (same logic as archive_template).
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            db.session.query(Transaction).filter(
+                Transaction.template_id == template.id,
+                Transaction.status_id == projected_id,
+                Transaction.is_deleted.is_(False),
+            ).update({"is_deleted": True}, synchronize_session="fetch")
+            db.session.commit()
+        return redirect(url_for("templates.list_templates"))
+
+    # No history -- safe to permanently delete.
+    # Delete all linked transactions first, then the template.  Only
+    # Projected transactions should remain (history check passed), but
+    # delete unconditionally for safety.
+    template_name = template.name
+    db.session.query(Transaction).filter(
+        Transaction.template_id == template.id,
+    ).delete(synchronize_session="fetch")
+
+    db.session.delete(template)
+    db.session.commit()
+
+    flash(f"Recurring transaction '{template_name}' permanently deleted.", "info")
     return redirect(url_for("templates.list_templates"))
 
 

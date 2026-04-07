@@ -53,6 +53,7 @@ def show():
     account_types = []
     types_in_use = set()
     categories = []
+    archived_categories = []
     group_names = []
     icon_choices = []
     mfa_enabled = False
@@ -65,15 +66,17 @@ def show():
             .all()
         )
     elif section == "categories":
-        categories = (
+        all_categories = (
             db.session.query(Category)
             .filter_by(user_id=current_user.id)
             .order_by(Category.sort_order, Category.group_name, Category.item_name)
             .all()
         )
-        # Distinct group names for the category add/edit dropdown (5A.4-2).
-        group_names = sorted(set(cat.group_name for cat in categories))
-        for cat in categories:
+        active_categories = [c for c in all_categories if c.is_active]
+        archived_categories = [c for c in all_categories if not c.is_active]
+        # Distinct group names from active categories for the add/edit dropdown (5A.4-2).
+        group_names = sorted(set(cat.group_name for cat in active_categories))
+        for cat in active_categories:
             grouped.setdefault(cat.group_name, []).append(cat)
     elif section == "pay-periods":
         pass  # Just needs errors={} which is already set.
@@ -147,6 +150,7 @@ def show():
         account_types=account_types,
         types_in_use=types_in_use,
         categories=categories,
+        archived_categories=archived_categories,
         group_names=group_names,
         icon_choices=icon_choices,
         mfa_enabled=mfa_enabled,

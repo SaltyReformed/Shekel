@@ -1554,3 +1554,337 @@ class TestOneTimeTransfer:
                 .count()
             )
             assert xfer_count == 0
+
+
+# ── Hard Delete Tests (5A.5-3) ─────────────────────────────────────
+
+
+class TestTransferTemplateHardDelete:
+    """Tests for POST /transfers/<id>/hard-delete (permanent deletion).
+
+    These tests verify transfer invariant compliance: shadow transactions
+    must never be orphaned, and all deletions must flow through the
+    transfer service.
+    """
+
+    def test_hard_delete_transfer_template_no_history(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5A.5-17: Template with only Projected transfers is permanently deleted."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+
+            template_id = template.id
+            xfer_id = xfer.id
+
+            # Verify shadows exist before deletion.
+            shadow_count_before = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count()
+            assert shadow_count_before == 2
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+
+            # Template is gone.
+            assert db.session.get(TransferTemplate, template_id) is None
+
+            # Transfer is gone.
+            assert db.session.get(Transfer, xfer_id) is None
+
+            # Shadow transactions are gone.
+            shadow_count_after = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count()
+            assert shadow_count_after == 0
+
+    def test_hard_delete_transfer_template_no_transfers(
+        self, app, auth_client, seed_user,
+    ):
+        """Template with zero transfers ever generated is permanently deleted."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            template_id = template.id
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+            assert db.session.get(TransferTemplate, template_id) is None
+
+    def test_hard_delete_transfer_template_with_history(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5A.5-18: Template with Paid transfer is blocked and archived instead."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            # Create two transfers: one Projected, one Paid.
+            xfer_projected = _create_transfer(
+                seed_user, seed_periods, savings, template,
+            )
+
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+            xfer_paid = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("200.00"),
+                status_id=paid_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Monthly Savings",
+            )
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"has payment history" in resp.data
+            assert b"archived instead" in resp.data
+
+            # Template still exists but is archived.
+            db.session.refresh(template)
+            assert template.is_active is False
+
+            # Paid transfer and its shadows are untouched.
+            db.session.refresh(xfer_paid)
+            assert xfer_paid.is_deleted is False
+            paid_shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_paid.id,
+            ).all()
+            assert len(paid_shadows) == 2
+            for shadow in paid_shadows:
+                assert shadow.is_deleted is False
+
+            # Projected transfer is soft-deleted.
+            db.session.refresh(xfer_projected)
+            assert xfer_projected.is_deleted is True
+
+    def test_hard_delete_transfer_template_with_history_already_archived(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Already-archived template with Paid history stays archived without re-archiving."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+            transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("200.00"),
+                status_id=paid_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Monthly Savings",
+            )
+
+            # Pre-archive.
+            template.is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"has payment history" in resp.data
+
+            db.session.refresh(template)
+            assert template.is_active is False
+
+    def test_hard_delete_preserves_shadow_invariant(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C-5A.5-19: No orphaned shadows remain after hard-deleting a template's transfers."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            # Create multiple transfers via the service.
+            xfer_ids = []
+            for i in range(3):
+                xfer = transfer_service.create_transfer(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[i].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("200.00"),
+                    status_id=db.session.query(Status).filter_by(
+                        name="Projected"
+                    ).one().id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Monthly Savings",
+                )
+                xfer_ids.append(xfer.id)
+            db.session.commit()
+
+            # Verify 3 transfers, 6 shadows (2 per transfer) before deletion.
+            total_shadows_before = 0
+            for xfer_id in xfer_ids:
+                count = db.session.query(Transaction).filter_by(
+                    transfer_id=xfer_id,
+                ).count()
+                assert count == 2, (
+                    f"Transfer {xfer_id} should have exactly 2 shadows, "
+                    f"found {count}"
+                )
+                total_shadows_before += count
+            assert total_shadows_before == 6
+
+            template_id = template.id
+
+            # Hard-delete the template.
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+
+            # Template and all transfers are gone.
+            assert db.session.get(TransferTemplate, template_id) is None
+            for xfer_id in xfer_ids:
+                assert db.session.get(Transfer, xfer_id) is None
+
+            # No orphaned shadows: query for any Transaction with a
+            # transfer_id that was just deleted.
+            orphaned_shadows = db.session.query(Transaction).filter(
+                Transaction.transfer_id.in_(xfer_ids),
+            ).count()
+            assert orphaned_shadows == 0, (
+                f"Found {orphaned_shadows} orphaned shadow transactions "
+                f"after hard-deleting template {template_id}"
+            )
+
+    def test_hard_delete_transfer_template_idor(
+        self, app, auth_client, seed_user,
+    ):
+        """C-5A.5-20: Hard-deleting another user's template returns 'not found'."""
+        with app.app_context():
+            other = _create_other_user_with_template()
+            other_id = other["template"].id
+
+            resp = auth_client.post(
+                f"/transfers/{other_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"not found" in resp.data
+
+            # Other user's template still exists.
+            assert db.session.get(TransferTemplate, other_id) is not None
+
+    def test_list_separates_active_and_archived_transfers(
+        self, app, auth_client, seed_user,
+    ):
+        """C-5A.5-21: List page shows active and archived in separate sections."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            active = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                name="Active Transfer",
+                default_amount=Decimal("100.00"),
+            )
+            archived = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                name="Archived Transfer",
+                default_amount=Decimal("50.00"),
+                is_active=False,
+            )
+            db.session.add_all([active, archived])
+            db.session.commit()
+
+            resp = auth_client.get("/transfers")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Active template in main table.
+            assert "Active Transfer" in html
+
+            # Archived section with count indicator.
+            assert "Archived (1)" in html
+            assert "Archived Transfer" in html
+
+    def test_archive_label_in_flash_transfers(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Archive flash message says 'archived' not 'deactivated'."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            _create_transfer(seed_user, seed_periods, savings, template)
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}/archive",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived" in resp.data
+            assert b"deactivated" not in resp.data
+
+    def test_hard_delete_transfer_template_soft_deleted_transfers_cleaned(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Soft-deleted transfers and their shadows are permanently removed on hard-delete."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer_id = xfer.id
+
+            # Soft-delete the transfer via the service.
+            transfer_service.delete_transfer(xfer.id, seed_user["user"].id, soft=True)
+            db.session.commit()
+
+            db.session.refresh(xfer)
+            assert xfer.is_deleted is True
+
+            # Shadows are also soft-deleted.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).all()
+            assert all(s.is_deleted for s in shadows)
+
+            template_id = template.id
+
+            # Hard-delete the template.
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+
+            # Everything is gone -- no ghost data.
+            assert db.session.get(TransferTemplate, template_id) is None
+            assert db.session.get(Transfer, xfer_id) is None
+            orphans = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count()
+            assert orphans == 0

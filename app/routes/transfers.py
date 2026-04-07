@@ -25,6 +25,7 @@ from app.models.scenario import Scenario
 from app.models.ref import RecurrencePattern, Status
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
+from app.utils import archive_helpers
 from app.schemas.validation import (
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -51,14 +52,24 @@ _xfer_update_schema = TransferUpdateSchema()
 @transfers_bp.route("/transfers")
 @login_required
 def list_transfer_templates():
-    """List all transfer templates for the current user."""
+    """List all transfer templates for the current user.
+
+    Separates templates into active and archived lists for the UI.
+    Both lists inherit the same ordering (sort_order, name).
+    """
     templates = (
         db.session.query(TransferTemplate)
         .filter_by(user_id=current_user.id)
         .order_by(TransferTemplate.sort_order, TransferTemplate.name)
         .all()
     )
-    return render_template("transfers/list.html", templates=templates)
+    active_templates = [t for t in templates if t.is_active]
+    archived_templates = [t for t in templates if not t.is_active]
+    return render_template(
+        "transfers/list.html",
+        active_templates=active_templates,
+        archived_templates=archived_templates,
+    )
 
 
 @transfers_bp.route("/transfers/new", methods=["GET"])
@@ -73,7 +84,7 @@ def new_transfer_template():
     )
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
@@ -244,7 +255,7 @@ def edit_transfer_template(template_id):
     )
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
@@ -452,6 +463,83 @@ def unarchive_transfer_template(template_id):
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
+@transfers_bp.route("/transfers/<int:template_id>/hard-delete", methods=["POST"])
+@login_required
+def hard_delete_transfer_template(template_id):
+    """Permanently delete a transfer template if it has no payment history.
+
+    Maintains all five transfer invariants from CLAUDE.md:
+      1. Two linked shadows per transfer -- CASCADE on Transaction.transfer_id
+         removes both shadows when the parent Transfer is hard-deleted via
+         transfer_service.delete_transfer(soft=False).
+      2. No orphaned shadows -- shadows are removed atomically with their
+         parent transfer through the service's CASCADE verification.
+      3. Amount/status/period parity -- not applicable; entire records are
+         removed, not mutated.
+      4. All mutations through the transfer service -- every transfer
+         deletion is routed through transfer_service.delete_transfer().
+      5. Balance calculator queries only budget.transactions -- after
+         deletion, shadow transactions no longer exist in the table.
+
+    Two-path logic:
+      - History exists (Paid/Settled transfers): permanent deletion is
+        blocked.  Template is archived instead (if not already) and the
+        user is warned.
+      - No history: all linked transfers are hard-deleted through the
+        transfer service (which CASCADE-deletes shadows), then the
+        template itself is permanently removed.
+    """
+    template = db.session.get(TransferTemplate, template_id)
+    if template is None or template.user_id != current_user.id:
+        flash("Recurring transfer not found.", "danger")
+        return redirect(url_for("transfers.list_transfer_templates"))
+
+    if archive_helpers.transfer_template_has_paid_history(template.id):
+        flash(
+            f"'{template.name}' has payment history and cannot be permanently "
+            "deleted. It has been archived instead.",
+            "warning",
+        )
+        if template.is_active:
+            template.is_active = False
+            # Soft-delete projected transfers via the service (same as
+            # archive_transfer_template) to maintain shadow invariants.
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            transfers_to_delete = (
+                db.session.query(Transfer)
+                .filter(
+                    Transfer.transfer_template_id == template.id,
+                    Transfer.status_id == projected_id,
+                    Transfer.is_deleted.is_(False),
+                )
+                .all()
+            )
+            for xfer in transfers_to_delete:
+                transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
+            db.session.commit()
+        return redirect(url_for("transfers.list_transfer_templates"))
+
+    # No history -- safe to permanently delete.
+    # Delete ALL linked transfers through the transfer service so that
+    # shadow transactions are CASCADE-deleted (invariants 1, 2, 4).
+    # transfer_service.delete_transfer flushes but does not commit,
+    # so all deletions are atomic within a single DB transaction.
+    template_name = template.name
+    all_transfers = (
+        db.session.query(Transfer)
+        .filter(Transfer.transfer_template_id == template.id)
+        .all()
+    )
+    for xfer in all_transfers:
+        transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
+
+    db.session.delete(template)
+    db.session.commit()
+
+    flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
+    return redirect(url_for("transfers.list_transfer_templates"))
+
+
 # ── Grid Cell Routes ────────────────────────────────────────────────
 
 
@@ -488,7 +576,7 @@ def get_full_edit(xfer_id):
     statuses = db.session.query(Status).all()
     categories = (
         db.session.query(Category)
-        .filter_by(user_id=current_user.id)
+        .filter_by(user_id=current_user.id, is_active=True)
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
