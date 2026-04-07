@@ -245,7 +245,7 @@ def dashboard(account_id):
     for pid in chart_labels:
         p = period_map.get(pid)
         if p:
-            chart_date_labels.append(p.start_date.strftime("%b %d"))
+            chart_date_labels.append(p.start_date.strftime("%b %Y"))
 
     # Default horizon for the growth chart slider.
     settings = (

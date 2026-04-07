@@ -362,7 +362,12 @@ def update_transfer_template(template_id):
                 "warning",
             )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash("A recurring transfer with that name already exists.", "warning")
+        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
     flash(f"Recurring transfer '{template.name}' updated.", "success")
     return redirect(url_for("transfers.list_transfer_templates"))
 
@@ -611,7 +616,11 @@ def update_transfer(xfer_id):
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer_id)
 
     # When opened from a shadow transaction cell in the grid, render the
@@ -660,7 +669,11 @@ def create_ad_hoc():
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -704,7 +717,11 @@ def mark_done(xfer_id):
     done_id = ref_cache.status_id(StatusEnum.DONE)
     transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
 
     # Grid shadow context: render transaction cell with gridRefresh
@@ -735,7 +752,11 @@ def cancel_transfer(xfer_id):
         xfer.id, current_user.id, status_id=cancelled_id
     )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
 
     # Grid shadow context: render transaction cell with gridRefresh

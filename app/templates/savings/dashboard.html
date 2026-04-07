@@ -106,7 +106,7 @@
         <div class="d-flex justify-content-between align-items-start">
           <div>
             <h6 class="card-title mb-1">
-              {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
+              {% if ad.account.account_type and ad.account.account_type.has_interest %}
                 <i class="bi bi-bank2 text-info"></i>
               {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_SAVINGS %}
                 <i class="bi bi-piggy-bank text-success"></i>
@@ -128,8 +128,8 @@
               {% endif %}
             </h6>
             <small class="text-muted">
-              {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
-                HYSA
+              {% if ad.account.account_type and ad.account.account_type.has_interest %}
+                {{ ad.account.account_type.name|format_account_type }}
               {% elif ad.account.account_type %}
                 {{ ad.account.account_type.name|format_account_type }}
               {% endif %}
@@ -154,9 +154,9 @@
              class="btn btn-sm btn-outline-primary" title="Checking Detail">
             <i class="bi bi-bank"></i>
           </a>
-          {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_HYSA %}
+          {% elif ad.account.account_type and ad.account.account_type.has_interest %}
           <a href="{{ url_for('accounts.interest_detail', account_id=ad.account.id) }}"
-             class="btn btn-sm btn-outline-info" title="HYSA Detail">
+             class="btn btn-sm btn-outline-info" title="Interest Detail">
             <i class="bi bi-graph-up"></i>
           </a>
           {% elif ad.account.account_type and ad.account.account_type.has_amortization %}

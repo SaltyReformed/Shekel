@@ -743,7 +743,9 @@ class AccountTypeCreateSchema(BaseSchema):
 class AccountTypeUpdateSchema(BaseSchema):
     """Validates POST data for updating an account type.
 
-    All fields are optional for partial updates.
+    All fields are optional for partial updates.  Cross-field
+    validation mirrors AccountTypeCreateSchema but only fires when
+    the relevant fields are present in the submitted data.
     """
 
     name = fields.String(validate=validate.Length(min=1, max=30))
@@ -763,6 +765,58 @@ class AccountTypeUpdateSchema(BaseSchema):
     def strip_empty_strings(self, data, **kwargs):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
+
+    @validates_schema
+    def validate_flag_combinations(self, data, **kwargs):
+        """Enforce category-flag consistency rules on partial updates.
+
+        Category-flag checks only fire when both the flag and
+        category_id are present, so partial updates that omit
+        category_id do not falsely reject.  Mutual-exclusion and
+        dependency checks fire whenever both relevant fields are
+        present.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import AcctCategoryEnum  # pylint: disable=import-outside-toplevel
+
+        cat_id = data.get("category_id")
+
+        if cat_id is not None:
+            liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            retirement_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+
+            if data.get("has_amortization") and cat_id != liability_id:
+                raise ValidationError(
+                    "has_amortization requires Liability category.",
+                    field_name="has_amortization",
+                )
+            if data.get("has_interest") and cat_id != asset_id:
+                raise ValidationError(
+                    "has_interest requires Asset category.",
+                    field_name="has_interest",
+                )
+            if data.get("is_pretax") and cat_id != retirement_id:
+                raise ValidationError(
+                    "is_pretax requires Retirement category.",
+                    field_name="is_pretax",
+                )
+            if data.get("is_liquid") and cat_id != asset_id:
+                raise ValidationError(
+                    "is_liquid requires Asset category.",
+                    field_name="is_liquid",
+                )
+
+        if data.get("has_amortization") and data.get("has_interest"):
+            raise ValidationError(
+                "has_amortization and has_interest are mutually exclusive.",
+                field_name="has_amortization",
+            )
+        if data.get("max_term_months") and not data.get("has_amortization"):
+            raise ValidationError(
+                "max_term_months requires has_amortization.",
+                field_name="max_term_months",
+            )
 
 
 # ── HYSA Schemas ──────────────────────────────────────────────────
