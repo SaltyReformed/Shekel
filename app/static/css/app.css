@@ -803,6 +803,44 @@ td.htmx-loading::after {
   }
 }
 
+@media (max-width: 359.98px) {
+  /* Further reduce the grid sticky column for very small screens */
+  .sticky-col {
+    min-width: 70px;
+    max-width: 90px;
+  }
+
+  .row-label-col {
+    min-width: 70px;
+    max-width: 90px;
+  }
+
+  /* Scale down grid font for 320px devices */
+  .grid-table {
+    font-size: 0.6rem;
+  }
+
+  .row-label {
+    font-size: 0.55rem;
+  }
+
+  /* Reduce anchor balance display for narrow screens */
+  .anchor-balance-display {
+    font-size: 18px;
+  }
+
+  /* Compact period quick-select buttons */
+  .period-btn-group .btn {
+    font-size: 0.65rem;
+    padding: 0.15rem 0.35rem;
+  }
+
+  /* Tighter breadcrumbs on very small screens */
+  .breadcrumb {
+    font-size: 0.75rem;
+  }
+}
+
 /* =============================================
    WELCOME BANNER
    ============================================= */
