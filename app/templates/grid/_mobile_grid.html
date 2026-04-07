@@ -1,0 +1,236 @@
+{# Mobile card-based budget grid view -- shown only at <768px.
+   Replaces the desktop table with period-by-period navigation,
+   collapsible income/expense sections, and tap-to-edit cards.
+
+   IMPORTANT: The transaction matching logic in this template is
+   duplicated from grid/grid.html.  Any change to matching conditions
+   MUST be applied to both files to prevent data divergence.
+
+   Expected context (from grid.index route):
+     periods           -- list of PayPeriod objects (visible window)
+     txn_by_period     -- dict[period_id -> list[Transaction]]
+     income_row_keys   -- list[RowKey] (category_id, template_id, txn_name, group_name, display_name, ...)
+     expense_row_keys  -- list[RowKey]
+     subtotals         -- dict[period_id -> dict("income", "expense", "net")]
+     balances          -- dict[period_id -> Decimal]
+     low_balance_threshold -- int/Decimal
+   Jinja globals: STATUS_CANCELLED, STATUS_CREDIT
+#}
+<div class="d-md-none" id="mobile-grid">
+
+  {# --- Period Navigation Header --- #}
+  <div class="d-flex align-items-center justify-content-between mb-3" id="mobile-period-nav">
+    <button class="btn btn-sm btn-outline-secondary" id="mobile-prev-btn"
+            aria-label="Previous period" {% if periods|length <= 1 %}disabled{% endif %}>
+      <i class="bi bi-chevron-left"></i>
+    </button>
+    <div class="text-center">
+      <div class="fw-bold" id="mobile-period-label">
+        {% if periods %}{{ periods[0].label }}{% endif %}
+      </div>
+      <small class="text-muted" id="mobile-period-range">
+        {% if periods %}{{ periods[0].start_date.strftime('%-m/%-d') }} -- {{ periods[0].end_date.strftime('%-m/%-d') }}{% endif %}
+      </small>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" id="mobile-next-btn"
+            aria-label="Next period" {% if periods|length <= 1 %}disabled{% endif %}>
+      <i class="bi bi-chevron-right"></i>
+    </button>
+  </div>
+
+  {# --- Period Panels --- #}
+  {% for period in periods %}
+  <div class="mobile-period-panel" data-period-index="{{ loop.index0 }}"
+       data-period-label="{{ period.label }}"
+       data-period-range="{{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}"
+       {% if not loop.first %}style="display: none;"{% endif %}>
+
+    {# --- Income Section (collapsible) --- #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center py-2"
+           style="background-color: var(--shekel-section-income-bg); color: var(--shekel-section-income-text);"
+           data-bs-toggle="collapse" data-bs-target="#mobile-income-{{ period.id }}"
+           aria-expanded="true" aria-controls="mobile-income-{{ period.id }}">
+        <span class="fw-bold small text-uppercase">
+          <i class="bi bi-chevron-down me-1"></i> Income
+        </span>
+        <span class="font-mono fw-bold">
+          {% set inc_total = subtotals[period.id].income %}
+          {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
+        </span>
+      </div>
+      <div class="collapse show" id="mobile-income-{{ period.id }}">
+        <ul class="list-group list-group-flush">
+          {% set ns_inc = namespace(current_group='') %}
+          {% for rk in income_row_keys %}
+
+            {# --- Transaction Matching (DUPLICATED from grid.html income block) --- #}
+            {% set period_txns = txn_by_period.get(period.id, []) %}
+            {% set matched = [] %}
+            {% for txn in period_txns %}
+              {% if txn.category_id == rk.category_id and txn.is_income and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
+                {% if rk.template_id is not none and txn.template_id is not none %}
+                  {% if txn.template_id == rk.template_id %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% else %}
+                  {% if txn.name == rk.txn_name %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+
+            {% if matched %}
+              {% if rk.group_name != ns_inc.current_group %}
+                {% set ns_inc.current_group = rk.group_name %}
+                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase"
+                    style="background-color: var(--shekel-group-header-bg); font-size: 11px; letter-spacing: 0.8px;">
+                  {{ rk.group_name }}
+                </li>
+              {% endif %}
+
+              {% for txn in matched %}
+                {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+                <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+                    data-mobile-txn-id="{{ txn.id }}"
+                    {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+                    role="button" tabindex="0"
+                    aria-label="{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}">
+                  <span class="text-truncate me-2">
+                    {{ rk.display_name }}
+                    {% if txn.status %}
+                      {% if txn.status.is_settled %}
+                        <span class="badge-done ms-1">&#10003;</span>
+                      {% elif txn.status_id == STATUS_CREDIT %}
+                        <span class="badge-credit ms-1">CC</span>
+                      {% endif %}
+                    {% endif %}
+                    {% if txn.transfer_id %}
+                      <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+                    {% endif %}
+                    {% if txn.credit_payback_for_id %}
+                      <span class="badge-credit ms-1">CC</span>
+                    {% endif %}
+                  </span>
+                  <span class="font-mono fw-semibold text-nowrap">
+                    ${{ "{:,.0f}".format(display_amount) }}
+                  </span>
+                </li>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    {# --- Expense Section (collapsible) --- #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center py-2"
+           style="background-color: var(--shekel-section-expense-bg); color: var(--shekel-section-expense-text);"
+           data-bs-toggle="collapse" data-bs-target="#mobile-expense-{{ period.id }}"
+           aria-expanded="true" aria-controls="mobile-expense-{{ period.id }}">
+        <span class="fw-bold small text-uppercase">
+          <i class="bi bi-chevron-down me-1"></i> Expenses
+        </span>
+        <span class="font-mono fw-bold">
+          {% set exp_total = subtotals[period.id].expense %}
+          {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
+        </span>
+      </div>
+      <div class="collapse show" id="mobile-expense-{{ period.id }}">
+        <ul class="list-group list-group-flush">
+          {% set ns_exp = namespace(current_group='') %}
+          {% for rk in expense_row_keys %}
+
+            {# --- Transaction Matching (DUPLICATED from grid.html expense block) --- #}
+            {% set period_txns = txn_by_period.get(period.id, []) %}
+            {% set matched = [] %}
+            {% for txn in period_txns %}
+              {% if txn.category_id == rk.category_id and txn.is_expense and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
+                {% if rk.template_id is not none and txn.template_id is not none %}
+                  {% if txn.template_id == rk.template_id %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% else %}
+                  {% if txn.name == rk.txn_name %}
+                    {% if matched.append(txn) %}{% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+
+            {% if matched %}
+              {% if rk.group_name != ns_exp.current_group %}
+                {% set ns_exp.current_group = rk.group_name %}
+                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase"
+                    style="background-color: var(--shekel-group-header-bg); font-size: 11px; letter-spacing: 0.8px;">
+                  {{ rk.group_name }}
+                </li>
+              {% endif %}
+
+              {% for txn in matched %}
+                {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+                <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+                    data-mobile-txn-id="{{ txn.id }}"
+                    {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+                    role="button" tabindex="0"
+                    aria-label="{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}">
+                  <span class="text-truncate me-2">
+                    {{ rk.display_name }}
+                    {% if txn.status %}
+                      {% if txn.status.is_settled %}
+                        <span class="badge-done ms-1">&#10003;</span>
+                      {% elif txn.status_id == STATUS_CREDIT %}
+                        <span class="badge-credit ms-1">CC</span>
+                      {% endif %}
+                    {% endif %}
+                    {% if txn.transfer_id %}
+                      <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+                    {% endif %}
+                    {% if txn.credit_payback_for_id %}
+                      <span class="badge-credit ms-1">CC</span>
+                    {% endif %}
+                  </span>
+                  <span class="font-mono fw-semibold text-nowrap">
+                    ${{ "{:,.0f}".format(display_amount) }}
+                  </span>
+                </li>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    {# --- Net Cash Flow Bar --- #}
+    {% set net = subtotals[period.id].net %}
+    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded"
+         style="background-color: var(--shekel-surface-raised);">
+      <span class="fw-bold small">Net Cash Flow</span>
+      <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
+        {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+        ${{ "{:,.0f}".format(net) }}
+      </span>
+    </div>
+
+    {# --- Projected End Balance --- #}
+    {% set bal = balances.get(period.id) %}
+    {% if bal is not none %}
+    <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
+      <div class="card-body py-2 d-flex justify-content-between align-items-center">
+        <span class="fw-bold small">
+          {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
+          Projected Balance
+        </span>
+        <span class="font-mono fw-bold fs-5 {{ 'text-danger' if bal < 0 else '' }}"
+              style="{{ 'color: var(--shekel-accent);' if bal >= 0 else '' }}">
+          ${{ "{:,.2f}".format(bal) }}
+        </span>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+  {% endfor %}
+</div>

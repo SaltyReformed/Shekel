@@ -27,6 +27,21 @@ function positionPopover(cell) {
     // Close any existing popover first.
     closeFullEdit();
 
+    // Mobile: bottom sheet -- CSS handles positioning via fixed position.
+    if (window.innerWidth < 768) {
+        var backdrop = document.createElement('div');
+        backdrop.className = 'bottom-sheet-backdrop';
+        backdrop.id = 'bottom-sheet-backdrop';
+        backdrop.addEventListener('click', closeFullEdit);
+        document.body.appendChild(backdrop);
+
+        // Clear any leftover desktop inline positioning
+        popover.style.top = '';
+        popover.style.left = '';
+        return popover;
+    }
+
+    // Desktop: existing positioning logic
     // Viewport-relative coordinates from the triggering cell.
     var cellRect = cell.getBoundingClientRect();
 
@@ -62,6 +77,10 @@ function showPopover(popover, html) {
     popover.innerHTML = html;
     popover.classList.remove('d-none');
     activePopover = popover;
+
+    if (window.innerWidth < 768) {
+        document.body.style.overflow = 'hidden';
+    }
 
     // Process any HTMX attributes in the loaded content.
     htmx.process(popover);
@@ -153,6 +172,10 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
         popover.classList.remove('d-none');
         activePopover = popover;
 
+        if (window.innerWidth < 768) {
+            document.body.style.overflow = 'hidden';
+        }
+
         // Override the form's hx-target before HTMX processes it.
         // The popover is outside the td, so "closest td" won't work.
         const form = popover.querySelector('form');
@@ -187,6 +210,10 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
  * Close the full edit popover and clean up listeners.
  */
 function closeFullEdit() {
+    var backdrop = document.getElementById('bottom-sheet-backdrop');
+    if (backdrop) backdrop.remove();
+    document.body.style.overflow = '';
+
     var popover = document.getElementById('txn-popover');
     if (popover) {
         popover.classList.add('d-none');

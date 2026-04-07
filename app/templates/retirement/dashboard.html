@@ -34,7 +34,7 @@
                  data-slider-group="gap-swr"
                  data-slider-target="gap-analysis-container"
                  data-slider-debounce="300">
-          <div class="input-group input-group-sm" style="width: 7rem; flex-shrink: 0;">
+          <div class="input-group input-group-sm" style="width: 7rem; min-width: 5rem; flex-shrink: 1;">
             <input type="number" class="form-control gap-param" id="swr_input" name="swr"
                    step="0.25" min="2.0" max="6.0"
                    value="{{ "%.2f"|format(current_swr) }}"
@@ -45,7 +45,7 @@
       </div>
       <div class="col-md-6">
         <label for="return_slider" class="form-label">Assumed Annual Return
-          <i class="bi bi-info-circle text-muted" title="Recalculates the gap analysis and account projections below using this rate for all accounts, overriding each account's configured rate as a what-if scenario. The default is the balance-weighted average of each account's configured rate."></i>
+          <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Recalculates the gap analysis and account projections below using this rate for all accounts, overriding each account's configured rate as a what-if scenario. The default is the balance-weighted average of each account's configured rate."></i>
         </label>
         <div class="d-flex align-items-center gap-2">
           <input type="range" class="form-range flex-grow-1" id="return_slider"
@@ -53,7 +53,7 @@
                  data-slider-group="gap-return"
                  data-slider-target="gap-analysis-container"
                  data-slider-debounce="300">
-          <div class="input-group input-group-sm" style="width: 7rem; flex-shrink: 0;">
+          <div class="input-group input-group-sm" style="width: 7rem; min-width: 5rem; flex-shrink: 1;">
             <input type="number" class="form-control gap-param" id="return_input" name="return_rate"
                    step="0.5" min="3.0" max="12.0"
                    value="{{ "%.1f"|format(current_return) }}"
@@ -94,25 +94,25 @@
         <table class="table table-sm mb-0">
           <tr>
             <td class="text-muted">Years of Service
-              <i class="bi bi-info-circle text-muted" title="Calculated from your hire date to planned retirement date."></i>
+              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Calculated from your hire date to planned retirement date."></i>
             </td>
             <td class="text-end font-mono">{{ pension_benefit.years_of_service }}</td>
           </tr>
           <tr>
             <td class="text-muted">High Salary Average
-              <i class="bi bi-info-circle text-muted" title="Average of your highest consecutive salary years, determined by the pension's high-years window."></i>
+              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Average of your highest consecutive salary years, determined by the pension's high-years window."></i>
             </td>
             <td class="text-end font-mono">${{ "{:,.2f}".format(pension_benefit.high_salary_average|float) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Annual Benefit
-              <i class="bi bi-info-circle text-muted" title="Benefit multiplier × years of service × high salary average."></i>
+              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Benefit multiplier × years of service × high salary average."></i>
             </td>
             <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(pension_benefit.annual_benefit|float) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Monthly Benefit
-              <i class="bi bi-info-circle text-muted" title="Annual benefit divided by 12."></i>
+              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Annual benefit divided by 12."></i>
             </td>
             <td class="text-end font-mono fw-bold" style="color: var(--shekel-accent);">
               ${{ "{:,.2f}".format(pension_benefit.monthly_benefit|float) }}

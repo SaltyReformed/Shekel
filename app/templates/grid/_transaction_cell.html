@@ -33,9 +33,9 @@
   {# Status badge #}
   {% if t.status %}
     {% if t.status.is_settled %}
-      <span class="badge-done ms-1" title="{{ t.status.name }}" aria-label="{{ t.status.name }}">✓</span>
+      <span class="badge-done ms-1" aria-label="{{ t.status.name }}" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="{{ t.status.name }}">✓</span>
     {% elif t.status_id == STATUS_CREDIT %}
-      <span class="badge-credit ms-1" title="Credit card" aria-label="Credit card">CC</span>
+      <span class="badge-credit ms-1" aria-label="Credit card" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="Credit card">CC</span>
     {% endif %}
   {% endif %}
 
@@ -51,7 +51,7 @@
 
   {# Credit payback indicator #}
   {% if t.credit_payback_for_id %}
-    <span class="badge-credit ms-1" title="CC Payback" aria-label="Credit card payback">CC</span>
+    <span class="badge-credit ms-1" aria-label="Credit card payback" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="CC Payback">CC</span>
   {% endif %}
 </div>
 {% if wrap_div is defined and wrap_div %}</div>{% endif %}

@@ -2759,20 +2759,21 @@ class TestButtonPlacement:
     def test_salary_list_existing_buttons_preserved(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Action column icon buttons link to breakdown and projection pages exactly once each."""
+        """Action column buttons link to breakdown and projection pages."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get("/salary")
             html = response.data.decode()
 
-            # After 5A.3 duplicate button removal, each URL appears once
-            # (in Actions column only, not duplicated in Name column).
+            # Each URL appears twice: once in the desktop icon buttons
+            # (d-none d-md-inline) and once in the mobile action dropdown
+            # (d-md-none). The 5A.3 Name-column duplicates are still gone.
             breakdown_url = f"/salary/{profile.id}/breakdown"
-            assert html.count(breakdown_url) == 1
+            assert html.count(breakdown_url) == 2
 
             projection_url = f"/salary/{profile.id}/projection"
-            assert html.count(projection_url) == 1
+            assert html.count(projection_url) == 2
 
     def test_salary_form_buttons_inline_with_submit(
         self, app, auth_client, seed_user, seed_periods
@@ -2874,9 +2875,9 @@ class TestSalaryListingButtonCleanup:
             assert 'title="Breakdown"' in html
             assert 'title="Projection"' in html
 
-            # The URLs appear exactly once each (Actions column only).
-            assert html.count(breakdown_url) == 1
-            assert html.count(projection_url) == 1
+            # Each URL appears twice: desktop icon buttons + mobile dropdown.
+            assert html.count(breakdown_url) == 2
+            assert html.count(projection_url) == 2
 
             # Verify the icon links contain the correct href.
             # Find the title="Breakdown" anchor and confirm it points to the right URL.

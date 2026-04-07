@@ -24,13 +24,14 @@
 </div>
 
 {% if profile_data %}
+<div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Salary profiles with estimated net pay</caption>
   <thead class="table-light">
     <tr>
       <th scope="col">Name</th>
-      <th scope="col">Filing Status</th>
-      <th scope="col">State</th>
+      <th scope="col" class="d-none d-lg-table-cell">Filing Status</th>
+      <th scope="col" class="d-none d-lg-table-cell">State</th>
       <th scope="col" class="text-end">Annual Salary</th>
       <th scope="col" class="text-end">Est. Net Biweekly <i class="bi bi-info-circle text-muted" title="Estimated take-home pay after taxes and deductions"></i></th>
       <th scope="col">Active</th>
@@ -42,8 +43,8 @@
     {% set p = item.profile %}
     <tr class="{{ 'text-muted' if not p.is_active }}">
       <td>{{ p.name }}</td>
-      <td>{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
-      <td>{{ p.state_code }}</td>
+      <td class="d-none d-lg-table-cell">{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
+      <td class="d-none d-lg-table-cell">{{ p.state_code }}</td>
       <td class="text-end">${{ "%.2f"|format(p.annual_salary|float) }}</td>
       <td class="text-end">
         {% if item.net_pay is not none %}
@@ -65,33 +66,73 @@
         {% endif %}
       </td>
       <td>
-        <a href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
-           class="btn btn-sm btn-outline-secondary me-1" title="Edit">
-          <i class="bi bi-pencil"></i>
-        </a>
-        <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
-           class="btn btn-sm btn-outline-info me-1" title="Breakdown">
-          <i class="bi bi-receipt"></i>
-        </a>
-        <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
-           class="btn btn-sm btn-outline-primary me-1" title="Projection">
-          <i class="bi bi-graph-up"></i>
-        </a>
-        {% if p.is_active %}
-        <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
-              class="d-inline"
-              data-confirm="Deactivate this salary profile?">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
-            <i class="bi bi-x-circle"></i>
+        {# Desktop action buttons #}
+        <span class="d-none d-md-inline">
+          <a href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
+             class="btn btn-sm btn-outline-secondary me-1" title="Edit">
+            <i class="bi bi-pencil"></i>
+          </a>
+          <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
+             class="btn btn-sm btn-outline-info me-1" title="Breakdown">
+            <i class="bi bi-receipt"></i>
+          </a>
+          <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
+             class="btn btn-sm btn-outline-primary me-1" title="Projection">
+            <i class="bi bi-graph-up"></i>
+          </a>
+          {% if p.is_active %}
+          <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
+                class="d-inline"
+                data-confirm="Deactivate this salary profile?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
+              <i class="bi bi-x-circle"></i>
+            </button>
+          </form>
+          {% endif %}
+        </span>
+        {# Mobile action dropdown #}
+        <div class="dropdown d-md-none d-inline-block">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                  data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-three-dots-vertical"></i>
           </button>
-        </form>
-        {% endif %}
+          <ul class="dropdown-menu">
+            <li>
+              <a class="dropdown-item" href="{{ url_for('salary.edit_profile', profile_id=p.id) }}">
+                <i class="bi bi-pencil me-2"></i>Edit
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}">
+                <i class="bi bi-receipt me-2"></i>Breakdown
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="{{ url_for('salary.projection', profile_id=p.id) }}">
+                <i class="bi bi-graph-up me-2"></i>Projection
+              </a>
+            </li>
+            {% if p.is_active %}
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
+                    data-confirm="Deactivate this salary profile?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="dropdown-item text-danger">
+                  <i class="bi bi-x-circle me-2"></i>Deactivate
+                </button>
+              </form>
+            </li>
+            {% endif %}
+          </ul>
+        </div>
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="alert alert-info">
   No salary profiles yet. Create one to start calculating paychecks.

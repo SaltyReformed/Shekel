@@ -9,6 +9,7 @@
   </div>
   <div class="card-body">
     {% if profile.deductions %}
+    <div class="table-responsive">
     <table class="table table-hover table-sm mb-0">
       <thead class="table-light">
         <tr>
@@ -92,6 +93,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted mb-0">No deductions configured.</p>
     {% endif %}

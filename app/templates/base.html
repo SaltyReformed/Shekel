@@ -22,6 +22,15 @@
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
 
+  <!-- Web App Manifest -->
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+  <meta name="theme-color" content="#4A9ECC">
+  <!-- iOS home screen support -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Shekel">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/icon-192.png') }}">
+
   <!-- App CSS -->
   <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
 </head>
@@ -239,6 +248,7 @@
   <!-- App JS -->
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
   <script src="{{ url_for('static', filename='js/grid_edit.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/mobile_grid.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

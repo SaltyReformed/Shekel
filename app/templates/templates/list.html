@@ -59,13 +59,14 @@
 
 {# ── Active Templates ─────────────────────────────────────────────── #}
 {% if active_templates %}
+<div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Active recurring transactions with recurrence rules</caption>
   <thead class="table-light">
     <tr>
       <th scope="col">Name</th>
-      <th scope="col">Category</th>
-      <th scope="col">Type</th>
+      <th scope="col" class="d-none d-md-table-cell">Category</th>
+      <th scope="col" class="d-none d-md-table-cell">Type</th>
       <th scope="col" class="text-end">Amount</th>
       <th scope="col">Recurrence</th>
       <th scope="col">Actions</th>
@@ -75,8 +76,8 @@
     {% for t in active_templates %}
     <tr>
       <td>{{ t.name }}</td>
-      <td>{{ t.category.display_name if t.category else '--' }}</td>
-      <td>
+      <td class="d-none d-md-table-cell">{{ t.category.display_name if t.category else '--' }}</td>
+      <td class="d-none d-md-table-cell">
         {% if t.transaction_type_id == TXN_TYPE_INCOME %}
           <span class="badge bg-success">Income</span>
         {% else %}
@@ -111,6 +112,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="alert alert-info">
   No active recurring transactions. Create one to auto-generate budget entries each pay period.
@@ -134,8 +136,8 @@
       <thead class="table-light">
         <tr>
           <th scope="col">Name</th>
-          <th scope="col">Category</th>
-          <th scope="col">Type</th>
+          <th scope="col" class="d-none d-md-table-cell">Category</th>
+          <th scope="col" class="d-none d-md-table-cell">Type</th>
           <th scope="col" class="text-end">Amount</th>
           <th scope="col">Recurrence</th>
           <th scope="col">Actions</th>
@@ -145,8 +147,8 @@
         {% for t in archived_templates %}
         <tr class="text-muted">
           <td>{{ t.name }}</td>
-          <td>{{ t.category.display_name if t.category else '--' }}</td>
-          <td>
+          <td class="d-none d-md-table-cell">{{ t.category.display_name if t.category else '--' }}</td>
+          <td class="d-none d-md-table-cell">
             {% if t.transaction_type_id == TXN_TYPE_INCOME %}
               <span class="badge bg-success">Income</span>
             {% else %}
