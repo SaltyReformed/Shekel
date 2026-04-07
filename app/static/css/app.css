@@ -213,7 +213,8 @@
 }
 
 /* Row hover */
-.grid-table tbody tr:hover td {
+.grid-table tbody tr:hover td,
+.grid-table tbody tr:active td {
   background-color: var(--shekel-row-hover);
 }
 
@@ -449,7 +450,9 @@ thead .sticky-col {
   transition: background-color 0.15s;
 }
 
-.anchor-balance-display:hover {
+.anchor-balance-display:hover,
+.anchor-balance-display:active,
+.anchor-balance-display:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.12);
 }
 
@@ -469,7 +472,9 @@ thead .sticky-col {
   transition: background-color 0.1s;
 }
 
-.txn-cell:hover {
+.txn-cell:hover,
+.txn-cell:active,
+.txn-cell:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
 }
 
@@ -482,7 +487,9 @@ thead .sticky-col {
   cursor: cell;
 }
 
-.txn-empty-cell:hover {
+.txn-empty-cell:hover,
+.txn-empty-cell:active,
+.txn-empty-cell:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.15);
 }
 
@@ -609,7 +616,9 @@ thead .sticky-col {
   width: 20px;
 }
 
-.txn-expand-btn:hover {
+.txn-expand-btn:hover,
+.txn-expand-btn:active,
+.txn-expand-btn:focus-visible {
   color: var(--shekel-accent);
 }
 
