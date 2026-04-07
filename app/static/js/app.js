@@ -90,6 +90,21 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
   if (typeof activePopover !== 'undefined' && activePopover && !activePopover.contains(el)) {
     closeFullEdit();
   }
+
+  // Re-initialize Bootstrap popovers/tooltips in swapped content
+  var target = event.detail.target || event.detail.elt;
+  if (target) {
+    target.querySelectorAll('[data-bs-toggle="popover"]').forEach(function(popEl) {
+      if (!bootstrap.Popover.getInstance(popEl)) {
+        new bootstrap.Popover(popEl);
+      }
+    });
+    target.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(tipEl) {
+      if (!bootstrap.Tooltip.getInstance(tipEl)) {
+        new bootstrap.Tooltip(tipEl);
+      }
+    });
+  }
 });
 
 // Close Add Transaction modal and reload after successful creation.
@@ -559,5 +574,15 @@ document.addEventListener('keydown', function(e) {
 document.addEventListener('DOMContentLoaded', function() {
   document.querySelectorAll('.toast').forEach(function(el) {
     new bootstrap.Toast(el).show();
+  });
+
+  // Initialize Bootstrap popovers (retirement info icons)
+  document.querySelectorAll('[data-bs-toggle="popover"]').forEach(function(el) {
+    new bootstrap.Popover(el);
+  });
+
+  // Initialize Bootstrap tooltips (transaction status badges)
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+    new bootstrap.Tooltip(el);
   });
 });

@@ -24,6 +24,7 @@
 </div>
 
 {% if profile_data %}
+<div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Salary profiles with estimated net pay</caption>
   <thead class="table-light">
@@ -92,6 +93,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="alert alert-info">
   No salary profiles yet. Create one to start calculating paychecks.

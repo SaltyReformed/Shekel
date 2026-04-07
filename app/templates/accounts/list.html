@@ -25,6 +25,7 @@
 
 {# ── Active Accounts ──────────────────────────────────────────────── #}
 {% if active_accounts %}
+<div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Active user accounts with type, balance, and actions</caption>
   <thead class="table-light">
@@ -70,6 +71,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="alert alert-info">
   No active accounts. Create one to get started.

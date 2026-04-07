@@ -59,6 +59,7 @@
 
 {# ── Active Templates ─────────────────────────────────────────────── #}
 {% if active_templates %}
+<div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Active recurring transactions with recurrence rules</caption>
   <thead class="table-light">
@@ -111,6 +112,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="alert alert-info">
   No active recurring transactions. Create one to auto-generate budget entries each pay period.
