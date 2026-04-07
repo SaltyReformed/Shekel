@@ -6,6 +6,7 @@ Tests for category CRUD endpoints:
   - Creating categories (regular + HTMX)
   - Duplicate detection
   - Deleting categories (unused, in-use by template/transaction, IDOR)
+  - Archive helper history-detection functions (5A.5-1)
 """
 
 from decimal import Decimal
@@ -13,12 +14,21 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, TransactionType, Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.utils.archive_helpers import (
+    account_has_history,
+    category_has_usage,
+    template_has_paid_history,
+    transfer_template_has_paid_history,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1036,3 +1046,281 @@ class TestCategoryGroupDropdown:
             # Existing groups should appear as options.
             assert '<option value="Auto"' in html
             assert '__new__' in html
+
+
+# ── Archive Helpers Tests (5A.5-1) ──────────────────────────────────
+
+
+class TestArchiveHelpers:
+    """Tests for archive history-detection utility functions.
+
+    Verifies that template_has_paid_history, transfer_template_has_paid_history,
+    account_has_history, and category_has_usage return correct boolean results
+    for various data configurations.
+    """
+
+    def test_existing_categories_default_active(self, app, db, seed_user):
+        """C-5A.5-1: Seed categories all have is_active=True after migration."""
+        with app.app_context():
+            categories = (
+                db.session.query(Category)
+                .filter_by(user_id=seed_user["user"].id)
+                .all()
+            )
+            assert len(categories) > 0, "seed_user should have created categories"
+            for cat in categories:
+                assert cat.is_active is True, (
+                    f"Category '{cat.display_name}' should default to is_active=True"
+                )
+
+    def test_template_has_paid_history_true(self, app, db, seed_user, seed_periods):
+        """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Paid History Template",
+                default_amount=Decimal("500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            txn = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Paid History Template",
+                estimated_amount=Decimal("500.00"),
+                status_id=paid_status.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            result = template_has_paid_history(template.id)
+            assert result is True
+
+    def test_template_has_paid_history_false(self, app, db, seed_user, seed_periods):
+        """C-5A.5-3: template_has_paid_history returns False when only Projected txns exist."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Projected Only Template",
+                default_amount=Decimal("500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            txn = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Projected Only Template",
+                estimated_amount=Decimal("500.00"),
+                status_id=projected_status.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            result = template_has_paid_history(template.id)
+            assert result is False
+
+    def test_transfer_template_has_paid_history_true(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5A.5-4: transfer_template_has_paid_history returns True when Paid transfer exists."""
+        with app.app_context():
+            paid_status = db.session.query(Status).filter_by(name="Paid").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+
+            savings_account = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings for Transfer Test",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_account)
+            db.session.flush()
+
+            xfer_template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings_account.id,
+                name="Paid Transfer Template",
+                default_amount=Decimal("200.00"),
+            )
+            db.session.add(xfer_template)
+            db.session.flush()
+
+            xfer = Transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings_account.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=paid_status.id,
+                transfer_template_id=xfer_template.id,
+                name="Paid Transfer",
+                amount=Decimal("200.00"),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            result = transfer_template_has_paid_history(xfer_template.id)
+            assert result is True
+
+    def test_transfer_template_has_paid_history_false(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C-5A.5-5: transfer_template_has_paid_history returns False when only Projected."""
+        with app.app_context():
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+
+            savings_account = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings for Projected Transfer",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(savings_account)
+            db.session.flush()
+
+            xfer_template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings_account.id,
+                name="Projected Transfer Template",
+                default_amount=Decimal("150.00"),
+            )
+            db.session.add(xfer_template)
+            db.session.flush()
+
+            xfer = Transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings_account.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_status.id,
+                transfer_template_id=xfer_template.id,
+                name="Projected Transfer",
+                amount=Decimal("150.00"),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            result = transfer_template_has_paid_history(xfer_template.id)
+            assert result is False
+
+    def test_account_has_history_true(self, app, db, seed_user, seed_periods):
+        """C-5A.5-6: account_has_history returns True when account has any non-deleted txn."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Account History Txn",
+                estimated_amount=Decimal("100.00"),
+                status_id=projected_status.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            result = account_has_history(seed_user["account"].id)
+            assert result is True
+
+    def test_account_has_history_false(self, app, db, seed_user):
+        """C-5A.5-7: account_has_history returns False when account has zero transactions."""
+        with app.app_context():
+            # seed_user["account"] has no transactions (tables truncated each test).
+            result = account_has_history(seed_user["account"].id)
+            assert result is False
+
+    def test_category_has_usage_true(self, app, db, seed_user):
+        """C-5A.5-8: category_has_usage returns True when a template references the category."""
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            category = seed_user["categories"]["Rent"]
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=category.id,
+                transaction_type_id=expense_type.id,
+                name="Category Usage Template",
+                default_amount=Decimal("1200.00"),
+            )
+            db.session.add(template)
+            db.session.commit()
+
+            result = category_has_usage(category.id, seed_user["user"].id)
+            assert result is True
+
+    def test_category_has_usage_false(self, app, db, seed_user):
+        """C-5A.5-9: category_has_usage returns False when nothing references the category."""
+        with app.app_context():
+            # Create a fresh category with no templates or transactions.
+            cat = Category(
+                user_id=seed_user["user"].id,
+                group_name="Unused",
+                item_name="Orphan",
+            )
+            db.session.add(cat)
+            db.session.commit()
+
+            result = category_has_usage(cat.id, seed_user["user"].id)
+            assert result is False
+
+    def test_category_has_usage_scoped_to_user(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """C-5A.5-10: category_has_usage returns False when only another user's template uses it.
+
+        User B creates a template referencing User B's category.  When
+        we check category_has_usage for User A's category (same group/item
+        names but different user_id), it must return False because the
+        check is scoped to User A.
+        """
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            # User B creates a template referencing User B's own Rent category.
+            user_b_cat = seed_second_user["categories"]["Rent"]
+            template_b = TransactionTemplate(
+                user_id=seed_second_user["user"].id,
+                account_id=seed_second_user["account"].id,
+                category_id=user_b_cat.id,
+                transaction_type_id=expense_type.id,
+                name="User B Rent Template",
+                default_amount=Decimal("900.00"),
+            )
+            db.session.add(template_b)
+            db.session.commit()
+
+            # User A's Rent category should show no usage (User B's template
+            # does not count).
+            user_a_cat = seed_user["categories"]["Rent"]
+            result = category_has_usage(user_a_cat.id, seed_user["user"].id)
+            assert result is False
