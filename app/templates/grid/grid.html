@@ -20,8 +20,8 @@
     {% endif %}
   </div>
 
-  {# --- Date Range Controls --- #}
-  <div class="d-flex align-items-center gap-2">
+  {# --- Date Range Controls (desktop only) --- #}
+  <div class="d-none d-md-flex align-items-center gap-2">
     {# Left arrow -- shift window back #}
     <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset - 1) }}"
        class="btn btn-sm btn-outline-secondary" title="Earlier" aria-label="Show earlier periods">
@@ -47,13 +47,16 @@
        class="btn btn-sm btn-outline-secondary" title="Later" aria-label="Show later periods">
       <i class="bi bi-chevron-right"></i>
     </a>
+  </div>
 
-    <a href="#" class="btn btn-sm btn-outline-primary ms-3" data-bs-toggle="modal"
+  {# --- Add buttons (all screen sizes) --- #}
+  <div class="d-flex align-items-center gap-2">
+    <a href="#" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
        data-bs-target="#addTransactionModal">
-      <i class="bi bi-plus-circle"></i> Add Transaction
+      <i class="bi bi-plus-circle"></i><span class="d-none d-sm-inline"> Add Transaction</span>
     </a>
     <a href="{{ url_for('transfers.new_transfer_template') }}" class="btn btn-sm btn-outline-secondary">
-      <i class="bi bi-arrow-left-right"></i> Add Transfer
+      <i class="bi bi-arrow-left-right"></i><span class="d-none d-sm-inline"> Add Transfer</span>
     </a>
   </div>
 </div>
