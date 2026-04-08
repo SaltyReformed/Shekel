@@ -41,7 +41,7 @@ def _freeze_today_to_period_5(monkeypatch):
 
 
 class TestGridIsolation:
-    """Verify the budget grid (/) shows only the logged-in user's transactions."""
+    """Verify the budget grid (/grid) shows only the logged-in user's transactions."""
 
     def test_user_a_sees_own_transactions(
         self, app, auth_client, seed_full_user_data, seed_full_second_user_data,
@@ -52,7 +52,7 @@ class TestGridIsolation:
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created (default view starts at the current period).
-            response = auth_client.get("/?offset=-5")
+            response = auth_client.get("/grid?offset=-5")
             assert response.status_code == 200
 
             # Positive: User A's transaction name is present (in aria-label
@@ -71,7 +71,7 @@ class TestGridIsolation:
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created.
-            response = second_auth_client.get("/?offset=-5")
+            response = second_auth_client.get("/grid?offset=-5")
             assert response.status_code == 200
 
             # Positive: User B's transaction name is present.

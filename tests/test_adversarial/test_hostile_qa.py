@@ -705,7 +705,7 @@ class TestInputValidationBypass:
         when the value cannot be converted, instead of raising ValueError.
         """
         with app.app_context():
-            resp = auth_client.get("/?periods=abc")
+            resp = auth_client.get("/grid?periods=abc")
             assert resp.status_code == 200
 
     def test_grid_negative_periods_param(self, app, auth_client, seed_user, seed_periods):
@@ -716,7 +716,7 @@ class TestInputValidationBypass:
         no columns (but doesn't crash).
         """
         with app.app_context():
-            resp = auth_client.get("/?periods=-1")
+            resp = auth_client.get("/grid?periods=-1")
             # Current behavior: renders a valid page (grid or pay period setup).
             assert resp.status_code == 200
             assert b"Shekel" in resp.data
@@ -731,7 +731,7 @@ class TestInputValidationBypass:
         crash, but in production with more data this could be a problem.
         """
         with app.app_context():
-            resp = auth_client.get("/?periods=10000")
+            resp = auth_client.get("/grid?periods=10000")
             # Current behavior: works because only 10 periods exist in test data.
             assert resp.status_code == 200
             assert b"grid-table" in resp.data

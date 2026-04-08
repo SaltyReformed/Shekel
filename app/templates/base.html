@@ -43,7 +43,7 @@
   {% if current_user.is_authenticated %}
   <nav class="navbar navbar-expand-md navbar-dark sticky-top">
     <div class="container-fluid">
-      <a class="navbar-brand" href="{{ url_for('grid.index') }}">
+      <a class="navbar-brand" href="{{ url_for('dashboard.page') }}">
         <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="38" style="width: auto;">
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain"
@@ -55,8 +55,14 @@
         <div class="d-none" id="scenario-selector-slot"></div>
         <ul class="navbar-nav me-auto">
           <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path == '/' else '' }}" href="{{ url_for('grid.index') }}"
-               {% if request.path == '/' %}aria-current="page"{% endif %}>
+            <a class="nav-link{{ ' active' if request.path == '/' or request.path == '/dashboard' else '' }}" href="{{ url_for('dashboard.page') }}"
+               {% if request.path == '/' or request.path == '/dashboard' %}aria-current="page"{% endif %}>
+              <i class="bi bi-speedometer2"></i> Dashboard
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link{{ ' active' if request.path.startswith('/grid') else '' }}" href="{{ url_for('grid.index') }}"
+               {% if request.path.startswith('/grid') %}aria-current="page"{% endif %}>
               <i class="bi bi-grid-3x3"></i> Budget
             </a>
           </li>

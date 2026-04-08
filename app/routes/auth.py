@@ -74,7 +74,7 @@ def login():
     """Display the login form and handle authentication."""
     # Already logged in -- go to the grid.
     if current_user.is_authenticated:
-        return redirect(url_for("grid.index"))
+        return redirect(url_for("dashboard.page"))
 
     if request.method == "POST":
         email = request.form.get("email", "").strip()
@@ -112,7 +112,7 @@ def login():
             next_page = request.args.get("next")
             if not _is_safe_redirect(next_page):
                 next_page = None
-            return redirect(next_page or url_for("grid.index"))
+            return redirect(next_page or url_for("dashboard.page"))
 
         except AuthError:
             log_event(logger, logging.WARNING, "login_failed", AUTH,
@@ -131,7 +131,7 @@ def register_form():
     if not current_app.config["REGISTRATION_ENABLED"]:
         abort(404)
     if current_user.is_authenticated:
-        return redirect(url_for("grid.index"))
+        return redirect(url_for("dashboard.page"))
     return render_template("auth/register.html")
 
 
@@ -146,7 +146,7 @@ def register():
     if not current_app.config["REGISTRATION_ENABLED"]:
         abort(404)
     if current_user.is_authenticated:
-        return redirect(url_for("grid.index"))
+        return redirect(url_for("dashboard.page"))
 
     email = request.form.get("email", "")
     display_name = request.form.get("display_name", "")
@@ -320,7 +320,7 @@ def mfa_verify():
     log_event(logger, logging.INFO, "mfa_login_success", AUTH,
               "MFA login succeeded", user_id=user.id)
 
-    return redirect(next_page or url_for("grid.index"))
+    return redirect(next_page or url_for("dashboard.page"))
 
 
 @auth_bp.route("/mfa/setup", methods=["GET"])

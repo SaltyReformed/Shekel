@@ -81,9 +81,37 @@ class TestDashboardAuth:
             assert resp.status_code == 302
             assert "/login" in resp.headers["Location"]
 
+    def test_root_requires_auth(self, app, client):
+        """GET / redirects unauthenticated users to login."""
+        with app.app_context():
+            resp = client.get("/")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
 
 class TestDashboardRendering:
     """Tests for dashboard page rendering."""
+
+    def test_root_serves_dashboard(self, app, auth_client, seed_user, seed_periods):
+        """GET / returns 200 with dashboard content."""
+        with app.app_context():
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            assert b"Upcoming Bills" in resp.data
+
+    def test_dashboard_url_still_works(self, app, auth_client, seed_user, seed_periods):
+        """GET /dashboard returns 200 with same dashboard content."""
+        with app.app_context():
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            assert b"Upcoming Bills" in resp.data
+
+    def test_root_does_not_contain_grid(self, app, auth_client, seed_user, seed_periods):
+        """GET / does NOT contain grid-specific content."""
+        with app.app_context():
+            resp = auth_client.get("/")
+            assert resp.status_code == 200
+            assert b"grid-table" not in resp.data
 
     def test_dashboard_renders(self, app, auth_client, seed_user, seed_periods):
         """GET /dashboard returns 200 with section headings."""
@@ -444,3 +472,51 @@ class TestOtherSections:
             assert resp.status_code == 200
             # Periods are in 2026, so next payday should be visible.
             assert b"payday" in resp.data.lower()
+
+
+# ── Nav Bar Tests ───────────────────────────────────────────────────
+
+
+class TestNavBar:
+    """Tests for nav bar after route swap."""
+
+    def test_nav_has_dashboard_link(self, app, auth_client, seed_user, seed_periods):
+        """Nav bar on grid page contains 'Dashboard' link."""
+        with app.app_context():
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert b"Dashboard" in resp.data
+
+    def test_nav_budget_points_to_grid(self, app, auth_client, seed_user, seed_periods):
+        """Budget nav link href contains '/grid'."""
+        with app.app_context():
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            assert b'href="/grid"' in resp.data
+
+    def test_nav_dashboard_active_on_root(self, app, auth_client, seed_user, seed_periods):
+        """Dashboard nav item is active when on /."""
+        with app.app_context():
+            resp = auth_client.get("/")
+            html = resp.data.decode()
+            # The dashboard nav link should have active class.
+            assert 'Dashboard' in html
+            # Check active class is on the dashboard link, not budget.
+            assert 'class="nav-link active" href="/"' in html or \
+                   'class="nav-link active" href="/dashboard"' in html
+
+    def test_nav_budget_active_on_grid(self, app, auth_client, seed_user, seed_periods):
+        """Budget nav item is active when on /grid."""
+        with app.app_context():
+            resp = auth_client.get("/grid")
+            html = resp.data.decode()
+            assert 'class="nav-link active" href="/grid"' in html
+
+    def test_no_redirect_loop(self, app, auth_client, seed_user, seed_periods):
+        """GET / and GET /dashboard both return 200, no redirect loops."""
+        with app.app_context():
+            resp1 = auth_client.get("/")
+            assert resp1.status_code == 200
+
+            resp2 = auth_client.get("/dashboard")
+            assert resp2.status_code == 200

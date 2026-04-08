@@ -1455,7 +1455,7 @@ class TestCategoryArchiveDelete:
             rent.is_active = False
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1491,7 +1491,7 @@ class TestCategoryArchiveDelete:
             category.is_active = False
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             # The transaction should still render with its name.
             assert b"Rent Payment" in resp.data

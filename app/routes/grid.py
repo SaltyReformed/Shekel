@@ -130,7 +130,7 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
     return row_keys
 
 
-@grid_bp.route("/")
+@grid_bp.route("/grid")
 @login_required
 def index():
     """Render the full budget grid page.

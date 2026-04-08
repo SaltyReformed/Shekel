@@ -27,7 +27,7 @@ class TestGridView:
     def test_grid_loads_with_periods(self, app, auth_client, seed_user, seed_periods):
         """GET / renders the budget grid with pay period columns."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             # Check for key grid elements.
             assert b"Checking Balance" in response.data
@@ -36,21 +36,21 @@ class TestGridView:
     def test_grid_shows_no_periods_page(self, app, auth_client, seed_user):
         """GET / shows the no-periods prompt when none exist."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             assert b"No Pay Periods" in response.data
 
     def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods):
         """GET / shows the resolved account name in the header."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             assert b"Checking Balance" in response.data
 
     def test_grid_period_controls(self, app, auth_client, seed_user, seed_periods):
         """Grid respects the periods query parameter."""
         with app.app_context():
-            response = auth_client.get("/?periods=3")
+            response = auth_client.get("/grid?periods=3")
             assert response.status_code == 200
             assert b"01/02" in response.data
             assert b"Projected End Balance" in response.data
@@ -88,7 +88,7 @@ class TestBalanceRow:
         """GET / with periods larger than available still renders."""
         with app.app_context():
             # Request 100 periods when only 10 exist -- should render what's available.
-            resp = auth_client.get("/?periods=100")
+            resp = auth_client.get("/grid?periods=100")
             assert resp.status_code == 200
             assert b"Projected End Balance" in resp.data
             assert b"01/02" in resp.data
@@ -1052,7 +1052,7 @@ class TestAccountScopedGrid:
                          txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         assert resp.status_code == 200
         html = resp.data.decode()
 
@@ -1082,7 +1082,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Savings grid: should show the $567 deposit, not the $1234 rent.
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
 
@@ -1096,7 +1096,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "Savings Balance" in html
 
@@ -1115,12 +1115,12 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Checking grid: balance should reflect $1000 anchor.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$1,000" in html
 
         # Savings grid: balance should reflect $5000 anchor.
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "$5,000" in html
 
@@ -1141,7 +1141,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Savings grid: balance should still be $5000 (the expense is on checking).
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "$5,000" in html
 
@@ -1203,7 +1203,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Full grid page for checking account -- subtotals reflect checking only.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$2,000" in html  # Total Income (checking).
         assert "$800" in html    # Total Expenses (checking).
@@ -1227,7 +1227,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "INCOME" in html
@@ -1251,12 +1251,12 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Checking grid: Rent row visible.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "Rent" in html
 
         # Savings grid: no Rent row (no transactions for this category on savings).
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         # The category name "Rent" should not appear as a row label.
         # It may appear in the "Add Transaction" modal dropdown, so check
@@ -1278,7 +1278,7 @@ class TestAccountScopedGrid:
         db.session.add(savings)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "New Savings Balance" in html
@@ -1298,7 +1298,7 @@ class TestAccountScopedGrid:
         db.session.add(savings)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
 
     # --- Cancelled and deleted transaction edge cases ---
@@ -1323,7 +1323,7 @@ class TestAccountScopedGrid:
                                      category=seed_user["categories"]["Car Payment"])
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         # The active transaction's cell should be rendered with its ID.
         assert f"txn-cell-{active.id}" in html
@@ -1342,7 +1342,7 @@ class TestAccountScopedGrid:
         txn.is_deleted = True
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$999" not in html
 
@@ -1473,7 +1473,7 @@ class TestTransfersSectionRemoved:
     def test_grid_no_transfers_section(self, app, auth_client, seed_user, seed_periods):
         """Grid does not contain a TRANSFERS section banner."""
         with app.app_context():
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "section-banner-transfer" not in html
@@ -1482,7 +1482,7 @@ class TestTransfersSectionRemoved:
     def test_grid_renders_without_transfers(self, app, auth_client, seed_user, seed_periods):
         """Grid renders normally with no transfers or shadows."""
         with app.app_context():
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "section-banner-income" in html
@@ -1532,7 +1532,7 @@ class TestInlineSubtotalRows:
             db.session.add_all([txn_inc, txn_exp])
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             assert "subtotal-row-income" in html
@@ -1569,7 +1569,7 @@ class TestInlineSubtotalRows:
                 db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             # Total Income = 2000 + 100 = 2100.
@@ -1612,7 +1612,7 @@ class TestInlineSubtotalRows:
             db.session.add_all([txn_ok, txn_bad])
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             # Only $1,000 counted (cancelled $500 excluded).
@@ -1677,7 +1677,7 @@ class TestNetCashFlowRow:
         """Grid contains a net-cash-flow-row with correct label."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "2000", "1400")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             assert "Net Cash Flow" in html
@@ -1687,7 +1687,7 @@ class TestNetCashFlowRow:
         """Negative net cash flow shows warning indicator."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "1000", "1500")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "balance-negative" in html
             # Warning icon for negative net.
@@ -1697,7 +1697,7 @@ class TestNetCashFlowRow:
         """Breakeven period shows empty net cash flow cell."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "1000", "1000")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             # Net is zero -- cell should be empty (matching footer behavior).
@@ -1748,7 +1748,7 @@ class TestFooterCondensation:
     def test_footer_htmx_refresh_cycle(self, app, db, auth_client, seed_user, seed_periods):
         """Initial page and balance-row both produce tfoot with HTMX attributes."""
         with app.app_context():
-            page_resp = auth_client.get("/")
+            page_resp = auth_client.get("/grid")
             page_html = page_resp.data.decode()
             assert 'id="grid-summary"' in page_html
 
@@ -1783,7 +1783,7 @@ class TestFooterCondensation:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "subtotal-row-income" in html
             assert "subtotal-row-expense" in html
@@ -1829,7 +1829,7 @@ class TestPeriodHeaderDateFormat:
             )
             assert current is not None, "No period covers today"
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1863,7 +1863,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = next_year_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1884,7 +1884,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             first_offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={first_offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={first_offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1912,7 +1912,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = future_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1944,7 +1944,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = last_current.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1987,7 +1987,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2006,7 +2006,7 @@ class TestPeriodHeaderDateFormat:
             start = today - timedelta(days=14)
             self._make_periods(db, seed_user, start)
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "<thead" in html
@@ -2039,7 +2039,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2069,7 +2069,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = dec_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2165,7 +2165,7 @@ class TestTransactionNameRows:
             db.session.add_all([txn_sf, txn_geico])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2206,7 +2206,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2280,7 +2280,7 @@ class TestTransactionNameRows:
             db.session.add(shadow)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2318,7 +2318,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2361,7 +2361,7 @@ class TestTransactionNameRows:
             db.session.add_all([txn_home, txn_auto])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2434,7 +2434,7 @@ class TestTransactionNameRows:
             db.session.commit()
 
             # Extract the quick-create URL from an empty cell.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             import re
@@ -2478,7 +2478,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             # Group header rows have the correct class.
@@ -2498,7 +2498,7 @@ class TestTransactionNameRows:
         subtotal rows with zeros, and no crash.
         """
         with app.app_context():
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2555,7 +2555,7 @@ class TestTransactionNameRows:
             db.session.add_all([income, expense1, expense2])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2726,10 +2726,10 @@ class TestTransactionNameRows:
                     html_str,
                 )
 
-            resp1 = auth_client.get("/?periods=3")
+            resp1 = auth_client.get("/grid?periods=3")
             labels1 = extract_row_labels(resp1.data.decode())
 
-            resp2 = auth_client.get("/?periods=3")
+            resp2 = auth_client.get("/grid?periods=3")
             labels2 = extract_row_labels(resp2.data.decode())
 
             assert labels1 == labels2
@@ -2764,7 +2764,7 @@ class TestTransactionNameRows:
             assert resp.status_code == 200
 
             # GET the grid showing the next period where the payback lives.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2809,7 +2809,7 @@ class TestTransactionNameRows:
             assert resp.status_code == 200
 
             # GET the grid.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2865,7 +2865,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2901,7 +2901,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2933,7 +2933,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2966,7 +2966,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2995,7 +2995,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3025,7 +3025,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3056,7 +3056,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3092,7 +3092,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3121,7 +3121,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3152,7 +3152,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3226,7 +3226,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3294,7 +3294,7 @@ class TestSubtotalDecimalPrecision:
             db.session.commit()
 
             # Fetch the grid page.
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -3361,7 +3361,7 @@ class TestGridSubtotalsRegressionBaseline:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 

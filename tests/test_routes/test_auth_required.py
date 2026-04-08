@@ -28,8 +28,9 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/mfa/disable"),  # auth.mfa_disable
     ("POST", "/mfa/disable"),  # auth.mfa_disable_confirm
 
+    # -- dashboard blueprint --
+    ("GET", "/"),  # dashboard.page
     # -- grid blueprint --
-    ("GET", "/"),  # grid.index
     ("GET", "/grid/balance-row"),  # grid.balance_row
 
     # -- transactions blueprint --

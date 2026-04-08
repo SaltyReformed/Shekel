@@ -298,8 +298,8 @@ class TestLogin:
             location = response.headers.get("Location", "")
             # Must NOT redirect to the attacker's site.
             assert "evil.com" not in location
-            # Must redirect to the grid index.
-            assert location.endswith("/")
+            # Must redirect to the dashboard (home page).
+            assert "/dashboard" in location or location.endswith("/")
 
     def test_open_redirect_protocol_relative_blocked(self, app, client, seed_user):
         """Protocol-relative URLs (//host) are a common bypass for scheme-only checks.
@@ -316,7 +316,7 @@ class TestLogin:
             assert response.status_code == 302
             location = response.headers.get("Location", "")
             assert "evil.com" not in location
-            assert location.endswith("/")
+            assert "/dashboard" in location or location.endswith("/")
 
     def test_open_redirect_backslash_blocked(self, app, client, seed_user):
         """Backslash-prefixed URLs are normalized to protocol-relative by some browsers.
@@ -400,8 +400,8 @@ class TestLogin:
             location = response.headers.get("Location", "")
             assert "/settings" in location
 
-    def test_no_next_redirects_to_grid(self, app, client, seed_user):
-        """When no next parameter is provided, the default redirect must be the grid index.
+    def test_no_next_redirects_to_dashboard(self, app, client, seed_user):
+        """When no next parameter is provided, the default redirect is the dashboard.
 
         This is the normal login flow -- no next parameter at all.
         """
@@ -413,8 +413,8 @@ class TestLogin:
 
             assert response.status_code == 302
             location = response.headers.get("Location", "")
-            # Default redirect is the grid index (/).
-            assert location.endswith("/")
+            # Default redirect is the dashboard (home page).
+            assert "/dashboard" in location or location.endswith("/")
 
     def test_deactivated_user_cannot_access_protected_routes(
         self, app, auth_client, seed_user
@@ -1062,8 +1062,8 @@ class TestMfaLogin:
             location = response.headers.get("Location", "")
             # Must NOT redirect to the attacker's site.
             assert "evil.com" not in location
-            # Must redirect to the default grid.
-            assert location.endswith("/")
+            # Must redirect to the dashboard (home page).
+            assert "/dashboard" in location or location.endswith("/")
 
     def test_mfa_open_redirect_protocol_relative_blocked(
         self, app, client, seed_user, monkeypatch
@@ -1092,7 +1092,7 @@ class TestMfaLogin:
             assert response.status_code == 302
             location = response.headers.get("Location", "")
             assert "evil.com" not in location
-            assert location.endswith("/")
+            assert "/dashboard" in location or location.endswith("/")
 
     def test_mfa_safe_next_redirect_allowed(
         self, app, client, seed_user, monkeypatch
