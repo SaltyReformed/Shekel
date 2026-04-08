@@ -99,6 +99,13 @@ class TestAnalyticsPage:
             assert resp.status_code == 200
             assert b"spinner-border" in resp.data
 
+    def test_analytics_uses_scroll_pills(self, app, auth_client, seed_user):
+        """GET /analytics uses the shekel-scroll-pills class for scroll behavior."""
+        with app.app_context():
+            resp = auth_client.get("/analytics")
+            assert resp.status_code == 200
+            assert b"shekel-scroll-pills" in resp.data
+
 
 # ── HTMX Tab Tests ────────────────────────────────────────────────
 

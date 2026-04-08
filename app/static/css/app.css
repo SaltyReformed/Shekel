@@ -858,26 +858,28 @@ td.htmx-loading::after {
   .anchor-balance-display {
     font-size: 22px;
   }
+}
 
-  /* =============================================
-     MOBILE SCROLLABLE TABS
-     ============================================= */
-  .mobile-scroll-tabs {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-  }
+/* =============================================
+   HORIZONTALLY SCROLLABLE NAV-PILLS
+   ============================================= */
+/* Progressive scroll: on wide screens all pills fit and no scrollbar
+   appears (overflow-x: auto).  On narrow screens, pills scroll
+   horizontally with a hidden scrollbar for a clean swipe UX. */
+.shekel-scroll-pills {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* IE/Edge legacy */
+}
 
-  .mobile-scroll-tabs::-webkit-scrollbar {
-    display: none;
-  }
+.shekel-scroll-pills::-webkit-scrollbar {
+  display: none;                /* Chrome/Safari/Opera */
+}
 
-  .mobile-scroll-tabs .nav-link {
-    white-space: nowrap;
-    padding: 0.5rem 0.75rem;
-  }
+.shekel-scroll-pills .nav-link {
+  white-space: nowrap;
 }
 
 @media (max-width: 359.98px) {
