@@ -12,7 +12,7 @@ from datetime import date
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from markupsafe import Markup, escape
+from markupsafe import escape
 
 from app.extensions import db
 from app.models.user import UserSettings
@@ -228,10 +228,12 @@ def _build_calendar_weeks(year, month, data, today):
 
 
 def _build_popover_html(entries):
-    """Build escaped HTML content for a day's popover.
+    """Build HTML content for a day's Bootstrap popover.
 
-    Shows each transaction's name, amount, and paid/projected status.
-    Returns a Markup-safe string for data-bs-content attribute.
+    Returns a plain string (not Markup) so Jinja auto-escapes it when
+    placed inside a data-bs-content attribute.  Bootstrap's popover
+    with data-bs-html="true" will parse the entity-decoded HTML at
+    display time.
     """
     lines = []
     for entry in entries[:5]:
@@ -250,4 +252,4 @@ def _build_popover_html(entries):
         lines.append(
             f'<div class="text-muted"><small>+{len(entries) - 5} more</small></div>'
         )
-    return Markup("".join(lines))
+    return "".join(lines)
