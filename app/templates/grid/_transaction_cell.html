@@ -53,6 +53,11 @@
   {% if t.credit_payback_for_id %}
     <span class="badge-credit ms-1" aria-label="Credit card payback" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="CC Payback">CC</span>
   {% endif %}
+
+  {# Due date indicator -- shown only when due_date differs from period start #}
+  {% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
+    <small class="text-muted d-block" style="font-size: 0.65rem;">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+  {% endif %}
 </div>
 {% if wrap_div is defined and wrap_div %}</div>{% endif %}
 {% endif %}

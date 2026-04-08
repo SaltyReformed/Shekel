@@ -120,6 +120,14 @@
                    class="form-control" min="1" max="31"
                    value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
           </div>
+          <div class="col d-none" id="field-due-dom">
+            <label for="due_day_of_month" class="form-label">Due Day of Month</label>
+            <input type="number" id="due_day_of_month" name="due_day_of_month"
+                   class="form-control" min="1" max="31"
+                   value="{{ template.recurrence_rule.due_day_of_month if template and template.recurrence_rule and template.recurrence_rule.due_day_of_month else '' }}"
+                   placeholder="Same as day">
+            <small class="form-text text-muted">Actual bill due day (if different from scheduled day)</small>
+          </div>
           <div class="col d-none" id="field-moy">
             <label for="month_of_year" class="form-label">Month</label>
             <select id="month_of_year" name="month_of_year" class="form-select">

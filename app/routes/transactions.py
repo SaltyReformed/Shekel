@@ -156,6 +156,8 @@ def update_transaction(txn_id):
             svc_kwargs["notes"] = data["notes"]
         if "category_id" in data:
             svc_kwargs["category_id"] = data["category_id"]
+        if "due_date" in data:
+            svc_kwargs["due_date"] = data["due_date"]
 
         try:
             transfer_service.update_transfer(

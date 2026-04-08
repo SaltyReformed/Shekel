@@ -21,6 +21,7 @@
   var container = document.getElementById('recurrence-fields');
   var interval = document.getElementById('field-interval');
   var dom = document.getElementById('field-dom');
+  var dueDom = document.getElementById('field-due-dom');
   var moy = document.getElementById('field-moy');
   var startPeriod = document.getElementById('field-start-period');
   var endDate = document.getElementById('field-end-date');
@@ -48,7 +49,9 @@
     container.classList.remove('d-none');
 
     interval.classList.toggle('d-none', pattern !== EVERY_N);
-    dom.classList.toggle('d-none', [MONTHLY, QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) === -1);
+    var showsDay = [MONTHLY, QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) !== -1;
+    dom.classList.toggle('d-none', !showsDay);
+    if (dueDom) dueDom.classList.toggle('d-none', !showsDay);
     moy.classList.toggle('d-none', [QUARTERLY, SEMI_ANNUAL, ANNUAL].indexOf(pattern) === -1);
 
     if (startPeriod) {
@@ -105,7 +108,7 @@
 
   // Listen for changes.
   patternSelect.addEventListener('change', function() { toggleFields(this.value); });
-  ['interval_n', 'day_of_month', 'month_of_year', 'end_date'].forEach(function(id) {
+  ['interval_n', 'day_of_month', 'due_day_of_month', 'month_of_year', 'end_date'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);
   });
