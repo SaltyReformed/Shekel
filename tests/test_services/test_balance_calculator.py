@@ -8,6 +8,7 @@ defined in §4.9 of the requirements:
   - Credit status is excluded from checking balance.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
@@ -2356,3 +2357,76 @@ class TestTransferInvariantsBalanceRegression:
             assert savings_balances[periods[1].id] == (
                 Decimal("500.00") + transfer_amount
             )
+
+
+class TestBalanceCalcIgnoresDueDate:
+    """Verify that due_date has no effect on balance calculations.
+
+    Balance calculator groups transactions by pay_period_id, not by
+    due_date.  Adding due_date to transactions must not change any
+    calculated balance.
+    """
+
+    def test_balance_calc_ignores_due_date(self, app, db, seed_user, seed_periods):
+        """Transactions with different due_dates in the same period produce the same balance.
+
+        Creates two identical transactions differing only in due_date.
+        Computes balances for each separately.  Both should produce
+        identical balance projections because the calculator uses
+        pay_period_id for grouping, not date fields.
+        """
+        from app.extensions import db as _db
+
+        with app.app_context():
+            expense_type = (
+                _db.session.query(TransactionType)
+                .filter_by(name="Expense").one()
+            )
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+            # Transaction with early due_date.
+            txn_early = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Early Due",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+                due_date=date(2026, 1, 5),
+            )
+
+            # Transaction with late due_date (same period, same amount).
+            txn_late = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Late Due",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+                due_date=date(2026, 1, 14),
+            )
+
+            # Calculate with each transaction separately.
+            bal_early, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods[:3],
+                transactions=[txn_early],
+            )
+            bal_late, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods[:3],
+                transactions=[txn_late],
+            )
+
+            # Balances must be identical despite different due_dates.
+            for period in seed_periods[:3]:
+                assert bal_early[period.id] == bal_late[period.id], (
+                    f"Period {period.id}: due_date affected balance "
+                    f"({bal_early[period.id]} vs {bal_late[period.id]})"
+                )

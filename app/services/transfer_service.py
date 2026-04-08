@@ -280,6 +280,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     notes=None,
     transfer_template_id=None,
     name=None,
+    due_date=None,
 ):
     """Create a transfer and its two shadow transactions atomically.
 
@@ -303,6 +304,8 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
                               transfer template (for recurrence).
         name:                 Optional name.  If omitted, generated
                               from account names.
+        due_date:             Optional due date for both shadow
+                              transactions (Date or None).
 
     Returns:
         The created Transfer object (shadows accessible via
@@ -380,6 +383,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         is_deleted=False,
         credit_payback_for_id=None,
         notes=None,
+        due_date=due_date,
     )
     db.session.add(expense_shadow)
 
@@ -400,6 +404,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         is_deleted=False,
         credit_payback_for_id=None,
         notes=None,
+        due_date=due_date,
     )
     db.session.add(income_shadow)
     db.session.flush()
@@ -429,6 +434,9 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         actual_amount  -- Actual settled amount (both shadows only;
                           the Transfer model has no actual_amount
                           column).
+        due_date       -- Due date for both shadows (Date or None).
+        paid_at        -- Payment timestamp for both shadows
+                          (DateTime or None).
         is_override    -- Override flag (transfer and both shadows).
 
     Any other kwargs are silently ignored (consistent with the
@@ -511,6 +519,18 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
             actual = None
         expense_shadow.actual_amount = actual
         income_shadow.actual_amount = actual
+
+    # ── due_date ──────────────────────────────────────────────────
+    if "due_date" in kwargs:
+        new_due = kwargs["due_date"]
+        expense_shadow.due_date = new_due
+        income_shadow.due_date = new_due
+
+    # ── paid_at ───────────────────────────────────────────────────
+    if "paid_at" in kwargs:
+        new_paid_at = kwargs["paid_at"]
+        expense_shadow.paid_at = new_paid_at
+        income_shadow.paid_at = new_paid_at
 
     # ── is_override ────────────────────────────────────────────────
     if "is_override" in kwargs:

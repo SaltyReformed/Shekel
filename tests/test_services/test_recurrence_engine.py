@@ -44,7 +44,8 @@ class FakePattern:
 class FakeRule:
     def __init__(self, pattern_name="Every Period", interval_n=1,
                  offset_periods=0, day_of_month=None, month_of_year=None,
-                 start_period_id=None, start_period=None, end_date=None):
+                 start_period_id=None, start_period=None, end_date=None,
+                 due_day_of_month=None):
         self.pattern = FakePattern(pattern_name)
         # Resolve pattern_id from ref_cache for ID-based dispatch.
         enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
@@ -55,6 +56,7 @@ class FakeRule:
         self.interval_n = interval_n
         self.offset_periods = offset_periods
         self.day_of_month = day_of_month
+        self.due_day_of_month = due_day_of_month
         self.month_of_year = month_of_year
         self.start_period_id = start_period_id
         self.start_period = start_period
@@ -1946,3 +1948,551 @@ class TestEndDateIntegration:
                 template, seed_periods, seed_user["scenario"].id,
             )
             assert len(regenerated) == 3
+
+
+# --- Due Date Generation Tests -----------------------------------------------
+
+
+class TestDueDateGeneration:
+    """Tests for due_date computation during transaction generation.
+
+    Verifies that generate_for_template correctly computes due_date on
+    each created Transaction by delegating to _compute_due_date.  Tests
+    cover every recurrence pattern, day-of-month clamping for short
+    months, the next-month convention for due_day_of_month, and edge
+    cases around leap years and month boundaries.
+    """
+
+    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+        """Create a TransactionTemplate with the given recurrence pattern."""
+        from app.models.recurrence_rule import RecurrenceRule
+        from app.models.ref import RecurrencePattern, TransactionType
+        from app.models.transaction_template import TransactionTemplate
+
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="Expense")
+            .one()
+        )
+
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            **rule_kwargs,
+        )
+        db.session.add(rule)
+        db.session.flush()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            name="Test Template",
+            default_amount=Decimal("100.00"),
+            category_id=seed_user["categories"]["Rent"].id,
+            transaction_type_id=expense_type.id,
+            account_id=seed_user["account"].id,
+            recurrence_rule_id=rule.id,
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def _make_custom_period(self, seed_user, start, end, index=0):
+        """Create a single PayPeriod with the given date range.
+
+        Args:
+            seed_user: The seed_user fixture dict.
+            start:     Period start_date.
+            end:       Period end_date.
+            index:     period_index (default 0).
+
+        Returns:
+            The created PayPeriod, flushed with an assigned ID.
+        """
+        from app.models.pay_period import PayPeriod
+
+        period = PayPeriod(
+            user_id=seed_user["user"].id,
+            start_date=start,
+            end_date=end,
+            period_index=index,
+        )
+        db.session.add(period)
+        db.session.flush()
+        return period
+
+    # -- Basic pattern tests ---------------------------------------------------
+
+    def test_due_date_monthly_pattern(self, app, db, seed_user, seed_periods):
+        """Monthly pattern with day_of_month=15 sets due_date to the 15th.
+
+        seed_periods P0 = Jan 2 - Jan 15, which contains Jan 15.
+        Expected: txn.due_date == 2026-01-15.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            # Find the transaction assigned to the period containing Jan 15.
+            jan_txns = [
+                txn for txn in created
+                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+            ]
+            assert len(jan_txns) == 1
+            assert jan_txns[0].due_date == date(2026, 1, 15)
+
+    def test_due_date_every_period_pattern(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Every Period with no day_of_month sets due_date to period.start_date.
+
+        P0 starts Jan 2, so due_date == 2026-01-02.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Every Period",
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            assert len(created) == len(seed_periods)
+            # First transaction should have due_date == first period's start.
+            first_txn = [
+                t for t in created if t.pay_period_id == seed_periods[0].id
+            ][0]
+            assert first_txn.due_date == date(2026, 1, 2)
+
+            # Verify all transactions use their period's start_date.
+            period_start_map = {p.id: p.start_date for p in seed_periods}
+            for txn in created:
+                assert txn.due_date == period_start_map[txn.pay_period_id]
+
+    # -- Month-end clamping tests ----------------------------------------------
+
+    def test_due_date_feb_clamping(self, app, db, seed_user):
+        """day_of_month=30 clamped to Feb 28 in a non-leap year (2026).
+
+        Custom period covers all of February to ensure Feb 28 falls inside.
+        min(30, 28) = 28, so due_date == 2026-02-28.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 2, 1), date(2026, 2, 28),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=30,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 2, 28)
+
+    def test_due_date_feb_leap_year(self, app, db, seed_user):
+        """day_of_month=29 in Feb 2028 (leap year) gives Feb 29.
+
+        2028 is a leap year, so min(29, 29) = 29.
+        due_date == 2028-02-29.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2028, 2, 1), date(2028, 2, 29),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=29,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2028, 2, 29)
+
+    def test_due_date_day31_in_30day_month(self, app, db, seed_user):
+        """day_of_month=31 clamped to 30 in April (30-day month).
+
+        April has 30 days: min(31, 30) = 30.
+        due_date == 2026-04-30.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 4, 1), date(2026, 4, 30),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=31,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 4, 30)
+
+    # -- due_day_of_month (next-month convention) tests ------------------------
+
+    def test_due_day_next_month_convention(
+        self, app, db, seed_user, seed_periods
+    ):
+        """due_day_of_month=1 < day_of_month=22: due date in the next month.
+
+        P1 = Jan 16 - Jan 29, which contains Jan 22. Since due_dom(1) <
+        dom(22), the due date rolls to the next month: Feb 1.
+        due_date == 2026-02-01.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=22, due_day_of_month=1,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            # P1 (Jan 16-29) contains Jan 22.
+            p1_txns = [
+                txn for txn in created
+                if txn.pay_period_id == seed_periods[1].id
+            ]
+            assert len(p1_txns) == 1
+            assert p1_txns[0].due_date == date(2026, 2, 1)
+
+    def test_due_day_same_month(self, app, db, seed_user):
+        """due_day_of_month=15 > day_of_month=1: due date in the same month.
+
+        Custom period Jan 1-14 contains Jan 1. Since due_dom(15) >=
+        dom(1), the due date stays in the same month: Jan 15.
+        due_date == 2026-01-15.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 1, 1), date(2026, 1, 14),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=1, due_day_of_month=15,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 1, 15)
+
+    def test_due_day_dec_to_jan_rollover(self, app, db, seed_user):
+        """due_day_of_month=1 < day_of_month=22 in December rolls to Jan next year.
+
+        Custom period Dec 15-28 contains Dec 22. Since due_dom(1) <
+        dom(22), the due date rolls to the next month. December + 1 =
+        January of the next year. due_date == 2027-01-01.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 12, 15), date(2026, 12, 28),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=22, due_day_of_month=1,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2027, 1, 1)
+
+    def test_due_day_null_uses_day_of_month(
+        self, app, db, seed_user, seed_periods
+    ):
+        """due_day_of_month=None falls back to day_of_month for due_date.
+
+        Same behavior as basic monthly: due_date == Jan 15.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=15, due_day_of_month=None,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            jan_txns = [
+                txn for txn in created
+                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+            ]
+            assert len(jan_txns) == 1
+            assert jan_txns[0].due_date == date(2026, 1, 15)
+
+    def test_due_day_equals_day_of_month(
+        self, app, db, seed_user, seed_periods
+    ):
+        """due_day_of_month == day_of_month treated as no override.
+
+        When due_day_of_month equals day_of_month, _compute_due_date
+        takes the 'due_dom is None or due_dom == dom' branch and uses
+        day_of_month directly. due_date == Jan 15.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=15, due_day_of_month=15,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            jan_txns = [
+                txn for txn in created
+                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+            ]
+            assert len(jan_txns) == 1
+            assert jan_txns[0].due_date == date(2026, 1, 15)
+
+    # -- No recurrence rule ----------------------------------------------------
+
+    def test_due_date_no_recurrence_rule(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Template with no recurrence rule returns empty list.
+
+        A template with recurrence_rule_id=None is manually placed and
+        generate_for_template returns [] without computing any due_date.
+        """
+        with app.app_context():
+            from app.models.ref import TransactionType
+            from app.models.transaction_template import TransactionTemplate
+
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense")
+                .one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                name="No Rule Template",
+                default_amount=Decimal("100.00"),
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                account_id=seed_user["account"].id,
+                recurrence_rule_id=None,
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.refresh(template)
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            assert created == []
+
+    # -- Quarterly and annual patterns -----------------------------------------
+
+    def test_due_date_quarterly_pattern(self, app, db, seed_user):
+        """Quarterly pattern with month_of_year=1 produces due dates in Jan, Apr, Jul, Oct.
+
+        Creates four custom periods -- one covering the 15th of each
+        quarterly month -- and asserts each transaction's due_date.
+        """
+        with app.app_context():
+            # Four periods, each spanning the full target month.
+            quarters = [
+                (date(2026, 1, 1), date(2026, 1, 31)),   # Jan
+                (date(2026, 4, 1), date(2026, 4, 30)),   # Apr
+                (date(2026, 7, 1), date(2026, 7, 31)),   # Jul
+                (date(2026, 10, 1), date(2026, 10, 31)), # Oct
+            ]
+            periods = [
+                self._make_custom_period(seed_user, s, e, idx)
+                for idx, (s, e) in enumerate(quarters)
+            ]
+
+            template = self._make_template_with_rule(
+                seed_user, "Quarterly",
+                month_of_year=1, day_of_month=15,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, periods, seed_user["scenario"].id,
+            )
+
+            assert len(created) == 4
+            expected_dates = [
+                date(2026, 1, 15),
+                date(2026, 4, 15),
+                date(2026, 7, 15),
+                date(2026, 10, 15),
+            ]
+            actual_dates = sorted(txn.due_date for txn in created)
+            assert actual_dates == expected_dates
+
+    def test_due_date_annual_pattern(self, app, db, seed_user):
+        """Annual pattern with month_of_year=10, day_of_month=1 gives Oct 1.
+
+        Custom period covers October 2026.
+        due_date == 2026-10-01.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 10, 1), date(2026, 10, 31),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Annual",
+                month_of_year=10, day_of_month=1,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 10, 1)
+
+    def test_due_date_semi_annual_pattern(self, app, db, seed_user):
+        """Semi-Annual with month_of_year=1 produces due dates in Jan and Jul.
+
+        Two custom periods cover Jan and Jul. day_of_month=15.
+        """
+        with app.app_context():
+            periods = [
+                self._make_custom_period(
+                    seed_user, date(2026, 1, 1), date(2026, 1, 31), 0,
+                ),
+                self._make_custom_period(
+                    seed_user, date(2026, 7, 1), date(2026, 7, 31), 1,
+                ),
+            ]
+            template = self._make_template_with_rule(
+                seed_user, "Semi-Annual",
+                month_of_year=1, day_of_month=15,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, periods, seed_user["scenario"].id,
+            )
+
+            assert len(created) == 2
+            actual_dates = sorted(txn.due_date for txn in created)
+            assert actual_dates == [date(2026, 1, 15), date(2026, 7, 15)]
+
+    # -- Period spanning two months --------------------------------------------
+
+    def test_due_date_period_spanning_two_months(self, app, db, seed_user):
+        """day_of_month=1, period Jan 17 - Feb 1: due_date is Feb 1, not Jan 1.
+
+        The period spans two months. Jan 1 is before the period start,
+        so _compute_due_date checks both start_date and end_date months.
+        Feb 1 falls within the period [Jan 17, Feb 1], so base_month
+        resolves to February. due_date == 2026-02-01.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 1, 17), date(2026, 2, 1),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=1,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 2, 1)
+
+    # -- due_day_of_month clamping tests ---------------------------------------
+
+    def test_due_day_same_month_clamping(self, app, db, seed_user):
+        """due_day_of_month=31 in April (30 days) clamped to 30.
+
+        day_of_month=15, due_day_of_month=31. Since 31 >= 15, the due
+        date stays in the same month (April). min(31, 30) = 30.
+        due_date == 2026-04-30.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 4, 1), date(2026, 4, 30),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=15, due_day_of_month=31,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            assert created[0].due_date == date(2026, 4, 30)
+
+    def test_due_day_next_month_feb_clamping(self, app, db, seed_user):
+        """Next-month convention with due_dom clamped in February.
+
+        day_of_month=31 in January, due_day_of_month=30. Since
+        due_dom(30) < dom(31), next-month convention applies: the due
+        date falls in February. February 2026 has 28 days, so
+        min(30, 28) = 28. due_date == 2026-02-28.
+        """
+        with app.app_context():
+            period = self._make_custom_period(
+                seed_user, date(2026, 1, 17), date(2026, 1, 31),
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly",
+                day_of_month=31, due_day_of_month=30,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, [period], seed_user["scenario"].id,
+            )
+
+            assert len(created) == 1
+            # dom=31 in Jan, due_dom=30 < 31 so next month = Feb.
+            # Feb 2026 has 28 days: min(30, 28) = 28.
+            assert created[0].due_date == date(2026, 2, 28)
+
+    # -- Pure function test for _compute_due_date ------------------------------
+
+    def test_compute_due_date_is_pure_function(self, app, db):
+        """_compute_due_date does not touch the database -- it's a pure function.
+
+        Constructs a FakeRule and FakePeriod to verify that _compute_due_date
+        can produce correct results without any DB interaction.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import RecurrencePatternEnum
+
+            monthly_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY
+            )
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD
+            )
+
+            # Test with day_of_month set (monthly-style).
+            rule_monthly = FakeRule(
+                pattern_name="Monthly", day_of_month=20,
+            )
+            period = FakePeriod(
+                id=1,
+                start_date=date(2026, 3, 13),
+                end_date=date(2026, 3, 26),
+                period_index=5,
+            )
+            result = recurrence_engine._compute_due_date(
+                rule_monthly, period,
+            )
+            assert result == date(2026, 3, 20)
+
+            # Test with no day_of_month (every-period style).
+            rule_every = FakeRule(pattern_name="Every Period")
+            result = recurrence_engine._compute_due_date(
+                rule_every, period,
+            )
+            assert result == date(2026, 3, 13)

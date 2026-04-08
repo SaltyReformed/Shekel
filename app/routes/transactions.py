@@ -148,6 +148,10 @@ def update_transaction(txn_id):
             svc_kwargs["actual_amount"] = data["actual_amount"]
         if "status_id" in data:
             svc_kwargs["status_id"] = data["status_id"]
+            # Null paid_at when reverting to a non-settled status.
+            new_status = db.session.get(Status, data["status_id"])
+            if new_status and not new_status.is_settled:
+                svc_kwargs["paid_at"] = None
         if "notes" in data:
             svc_kwargs["notes"] = data["notes"]
         if "category_id" in data:
@@ -170,9 +174,20 @@ def update_transaction(txn_id):
         return response, 200, {"HX-Trigger": "balanceChanged"}
     # --- End guard ---
 
+    # Look up new status BEFORE applying setattr to avoid autoflush
+    # triggering an FK violation when the session is dirtied.
+    revert_paid_at = False
+    if "status_id" in data:
+        new_status = db.session.get(Status, data["status_id"])
+        if new_status and not new_status.is_settled and txn.paid_at is not None:
+            revert_paid_at = True
+
     # Apply updates (regular transactions only).
     for field, value in data.items():
         setattr(txn, field, value)
+
+    if revert_paid_at:
+        txn.paid_at = None
 
     # If the user changed amount or period on a template-generated item,
     # flag as override.
@@ -217,7 +232,10 @@ def mark_done(txn_id):
         # Use 'done' for the transfer service -- it sets the same status
         # on both shadows.  The 'done'/'received' distinction is a
         # display convention for regular transactions.
-        svc_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
+        svc_kwargs = {
+            "status_id": ref_cache.status_id(StatusEnum.DONE),
+            "paid_at": db.func.now(),
+        }
 
         actual = request.form.get("actual_amount")
         if actual:
@@ -240,6 +258,7 @@ def mark_done(txn_id):
     # --- End guard ---
 
     txn.status_id = status_id
+    txn.paid_at = db.func.now()
 
     # Accept an actual amount from the form.
     actual = request.form.get("actual_amount")
