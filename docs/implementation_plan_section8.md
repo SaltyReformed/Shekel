@@ -1,7 +1,8 @@
 # Implementation Plan: Section 8 -- Visualization and Reporting Overhaul
 
-**Version:** 1.0
-**Date:** April 7, 2026
+**Version:** 1.1
+**Date:** April 7, 2026 (updated April 7, 2026 -- added due_date/paid_at, nav-pills, revised
+commit sequence)
 **Prerequisite:** Sections 5, 5A complete. Section 6 tasks 6.1-6.4 are NOT prerequisites.
 Tasks 6.5, 6.6, and 6.7 (computation engines) are built in this section alongside their
 display layers.
@@ -335,6 +336,119 @@ spending from the last 6 periods or template baseline. The savings goal service
 dashboard service, not a reuse of existing services. The 30-day window uses paid transactions
 with actual amounts from the last ~2 pay periods.
 
+### D-6: Transaction model has `updated_at` but no `paid_at`
+
+**Decision:** Add `paid_at` (DateTime, nullable) to `Transaction`.
+
+**Code says:** `app/models/transaction.py:98-102` defines `updated_at` with
+`server_default=db.func.now()` and `onupdate=db.func.now()`. This is an audit column that
+changes on ANY update (amount edit, notes edit, status change). It is NOT suitable as a
+reliable "when was this paid" timestamp because editing notes on a paid transaction would
+overwrite it.
+
+**Impact:** `paid_at` must be a separate column. Backfill for existing Done/Received
+transactions uses `updated_at` as a best-effort approximation -- for most historical
+transactions, the last update WAS the status change. The prompt's backfill strategy is
+confirmed valid.
+
+### D-7: Transaction model has no `due_date` column
+
+**Decision:** Add `due_date` (Date, nullable) to `Transaction`.
+
+**Code says:** Confirmed by reading `app/models/transaction.py`. No date columns exist beyond
+`created_at` and `updated_at`. Transactions are organized by `pay_period_id` only.
+
+**Impact:** The `due_date` column is purely for display, calendar placement, and analytics
+attribution. It must NOT affect balance calculations, which use `pay_period_id` exclusively
+(confirmed: `balance_calculator.py:62-64` groups by `txn.pay_period_id`).
+
+### D-8: RecurrenceRule has no `due_day_of_month` column
+
+**Decision:** Add `due_day_of_month` (Integer, nullable, CHECK 1-31) to `RecurrenceRule`.
+
+**Code says:** `app/models/recurrence_rule.py:35-41` defines `day_of_month` with CHECK
+constraint `day_of_month IS NULL OR (day_of_month >= 1 AND day_of_month <= 31)`. This column
+controls which pay period a transaction is assigned to. The new `due_day_of_month` column
+stores when the bill is actually due (if different from the scheduling day).
+
+**Impact:** When `due_day_of_month` is null, `day_of_month` serves as both the scheduling day
+and the due date. When set, `due_day_of_month` provides the actual due date while
+`day_of_month` continues to control pay period assignment unchanged.
+
+### D-9: Recurrence engine clamps `day_of_month` to month's last day
+
+**Code says:** `app/services/recurrence_engine.py:366-368` in `_match_monthly()`:
+```python
+last_day = calendar.monthrange(dt.year, dt.month)[1]
+target_day = min(day_of_month, last_day)
+target_date = date(dt.year, dt.month, target_day)
+```
+The same clamping pattern appears in `_match_specific_months()` (line 423-424) and
+`_match_annual()` (line 446-447). This handles February, 30-day months, etc.
+
+**Impact:** The `due_date` computation for generated transactions must use the same clamping
+logic: `min(due_day_of_month, calendar.monthrange(year, month)[1])`. This is already a proven
+pattern in the codebase.
+
+### D-10: Transfer service explicitly lists every shadow column
+
+**Code says:** `app/services/transfer_service.py:367-403` sets every Transaction column
+explicitly when creating shadow transactions. There are no `**kwargs` or implicit defaults.
+
+**Impact:** Adding `due_date` to Transaction requires adding an explicit `due_date=` parameter
+to both shadow Transaction constructors in `create_transfer()` (lines 367-403) and a new
+handler block in `update_transfer()` (lines 453-524). The Transfer model itself does NOT need
+a `due_date` column -- shadow transactions carry it.
+
+### D-11: No dedicated status revert endpoint exists
+
+**Code says:** There is no "unmark-done" or "revert-to-projected" endpoint. Status changes are
+made via `PATCH /transactions/<id>` (line 118) which accepts `status_id` as a field. For
+shadow transactions, this routes through `transfer_service.update_transfer()`.
+
+**Impact:** `paid_at` nulling on status revert must be handled in the generic
+`update_transaction` PATCH endpoint. When `status_id` is in the update data and the new status
+is not settled (e.g., reverting to Projected), `paid_at` must be set to None. This logic goes
+in the route handler, not the model.
+
+### D-12: Only one template uses `nav-tabs` in the entire app
+
+**Code says:** Grep of all templates for `nav-tabs`, `nav-pills`, `data-bs-toggle="tab"`, and
+`data-bs-toggle="pill"` found exactly one file:
+
+- `app/templates/loan/dashboard.html` (348 lines):
+  - Line 21: Primary nav with class `nav nav-tabs mobile-scroll-tabs` (6 tabs for main
+    dashboard sections: Overview, Escrow, Rate History, Amortization Schedule, Payoff
+    Calculator, Refinance Calculator).
+  - Line 267: Nested nav inside Payoff Calculator with class
+    `nav nav-tabs mobile-scroll-tabs` (2 tabs: Extra Payment, Target Date).
+  - Both use `data-bs-toggle="tab"`.
+
+No other templates use `nav-tabs` or `nav-pills`. The `mobile-scroll-tabs` class is defined
+in `app/static/css/app.css:862-881` as a media query that makes tabs horizontally scrollable
+at `<576px`.
+
+**Impact:** The nav-pills standardization commit (Commit 4) modifies one file
+(`loan/dashboard.html`) plus removes the conditional CSS. The analytics page (Commit 3)
+already uses pills.
+
+### D-13: `_match_monthly` determines month from period overlap, not from a fixed month
+
+**Code says:** `app/services/recurrence_engine.py:359-374` -- the `_match_monthly()` function
+iterates over periods and checks whether `target_date` (computed from `day_of_month` clamped
+to the month) falls within the period's date range (`start_date <= target_date <= end_date`).
+A single period can span two calendar months, so both `start_date.month` and `end_date.month`
+are checked.
+
+**Impact:** When computing `due_date` for a generated transaction, the month context comes from
+the pay period that was matched -- not from a standalone month. For monthly patterns, the
+period that "owns" the transaction is the one containing `day_of_month`. The `due_date` must
+be computed in the same month as the matched `day_of_month` target.
+
+For the next-month convention (`due_day_of_month < day_of_month`), the due date falls in the
+calendar month after the `day_of_month` target. Example: `day_of_month=22` targets the period
+containing the 22nd. `due_day_of_month=1` means the bill is due on the 1st of the next month.
+
 ---
 
 ## Codebase Inventory
@@ -348,9 +462,9 @@ actual files on April 7, 2026.
 |------|-------|---------|-------------|
 | `app/models/user.py` | 123 | User and UserSettings models | 8.0-infra (new settings columns) |
 | `app/models/account.py` | 88 | Account model (anchor, default account) | 8.1 depends |
-| `app/models/transaction.py` | 158 | Transaction model (effective_amount, status) | 8.1, 8.2, 6.5, 6.7 depends |
-| `app/models/transaction_template.py` | 64 | TransactionTemplate (recurrence_rule linkage) | 8.2 depends |
-| `app/models/recurrence_rule.py` | 66 | RecurrenceRule (day_of_month, pattern_id) | 8.2 depends |
+| `app/models/transaction.py` | 158 | Transaction model (effective_amount, status) | Commit 2 (due_date, paid_at), all tasks depend |
+| `app/models/transaction_template.py` | 64 | TransactionTemplate (recurrence_rule linkage) | Commit 12 depends |
+| `app/models/recurrence_rule.py` | 66 | RecurrenceRule (day_of_month, pattern_id) | Commit 2 (due_day_of_month) |
 | `app/models/pay_period.py` | 49 | PayPeriod (start_date, end_date, period_index) | All tasks depend |
 | `app/models/category.py` | 41 | Category (group_name, item_name) | 6.5, 6.7 depends |
 | `app/models/savings_goal.py` | 100 | SavingsGoal model | 8.1 depends |
@@ -365,6 +479,8 @@ actual files on April 7, 2026.
 |------|-------|---------|-------------|
 | `app/services/chart_data_service.py` | 720 | Chart data assembly | 8.0a, 8.cleanup (prune unused) |
 | `app/services/savings_dashboard_service.py` | 930 | Savings/accounts dashboard data | 8.1 depends (debt summary reuse) |
+| `app/services/recurrence_engine.py` | 552 | Transaction generation from templates | Commit 2 (due_date population) |
+| `app/services/transfer_service.py` | 707 | Transfer CRUD with shadow invariants | Commit 2 (due_date on shadows) |
 
 ### Services (existing, read-only dependencies)
 
@@ -372,7 +488,7 @@ actual files on April 7, 2026.
 |------|-------|---------|---------|
 | `app/services/balance_calculator.py` | 354 | Balance projection from anchor | 8.1, 8.2, 8.3 |
 | `app/services/paycheck_calculator.py` | 462 | Paycheck net pay computation | 8.1, 8.3 |
-| `app/services/recurrence_engine.py` | 552 | Transaction generation from templates | 8.2 |
+| `app/services/recurrence_engine.py` | 552 | Transaction generation from templates | Commit 2 (modify), Commit 5 depends |
 | `app/services/savings_goal_service.py` | 488 | Goal progress calculations | 8.1 |
 | `app/services/amortization_engine.py` | 865 | Loan amortization with payment replay | 8.3 |
 | `app/services/pay_period_service.py` | 167 | Pay period queries | 8.1, 8.2, 6.5 |
@@ -387,34 +503,36 @@ actual files on April 7, 2026.
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `app/services/dashboard_service.py` | Dashboard data aggregation | Commit 6 |
-| `app/services/calendar_service.py` | Month/year calendar data (6.6 engine) | Commit 3 |
-| `app/services/budget_variance_service.py` | Variance analysis engine (6.5) | Commit 4 |
-| `app/services/spending_trend_service.py` | Trend detection engine (6.7) | Commit 5 |
-| `app/services/year_end_summary_service.py` | Year-end summary aggregation | Commit 10 |
-| `app/services/csv_export_service.py` | CSV generation for all analytics views | Commit 14 |
+| `app/services/dashboard_service.py` | Dashboard data aggregation | Commit 8 |
+| `app/services/calendar_service.py` | Month/year calendar data (6.6 engine) | Commit 5 |
+| `app/services/budget_variance_service.py` | Variance analysis engine (6.5) | Commit 6 |
+| `app/services/spending_trend_service.py` | Trend detection engine (6.7) | Commit 7 |
+| `app/services/year_end_summary_service.py` | Year-end summary aggregation | Commit 13 |
+| `app/services/csv_export_service.py` | CSV generation for all analytics views | Commit 17 |
 
 ### Routes (existing, to modify)
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
 | `app/routes/grid.py` | 399 | Budget grid (currently serves `/`) | Commit 8 (re-route) |
-| `app/routes/charts.py` | 202 | Charts dashboard (replaced by analytics) | Commit 2, Commit 15 |
+| `app/routes/charts.py` | 202 | Charts dashboard (replaced by analytics) | Commit 3, Commit 18 |
 | `app/routes/settings.py` | 204 | User settings | Commit 1 (new fields) |
-| `app/__init__.py` | 507 | App factory, blueprint registration | Commit 2, 6, 8 |
+| `app/routes/transactions.py` | 633 | Transaction CRUD, mark-done | Commit 2 (paid_at) |
+| `app/routes/templates.py` | 514 | Template CRUD | Commit 12 (due_day_of_month UI) |
+| `app/__init__.py` | 507 | App factory, blueprint registration | Commit 3, 8, 10 |
 
 ### Routes (new files to create)
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `app/routes/dashboard.py` | Summary dashboard route | Commit 6 |
-| `app/routes/analytics.py` | Analytics page with tabs (replaces charts) | Commit 2 |
+| `app/routes/dashboard.py` | Summary dashboard route | Commit 8 |
+| `app/routes/analytics.py` | Analytics page with tabs (replaces charts) | Commit 3 |
 
 ### Schemas
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
-| `app/schemas/validation.py` | 1281 | Marshmallow validation schemas | Commit 1 (settings), Commit 6 (true-up) |
+| `app/schemas/validation.py` | 1281 | Marshmallow validation schemas | Commit 1 (settings), Commit 2 (due_date, paid_at, due_day_of_month), Commit 12 (due_day_of_month UI) |
 
 ### Enums and Cache
 
@@ -427,100 +545,110 @@ actual files on April 7, 2026.
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
-| `app/templates/base.html` | 256 | App shell, nav bar, scripts | Commit 2 (nav), Commit 8 (nav) |
+| `app/templates/base.html` | 256 | App shell, nav bar, scripts | Commit 3 (nav), Commit 10 (nav) |
 | `app/templates/settings/dashboard.html` | ~200 | Settings page | Commit 1 (new fields) |
+| `app/templates/loan/dashboard.html` | 348 | Loan dashboard with tabs | Commit 4 (nav-pills) |
+| `app/templates/templates/form.html` | ~160 | Template create/edit form | Commit 12 (due_day_of_month field) |
+| `app/templates/grid/_transaction_full_edit.html` | 122 | Full edit popover | Commit 12 (due_date override) |
+| `app/templates/grid/_transaction_cell.html` | 58 | Transaction cell display | Commit 12 (due_date display) |
 
 ### Templates (new files to create)
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `app/templates/dashboard/dashboard.html` | Main dashboard page | Commit 7 |
-| `app/templates/dashboard/_upcoming_bills.html` | Bills section partial | Commit 7 |
-| `app/templates/dashboard/_alerts.html` | Alerts section partial | Commit 7 |
-| `app/templates/dashboard/_balance_runway.html` | Balance/runway section partial | Commit 7 |
-| `app/templates/dashboard/_payday.html` | Next payday section partial | Commit 7 |
-| `app/templates/dashboard/_savings_goals.html` | Savings goals section partial | Commit 7 |
-| `app/templates/dashboard/_debt_summary.html` | Debt summary section partial | Commit 7 |
-| `app/templates/dashboard/_spending_comparison.html` | Period spending comparison partial | Commit 7 |
-| `app/templates/dashboard/_bill_row.html` | Single bill row for mark-paid HTMX | Commit 7 |
-| `app/templates/dashboard/_mark_paid_form.html` | Mark-paid inline form | Commit 7 |
-| `app/templates/dashboard/_true_up_form.html` | True-up inline form | Commit 7 |
-| `app/templates/analytics/analytics.html` | Analytics page with tab structure | Commit 2 |
-| `app/templates/analytics/_calendar_month.html` | Month detail calendar view | Commit 9 |
-| `app/templates/analytics/_calendar_year.html` | Year overview calendar | Commit 9 |
-| `app/templates/analytics/_year_end.html` | Year-end summary partial | Commit 11 |
-| `app/templates/analytics/_variance.html` | Budget variance partial | Commit 12 |
-| `app/templates/analytics/_variance_detail.html` | Variance drill-down partial | Commit 12 |
-| `app/templates/analytics/_trends.html` | Spending trends partial | Commit 13 |
-| `app/templates/analytics/_trends_detail.html` | Trend drill-down partial | Commit 13 |
+| `app/templates/dashboard/dashboard.html` | Main dashboard page | Commit 9 |
+| `app/templates/dashboard/_upcoming_bills.html` | Bills section partial | Commit 9 |
+| `app/templates/dashboard/_alerts.html` | Alerts section partial | Commit 9 |
+| `app/templates/dashboard/_balance_runway.html` | Balance/runway section partial | Commit 9 |
+| `app/templates/dashboard/_payday.html` | Next payday section partial | Commit 9 |
+| `app/templates/dashboard/_savings_goals.html` | Savings goals section partial | Commit 9 |
+| `app/templates/dashboard/_debt_summary.html` | Debt summary section partial | Commit 9 |
+| `app/templates/dashboard/_spending_comparison.html` | Period spending comparison partial | Commit 9 |
+| `app/templates/dashboard/_bill_row.html` | Single bill row for mark-paid HTMX | Commit 9 |
+| `app/templates/dashboard/_mark_paid_form.html` | Mark-paid inline form | Commit 9 |
+| `app/templates/dashboard/_true_up_form.html` | True-up inline form | Commit 9 |
+| `app/templates/analytics/analytics.html` | Analytics page with tab structure | Commit 3 |
+| `app/templates/analytics/_calendar_month.html` | Month detail calendar view | Commit 11 |
+| `app/templates/analytics/_calendar_year.html` | Year overview calendar | Commit 11 |
+| `app/templates/analytics/_year_end.html` | Year-end summary partial | Commit 14 |
+| `app/templates/analytics/_variance.html` | Budget variance partial | Commit 15 |
+| `app/templates/analytics/_variance_detail.html` | Variance drill-down partial | Commit 15 |
+| `app/templates/analytics/_trends.html` | Spending trends partial | Commit 16 |
+| `app/templates/analytics/_trends_detail.html` | Trend drill-down partial | Commit 16 |
 
 ### Templates (to delete)
 
 | File | Lines | Deleted by |
 |------|-------|------------|
-| `app/templates/charts/dashboard.html` | 138 | Commit 15 |
-| `app/templates/charts/_balance_over_time.html` | 35 | Commit 15 |
-| `app/templates/charts/_spending_category.html` | 23 | Commit 15 |
-| `app/templates/charts/_budget_vs_actuals.html` | 24 | Commit 15 |
-| `app/templates/charts/_amortization.html` | 29 | Commit 15 |
-| `app/templates/charts/_net_worth.html` | 12 | Commit 15 |
-| `app/templates/charts/_net_pay.html` | 28 | Commit 15 |
-| `app/templates/charts/_error.html` | 13 | Commit 15 |
+| `app/templates/charts/dashboard.html` | 138 | Commit 18 |
+| `app/templates/charts/_balance_over_time.html` | 35 | Commit 18 |
+| `app/templates/charts/_spending_category.html` | 23 | Commit 18 |
+| `app/templates/charts/_budget_vs_actuals.html` | 24 | Commit 18 |
+| `app/templates/charts/_amortization.html` | 29 | Commit 18 |
+| `app/templates/charts/_net_worth.html` | 12 | Commit 18 |
+| `app/templates/charts/_net_pay.html` | 28 | Commit 18 |
+| `app/templates/charts/_error.html` | 13 | Commit 18 |
 
 ### Static Assets (existing, to modify)
 
 | File | Lines | Purpose | Affected by |
 |------|-------|---------|-------------|
 | `app/static/js/chart_theme.js` | 228 | CSS custom property theming for Chart.js | 8.0a (x-axis callback) |
-| `app/static/css/app.css` | 975 | App-wide custom styles | Commit 7, 9, 11-13 |
+| `app/static/css/app.css` | 975 | App-wide custom styles | Commit 4, 9, 11, 14-16 |
 
 ### Static Assets (new files to create)
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `app/static/js/chart_variance.js` | Variance bar chart | Commit 12 |
-| `app/static/js/chart_year_end.js` | Year-end net worth line chart | Commit 11 |
-| `app/static/js/dashboard.js` | Dashboard interactions (mark-paid, true-up) | Commit 7 |
-| `app/static/js/calendar.js` | Calendar tooltip/popover interactions | Commit 9 |
+| `app/static/js/chart_variance.js` | Variance bar chart | Commit 15 |
+| `app/static/js/chart_year_end.js` | Year-end net worth line chart | Commit 14 |
+| `app/static/js/dashboard.js` | Dashboard interactions (mark-paid, true-up) | Commit 9 |
+| `app/static/js/calendar.js` | Calendar tooltip/popover interactions | Commit 11 |
 
 ### Static Assets (to delete)
 
 | File | Lines | Deleted by |
 |------|-------|------------|
-| `app/static/js/chart_balance.js` | 113 | Commit 15 |
-| `app/static/js/chart_spending.js` | 74 | Commit 15 |
-| `app/static/js/chart_budget.js` | 86 | Commit 15 |
-| `app/static/js/chart_amortization.js` | 97 | Commit 15 |
-| `app/static/js/chart_net_worth.js` | 82 | Commit 15 |
-| `app/static/js/chart_net_pay.js` | 91 | Commit 15 |
-| `app/static/js/chart_slider.js` | 95 | Commit 15 |
+| `app/static/js/chart_balance.js` | 113 | Commit 18 |
+| `app/static/js/chart_spending.js` | 74 | Commit 18 |
+| `app/static/js/chart_budget.js` | 86 | Commit 18 |
+| `app/static/js/chart_amortization.js` | 97 | Commit 18 |
+| `app/static/js/chart_net_worth.js` | 82 | Commit 18 |
+| `app/static/js/chart_net_pay.js` | 91 | Commit 18 |
+| `app/static/js/chart_slider.js` | 95 | Commit 18 |
 
 ### Tests (existing, to modify)
 
 | File | Purpose | Affected by |
 |------|---------|-------------|
-| `tests/test_routes/test_charts.py` | Chart route tests | Commit 15 (replace) |
-| `tests/test_services/test_chart_data_service.py` | Chart data service tests | Commit 1 (x-axis), Commit 15 |
+| `tests/test_routes/test_charts.py` | Chart route tests | Commit 18 (replace) |
+| `tests/test_services/test_chart_data_service.py` | Chart data service tests | Commit 1 (x-axis), Commit 18 |
 | `tests/conftest.py` | Test fixtures | Commit 1 (new settings columns) |
+| `tests/test_services/test_recurrence_engine.py` | Recurrence engine tests | Commit 2 (due_date generation) |
+| `tests/test_routes/test_transactions.py` | Transaction CRUD tests | Commit 2 (paid_at) |
+| `tests/test_services/test_transfer_service.py` | Transfer invariant tests | Commit 2 (due_date on shadows) |
+| `tests/test_routes/test_templates.py` | Template CRUD tests | Commit 12 (due_day_of_month) |
+| `tests/test_routes/test_loan.py` | Loan dashboard tests | Commit 4 (nav-pills) |
 
 ### Tests (new files to create)
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `tests/test_services/test_calendar_service.py` | Calendar engine tests | Commit 3 |
-| `tests/test_services/test_budget_variance_service.py` | Variance engine tests | Commit 4 |
-| `tests/test_services/test_spending_trend_service.py` | Trend engine tests | Commit 5 |
-| `tests/test_services/test_dashboard_service.py` | Dashboard service tests | Commit 6 |
-| `tests/test_services/test_year_end_summary_service.py` | Year-end service tests | Commit 10 |
-| `tests/test_services/test_csv_export_service.py` | CSV export tests | Commit 14 |
-| `tests/test_routes/test_dashboard.py` | Dashboard route tests | Commit 7 |
-| `tests/test_routes/test_analytics.py` | Analytics route tests | Commit 2, 9, 11-13 |
+| `tests/test_services/test_calendar_service.py` | Calendar engine tests | Commit 5 |
+| `tests/test_services/test_budget_variance_service.py` | Variance engine tests | Commit 6 |
+| `tests/test_services/test_spending_trend_service.py` | Trend engine tests | Commit 7 |
+| `tests/test_services/test_dashboard_service.py` | Dashboard service tests | Commit 8 |
+| `tests/test_services/test_year_end_summary_service.py` | Year-end service tests | Commit 13 |
+| `tests/test_services/test_csv_export_service.py` | CSV export tests | Commit 17 |
+| `tests/test_routes/test_dashboard.py` | Dashboard route tests | Commit 9 |
+| `tests/test_routes/test_analytics.py` | Analytics route tests | Commit 3, 11, 14-16 |
 
 ### Migrations (new)
 
 | Migration | Purpose | Created by |
 |-----------|---------|------------|
 | Add settings columns | `large_transaction_threshold`, `trend_alert_threshold`, `anchor_staleness_days` to `auth.user_settings` | Commit 1 |
+| Add due_date/paid_at | `due_date`, `paid_at` on `budget.transactions`; `due_day_of_month` on `budget.recurrence_rules` | Commit 2 |
 
 ---
 
@@ -531,47 +659,67 @@ actual files on April 7, 2026.
 ```text
 Commit 1 (Settings migration + 8.0a fix)
   |
-  +---> Commit 2 (Analytics route shell)
+  +---> Commit 2 (due_date/paid_at migration + generation logic)
   |       |
-  |       +---> Commit 9 (Calendar display) <--- Commit 3 (Calendar engine)
+  |       +---> Commit 5 (Calendar engine) -- reads txn.due_date
   |       |
-  |       +---> Commit 11 (Year-end display) <--- Commit 10 (Year-end engine)
+  |       +---> Commit 6 (Variance engine) -- monthly attribution uses due_date
   |       |
-  |       +---> Commit 12 (Variance display) <--- Commit 4 (Variance engine)
+  |       +---> Commit 8 (Dashboard service) -- sorts bills by due_date
   |       |
-  |       +---> Commit 13 (Trends display) <--- Commit 5 (Trends engine)
-  |       |
-  |       +---> Commit 14 (CSV export) <--- Commits 9, 11, 12, 13
+  |       +---> Commit 12 (Due date UI) -- template form + transaction override
   |
-  +---> Commit 6 (Dashboard service) <--- Commits 3, 4, 5
+  +---> Commit 3 (Analytics route shell with nav-pills)
   |       |
-  |       +---> Commit 7 (Dashboard template + interactions)
+  |       +---> Commit 11 (Calendar display) <--- Commit 5 (Calendar engine)
+  |       |
+  |       +---> Commit 14 (Year-end display) <--- Commit 13 (Year-end engine)
+  |       |
+  |       +---> Commit 15 (Variance display) <--- Commit 6 (Variance engine)
+  |       |
+  |       +---> Commit 16 (Trends display) <--- Commit 7 (Trends engine)
+  |       |
+  |       +---> Commit 17 (CSV export) <--- Commits 11, 14, 15, 16
+  |
+  +---> Commit 4 (Standardize nav-pills) <--- Commit 3
+  |
+  +---> Commit 8 (Dashboard service) <--- Commits 5, 6, 7
+  |       |
+  |       +---> Commit 9 (Dashboard template + interactions)
   |               |
-  |               +---> Commit 8 (Default route swap + nav update)
+  |               +---> Commit 10 (Default route swap + nav update)
   |
-  +---> Commit 15 (Remove old charts, final cleanup) <--- All above
+  +---> Commit 18 (Remove old charts, final cleanup) <--- All above
 ```
 
 ### Commit Order Rationale
 
-The ordering follows five principles:
+The ordering follows six principles:
 
 1. **Infrastructure first:** Commit 1 (migration + bug fix) provides the settings columns and
    x-axis fix that other commits depend on.
-2. **Shell before content:** Commit 2 creates the analytics route shell with empty tab
-   placeholders, establishing the URL structure and nav changes before any tab content is built.
-3. **Engine before display:** Commits 3-5 build the computation engines (pure functions with
-   full test coverage) before any display work. This matches the Section 5 pattern and ensures
-   the data layer is correct before templates consume it.
-4. **Dashboard after engines:** Commit 6 aggregates data from existing services and the new
-   engines. Commits 7-8 build the dashboard UI and swap the default route.
-5. **Cleanup last:** Commit 15 removes old charts only after all replacements are in place.
+2. **Data model before consumers:** Commit 2 adds `due_date`, `paid_at`, and
+   `due_day_of_month` to the data model. Every downstream commit that reads or displays
+   transaction dates depends on these columns existing.
+3. **Shell before content:** Commit 3 creates the analytics route shell with nav-pills,
+   establishing the URL structure and nav changes before any tab content is built.
+4. **Consistency sweep early:** Commit 4 standardizes nav-pills across the app immediately
+   after the analytics shell establishes the pattern. This prevents building more UI on top
+   of inconsistent navigation.
+5. **Engine before display:** Commits 5-7 build the computation engines (pure functions with
+   full test coverage) before any display work. Commits 5 and 6 benefit from `due_date`
+   existing on transactions (simplified logic, correct monthly attribution).
+6. **UI after backend:** Commit 12 adds the `due_date` UI (template form, transaction
+   override) after the calendar display (Commit 11) so users can see the calendar context
+   that `due_date` enables before being asked to enter the data.
 
 **Phase 1 -- Infrastructure:** Commits 1-2
-**Phase 2 -- Computation Engines:** Commits 3-5
-**Phase 3 -- Dashboard:** Commits 6-8
-**Phase 4 -- Analytics Display:** Commits 9-13
-**Phase 5 -- Export and Cleanup:** Commits 14-15
+**Phase 1A -- UI Consistency:** Commits 3-4
+**Phase 2 -- Computation Engines:** Commits 5-7
+**Phase 3 -- Dashboard:** Commits 8-10
+**Phase 4 -- Analytics Display:** Commits 11-16
+**Phase 4A -- Due Date UI:** Commit 12 (after calendar, before year-end)
+**Phase 5 -- Export and Cleanup:** Commits 17-18
 
 ---
 
@@ -727,12 +875,379 @@ user-entered data yet.
 
 ---
 
-## Commit 2: Analytics Route Shell with Tab Structure
+## Commit 2: Add due_date, paid_at, and due_day_of_month -- Migration, Generation, and Mark-Paid
 
 ### A. Commit message
 
 ```text
-feat(analytics): create /analytics route with lazy-loaded tab structure
+feat(transaction): add due_date and paid_at to transactions, due_day_of_month to recurrence rules
+```
+
+### B. Problem statement
+
+Transactions have no explicit due date or payment timestamp. The `day_of_month` on
+`RecurrenceRule` controls pay-period assignment but is not stored on generated transactions,
+forcing downstream consumers (calendar, variance, dashboard) to join through three tables to
+derive display dates. Adding `due_date` directly on `Transaction` provides a first-class date
+for calendar placement, monthly attribution, and bill sorting. Adding `paid_at` enables
+payment timing analysis. Adding `due_day_of_month` on `RecurrenceRule` allows the due date to
+differ from the pay-period scheduling date.
+
+### C. Files modified
+
+- `app/models/transaction.py` (158 lines) -- Add `due_date` (Date, nullable) and `paid_at`
+  (DateTime(timezone), nullable) columns.
+- `app/models/recurrence_rule.py` (66 lines) -- Add `due_day_of_month` (Integer, nullable,
+  CHECK 1-31) column.
+- `app/services/recurrence_engine.py` (552 lines) -- Populate `due_date` when generating
+  transactions.
+- `app/services/transfer_service.py` (707 lines) -- Pass `due_date` to shadow transactions
+  in `create_transfer()` and `update_transfer()`.
+- `app/services/transfer_recurrence.py` (261 lines) -- Pass `due_date` through to
+  `create_transfer()`.
+- `app/routes/transactions.py` (633 lines) -- Set `paid_at` in `mark_done()` and
+  `update_transaction()`.
+- `app/schemas/validation.py` (1281 lines) -- Add `due_date`, `paid_at` to transaction
+  schemas; add `due_day_of_month` to template schemas.
+- `migrations/versions/<auto>.py` -- Alembic migration with backfill.
+- `tests/test_services/test_recurrence_engine.py` (1948 lines) -- Add due_date generation
+  tests.
+- `tests/test_routes/test_transactions.py` -- Add paid_at lifecycle tests.
+- `tests/test_services/test_transfer_service.py` -- Add due_date shadow propagation tests.
+
+### D. Implementation approach
+
+**Model changes:**
+
+In `app/models/transaction.py`, add after `notes` (line 96):
+
+```python
+due_date = db.Column(db.Date, nullable=True)
+paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+```
+
+Add an index for due_date queries (calendar, dashboard sorting):
+
+```python
+db.Index("idx_transactions_due_date", "due_date",
+         postgresql_where=db.text("due_date IS NOT NULL")),
+```
+
+In `app/models/recurrence_rule.py`, add after `day_of_month` (line 41):
+
+```python
+due_day_of_month = db.Column(
+    db.Integer,
+    db.CheckConstraint(
+        "due_day_of_month IS NULL OR (due_day_of_month >= 1 AND due_day_of_month <= 31)",
+        name="ck_recurrence_rules_due_dom",
+    ),
+)
+```
+
+**Alembic migration:**
+
+Upgrade:
+1. Add `due_day_of_month` to `budget.recurrence_rules` (nullable, CHECK 1-31).
+2. Add `due_date` to `budget.transactions` (nullable Date).
+3. Add `paid_at` to `budget.transactions` (nullable DateTime with timezone).
+4. Add partial index `idx_transactions_due_date`.
+5. Backfill `due_date` (see below).
+6. Backfill `paid_at` (see below).
+
+Downgrade:
+1. Drop index `idx_transactions_due_date`.
+2. Drop `paid_at` from `budget.transactions`.
+3. Drop `due_date` from `budget.transactions`.
+4. Drop `due_day_of_month` from `budget.recurrence_rules`.
+
+**Backfill `due_date`:**
+
+Run as raw SQL within the migration for performance (single UPDATE, no ORM overhead):
+
+```sql
+-- Transactions linked to templates with monthly/quarterly/semi-annual/annual patterns
+-- that have day_of_month set: compute due_date within the transaction's pay period month.
+UPDATE budget.transactions t
+SET due_date = (
+    SELECT MAKE_DATE(
+        EXTRACT(YEAR FROM pp.start_date)::int,
+        EXTRACT(MONTH FROM pp.start_date)::int,
+        LEAST(
+            rr.day_of_month,
+            (DATE_TRUNC('month', pp.start_date) + INTERVAL '1 month' - INTERVAL '1 day')::date
+                - DATE_TRUNC('month', pp.start_date)::date + 1
+        )::int
+    )
+    FROM budget.transaction_templates tt
+    JOIN budget.recurrence_rules rr ON tt.recurrence_rule_id = rr.id
+    JOIN budget.pay_periods pp ON t.pay_period_id = pp.id
+    WHERE tt.id = t.template_id
+      AND rr.day_of_month IS NOT NULL
+)
+WHERE t.template_id IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM budget.transaction_templates tt2
+    JOIN budget.recurrence_rules rr2 ON tt2.recurrence_rule_id = rr2.id
+    WHERE tt2.id = t.template_id
+      AND rr2.day_of_month IS NOT NULL
+  );
+
+-- Transactions without day_of_month (every-paycheck patterns, manual, no template):
+-- use pay_period start_date.
+UPDATE budget.transactions t
+SET due_date = (
+    SELECT pp.start_date
+    FROM budget.pay_periods pp
+    WHERE pp.id = t.pay_period_id
+)
+WHERE t.due_date IS NULL;
+```
+
+**Backfill `paid_at`:**
+
+```sql
+-- Set paid_at from updated_at for transactions with settled status.
+UPDATE budget.transactions t
+SET paid_at = t.updated_at
+WHERE t.status_id IN (
+    SELECT s.id FROM ref.statuses s WHERE s.is_settled = true
+);
+```
+
+**Recurrence engine changes (`app/services/recurrence_engine.py`):**
+
+Add a `_compute_due_date()` helper function after the existing pattern-matching helpers:
+
+```python
+def _compute_due_date(rule, period, pattern_id):
+    """Compute the due_date for a generated transaction.
+
+    Source priority:
+    1. rule.due_day_of_month (if set and differs from day_of_month)
+    2. rule.day_of_month (derived within the period's month context)
+    3. period.start_date (for every-paycheck patterns with no day_of_month)
+
+    Next-month convention: If due_day_of_month < day_of_month, the due date
+    is in the following calendar month. Example: day_of_month=22,
+    due_day_of_month=1 means the bill is due on the 1st of the next month.
+
+    Month-end clamping: day values > last day of month are clamped (e.g.,
+    day 31 in February becomes day 28/29).
+    """
+    import calendar as cal
+
+    dom = rule.day_of_month
+    due_dom = rule.due_day_of_month
+
+    # Patterns without day_of_month: use period start_date.
+    if dom is None:
+        return period.start_date
+
+    # Determine the base month from the period context.
+    # For monthly patterns, the period was matched because it contains
+    # the day_of_month target. Use the period's start_date month as
+    # the base, checking end_date month if the target is in the next month.
+    base_year = period.start_date.year
+    base_month = period.start_date.month
+
+    # Check if the target day falls in the end_date's month instead.
+    for dt in (period.start_date, period.end_date):
+        last_day = cal.monthrange(dt.year, dt.month)[1]
+        target_day = min(dom, last_day)
+        target = date(dt.year, dt.month, target_day)
+        if period.start_date <= target <= period.end_date:
+            base_year = dt.year
+            base_month = dt.month
+            break
+
+    if due_dom is None or due_dom == dom:
+        # No separate due date -- use day_of_month in the base month.
+        last_day = cal.monthrange(base_year, base_month)[1]
+        return date(base_year, base_month, min(dom, last_day))
+
+    # Next-month convention: due_day_of_month < day_of_month means next month.
+    if due_dom < dom:
+        # Advance to next month.
+        if base_month == 12:
+            due_year = base_year + 1
+            due_month = 1
+        else:
+            due_year = base_year
+            due_month = base_month + 1
+    else:
+        due_year = base_year
+        due_month = base_month
+
+    last_day = cal.monthrange(due_year, due_month)[1]
+    return date(due_year, due_month, min(due_dom, last_day))
+```
+
+In `generate_for_template()`, after computing `amount` (line 132) and before creating the
+Transaction (line 135), compute the due_date:
+
+```python
+due = _compute_due_date(rule, period, pattern_id)
+```
+
+Add `due_date=due` to the Transaction constructor (line 135-147).
+
+**Transfer service changes (`app/services/transfer_service.py`):**
+
+In `create_transfer()` (lines 367-403), add `due_date=None` to both shadow Transaction
+constructors. Transfer shadows do not have inherent due dates -- they inherit from the
+transfer context. The caller (transfer_recurrence.py or route handler) can pass `due_date`
+as a keyword argument if applicable.
+
+Add parameter `due_date=None` to `create_transfer()` signature. Set on both shadows:
+
+```python
+expense_shadow = Transaction(
+    ...
+    due_date=due_date,    # New
+    ...
+)
+income_shadow = Transaction(
+    ...
+    due_date=due_date,    # New
+    ...
+)
+```
+
+In `update_transfer()` (lines 450-524), add a new handler block:
+
+```python
+# -- due_date -------------------------------------------------
+if "due_date" in kwargs:
+    new_due = kwargs["due_date"]
+    expense_shadow.due_date = new_due
+    income_shadow.due_date = new_due
+```
+
+**Transfer recurrence changes (`app/services/transfer_recurrence.py`):**
+
+The transfer recurrence engine calls `transfer_service.create_transfer()` (line ~98). Transfer
+templates have their own `RecurrenceRule` but no `day_of_month` semantic for due dates.
+Transfer shadows get `due_date = period.start_date` (the paycheck date) since transfers
+typically happen on payday. Pass this as `due_date=period.start_date` to `create_transfer()`.
+
+**Mark-paid endpoint changes (`app/routes/transactions.py`):**
+
+In `mark_done()` (line 194-260):
+
+For regular transactions (non-transfer), after `txn.status_id = status_id` (line 242), add:
+
+```python
+txn.paid_at = db.func.now()
+```
+
+For transfer shadows (lines 216-239), add `"paid_at": db.func.now()` to `svc_kwargs` before
+calling `transfer_service.update_transfer()`. Then add a handler in `update_transfer()`:
+
+```python
+# -- paid_at --------------------------------------------------
+if "paid_at" in kwargs:
+    new_paid_at = kwargs["paid_at"]
+    expense_shadow.paid_at = new_paid_at
+    income_shadow.paid_at = new_paid_at
+```
+
+In `update_transaction()` (PATCH endpoint, line 118-191), add logic to null `paid_at` when
+status reverts from settled to non-settled:
+
+```python
+if "status_id" in data:
+    new_status = db.session.get(Status, data["status_id"])
+    if new_status and not new_status.is_settled and txn.paid_at is not None:
+        txn.paid_at = None
+    # For transfer shadows, route through transfer_service with paid_at=None
+```
+
+**Schema changes (`app/schemas/validation.py`):**
+
+In `TransactionUpdateSchema` (lines 20-35):
+- Add `due_date = fields.Date(allow_none=True)`.
+- Add `paid_at = fields.DateTime(allow_none=True, dump_only=True)` (read-only in responses).
+
+In `TransactionCreateSchema` (lines 37-50):
+- Add `due_date = fields.Date(allow_none=True)`.
+
+In `TemplateCreateSchema` (lines 75-105):
+- Add `due_day_of_month = fields.Integer(validate=Range(min=1, max=31), allow_none=True)`.
+
+In `TemplateUpdateSchema` (lines 107-124):
+- Add `due_day_of_month = fields.Integer(validate=Range(min=1, max=31), allow_none=True)`.
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C2-1 | test_due_date_monthly_pattern | Template with day_of_month=15, period in Jan | `generate_for_template` | txn.due_date = Jan 15, 2026 | New |
+| C2-2 | test_due_date_every_period_pattern | Template with Every Period, period start Jan 2 | `generate_for_template` | txn.due_date = Jan 2, 2026 (period start) | New |
+| C2-3 | test_due_date_feb_clamping | Template day_of_month=30, period in Feb 2026 | `generate_for_template` | txn.due_date = Feb 28, 2026 | New |
+| C2-4 | test_due_date_feb_leap_year | Template day_of_month=29, period in Feb 2028 | `generate_for_template` | txn.due_date = Feb 29, 2028 | New |
+| C2-5 | test_due_date_day31_in_30day_month | Template day_of_month=31, period in Apr | `generate_for_template` | txn.due_date = Apr 30, 2026 | New |
+| C2-6 | test_due_day_of_month_next_month_convention | rule: day_of_month=22, due_day_of_month=1 | `_compute_due_date` | Due date is 1st of next month | New |
+| C2-7 | test_due_day_of_month_same_month | rule: day_of_month=1, due_day_of_month=15 | `_compute_due_date` | Due date is 15th of same month | New |
+| C2-8 | test_due_day_of_month_dec_to_jan | rule: day_of_month=22, due_day_of_month=1, period in Dec | `_compute_due_date` | Due date is Jan 1 of next year | New |
+| C2-9 | test_due_day_of_month_null_uses_day_of_month | rule: day_of_month=15, due_day_of_month=None | `_compute_due_date` | Due date is 15th (same as day_of_month) | New |
+| C2-10 | test_due_day_of_month_equals_day_of_month | rule: day_of_month=15, due_day_of_month=15 | `_compute_due_date` | Due date is 15th (treated as no override) | New |
+| C2-11 | test_due_date_no_template | Manual transaction, no template_id | Create txn without template | due_date populated from period start_date by backfill | New |
+| C2-12 | test_due_date_no_recurrence_rule | Template with no recurrence rule | `generate_for_template` | Returns [] (no generation for no-rule templates) | New |
+| C2-13 | test_due_date_quarterly_pattern | Template Quarterly, month_of_year=1, day=15 | `generate_for_template` | due_date = Jan 15, Apr 15, Jul 15, Oct 15 | New |
+| C2-14 | test_due_date_annual_pattern | Template Annual, month=10, day=1 | `generate_for_template` | due_date = Oct 1 each year | New |
+| C2-15 | test_paid_at_set_on_mark_done | Projected expense transaction | POST /transactions/<id>/mark-done | paid_at is not None, close to now | New |
+| C2-16 | test_paid_at_set_on_mark_received | Projected income transaction | POST /transactions/<id>/mark-done | paid_at is not None | New |
+| C2-17 | test_paid_at_nulled_on_status_revert | Paid transaction | PATCH status_id to Projected | paid_at is None | New |
+| C2-18 | test_paid_at_re_mark_sets_new_timestamp | Reverted txn marked done again | POST mark-done twice with revert | Second paid_at > first paid_at | New |
+| C2-19 | test_paid_at_transfer_shadow_both_set | Transfer shadow marked done | POST mark-done on shadow | Both shadows have paid_at set | New |
+| C2-20 | test_paid_at_transfer_shadow_revert | Transfer shadow status reverted | PATCH status_id to Projected | Both shadows have paid_at nulled | New |
+| C2-21 | test_shadow_due_date_propagation | Create transfer with due_date | `create_transfer(due_date=...)` | Both shadows have due_date set | New |
+| C2-22 | test_shadow_due_date_update | Update transfer due_date | `update_transfer(due_date=...)` | Both shadows updated | New |
+| C2-23 | test_balance_calc_ignores_due_date | Txns with various due_dates | `calculate_balances()` | Balances identical to pre-due_date behavior | New |
+| C2-24 | test_backfill_due_date_with_day_of_month | Existing txn with template day_of_month=15 | Run migration | due_date populated as 15th of period month | New |
+| C2-25 | test_backfill_due_date_without_day_of_month | Existing txn, Every Period pattern | Run migration | due_date = period start_date | New |
+| C2-26 | test_backfill_paid_at | Existing txn with Done status | Run migration | paid_at = updated_at | New |
+| C2-27 | test_backfill_paid_at_projected | Existing projected txn | Run migration | paid_at is NULL | New |
+| C2-28 | test_due_day_of_month_feb_clamping | rule: due_day_of_month=31, next month is Feb | `_compute_due_date` | Feb 28 (or 29 in leap year) | New |
+| C2-29 | test_schema_due_day_of_month_validation | POST template with due_day_of_month=0 | TemplateCreateSchema validate | Validation error (min=1) | New |
+| C2-30 | test_schema_due_day_of_month_32 | POST template with due_day_of_month=32 | TemplateCreateSchema validate | Validation error (max=31) | New |
+| C2-31 | test_schema_due_date_on_transaction_update | PATCH txn with due_date="2026-04-15" | TransactionUpdateSchema | Accepts valid date | New |
+
+### F. Manual verification steps
+
+1. Run `flask db upgrade`. Verify migration completes without errors.
+2. Run `flask db downgrade` then `flask db upgrade` again to verify round-trip.
+3. Query existing transactions -- verify `due_date` is populated on all rows.
+4. Query transactions with Done status -- verify `paid_at` matches `updated_at`.
+5. Open the grid. Click a transaction cell, mark it as paid. Verify the transaction
+   now has a `paid_at` timestamp in the database.
+6. Open the grid. Edit a paid transaction's status back to Projected. Verify `paid_at`
+   is nulled.
+
+### G. Downstream effects
+
+- All existing queries that read transactions will now see the new columns. Since both are
+  nullable, no existing query breaks.
+- The balance calculator is NOT affected -- it uses `pay_period_id` for grouping, not dates.
+  Test C2-23 verifies this invariant.
+- Commits 5, 6, 8, 9, 11-17 can now read `txn.due_date` directly instead of joining through
+  template -> recurrence_rule -> day_of_month.
+
+### H. Rollback notes
+
+Revert the migration with `flask db downgrade`. The three columns and one index are dropped.
+Backfilled data is lost but can be regenerated. Revert Python changes. The recurrence engine
+returns to not setting `due_date`, the mark-paid endpoint returns to not setting `paid_at`.
+
+---
+
+## Commit 3: Analytics Route Shell with Nav-Pills Tab Structure
+
+### A. Commit message
+
+```text
+feat(analytics): create /analytics route with nav-pills lazy-loaded tab structure
 ```
 
 ### B. Problem statement
@@ -839,14 +1354,14 @@ Calendar is the default tab (loaded on page load via `hx-trigger="click, load"`)
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C2-1 | test_analytics_requires_auth | client | GET /analytics | 302 redirect to /login | New |
-| C2-2 | test_analytics_page_renders | auth_client | GET /analytics | 200, contains "Analytics" | New |
-| C2-3 | test_calendar_tab_htmx | auth_client | GET /analytics/calendar (HX-Request) | 200, placeholder content | New |
-| C2-4 | test_calendar_tab_no_htmx | auth_client | GET /analytics/calendar (no HX-Request) | 302 redirect to /analytics | New |
-| C2-5 | test_year_end_tab_htmx | auth_client | GET /analytics/year-end (HX-Request) | 200, placeholder content | New |
-| C2-6 | test_variance_tab_htmx | auth_client | GET /analytics/variance (HX-Request) | 200, placeholder content | New |
-| C2-7 | test_trends_tab_htmx | auth_client | GET /analytics/trends (HX-Request) | 200, placeholder content | New |
-| C2-8 | test_nav_shows_analytics | auth_client, seed_user | GET / | Nav contains "Analytics" link | New |
+| C3- | test_analytics_requires_auth | client | GET /analytics | 302 redirect to /login | New |
+| C3- | test_analytics_page_renders | auth_client | GET /analytics | 200, contains "Analytics" | New |
+| C3- | test_calendar_tab_htmx | auth_client | GET /analytics/calendar (HX-Request) | 200, placeholder content | New |
+| C3- | test_calendar_tab_no_htmx | auth_client | GET /analytics/calendar (no HX-Request) | 302 redirect to /analytics | New |
+| C3- | test_year_end_tab_htmx | auth_client | GET /analytics/year-end (HX-Request) | 200, placeholder content | New |
+| C3- | test_variance_tab_htmx | auth_client | GET /analytics/variance (HX-Request) | 200, placeholder content | New |
+| C3- | test_trends_tab_htmx | auth_client | GET /analytics/trends (HX-Request) | 200, placeholder content | New |
+| C3- | test_nav_shows_analytics | auth_client, seed_user | GET / | Nav contains "Analytics" link | New |
 
 ### F. Manual verification steps
 
@@ -870,7 +1385,113 @@ migration, no data impact.
 
 ---
 
-## Commit 3: Calendar Service Engine (6.6)
+## Commit 4: Standardize on Nav-Pills Across the App
+
+### A. Commit message
+
+```text
+refactor(ui): standardize Bootstrap nav-pills across all tabbed interfaces
+```
+
+### B. Problem statement
+
+The app uses `nav-tabs` on the loan dashboard and `nav-pills` on the new analytics page. The
+mobile plan already implemented a `mobile-scroll-tabs` CSS class that converts tabs to
+horizontally scrollable pills at `<576px`. Standardizing on pills everywhere removes the
+inconsistency and simplifies the CSS -- pills work at all breakpoints without conditional
+media queries.
+
+### C. Files modified
+
+- `app/templates/loan/dashboard.html` (348 lines) -- Change `nav-tabs` to `nav-pills` and
+  `data-bs-toggle="tab"` to `data-bs-toggle="pill"` in both the primary nav (line 21) and
+  the nested payoff calculator nav (line 267). Change `tab-content` to `pill-content` and
+  `tab-pane` to `pill-pane` throughout.
+- `app/static/css/app.css` (975 lines) -- Remove the `mobile-scroll-tabs` media query
+  conditional (lines 862-881). Replace with a non-conditional `.shekel-scroll-pills` class
+  that applies horizontal scrolling at all widths where overflow occurs. This is simpler --
+  pills naturally handle narrow widths better than tabs.
+- `tests/test_routes/test_loan.py` -- Add test verifying loan dashboard renders with pills.
+
+### D. Implementation approach
+
+**Loan dashboard template (`loan/dashboard.html`):**
+
+Line 21: Change `nav nav-tabs mobile-scroll-tabs` to `nav nav-pills shekel-scroll-pills`.
+Change all `data-bs-toggle="tab"` to `data-bs-toggle="pill"` on the 6 primary tab buttons
+(lines 23, 27, 32, 37, 41, 45).
+
+Change all `tab-content` divs to keep their IDs but use Bootstrap's pill-compatible markup.
+Note: Bootstrap 5's `tab-content` and `tab-pane` classes work with both tabs and pills -- the
+`data-bs-toggle` attribute is what matters. However, for semantic consistency, update the
+`data-bs-toggle` attributes.
+
+Line 267: Change nested `nav nav-tabs mobile-scroll-tabs` to `nav nav-pills shekel-scroll-pills`.
+Change the 2 nested tab buttons (lines 269, 273) from `data-bs-toggle="tab"` to
+`data-bs-toggle="pill"`.
+
+**CSS (`app/static/css/app.css`):**
+
+Replace the `@media (max-width: 575.98px)` block for `.mobile-scroll-tabs` (lines 862-881)
+with a non-conditional class:
+
+```css
+/* Horizontally scrollable nav-pills for narrow containers. */
+.shekel-scroll-pills {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.shekel-scroll-pills::-webkit-scrollbar {
+  display: none;
+}
+
+.shekel-scroll-pills .nav-link {
+  white-space: nowrap;
+}
+```
+
+This applies the scrollable behavior regardless of viewport width. On wide screens where all
+pills fit, no scrolling occurs (overflow-x: auto only scrolls when content overflows). On
+narrow screens, pills scroll horizontally. No media query needed.
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C4-1 | test_loan_dashboard_renders_pills | auth_client, loan account | GET /accounts/<id>/loan | 200, contains `nav-pills` | New |
+| C4-2 | test_loan_dashboard_no_nav_tabs | auth_client, loan account | GET /accounts/<id>/loan | Does NOT contain `nav-tabs` | New |
+| C4-3 | test_loan_payoff_nested_pills | auth_client, loan account | GET /accounts/<id>/loan | Payoff Calculator section contains `nav-pills` | New |
+| C4-4 | test_analytics_still_uses_pills | auth_client | GET /analytics | Contains `nav-pills` | New |
+
+### F. Manual verification steps
+
+1. Navigate to a loan dashboard. Verify pills render instead of underlined tabs.
+2. Click each pill (Overview, Escrow, Amortization Schedule, Payoff Calculator, Refinance
+   Calculator). Verify content switches correctly.
+3. Inside Payoff Calculator, verify Extra Payment and Target Date sub-pills work.
+4. For ARM loans, verify the Rate History pill appears.
+5. Test at 375px width. Verify pills scroll horizontally when they overflow.
+6. Navigate to `/analytics`. Verify pills remain unchanged.
+7. Toggle dark mode on both pages. Verify pills render correctly.
+
+### G. Downstream effects
+
+- The `mobile-scroll-tabs` CSS class is removed. If any future template used it, it would
+  need to use `shekel-scroll-pills` instead. Currently no other template uses it.
+- The loan dashboard test suite may have assertions checking for `nav-tabs` class names --
+  these need updating (covered by test C4-2).
+
+### H. Rollback notes
+
+Revert template and CSS changes. No migration, no data impact.
+
+---
+
+## Commit 5: Calendar Service Engine (6.6)
 
 ### A. Commit message
 
@@ -882,9 +1503,9 @@ feat(calendar): add calendar service for month/year expense aggregation and 3rd 
 
 The financial calendar (8.2) and year overview (6.6) need a service that groups transactions
 by calendar month, computes per-month income/expense/net totals, detects 3rd-paycheck months,
-identifies large/infrequent transactions, and computes projected month-end balances. The
-recurrence engine and balance calculator already compute the underlying data; this service
-reshapes it for calendar display.
+identifies large/infrequent transactions, and computes projected month-end balances. Now that
+`Transaction.due_date` exists (Commit 2), the service reads it directly instead of joining
+through template -> recurrence_rule -> day_of_month.
 
 ### C. Files modified
 
@@ -961,15 +1582,12 @@ def get_year_overview(
     Calls get_month_detail for each month and assembles into YearOverview.
     """
 
-def _get_display_day(
-    transaction: Transaction,
-    period: PayPeriod,
-) -> int:
+def _get_display_day(transaction: Transaction) -> int:
     """Determine the calendar day to display a transaction on.
 
-    If the transaction's template has a recurrence rule with day_of_month set
-    (Monthly, Quarterly, Semi-Annual, Annual patterns), use that day.
-    Otherwise, use the pay period start_date day.
+    Reads transaction.due_date directly (populated by the recurrence engine
+    in Commit 2). Falls back to pay_period.start_date.day if due_date is None
+    (should not happen after backfill, but defensive).
     """
 
 def _is_infrequent(transaction: Transaction) -> bool:
@@ -990,14 +1608,17 @@ def _detect_third_paycheck_months(
     """
 ```
 
-**Transaction date assignment logic:**
+**Transaction date assignment logic (simplified by Commit 2):**
 
 For each transaction in the month's pay periods:
-1. If `txn.template` exists and `txn.template.recurrence_rule` exists and
-   `txn.template.recurrence_rule.day_of_month` is not None:
-   - Display on day = `min(day_of_month, last_day_of_month)` (handle Feb 30 -> Feb 28).
-   - The month is determined by which calendar month the pay period overlaps.
-2. Otherwise: display on `txn.pay_period.start_date.day` (the paycheck date).
+1. Read `txn.due_date` directly. This is always populated (by the recurrence engine for
+   template-generated transactions, by the backfill migration for historical transactions).
+2. Display the transaction on `txn.due_date.day` within the calendar month.
+3. Fallback (defensive): if `txn.due_date` is None, use `txn.pay_period.start_date.day`.
+
+No joins through template -> recurrence_rule are needed. The `due_date` column already
+contains the clamped, month-aware display date computed by `_compute_due_date()` in the
+recurrence engine.
 
 **Month-end balance:**
 
@@ -1023,25 +1644,26 @@ The service queries `Transaction` joined with `PayPeriod`, filtered by:
 - `Transaction.scenario_id == baseline_scenario_id`
 - `Transaction.is_deleted.is_(False)`
 - `PayPeriod.start_date` within the date range
-- Eager load: `Transaction.template -> TransactionTemplate.recurrence_rule`,
-  `Transaction.category`, `Transaction.status`
+- Eager load: `Transaction.category`, `Transaction.status`, `Transaction.template`
+  (template needed only for `_is_infrequent` check -- no recurrence_rule join needed since
+  `due_date` is read directly from the transaction)
 
 ### E. Test cases
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C3-1 | test_month_detail_empty | User with no transactions | `get_month_detail(uid, 2026, 4)` | MonthSummary with zero totals, empty day_entries | New |
-| C3-2 | test_month_detail_income_and_expense | 2 periods in April: $2000 income, $500 rent | `get_month_detail(uid, 2026, 4)` | total_income=4000 (2 checks), total_expenses=500, net=3500 | New |
-| C3-3 | test_day_assignment_with_due_date | Template with day_of_month=15 | `get_month_detail` | Transaction appears on day 15 | New |
-| C3-4 | test_day_assignment_without_due_date | Template with Every Period pattern | `get_month_detail` | Transaction appears on paycheck day | New |
-| C3-5 | test_large_transaction_flagging | Txn of $600, threshold=500 | `get_month_detail(threshold=500)` | DayEntry.is_large=True | New |
-| C3-6 | test_infrequent_transaction_flagging | Template with Annual pattern | `_is_infrequent(txn)` | Returns True | New |
-| C3-7 | test_monthly_not_infrequent | Template with Monthly pattern | `_is_infrequent(txn)` | Returns False | New |
-| C3-8 | test_third_paycheck_detection | 52 periods in 2026 | `_detect_third_paycheck_months(periods, 2026)` | Exactly 2 months flagged | New |
-| C3-9 | test_year_overview_12_months | Full year of data | `get_year_overview(uid, 2026)` | 12 MonthSummary entries, totals consistent | New |
-| C3-10 | test_year_overview_marks_third_paycheck | 52 periods | `get_year_overview` | is_third_paycheck_month=True for exactly 2 months | New |
-| C3-11 | test_month_end_balance | Anchor=1000, income=2000, expenses=1500 per period | `get_month_detail` | projected_end_balance reflects anchor + net | New |
-| C3-12 | test_feb_day_of_month_clamping | Template day_of_month=30, February | `_get_display_day` | Returns 28 (or 29 in leap year) | New |
+| C5-1 | test_month_detail_empty | User with no transactions | `get_month_detail(uid, 2026, 4)` | MonthSummary with zero totals, empty day_entries | New |
+| C5-2 | test_month_detail_income_and_expense | 2 periods in April: $2000 income, $500 rent | `get_month_detail(uid, 2026, 4)` | total_income=4000 (2 checks), total_expenses=500, net=3500 | New |
+| C5-3 | test_day_assignment_from_due_date | Txn with due_date=Jan 15 | `get_month_detail` | Transaction appears on day 15 | New |
+| C5-4 | test_day_assignment_paycheck_pattern | Txn with due_date=period.start_date | `get_month_detail` | Transaction appears on paycheck day | New |
+| C5-5 | test_large_transaction_flagging | Txn of $600, threshold=500 | `get_month_detail(threshold=500)` | DayEntry.is_large=True | New |
+| C5-6 | test_infrequent_transaction_flagging | Template with Annual pattern | `_is_infrequent(txn)` | Returns True | New |
+| C5-7 | test_monthly_not_infrequent | Template with Monthly pattern | `_is_infrequent(txn)` | Returns False | New |
+| C5-8 | test_third_paycheck_detection | 52 periods in 2026 | `_detect_third_paycheck_months(periods, 2026)` | Exactly 2 months flagged | New |
+| C5-9 | test_year_overview_12_months | Full year of data | `get_year_overview(uid, 2026)` | 12 MonthSummary entries, totals consistent | New |
+| C5-10 | test_year_overview_marks_third_paycheck | 52 periods | `get_year_overview` | is_third_paycheck_month=True for exactly 2 months | New |
+| C5-11 | test_month_end_balance | Anchor=1000, income=2000, expenses=1500 per period | `get_month_detail` | projected_end_balance reflects anchor + net | New |
+| C5-12 | test_feb_day_of_month_clamping | Template day_of_month=30, February | `_get_display_day` | Returns 28 (or 29 in leap year) | New |
 
 ### F. Manual verification steps
 
@@ -1057,7 +1679,7 @@ Delete the new files. No migration, no data impact.
 
 ---
 
-## Commit 4: Budget Variance Service Engine (6.5)
+## Commit 6: Budget Variance Service Engine (6.5)
 
 ### A. Commit message
 
@@ -1170,13 +1792,23 @@ def _get_transactions_for_window(
 
     Filters: baseline scenario, not deleted, excludes_from_balance=False.
     For pay_period: transactions where pay_period_id matches.
-    For month: transactions where pay_period.start_date falls in the month.
-    For year: transactions where pay_period.start_date falls in the year.
+    For month: transactions where COALESCE(due_date, pay_period.start_date) falls in the month.
+    For year: transactions where COALESCE(due_date, pay_period.start_date) falls in the year.
     """
 ```
 
-**Monthly attribution:** Transactions are attributed to the month of their pay period's
-`start_date`, consistent with OQ-8 resolution and scope document section 4.4.2.
+**Monthly attribution (updated for Commit 2):** Transactions are attributed to the month of
+their `due_date` when available, falling back to `pay_period.start_date` if `due_date` is
+null. This is consistent with the scope document section 4.4.2 -- transactions with an
+explicit due date are attributed to that date's month, and transactions without one are
+attributed to the month of their paycheck date. Now that `due_date` exists on the Transaction
+model, this is a simple column read rather than a join.
+
+For the monthly window query:
+```python
+# Attribute to due_date month when available, else pay_period month.
+COALESCE(t.due_date, pp.start_date)
+```
 
 **Variance calculation details:**
 - For paid/received/settled transactions: `actual = txn.actual_amount or txn.estimated_amount`
@@ -1190,18 +1822,18 @@ def _get_transactions_for_window(
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C4-1 | test_variance_empty_period | User with no transactions | `compute_variance(uid, "pay_period", period_id=1)` | VarianceReport with zero totals, empty groups | New |
-| C4-2 | test_variance_pay_period_exact | $500 estimated, $500 actual (paid) | `compute_variance("pay_period")` | variance=0, variance_pct=0 | New |
-| C4-3 | test_variance_pay_period_over | $500 est, $550 actual | `compute_variance("pay_period")` | variance=50, variance_pct=10.00 | New |
-| C4-4 | test_variance_pay_period_under | $500 est, $450 actual | `compute_variance("pay_period")` | variance=-50, variance_pct=-10.00 | New |
-| C4-5 | test_variance_projected_zero_variance | $500 est, projected status | `compute_variance("pay_period")` | variance=0 (projected uses estimate) | New |
-| C4-6 | test_variance_monthly_window | Txns across 2 periods in same month | `compute_variance("month", month=1, year=2026)` | Both periods' txns included | New |
-| C4-7 | test_variance_annual_window | Txns across full year | `compute_variance("year", year=2026)` | All periods' txns included | New |
-| C4-8 | test_variance_category_grouping | Multiple categories, items | `compute_variance` | Groups contain correct items, totals sum correctly | New |
-| C4-9 | test_variance_sorted_by_magnitude | Multiple items with different variances | `compute_variance` | Sorted by abs(variance) descending | New |
-| C4-10 | test_variance_zero_estimated | $0 estimated, $50 actual | `compute_variance` | variance_pct=None (division by zero guard) | New |
-| C4-11 | test_variance_excludes_deleted | Soft-deleted transaction | `compute_variance` | Deleted txn not in results | New |
-| C4-12 | test_variance_excludes_cancelled | Cancelled status transaction | `compute_variance` | Cancelled txn not in results | New |
+| C6- | test_variance_empty_period | User with no transactions | `compute_variance(uid, "pay_period", period_id=1)` | VarianceReport with zero totals, empty groups | New |
+| C6- | test_variance_pay_period_exact | $500 estimated, $500 actual (paid) | `compute_variance("pay_period")` | variance=0, variance_pct=0 | New |
+| C6- | test_variance_pay_period_over | $500 est, $550 actual | `compute_variance("pay_period")` | variance=50, variance_pct=10.00 | New |
+| C6- | test_variance_pay_period_under | $500 est, $450 actual | `compute_variance("pay_period")` | variance=-50, variance_pct=-10.00 | New |
+| C6- | test_variance_projected_zero_variance | $500 est, projected status | `compute_variance("pay_period")` | variance=0 (projected uses estimate) | New |
+| C6- | test_variance_monthly_window | Txns across 2 periods in same month | `compute_variance("month", month=1, year=2026)` | Both periods' txns included | New |
+| C6- | test_variance_annual_window | Txns across full year | `compute_variance("year", year=2026)` | All periods' txns included | New |
+| C6- | test_variance_category_grouping | Multiple categories, items | `compute_variance` | Groups contain correct items, totals sum correctly | New |
+| C6- | test_variance_sorted_by_magnitude | Multiple items with different variances | `compute_variance` | Sorted by abs(variance) descending | New |
+| C6- | test_variance_zero_estimated | $0 estimated, $50 actual | `compute_variance` | variance_pct=None (division by zero guard) | New |
+| C6- | test_variance_excludes_deleted | Soft-deleted transaction | `compute_variance` | Deleted txn not in results | New |
+| C6- | test_variance_excludes_cancelled | Cancelled status transaction | `compute_variance` | Cancelled txn not in results | New |
 
 ### F. Manual verification steps
 
@@ -1217,7 +1849,7 @@ Delete the new files. No migration, no data impact.
 
 ---
 
-## Commit 5: Spending Trend Service Engine (6.7)
+## Commit 7: Spending Trend Service Engine (6.7)
 
 ### A. Commit message
 
@@ -1337,18 +1969,18 @@ flagged. The threshold is passed in from `user_settings.trend_alert_threshold`.
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C5-1 | test_trends_insufficient_data | User with 1 month of data | `compute_trends(uid)` | data_sufficiency="insufficient", empty lists | New |
-| C5-2 | test_trends_preliminary_3_months | 3 months of data | `compute_trends(uid)` | data_sufficiency="preliminary", window_months=3 | New |
-| C5-3 | test_trends_sufficient_6_months | 6+ months of data | `compute_trends(uid)` | data_sufficiency="sufficient", window_months=6 | New |
-| C5-4 | test_trend_increasing_category | Groceries: $400, $420, $440, $460, $480, $500 | `compute_trends` | Groceries flagged as "up", pct_change ~25% | New |
-| C5-5 | test_trend_decreasing_category | Dining: $300, $270, $240, $210, $180, $150 | `compute_trends` | Dining flagged as "down", pct_change ~-50% | New |
-| C5-6 | test_trend_flat_not_flagged | Rent: $1200 every period | `compute_trends` | Rent direction="flat", is_flagged=False | New |
-| C5-7 | test_threshold_boundary | Category at exactly 10% change | `compute_trends(threshold=0.10)` | is_flagged=True (>= threshold) | New |
-| C5-8 | test_top_5_sorting | 7 increasing categories | `compute_trends` | top_increasing has exactly 5, sorted desc | New |
-| C5-9 | test_group_weighted_average | Group with 2 items: big spender up, small down | `compute_trends` | Group pct weighted toward bigger item | New |
-| C5-10 | test_linear_regression_known_values | values=[10, 20, 30, 40, 50] | `_compute_linear_regression` | slope=10.0, intercept=10.0 | New |
-| C5-11 | test_linear_regression_constant | values=[100, 100, 100] | `_compute_linear_regression` | slope=0.0 | New |
-| C5-12 | test_excludes_projected_transactions | Mix of paid and projected | `compute_trends` | Only paid transactions contribute to trends | New |
+| C7- | test_trends_insufficient_data | User with 1 month of data | `compute_trends(uid)` | data_sufficiency="insufficient", empty lists | New |
+| C7- | test_trends_preliminary_3_months | 3 months of data | `compute_trends(uid)` | data_sufficiency="preliminary", window_months=3 | New |
+| C7- | test_trends_sufficient_6_months | 6+ months of data | `compute_trends(uid)` | data_sufficiency="sufficient", window_months=6 | New |
+| C7- | test_trend_increasing_category | Groceries: $400, $420, $440, $460, $480, $500 | `compute_trends` | Groceries flagged as "up", pct_change ~25% | New |
+| C7- | test_trend_decreasing_category | Dining: $300, $270, $240, $210, $180, $150 | `compute_trends` | Dining flagged as "down", pct_change ~-50% | New |
+| C7- | test_trend_flat_not_flagged | Rent: $1200 every period | `compute_trends` | Rent direction="flat", is_flagged=False | New |
+| C7- | test_threshold_boundary | Category at exactly 10% change | `compute_trends(threshold=0.10)` | is_flagged=True (>= threshold) | New |
+| C7- | test_top_5_sorting | 7 increasing categories | `compute_trends` | top_increasing has exactly 5, sorted desc | New |
+| C7- | test_group_weighted_average | Group with 2 items: big spender up, small down | `compute_trends` | Group pct weighted toward bigger item | New |
+| C7- | test_linear_regression_known_values | values=[10, 20, 30, 40, 50] | `_compute_linear_regression` | slope=10.0, intercept=10.0 | New |
+| C7- | test_linear_regression_constant | values=[100, 100, 100] | `_compute_linear_regression` | slope=0.0 | New |
+| C7- | test_excludes_projected_transactions | Mix of paid and projected | `compute_trends` | Only paid transactions contribute to trends | New |
 
 ### F. Manual verification steps
 
@@ -1364,7 +1996,7 @@ Delete the new files. No migration, no data impact.
 
 ---
 
-## Commit 6: Dashboard Service Aggregation Layer
+## Commit 8: Dashboard Service Aggregation Layer
 
 ### A. Commit message
 
@@ -1417,10 +2049,10 @@ def _get_upcoming_bills(user_id: int, account_id: int, scenario_id: int) -> list
     - status.is_settled is False (not yet paid)
     - transaction_type is Expense
     - pay_period_id in (current_period, next_period)
-    Sorted by pay_period.start_date ASC, then name ASC.
+    Sorted by due_date ASC (falls back to pay_period.start_date if null), then name ASC.
 
-    Returns list of dicts: {id, name, amount (effective_amount), period_start_date,
-    category_group, category_item, is_transfer (transfer_id is not None)}.
+    Returns list of dicts: {id, name, amount (effective_amount), due_date,
+    period_start_date, category_group, category_item, is_transfer (transfer_id is not None)}.
     """
 ```
 
@@ -1538,21 +2170,21 @@ def _get_spending_comparison(
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C6-1 | test_dashboard_empty_user | User with no data | `compute_dashboard_data(uid)` | All sections return empty/zero/None gracefully | New |
-| C6-2 | test_upcoming_bills | 3 expense txns (2 projected, 1 paid) | `_get_upcoming_bills` | Returns 2 unpaid, sorted by date | New |
-| C6-3 | test_upcoming_bills_two_periods | Txns in current + next period | `_get_upcoming_bills` | Both periods' unpaid txns included | New |
-| C6-4 | test_alert_stale_anchor | Anchor updated 20 days ago, threshold=14 | `_compute_alerts` | Stale anchor alert present | New |
-| C6-5 | test_alert_no_stale | Anchor updated 5 days ago | `_compute_alerts` | No stale anchor alert | New |
-| C6-6 | test_alert_negative_balance | Period with projected balance < 0 | `_compute_alerts` | Negative balance alert present | New |
-| C6-7 | test_cash_runway_calculation | Balance=3000, last 30 days spending=$1500 | `_get_balance_info` | runway=60 days (3000 / (1500/30)) | New |
-| C6-8 | test_cash_runway_zero_spending | Balance=3000, no spending last 30 days | `_get_balance_info` | runway=None or very large (division guard) | New |
-| C6-9 | test_payday_info | Next period starts in 5 days | `_get_payday_info` | days_until=5, next_amount from paycheck calc | New |
-| C6-10 | test_payday_info_no_salary | No salary profile | `_get_payday_info` | days_until=5, next_amount=None | New |
-| C6-11 | test_savings_goals_progress | Goal: target=10000, account balance=2500 | `_get_savings_goals` | pct_complete=25.00 | New |
-| C6-12 | test_debt_summary_present | Mortgage account with LoanParams | `compute_dashboard_data` | debt_summary has total_debt, dti_ratio | New |
-| C6-13 | test_spending_comparison | Current period $800 spent, prior $600 | `_get_spending_comparison` | delta=200, direction='higher' | New |
-| C6-14 | test_spending_comparison_no_prior | First period ever | `_get_spending_comparison` | prior_total=None | New |
-| C6-15 | test_full_dashboard_integration | seed_full_user_data | `compute_dashboard_data` | All sections populated, no errors | New |
+| C8- | test_dashboard_empty_user | User with no data | `compute_dashboard_data(uid)` | All sections return empty/zero/None gracefully | New |
+| C8- | test_upcoming_bills | 3 expense txns (2 projected, 1 paid) | `_get_upcoming_bills` | Returns 2 unpaid, sorted by date | New |
+| C8- | test_upcoming_bills_two_periods | Txns in current + next period | `_get_upcoming_bills` | Both periods' unpaid txns included | New |
+| C8- | test_alert_stale_anchor | Anchor updated 20 days ago, threshold=14 | `_compute_alerts` | Stale anchor alert present | New |
+| C8- | test_alert_no_stale | Anchor updated 5 days ago | `_compute_alerts` | No stale anchor alert | New |
+| C8- | test_alert_negative_balance | Period with projected balance < 0 | `_compute_alerts` | Negative balance alert present | New |
+| C8- | test_cash_runway_calculation | Balance=3000, last 30 days spending=$1500 | `_get_balance_info` | runway=60 days (3000 / (1500/30)) | New |
+| C8- | test_cash_runway_zero_spending | Balance=3000, no spending last 30 days | `_get_balance_info` | runway=None or very large (division guard) | New |
+| C8- | test_payday_info | Next period starts in 5 days | `_get_payday_info` | days_until=5, next_amount from paycheck calc | New |
+| C8- | test_payday_info_no_salary | No salary profile | `_get_payday_info` | days_until=5, next_amount=None | New |
+| C8- | test_savings_goals_progress | Goal: target=10000, account balance=2500 | `_get_savings_goals` | pct_complete=25.00 | New |
+| C8- | test_debt_summary_present | Mortgage account with LoanParams | `compute_dashboard_data` | debt_summary has total_debt, dti_ratio | New |
+| C8- | test_spending_comparison | Current period $800 spent, prior $600 | `_get_spending_comparison` | delta=200, direction='higher' | New |
+| C8- | test_spending_comparison_no_prior | First period ever | `_get_spending_comparison` | prior_total=None | New |
+| C8- | test_full_dashboard_integration | seed_full_user_data | `compute_dashboard_data` | All sections populated, no errors | New |
 
 ### F. Manual verification steps
 
@@ -1568,7 +2200,7 @@ Delete the new files. No migration, no data impact.
 
 ---
 
-## Commit 7: Dashboard Template with All 7 Sections and Interactive Elements
+## Commit 9: Dashboard Template with All 7 Sections and Interactive Elements
 
 ### A. Commit message
 
@@ -1721,23 +2353,23 @@ buttons are touch-target sized (min 44x44px).
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C7-1 | test_dashboard_requires_auth | client | GET /dashboard | 302 redirect to /login | New |
-| C7-2 | test_dashboard_renders_empty | auth_client, seed_user | GET /dashboard | 200, contains "Upcoming Bills" | New |
-| C7-3 | test_dashboard_shows_bills | seed_full_user_data, projected expense | GET /dashboard | Bill name and amount in response | New |
-| C7-4 | test_mark_paid_from_dashboard | seed_full_user_data, projected expense | POST /dashboard/mark-paid/<id> | 200, transaction status changed to done | New |
-| C7-5 | test_mark_paid_with_actual_amount | projected expense | POST with actual_amount=450 | Transaction actual_amount set | New |
-| C7-6 | test_mark_paid_returns_paid_row | projected expense | POST /dashboard/mark-paid/<id> | Response contains struck-through styling | New |
-| C7-7 | test_mark_paid_triggers_refresh | projected expense | POST /dashboard/mark-paid/<id> | HX-Trigger header contains dashboardRefresh | New |
-| C7-8 | test_bills_section_htmx | auth_client | GET /dashboard/bills (HX-Request) | 200, bills HTML partial | New |
-| C7-9 | test_balance_section_htmx | auth_client | GET /dashboard/balance (HX-Request) | 200, balance HTML partial | New |
-| C7-10 | test_dashboard_shows_alerts | seed_user, stale anchor | GET /dashboard | Alert message present | New |
-| C7-11 | test_dashboard_no_alerts | seed_user, fresh anchor | GET /dashboard | No alert section or empty | New |
-| C7-12 | test_dashboard_savings_goals | seed_full_user_data | GET /dashboard | Goal name and progress bar | New |
-| C7-13 | test_dashboard_debt_summary | seed_full_user_data + mortgage | GET /dashboard | DTI ratio displayed | New |
-| C7-14 | test_dashboard_spending_comparison | 2 periods with paid expenses | GET /dashboard | Current vs prior amounts shown | New |
-| C7-15 | test_dashboard_payday_info | seed_full_user_data | GET /dashboard | "days until payday" and amount | New |
-| C7-16 | test_mark_paid_wrong_user | second_auth_client, first user's txn | POST /dashboard/mark-paid/<id> | 404 (ownership check) | New |
-| C7-17 | test_mark_paid_transfer_shadow | Transfer shadow transaction | POST /dashboard/mark-paid/<id> | Both shadows updated via transfer_service | New |
+| C9- | test_dashboard_requires_auth | client | GET /dashboard | 302 redirect to /login | New |
+| C9- | test_dashboard_renders_empty | auth_client, seed_user | GET /dashboard | 200, contains "Upcoming Bills" | New |
+| C9- | test_dashboard_shows_bills | seed_full_user_data, projected expense | GET /dashboard | Bill name and amount in response | New |
+| C9- | test_mark_paid_from_dashboard | seed_full_user_data, projected expense | POST /dashboard/mark-paid/<id> | 200, transaction status changed to done | New |
+| C9- | test_mark_paid_with_actual_amount | projected expense | POST with actual_amount=450 | Transaction actual_amount set | New |
+| C9- | test_mark_paid_returns_paid_row | projected expense | POST /dashboard/mark-paid/<id> | Response contains struck-through styling | New |
+| C9- | test_mark_paid_triggers_refresh | projected expense | POST /dashboard/mark-paid/<id> | HX-Trigger header contains dashboardRefresh | New |
+| C9- | test_bills_section_htmx | auth_client | GET /dashboard/bills (HX-Request) | 200, bills HTML partial | New |
+| C9- | test_balance_section_htmx | auth_client | GET /dashboard/balance (HX-Request) | 200, balance HTML partial | New |
+| C9- | test_dashboard_shows_alerts | seed_user, stale anchor | GET /dashboard | Alert message present | New |
+| C9- | test_dashboard_no_alerts | seed_user, fresh anchor | GET /dashboard | No alert section or empty | New |
+| C9- | test_dashboard_savings_goals | seed_full_user_data | GET /dashboard | Goal name and progress bar | New |
+| C9- | test_dashboard_debt_summary | seed_full_user_data + mortgage | GET /dashboard | DTI ratio displayed | New |
+| C9- | test_dashboard_spending_comparison | 2 periods with paid expenses | GET /dashboard | Current vs prior amounts shown | New |
+| C9- | test_dashboard_payday_info | seed_full_user_data | GET /dashboard | "days until payday" and amount | New |
+| C9- | test_mark_paid_wrong_user | second_auth_client, first user's txn | POST /dashboard/mark-paid/<id> | 404 (ownership check) | New |
+| C9- | test_mark_paid_transfer_shadow | Transfer shadow transaction | POST /dashboard/mark-paid/<id> | Both shadows updated via transfer_service | New |
 
 ### F. Manual verification steps
 
@@ -1755,7 +2387,7 @@ buttons are touch-target sized (min 44x44px).
 ### G. Downstream effects
 
 - The dashboard blueprint is registered but `/` still points to the grid. The route swap
-  happens in Commit 8.
+  happens in Commit 10.
 
 ### H. Rollback notes
 
@@ -1763,7 +2395,7 @@ Remove `dashboard_bp` from `__init__.py`, delete all new dashboard files. No mig
 
 ---
 
-## Commit 8: Default Route Swap and Nav Bar Update
+## Commit 10: Default Route Swap and Nav Bar Update
 
 ### A. Commit message
 
@@ -1815,12 +2447,12 @@ Active detection for "Budget": `request.path.startswith('/grid')`.
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C8-1 | test_root_serves_dashboard | auth_client | GET / | 200, contains "Upcoming Bills" | New |
-| C8-2 | test_grid_at_new_url | auth_client, seed_user | GET /grid | 200, contains grid content | New |
-| C8-3 | test_old_grid_url_gone | auth_client | GET / | Does NOT contain grid table | New |
-| C8-4 | test_nav_has_dashboard | auth_client | GET /grid | Nav contains "Dashboard" link | New |
-| C8-5 | test_nav_budget_points_to_grid | auth_client | GET / | "Budget" link href="/grid" | New |
-| C8-6 | test_grid_redirect_after_baseline | client, no scenario | POST /grid/create-baseline | Redirects to /grid | Mod |
+| C10- | test_root_serves_dashboard | auth_client | GET / | 200, contains "Upcoming Bills" | New |
+| C10- | test_grid_at_new_url | auth_client, seed_user | GET /grid | 200, contains grid content | New |
+| C10- | test_old_grid_url_gone | auth_client | GET / | Does NOT contain grid table | New |
+| C10- | test_nav_has_dashboard | auth_client | GET /grid | Nav contains "Dashboard" link | New |
+| C10- | test_nav_budget_points_to_grid | auth_client | GET / | "Budget" link href="/grid" | New |
+| C10- | test_grid_redirect_after_baseline | client, no scenario | POST /grid/create-baseline | Redirects to /grid | Mod |
 
 ### F. Manual verification steps
 
@@ -1844,7 +2476,7 @@ Revert route changes, revert nav bar. Grid returns to `/`. No migration.
 
 ---
 
-## Commit 9: Calendar Display Layer (8.2 + 6.6 Display)
+## Commit 11: Calendar Display Layer (8.2 + 6.6 Display)
 
 ### A. Commit message
 
@@ -2029,14 +2661,14 @@ are smaller. The year overview uses `row-cols-2` for a 2-column layout on small 
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C9-1 | test_calendar_month_renders | seed_full_user_data | GET /analytics/calendar?view=month (HX) | 200, month name in response | New |
-| C9-2 | test_calendar_year_renders | seed_full_user_data | GET /analytics/calendar?view=year (HX) | 200, 12 month cards | New |
-| C9-3 | test_calendar_navigation | seed_full_user_data | GET ?view=month&year=2026&month=3 | March 2026 displayed | New |
-| C9-4 | test_calendar_paycheck_highlighting | seed_periods | GET ?view=month | Paycheck days have highlight class | New |
-| C9-5 | test_calendar_large_txn_marker | seed_full_user_data, txn > threshold | GET ?view=month | Transaction marked as large | New |
-| C9-6 | test_calendar_third_paycheck_badge | 52 periods | GET ?view=year | 2 months have "3rd check" badge | New |
-| C9-7 | test_calendar_empty_month | No transactions | GET ?view=month | Month renders with empty day cells | New |
-| C9-8 | test_calendar_no_htmx_redirect | auth_client | GET /analytics/calendar (no HX-Request) | 302 redirect to /analytics | Existing |
+| C11- | test_calendar_month_renders | seed_full_user_data | GET /analytics/calendar?view=month (HX) | 200, month name in response | New |
+| C11- | test_calendar_year_renders | seed_full_user_data | GET /analytics/calendar?view=year (HX) | 200, 12 month cards | New |
+| C11- | test_calendar_navigation | seed_full_user_data | GET ?view=month&year=2026&month=3 | March 2026 displayed | New |
+| C11- | test_calendar_paycheck_highlighting | seed_periods | GET ?view=month | Paycheck days have highlight class | New |
+| C11- | test_calendar_large_txn_marker | seed_full_user_data, txn > threshold | GET ?view=month | Transaction marked as large | New |
+| C11- | test_calendar_third_paycheck_badge | 52 periods | GET ?view=year | 2 months have "3rd check" badge | New |
+| C11- | test_calendar_empty_month | No transactions | GET ?view=month | Month renders with empty day cells | New |
+| C11- | test_calendar_no_htmx_redirect | auth_client | GET /analytics/calendar (no HX-Request) | 302 redirect to /analytics | Existing |
 
 ### F. Manual verification steps
 
@@ -2052,7 +2684,7 @@ are smaller. The year overview uses `row-cols-2` for a 2-column layout on small 
 
 ### G. Downstream effects
 
-None. This replaces the calendar tab placeholder from Commit 2.
+None. This replaces the calendar tab placeholder from Commit 3.
 
 ### H. Rollback notes
 
@@ -2060,7 +2692,211 @@ Revert analytics route to placeholder, delete new templates and JS. No migration
 
 ---
 
-## Commit 10: Year-End Summary Service Engine (8.3)
+## Commit 12: Due Date UI -- Template Form and Transaction Override
+
+### A. Commit message
+
+```text
+feat(ui): add due_day_of_month to template form and due_date override to transaction edit
+```
+
+### B. Problem statement
+
+The `due_day_of_month` column (Commit 2) exists on RecurrenceRule but has no UI to set it.
+The `due_date` column exists on Transaction but has no UI to override it. This commit adds:
+(1) an optional "Due date differs from scheduled date" section to the template create/edit
+form, and (2) an editable `due_date` field to the transaction full-edit popover and grid
+display.
+
+### C. Files modified
+
+- `app/templates/templates/form.html` (~160 lines) -- Add checkbox + `due_day_of_month` field.
+- `app/static/js/recurrence_form.js` -- Add show/hide logic for `due_day_of_month`.
+- `app/routes/templates.py` (514 lines) -- Handle `due_day_of_month` in create/update.
+- `app/templates/grid/_transaction_full_edit.html` (122 lines) -- Add `due_date` field.
+- `app/templates/grid/_transaction_cell.html` (58 lines) -- Show due date in tooltip.
+- `app/routes/transactions.py` (633 lines) -- Handle `due_date` override in PATCH endpoint.
+- `app/schemas/validation.py` (1281 lines) -- Already updated in Commit 2 (no new changes).
+- `tests/test_routes/test_templates.py` (1088 lines) -- Add due_day_of_month form tests.
+- `tests/test_routes/test_transactions.py` -- Add due_date override tests.
+
+### D. Implementation approach
+
+**Template form (`templates/form.html`):**
+
+Add a new section inside the `#recurrence-fields` container, visible only when a pattern with
+`day_of_month` is selected (Monthly, Quarterly, Semi-Annual, Annual):
+
+```html
+<div id="due-day-group" class="mb-2 d-none">
+  <div class="form-check">
+    <input type="checkbox" class="form-check-input" id="due_day_differs"
+           {{ 'checked' if template and template.recurrence_rule and
+              template.recurrence_rule.due_day_of_month else '' }}>
+    <label class="form-check-label" for="due_day_differs">
+      Due date differs from scheduled date
+    </label>
+  </div>
+  <div id="due-day-input" class="mt-2 {{ '' if template and template.recurrence_rule and
+       template.recurrence_rule.due_day_of_month else 'd-none' }}">
+    <label class="form-label mb-0 small">Due day of month</label>
+    <input type="number" name="due_day_of_month" min="1" max="31"
+           class="form-control form-control-sm"
+           value="{{ template.recurrence_rule.due_day_of_month or ''
+                    if template and template.recurrence_rule else '' }}"
+           placeholder="1-31">
+    <small class="form-text text-muted">
+      If the bill is drafted on the 22nd but due on the 1st of the next month,
+      enter 1 here. Dates earlier than the scheduled day are assumed to be next month.
+    </small>
+  </div>
+</div>
+```
+
+**Recurrence form JS (`recurrence_form.js`):**
+
+Add logic to `updateFields()`:
+- Show `#due-day-group` when the selected pattern uses `day_of_month` (MONTHLY, QUARTERLY,
+  SEMI_ANNUAL, ANNUAL).
+- Hide it for other patterns.
+- Toggle `#due-day-input` visibility based on the checkbox state.
+- When the checkbox is unchecked, clear the `due_day_of_month` input value.
+
+```javascript
+// Inside updateFields():
+var dueGroup = document.getElementById('due-day-group');
+var dueInput = document.getElementById('due-day-input');
+var dueCheck = document.getElementById('due_day_differs');
+if (showsDayOfMonth) {
+  dueGroup.classList.remove('d-none');
+} else {
+  dueGroup.classList.add('d-none');
+}
+
+dueCheck.addEventListener('change', function() {
+  if (this.checked) {
+    dueInput.classList.remove('d-none');
+  } else {
+    dueInput.classList.add('d-none');
+    document.querySelector('input[name="due_day_of_month"]').value = '';
+  }
+});
+```
+
+**Template route changes (`templates.py`):**
+
+In `create_template()` (line ~94-180): Extract `due_day_of_month` from validated data when
+creating or updating the RecurrenceRule. Add to the rule creation:
+
+```python
+if due_day_of_month is not None:
+    rule.due_day_of_month = due_day_of_month
+```
+
+In `update_template()` (line ~218-318): Same pattern. If the checkbox is unchecked (field is
+empty/None), set `rule.due_day_of_month = None`.
+
+**Transaction full-edit popover (`_transaction_full_edit.html`):**
+
+Add a `due_date` field after the Notes field (line 58):
+
+```html
+{# Due date (read-only by default, editable on toggle) #}
+{% if txn.due_date %}
+<div class="mb-2">
+  <label class="form-label mb-0 small d-flex justify-content-between">
+    Due Date
+    <a href="#" class="small" data-action="toggle-due-date"
+       title="Override due date">
+      <i class="bi bi-pencil-square"></i>
+    </a>
+  </label>
+  <div id="due-date-display-{{ txn.id }}">
+    <small class="text-muted">{{ txn.due_date.strftime('%-m/%-d/%Y') }}</small>
+  </div>
+  <div id="due-date-edit-{{ txn.id }}" class="d-none">
+    <input type="date" name="due_date"
+           value="{{ txn.due_date.isoformat() }}"
+           class="form-control form-control-sm">
+  </div>
+</div>
+{% endif %}
+```
+
+The pencil icon toggles between display and edit mode via a small JS handler in `grid_edit.js`
+(or inline via `data-action` pattern already used for close-popover).
+
+**Transaction cell display (`_transaction_cell.html`):**
+
+Add due date to the tooltip content (the `title` attribute on the cell). Currently shows
+amount and status. Add due date when it differs from the period start:
+
+```html
+{% if txn.due_date and txn.due_date != txn.pay_period.start_date %}
+  <small class="d-block text-muted">Due: {{ txn.due_date.strftime('%-m/%-d') }}</small>
+{% endif %}
+```
+
+**Transaction PATCH endpoint (`transactions.py`):**
+
+In `update_transaction()` (line 118-191), add handling for `due_date` in the update data:
+
+```python
+if "due_date" in data:
+    txn.due_date = data["due_date"]
+    # For transfer shadows, propagate to both shadows.
+    if txn.transfer_id is not None:
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id, due_date=data["due_date"]
+        )
+```
+
+### E. Test cases
+
+| ID | Test name | Setup | Action | Expected | New/Mod |
+|----|-----------|-------|--------|----------|---------|
+| C12-1 | test_create_template_with_due_day | auth_client | POST /templates with due_day_of_month=1 | RecurrenceRule.due_day_of_month = 1 | New |
+| C12-2 | test_create_template_without_due_day | auth_client | POST /templates, no due_day_of_month | RecurrenceRule.due_day_of_month = None | New |
+| C12-3 | test_update_template_add_due_day | Template without due_day | POST update with due_day_of_month=15 | Rule updated, transactions regenerated with new due_dates | New |
+| C12-4 | test_update_template_remove_due_day | Template with due_day=15 | POST update with due_day_of_month="" (empty) | Rule.due_day_of_month = None | New |
+| C12-5 | test_due_day_validation_min | auth_client | POST with due_day_of_month=0 | Validation error | New |
+| C12-6 | test_due_day_validation_max | auth_client | POST with due_day_of_month=32 | Validation error | New |
+| C12-7 | test_transaction_override_due_date | Txn with due_date=Jan 15 | PATCH with due_date=2026-01-20 | txn.due_date = Jan 20 | New |
+| C12-8 | test_transaction_override_due_date_null | Txn with overridden due_date | PATCH with due_date=null | txn.due_date = null | New |
+| C12-9 | test_transaction_override_shadow_propagates | Shadow txn | PATCH due_date on shadow | Both shadows updated | New |
+| C12-10 | test_full_edit_shows_due_date | Txn with due_date | GET quick-edit full view | Due date displayed | New |
+| C12-11 | test_cell_tooltip_shows_due_date | Txn where due_date != period start | GET grid page | Cell shows "Due: M/D" | New |
+| C12-12 | test_regeneration_updates_due_dates | Template with due_day_of_month, update amount | POST update template | Regenerated txns have correct due_dates | New |
+
+### F. Manual verification steps
+
+1. Create a new template with Monthly pattern, day_of_month=22. Check the "Due date differs"
+   checkbox. Enter due_day_of_month=1. Save. Verify the generated transactions have
+   `due_date` on the 1st of the month after the 22nd.
+2. Edit the template. Uncheck the checkbox. Save. Verify `due_day_of_month` is cleared and
+   regenerated transactions have `due_date` matching `day_of_month`.
+3. In the grid, click a transaction cell. Open full edit. Verify due date is shown. Click the
+   pencil icon. Verify the date picker appears. Change the date. Save. Verify the override
+   persists.
+4. Verify the transaction cell shows "Due: M/D" for transactions where due_date differs from
+   the period start.
+5. Test at 375px width. Verify the due date field in full edit is usable.
+
+### G. Downstream effects
+
+- Templates with `due_day_of_month` set will generate transactions with correct `due_date`
+  values that differ from the pay period scheduling date.
+- The calendar (Commit 11) will display these transactions on the correct day.
+- The dashboard (Commit 9) will sort bills by the correct due date.
+
+### H. Rollback notes
+
+Revert template, JS, and route changes. The `due_day_of_month` column remains in the database
+(added by Commit 2's migration) but is unused. No data loss.
+
+---
+
+## Commit 13: Year-End Summary Service Engine (8.3)
 
 ### A. Commit message
 
@@ -2150,16 +2986,16 @@ calculator or growth engine. Total contributions = sum of shadow income transact
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C10-1 | test_year_end_empty | User, no salary/txns | `compute_year_end_summary(uid, 2026)` | All sections zero/empty | New |
-| C10-2 | test_income_aggregation | Salary profile, 26 periods in year | compute | gross = annual_salary, net = 26 * net_biweekly | New |
-| C10-3 | test_tax_breakdown | Salary profile with known brackets | compute | Federal tax matches sum of per-period calculations. Hand-computed: $75,000 salary -> taxable ~$60,050 -> ~$6,786 federal (verify with bracket math) | New |
-| C10-4 | test_mortgage_interest_total | Mortgage with 12 payments in year | compute | mortgage_interest_total = sum of interest portions. Hand-computed: $240,000 at 6.5%, first year ~$15,500 interest | New |
-| C10-5 | test_spending_by_category | 3 paid expenses in 2 categories | compute | Categories grouped, totals correct | New |
-| C10-6 | test_spending_hierarchy | Multiple items in same group | compute | Group total = sum of item totals | New |
-| C10-7 | test_transfers_summary | Transfers to savings and mortgage | compute | Grouped by destination, amounts summed | New |
-| C10-8 | test_net_worth_12_points | Account with varying balance | compute | 12 monthly values, jan1 and dec31 match endpoints | New |
-| C10-9 | test_debt_progress | Mortgage, payments made | compute | jan1_balance > dec31_balance, principal_paid = difference | New |
-| C10-10 | test_savings_progress | Savings account, contributions | compute | dec31 > jan1, contributions = sum of transfers in | New |
+| C13-1 | test_year_end_empty | User, no salary/txns | `compute_year_end_summary(uid, 2026)` | All sections zero/empty | New |
+| C13-2 | test_income_aggregation | Salary profile, 26 periods in year | compute | gross = annual_salary, net = 26 * net_biweekly | New |
+| C13-3 | test_tax_breakdown | Salary profile with known brackets | compute | Federal tax matches sum of per-period calculations. Hand-computed: $75,000 salary -> taxable ~$60,050 -> ~$6,786 federal (verify with bracket math) | New |
+| C13-4 | test_mortgage_interest_total | Mortgage with 12 payments in year | compute | mortgage_interest_total = sum of interest portions. Hand-computed: $240,000 at 6.5%, first year ~$15,500 interest | New |
+| C13-5 | test_spending_by_category | 3 paid expenses in 2 categories | compute | Categories grouped, totals correct | New |
+| C13-6 | test_spending_hierarchy | Multiple items in same group | compute | Group total = sum of item totals | New |
+| C13-7 | test_transfers_summary | Transfers to savings and mortgage | compute | Grouped by destination, amounts summed | New |
+| C13-8 | test_net_worth_12_points | Account with varying balance | compute | 12 monthly values, jan1 and dec31 match endpoints | New |
+| C13-9 | test_debt_progress | Mortgage, payments made | compute | jan1_balance > dec31_balance, principal_paid = difference | New |
+| C13-10 | test_savings_progress | Savings account, contributions | compute | dec31 > jan1, contributions = sum of transfers in | New |
 
 ### F. Manual verification steps
 
@@ -2175,7 +3011,7 @@ Delete the new files. No migration, no data impact.
 
 ---
 
-## Commit 11: Year-End Summary Display Layer (8.3 Display)
+## Commit 14: Year-End Summary Display Layer (8.3 Display)
 
 ### A. Commit message
 
@@ -2246,12 +3082,12 @@ dollar values.
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C11-1 | test_year_end_tab_renders | seed_full_user_data | GET /analytics/year-end (HX) | 200, contains year-end content | New |
-| C11-2 | test_year_end_year_selector | seed_full_user_data | GET ?year=2026 | 2026 data displayed | New |
-| C11-3 | test_year_end_income_section | Salary profile | GET year-end | Gross wages and net pay shown | New |
-| C11-4 | test_year_end_spending_section | Paid expenses | GET year-end | Category groups visible | New |
-| C11-5 | test_year_end_net_worth_chart | Account data | GET year-end | Canvas element with data attributes | New |
-| C11-6 | test_year_end_empty_year | No data for year | GET ?year=2025 | Empty state message | New |
+| C14- | test_year_end_tab_renders | seed_full_user_data | GET /analytics/year-end (HX) | 200, contains year-end content | New |
+| C14- | test_year_end_year_selector | seed_full_user_data | GET ?year=2026 | 2026 data displayed | New |
+| C14- | test_year_end_income_section | Salary profile | GET year-end | Gross wages and net pay shown | New |
+| C14- | test_year_end_spending_section | Paid expenses | GET year-end | Category groups visible | New |
+| C14- | test_year_end_net_worth_chart | Account data | GET year-end | Canvas element with data attributes | New |
+| C14- | test_year_end_empty_year | No data for year | GET ?year=2025 | Empty state message | New |
 
 ### F. Manual verification steps
 
@@ -2273,7 +3109,7 @@ Revert analytics route to placeholder, delete new templates and JS. No migration
 
 ---
 
-## Commit 12: Budget Variance Display Layer (6.5 Display)
+## Commit 15: Budget Variance Display Layer (6.5 Display)
 
 ### A. Commit message
 
@@ -2363,13 +3199,13 @@ over/under). Uses `ShekelChart.create()` pattern. Dollar formatting on y-axis.
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C12-1 | test_variance_tab_renders | seed_full_user_data | GET /analytics/variance (HX) | 200, contains variance content | New |
-| C12-2 | test_variance_pay_period_window | seed_full_user_data | GET ?window=pay_period | Current period data shown | New |
-| C12-3 | test_variance_monthly_window | seed_full_user_data | GET ?window=month&month=1&year=2026 | Monthly data shown | New |
-| C12-4 | test_variance_annual_window | seed_full_user_data | GET ?window=year&year=2026 | Annual data shown | New |
-| C12-5 | test_variance_chart_data | seed_full_user_data | GET variance | Canvas with data-labels, data-estimated, data-actual | New |
-| C12-6 | test_variance_detail_drilldown | seed_full_user_data | GET /analytics/variance/detail/<cat_id> (HX) | Transaction-level rows shown | New |
-| C12-7 | test_variance_color_coding | Over-budget category | GET variance | Red styling on over-budget row | New |
+| C15- | test_variance_tab_renders | seed_full_user_data | GET /analytics/variance (HX) | 200, contains variance content | New |
+| C15- | test_variance_pay_period_window | seed_full_user_data | GET ?window=pay_period | Current period data shown | New |
+| C15- | test_variance_monthly_window | seed_full_user_data | GET ?window=month&month=1&year=2026 | Monthly data shown | New |
+| C15- | test_variance_annual_window | seed_full_user_data | GET ?window=year&year=2026 | Annual data shown | New |
+| C15- | test_variance_chart_data | seed_full_user_data | GET variance | Canvas with data-labels, data-estimated, data-actual | New |
+| C15- | test_variance_detail_drilldown | seed_full_user_data | GET /analytics/variance/detail/<cat_id> (HX) | Transaction-level rows shown | New |
+| C15- | test_variance_color_coding | Over-budget category | GET variance | Red styling on over-budget row | New |
 
 ### F. Manual verification steps
 
@@ -2390,7 +3226,7 @@ Revert analytics route to placeholder, delete new templates and JS. No migration
 
 ---
 
-## Commit 13: Spending Trends Display Layer (6.7 Display)
+## Commit 16: Spending Trends Display Layer (6.7 Display)
 
 ### A. Commit message
 
@@ -2458,13 +3294,13 @@ def trends_group_detail(group_name):
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C13-1 | test_trends_tab_renders | seed_full_user_data (6+ months) | GET /analytics/trends (HX) | 200, trend lists present | New |
-| C13-2 | test_trends_insufficient_data | seed_user (no data) | GET trends | "Not enough data" banner | New |
-| C13-3 | test_trends_preliminary_banner | 3-month user | GET trends | "Trends are preliminary" banner | New |
-| C13-4 | test_trends_up_list | Categories with increases | GET trends | Red arrows, percentage shown | New |
-| C13-5 | test_trends_down_list | Categories with decreases | GET trends | Green arrows, percentage shown | New |
-| C13-6 | test_trends_group_drilldown | seed_full_user_data | GET /analytics/trends/group/Auto (HX) | Group items listed with trends | New |
-| C13-7 | test_trends_no_htmx_redirect | auth_client | GET /analytics/trends (no HX) | 302 redirect | Existing |
+| C16-1 | test_trends_tab_renders | seed_full_user_data (6+ months) | GET /analytics/trends (HX) | 200, trend lists present | New |
+| C16-2 | test_trends_insufficient_data | seed_user (no data) | GET trends | "Not enough data" banner | New |
+| C16-3 | test_trends_preliminary_banner | 3-month user | GET trends | "Trends are preliminary" banner | New |
+| C16-4 | test_trends_up_list | Categories with increases | GET trends | Red arrows, percentage shown | New |
+| C16-5 | test_trends_down_list | Categories with decreases | GET trends | Green arrows, percentage shown | New |
+| C16-6 | test_trends_group_drilldown | seed_full_user_data | GET /analytics/trends/group/Auto (HX) | Group items listed with trends | New |
+| C16-7 | test_trends_no_htmx_redirect | auth_client | GET /analytics/trends (no HX) | 302 redirect | Existing |
 
 ### F. Manual verification steps
 
@@ -2486,7 +3322,7 @@ Revert analytics route to placeholder, delete new templates. No migration.
 
 ---
 
-## Commit 14: CSV Export for All Analytics Views
+## Commit 17: CSV Export for All Analytics Views
 
 ### A. Commit message
 
@@ -2522,7 +3358,7 @@ import io
 def export_calendar_csv(data: MonthSummary | YearOverview) -> str:
     """Export calendar data as CSV.
 
-    Columns: Date, Name, Category, Amount, Status, Account.
+    Columns: Due Date, Name, Category, Amount, Status, Account, Paid At.
     For year overview: one row per transaction across all months.
     """
 
@@ -2589,16 +3425,16 @@ download.
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C14-1 | test_calendar_csv_export | seed_full_user_data | GET /analytics/calendar?format=csv | 200, Content-Type: text/csv | New |
-| C14-2 | test_calendar_csv_content | seed_full_user_data with txns | GET calendar?format=csv | CSV contains transaction names and amounts | New |
-| C14-3 | test_year_end_csv_export | seed_full_user_data | GET /analytics/year-end?format=csv&year=2026 | 200, Content-Type: text/csv | New |
-| C14-4 | test_year_end_csv_sections | seed_full_user_data | GET year-end?format=csv | CSV has [Income and Taxes] section header | New |
-| C14-5 | test_variance_csv_export | seed_full_user_data | GET /analytics/variance?format=csv | 200, Content-Type: text/csv | New |
-| C14-6 | test_variance_csv_includes_transactions | seed_full_user_data | GET variance?format=csv | CSV has category group AND transaction rows | New |
-| C14-7 | test_trends_csv_export | seed_full_user_data | GET /analytics/trends?format=csv | 200, Content-Type: text/csv | New |
-| C14-8 | test_csv_requires_auth | client | GET calendar?format=csv | 302 redirect to login | New |
-| C14-9 | test_csv_content_disposition | seed_full_user_data | GET calendar?format=csv | Content-Disposition: attachment header present | New |
-| C14-10 | test_export_calendar_empty | No transactions | export_calendar_csv(empty) | CSV with headers only, no data rows | New |
+| C17-1 | test_calendar_csv_export | seed_full_user_data | GET /analytics/calendar?format=csv | 200, Content-Type: text/csv | New |
+| C17-2 | test_calendar_csv_content | seed_full_user_data with txns | GET calendar?format=csv | CSV contains transaction names and amounts | New |
+| C17-3 | test_year_end_csv_export | seed_full_user_data | GET /analytics/year-end?format=csv&year=2026 | 200, Content-Type: text/csv | New |
+| C17-4 | test_year_end_csv_sections | seed_full_user_data | GET year-end?format=csv | CSV has [Income and Taxes] section header | New |
+| C17-5 | test_variance_csv_export | seed_full_user_data | GET /analytics/variance?format=csv | 200, Content-Type: text/csv | New |
+| C17-6 | test_variance_csv_includes_transactions | seed_full_user_data | GET variance?format=csv | CSV has category group AND transaction rows | New |
+| C17-7 | test_trends_csv_export | seed_full_user_data | GET /analytics/trends?format=csv | 200, Content-Type: text/csv | New |
+| C17-8 | test_csv_requires_auth | client | GET calendar?format=csv | 302 redirect to login | New |
+| C17-9 | test_csv_content_disposition | seed_full_user_data | GET calendar?format=csv | Content-Disposition: attachment header present | New |
+| C17-10 | test_export_calendar_empty | No transactions | export_calendar_csv(empty) | CSV with headers only, no data rows | New |
 
 ### F. Manual verification steps
 
@@ -2618,7 +3454,7 @@ Remove `?format=csv` handling from analytics routes, delete CSV service. No migr
 
 ---
 
-## Commit 15: Remove Old Charts Route and Templates, Final Cleanup
+## Commit 18: Remove Old Charts Route and Templates, Final Cleanup
 
 ### A. Commit message
 
@@ -2692,12 +3528,12 @@ files (growth_chart, payoff_chart, retirement_gap_chart, debt_strategy, chart_th
 
 | ID | Test name | Setup | Action | Expected | New/Mod |
 |----|-----------|-------|--------|----------|---------|
-| C15-1 | test_charts_redirects_to_analytics | auth_client | GET /charts | 301 redirect to /analytics | New |
-| C15-2 | test_chart_fragments_gone | auth_client | GET /charts/balance-over-time (HX) | 301 or 404 | New |
-| C15-3 | test_loan_chart_still_works | auth_client, loan account | GET loan dashboard | Amortization chart renders | New |
-| C15-4 | test_salary_chart_still_works | auth_client, salary profile | GET salary projection | Net pay chart renders | New |
-| C15-5 | test_no_dead_script_includes | auth_client | GET any page | No 404s for deleted JS files | New |
-| C15-6 | test_chart_data_service_retained_functions | seed_full_user_data | Call get_amortization_breakdown | Returns valid data | Mod |
+| C18-1 | test_charts_redirects_to_analytics | auth_client | GET /charts | 301 redirect to /analytics | New |
+| C18-2 | test_chart_fragments_gone | auth_client | GET /charts/balance-over-time (HX) | 301 or 404 | New |
+| C18-3 | test_loan_chart_still_works | auth_client, loan account | GET loan dashboard | Amortization chart renders | New |
+| C18-4 | test_salary_chart_still_works | auth_client, salary profile | GET salary projection | Net pay chart renders | New |
+| C18-5 | test_no_dead_script_includes | auth_client | GET any page | No 404s for deleted JS files | New |
+| C18-6 | test_chart_data_service_retained_functions | seed_full_user_data | Call get_amortization_breakdown | Returns valid data | Mod |
 
 ### F. Manual verification steps
 
@@ -2720,22 +3556,80 @@ non-charts pages that use Chart.js still function.
 
 ---
 
+## Opportunities
+
+Optional enhancements identified during the code audit. These are not committed work -- they
+are options for the developer to consider during or after implementation.
+
+### OP-1: "Paid on time" indicator on the dashboard
+
+**What:** Compare `paid_at` to `due_date` for each bill in the upcoming bills section. Show a
+green check for bills paid before or on the due date, a yellow warning for bills paid 1-3 days
+late, and a red indicator for bills paid >3 days late.
+
+**Effort:** ~20 lines of template logic plus 2-3 CSS classes. No new service code -- both
+fields are already on the Transaction model.
+
+**Tradeoff:** Adds visual noise to the bills list. Some users may find "late" indicators
+discouraging rather than helpful. Could be gated behind a user setting.
+
+### OP-2: Late payment summary in the year-end report
+
+**What:** Add a "Payment Timeliness" section to the year-end summary (Commit 13/14) showing:
+total bills paid, bills paid on time, bills paid late, average days before due date.
+
+**Effort:** ~30 lines of service code querying paid transactions where `paid_at > due_date`.
+~20 lines of template code.
+
+**Tradeoff:** Requires `paid_at` and `due_date` to be reliably populated. After Commit 2's
+backfill, historical data uses `updated_at` as `paid_at` which may not reflect the actual
+payment date. This metric becomes more accurate over time as real `paid_at` values accumulate.
+
+### OP-3: Average days-before-due-date metric on spending trends
+
+**What:** Extend the spending trend service (Commit 7) to compute `avg_days_early` per
+category -- the average number of days between `paid_at` and `due_date` for paid transactions.
+Categories where users consistently pay late may indicate cash flow pressure.
+
+**Effort:** ~20 lines of service code, one new field on `ItemTrend` dataclass.
+
+**Tradeoff:** Same `paid_at` accuracy caveat as OP-2. Only useful after several months of
+real payment data accumulates.
+
+### OP-4: Batch `due_day_of_month` setup wizard
+
+**What:** After the template form UI (Commit 12) ships, provide a one-time "Set due dates"
+wizard accessible from Settings that lists all monthly/quarterly/annual templates and lets the
+user enter `due_day_of_month` for each in a single table view rather than editing templates
+one by one.
+
+**Effort:** One new route endpoint, one new template (~50 lines), form handler that bulk-updates
+recurrence rules.
+
+**Tradeoff:** Only useful if the user has many templates. For 5-10 templates, editing
+individually is fine. For 20+, the batch wizard saves significant time.
+
+---
+
 ## Commit Checklist
 
 | # | Commit Message | Summary |
 |---|----------------|---------|
 | 1 | `fix(charts): add year to x-axis labels crossing year boundary; add Section 8 settings columns` | X-axis date fix for all charts; migration adding large_transaction_threshold, trend_alert_threshold, anchor_staleness_days to user_settings |
-| 2 | `feat(analytics): create /analytics route with lazy-loaded tab structure` | Analytics page shell with 4 tab pills, HTMX lazy-loading, nav bar rename Charts->Analytics |
-| 3 | `feat(calendar): add calendar service for month/year expense aggregation and 3rd paycheck detection` | Calendar engine: month grouping, day assignment, large/infrequent flagging, 3rd paycheck detection, month-end balance |
-| 4 | `feat(variance): add budget variance analysis service with pay-period, monthly, and annual views` | Variance engine: estimated vs actual per category, three time windows, drill-down data |
-| 5 | `feat(trends): add spending trend detection service with linear regression and threshold flagging` | Trend engine: rolling window analysis, linear regression, threshold flagging, top-5 lists |
-| 6 | `feat(dashboard): add dashboard service aggregating balance, bills, alerts, paycheck, goals, and debt data` | Dashboard service: 7 sections aggregating data from existing services |
-| 7 | `feat(dashboard): add summary dashboard page with mark-paid, true-up, and HTMX refresh` | Dashboard template with all sections, mark-as-paid interaction, inline true-up, HTMX refresh |
-| 8 | `feat(dashboard): make dashboard the default route, move grid to /grid` | Route swap: dashboard at /, grid at /grid, nav bar updated |
-| 9 | `feat(calendar): add month detail and year overview calendar views to analytics page` | Calendar display: 7-column month grid with markers, 4x3 year overview with totals, HTMX navigation |
-| 10 | `feat(year-end): add year-end summary service aggregating income, taxes, spending, transfers, net worth, and debt progress` | Year-end engine: W-2-style income/tax, spending by category, net worth trend, debt/savings progress |
-| 11 | `feat(year-end): add year-end summary view with income/tax breakdown, spending, and net worth chart` | Year-end display: structured annual report with Chart.js net worth line chart |
-| 12 | `feat(variance): add budget variance view with bar chart, drill-down table, and time window toggle` | Variance display: grouped bar chart, category table with expandable rows, period/month/year toggle |
-| 13 | `feat(trends): add spending trend view with top-5 lists and category drill-down` | Trends display: top-5 up/down lists, direction indicators, group drill-down, data sufficiency banner |
-| 14 | `feat(export): add CSV export endpoints for calendar, year-end, variance, and trends tabs` | CSV export: ?format=csv on each analytics tab, Content-Disposition download |
-| 15 | `refactor(charts): remove old /charts route, templates, and JS; clean up chart_data_service` | Cleanup: delete 8 templates, 7 JS files, prune unused service functions, add /charts->analytics redirect |
+| 2 | `feat(transaction): add due_date and paid_at to transactions, due_day_of_month to recurrence rules` | Migration adding due_date/paid_at to Transaction, due_day_of_month to RecurrenceRule; recurrence engine populates due_date; mark-paid sets paid_at; backfill existing data |
+| 3 | `feat(analytics): create /analytics route with nav-pills lazy-loaded tab structure` | Analytics page shell with 4 nav-pills, HTMX lazy-loading, nav bar rename Charts->Analytics |
+| 4 | `refactor(ui): standardize Bootstrap nav-pills across all tabbed interfaces` | Convert loan dashboard from nav-tabs to nav-pills; replace mobile-scroll-tabs CSS with non-conditional shekel-scroll-pills |
+| 5 | `feat(calendar): add calendar service for month/year expense aggregation and 3rd paycheck detection` | Calendar engine: reads txn.due_date directly, month grouping, large/infrequent flagging, 3rd paycheck detection, month-end balance |
+| 6 | `feat(variance): add budget variance analysis service with pay-period, monthly, and annual views` | Variance engine: estimated vs actual per category, monthly attribution uses due_date, three time windows, drill-down data |
+| 7 | `feat(trends): add spending trend detection service with linear regression and threshold flagging` | Trend engine: rolling window analysis, linear regression, threshold flagging, top-5 lists |
+| 8 | `feat(dashboard): add dashboard service aggregating balance, bills, alerts, paycheck, goals, and debt data` | Dashboard service: 7 sections, bills sorted by due_date, aggregating data from existing services |
+| 9 | `feat(dashboard): add summary dashboard page with mark-paid, true-up, and HTMX refresh` | Dashboard template with all sections, mark-as-paid interaction, inline true-up, HTMX refresh |
+| 10 | `feat(dashboard): make dashboard the default route, move grid to /grid` | Route swap: dashboard at /, grid at /grid, nav bar updated |
+| 11 | `feat(calendar): add month detail and year overview calendar views to analytics page` | Calendar display: 7-column month grid with markers, 4x3 year overview with totals, HTMX navigation |
+| 12 | `feat(ui): add due_day_of_month to template form and due_date override to transaction edit` | Template form checkbox + due_day_of_month field; transaction full-edit due_date override; grid cell due date display |
+| 13 | `feat(year-end): add year-end summary service aggregating income, taxes, spending, transfers, net worth, and debt progress` | Year-end engine: W-2-style income/tax, spending by category, net worth trend, debt/savings progress |
+| 14 | `feat(year-end): add year-end summary view with income/tax breakdown, spending, and net worth chart` | Year-end display: structured annual report with Chart.js net worth line chart |
+| 15 | `feat(variance): add budget variance view with bar chart, drill-down table, and time window toggle` | Variance display: grouped bar chart, category table with expandable rows, period/month/year toggle |
+| 16 | `feat(trends): add spending trend view with top-5 lists and category drill-down` | Trends display: top-5 up/down lists, direction indicators, group drill-down, data sufficiency banner |
+| 17 | `feat(export): add CSV export endpoints for calendar, year-end, variance, and trends tabs` | CSV export: ?format=csv on each analytics tab, includes due_date and paid_at columns, Content-Disposition download |
+| 18 | `refactor(charts): remove old /charts route, templates, and JS; clean up chart_data_service` | Cleanup: delete 8 templates, 7 JS files, prune unused service functions, add /charts->analytics redirect |
