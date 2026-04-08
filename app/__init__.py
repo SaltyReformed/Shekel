@@ -292,6 +292,7 @@ def _register_blueprints(app):
     from app.routes.investment import investment_bp
     from app.routes.retirement import retirement_bp
     from app.routes.charts import charts_bp
+    from app.routes.analytics import analytics_bp
     from app.routes.debt_strategy import debt_strategy_bp
     from app.routes.obligations import obligations_bp
     from app.routes.health import health_bp
@@ -311,6 +312,7 @@ def _register_blueprints(app):
     app.register_blueprint(investment_bp)
     app.register_blueprint(retirement_bp)
     app.register_blueprint(charts_bp)
+    app.register_blueprint(analytics_bp)
     app.register_blueprint(debt_strategy_bp)
     app.register_blueprint(obligations_bp)
     app.register_blueprint(health_bp)

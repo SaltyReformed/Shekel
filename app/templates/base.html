@@ -97,9 +97,9 @@
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link{{ ' active' if request.path.startswith('/charts') else '' }}" href="{{ url_for('charts.dashboard') }}"
-               {% if request.path.startswith('/charts') %}aria-current="page"{% endif %}>
-              <i class="bi bi-bar-chart-line"></i> Charts
+            <a class="nav-link{{ ' active' if request.path.startswith('/analytics') else '' }}" href="{{ url_for('analytics.page') }}"
+               {% if request.path.startswith('/analytics') %}aria-current="page"{% endif %}>
+              <i class="bi bi-bar-chart-line"></i> Analytics
             </a>
           </li>
           <li class="nav-item">

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Analytics -- Shekel{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('grid.index') }}">Home</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Analytics</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
+
+<ul class="nav nav-pills mb-3" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.calendar_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click, load"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="true">
+      Calendar
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.year_end_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="false">
+      Year-End
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.variance_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="false">
+      Variance
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.trends_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="false">
+      Trends
+    </button>
+  </li>
+</ul>
+
+{# Loading indicator for subsequent tab switches -- survives content swaps
+   because it lives outside #tab-content.  HTMX toggles visibility via the
+   htmx-request class when a request targeting #tab-content is in flight. #}
+<div id="tab-spinner" class="htmx-indicator text-center py-3">
+  <div class="spinner-border spinner-border-sm text-secondary" role="status">
+    <span class="visually-hidden">Loading...</span>
+  </div>
+</div>
+
+<div id="tab-content">
+  {# Initial spinner shown until the Calendar tab auto-loads via hx-trigger="load" #}
+  <div class="d-flex justify-content-center py-5">
+    <div class="spinner-border text-secondary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+</div>
+{% endblock %}

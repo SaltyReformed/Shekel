@@ -66,11 +66,12 @@ class TestChartsDashboard:
             assert b"Net Pay Trajectory" in resp.data
 
     def test_charts_navbar_link(self, app, auth_client, seed_user):
-        """Charts link appears in the navbar."""
+        """Charts page still renders; nav link now points to Analytics."""
         with app.app_context():
             resp = auth_client.get("/charts")
             assert resp.status_code == 200
-            assert b'href="/charts"' in resp.data
+            # Nav link renamed from Charts to Analytics (Section 8 Commit 3).
+            assert b'href="/analytics"' in resp.data
 
 
 # ── Fragment Behavior Tests ─────────────────────────────────────────
