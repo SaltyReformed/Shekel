@@ -1,0 +1,78 @@
+{# Year overview -- 12 month cards in responsive grid with totals. #}
+
+{# Navigation #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <button class="btn btn-sm btn-outline-secondary"
+          hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year - 1) }}"
+          hx-target="#tab-content" hx-swap="innerHTML">
+    <i class="bi bi-chevron-left"></i> {{ year - 1 }}
+  </button>
+  <h5 class="mb-0">{{ year }}</h5>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-primary"
+            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
+            hx-target="#tab-content" hx-swap="innerHTML">
+      <i class="bi bi-calendar"></i> Month
+    </button>
+    <button class="btn btn-sm btn-outline-secondary"
+            hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year + 1) }}"
+            hx-target="#tab-content" hx-swap="innerHTML">
+      {{ year + 1 }} <i class="bi bi-chevron-right"></i>
+    </button>
+  </div>
+</div>
+
+{# Month cards #}
+<div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3 mb-3">
+  {% for card in month_cards %}
+  <div class="col">
+    <div class="card calendar-month-card h-100
+                {% if card.summary.net|float > 0 %}border-success{% elif card.summary.net|float < 0 %}border-danger{% endif %}"
+         hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year, month=card.summary.month) }}"
+         hx-target="#tab-content" hx-swap="innerHTML"
+         role="button" tabindex="0">
+      <div class="card-body py-2 px-3">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <strong class="small">{{ card.name }}</strong>
+          {% if card.summary.is_third_paycheck_month %}
+          <span class="badge bg-info" style="font-size: 0.65rem;">3rd check</span>
+          {% endif %}
+        </div>
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">Income</small>
+          <small class="font-mono text-success">${{ "{:,.0f}".format(card.summary.total_income|float) }}</small>
+        </div>
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">Expenses</small>
+          <small class="font-mono text-danger">${{ "{:,.0f}".format(card.summary.total_expenses|float) }}</small>
+        </div>
+        <hr class="my-1">
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">Net</small>
+          <small class="font-mono fw-bold {% if card.summary.net|float >= 0 %}text-success{% else %}text-danger{% endif %}">
+            ${{ "{:,.0f}".format(card.summary.net|float) }}
+          </small>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# Annual totals #}
+<div class="row g-2 text-center">
+  <div class="col-4">
+    <small class="text-muted d-block">Annual Income</small>
+    <span class="font-mono text-success">${{ "{:,.2f}".format(data.annual_income|float) }}</span>
+  </div>
+  <div class="col-4">
+    <small class="text-muted d-block">Annual Expenses</small>
+    <span class="font-mono text-danger">${{ "{:,.2f}".format(data.annual_expenses|float) }}</span>
+  </div>
+  <div class="col-4">
+    <small class="text-muted d-block">Annual Net</small>
+    <span class="font-mono fw-bold {% if data.annual_net|float >= 0 %}text-success{% else %}text-danger{% endif %}">
+      ${{ "{:,.2f}".format(data.annual_net|float) }}
+    </span>
+  </div>
+</div>
