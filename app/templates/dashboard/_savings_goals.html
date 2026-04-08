@@ -1,0 +1,28 @@
+{# Savings goals section partial -- progress bars for active goals. #}
+{% if savings_goals %}
+{% for goal in savings_goals %}
+<div class="mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-1">
+    <small class="fw-bold">{{ goal.name }}</small>
+    <small class="font-mono text-muted">
+      ${{ "{:,.2f}".format(goal.current_balance|float) }}
+      / ${{ "{:,.2f}".format(goal.target_amount|float) }}
+    </small>
+  </div>
+  <div class="progress" style="height: 8px;">
+    <div class="progress-bar {% if goal.pct_complete|float >= 100 %}bg-success{% else %}bg-primary{% endif %}"
+         role="progressbar"
+         style="width: {{ [goal.pct_complete|float, 100]|min }}%"
+         aria-valuenow="{{ goal.pct_complete|float }}"
+         aria-valuemin="0" aria-valuemax="100">
+    </div>
+  </div>
+  <small class="text-muted">{{ "{:.0f}".format(goal.pct_complete|float) }}% -- {{ goal.account_name }}</small>
+</div>
+{% endfor %}
+{% else %}
+<p class="text-muted mb-0">
+  No active savings goals.
+  <a href="{{ url_for('savings.dashboard') }}">Set up a goal</a>
+</p>
+{% endif %}

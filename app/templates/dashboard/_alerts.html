@@ -1,0 +1,16 @@
+{# Alerts section partial -- renders operational alerts. #}
+{% if alerts %}
+{% for alert in alerts %}
+<div class="alert alert-{{ alert.severity }} d-flex align-items-start py-2 px-3 mb-2" role="alert">
+  <i class="bi {% if alert.severity == 'danger' %}bi-exclamation-triangle-fill{% else %}bi-info-circle-fill{% endif %} me-2 mt-1"></i>
+  <div class="flex-grow-1">
+    <small>{{ alert.message }}</small>
+    {% if alert.link %}
+    <a href="{{ alert.link }}" class="d-block mt-1"><small>View details</small></a>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="text-muted mb-0"><i class="bi bi-shield-check"></i> All clear -- no alerts</p>
+{% endif %}

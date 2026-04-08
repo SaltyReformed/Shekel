@@ -1,0 +1,30 @@
+{# Debt summary section partial. #}
+{% if debt_summary %}
+<div class="d-flex justify-content-between mb-2">
+  <span class="text-muted">Total Debt</span>
+  <span class="font-mono fw-bold">${{ "{:,.2f}".format(debt_summary.total_debt|float) }}</span>
+</div>
+<div class="d-flex justify-content-between mb-2">
+  <span class="text-muted">Monthly Payments</span>
+  <span class="font-mono">${{ "{:,.2f}".format(debt_summary.total_monthly_payments|float) }}</span>
+</div>
+{% if debt_summary.dti_ratio is not none %}
+<div class="d-flex justify-content-between mb-2">
+  <span class="text-muted">DTI Ratio</span>
+  <span>
+    {{ "{:.1f}".format(debt_summary.dti_ratio|float) }}%
+    <span class="badge {% if debt_summary.dti_label == 'healthy' %}bg-success{% elif debt_summary.dti_label == 'moderate' %}bg-warning text-dark{% else %}bg-danger{% endif %} ms-1">
+      {{ debt_summary.dti_label|title }}
+    </span>
+  </span>
+</div>
+{% endif %}
+{% if debt_summary.projected_debt_free_date %}
+<div class="d-flex justify-content-between">
+  <span class="text-muted">Debt-Free Date</span>
+  <span>{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
+</div>
+{% endif %}
+{% else %}
+<p class="text-muted mb-0">No debt accounts</p>
+{% endif %}

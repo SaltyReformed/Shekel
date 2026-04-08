@@ -1,0 +1,17 @@
+{# Upcoming bills section partial -- lists unpaid expense transactions. #}
+{% if current_period %}
+<small class="text-muted d-block mb-2">
+  {{ current_period.start_date.strftime('%b %-d') }} --
+  {% if current_period.end_date %}{{ current_period.end_date.strftime('%b %-d, %Y') }}{% endif %}
+</small>
+{% endif %}
+
+{% if upcoming_bills %}
+<div class="bill-list">
+  {% for bill in upcoming_bills %}
+  {% include "dashboard/_bill_row.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-muted mb-0"><i class="bi bi-check-circle"></i> No upcoming bills</p>
+{% endif %}

@@ -1,0 +1,43 @@
+{# Single bill row -- used for initial render and HTMX swap after mark-paid. #}
+<div class="bill-row d-flex justify-content-between align-items-center py-2 px-2 border-bottom
+            {% if bill.is_paid|default(false) %}bill-row--paid{% endif %}">
+  <div class="d-flex align-items-center gap-2 flex-grow-1 min-width-0">
+    {% if bill.is_paid|default(false) %}
+    <i class="bi bi-check-circle-fill text-success"></i>
+    {% elif bill.is_transfer %}
+    <i class="bi bi-arrow-left-right text-muted"></i>
+    {% elif bill.days_until_due is not none and bill.days_until_due < 0 %}
+    <i class="bi bi-exclamation-circle-fill text-danger" title="Past due"></i>
+    {% elif bill.days_until_due is not none and bill.days_until_due <= 3 %}
+    <i class="bi bi-clock-fill text-warning" title="Due soon"></i>
+    {% else %}
+    <i class="bi bi-circle text-muted"></i>
+    {% endif %}
+    <div class="text-truncate">
+      <span class="{% if bill.is_paid|default(false) %}text-decoration-line-through text-muted{% endif %}">
+        {{ bill.name }}
+      </span>
+      {% if bill.category_group %}
+      <small class="text-muted d-block">{{ bill.category_group }}{% if bill.category_item %}: {{ bill.category_item }}{% endif %}</small>
+      {% endif %}
+    </div>
+  </div>
+  <div class="d-flex align-items-center gap-2 flex-shrink-0">
+    <span class="font-mono {% if bill.is_paid|default(false) %}text-muted text-decoration-line-through{% endif %}">
+      ${{ "{:,.2f}".format(bill.amount|float) }}
+    </span>
+    {% if bill.due_date %}
+    <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
+    {% endif %}
+    {% if not bill.is_paid|default(false) %}
+    <button class="btn btn-sm btn-outline-success mark-paid-btn"
+            hx-post="{{ url_for('dashboard.mark_paid', txn_id=bill.id) }}"
+            hx-target="closest .bill-row"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            title="Mark as paid">
+      <i class="bi bi-check-lg"></i>
+    </button>
+    {% endif %}
+  </div>
+</div>

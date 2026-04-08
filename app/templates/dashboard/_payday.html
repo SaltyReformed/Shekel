@@ -1,0 +1,28 @@
+{# Payday info section partial. #}
+{% if payday_info.days_until is not none %}
+<div class="text-center">
+  <div class="fs-2 fw-bold" style="color: var(--shekel-accent);">
+    {{ payday_info.days_until }}
+  </div>
+  <small class="text-muted">days until payday</small>
+  {% if payday_info.next_date %}
+  <div class="mt-1">
+    <small class="text-muted">{{ payday_info.next_date.strftime('%b %-d, %Y') }}</small>
+  </div>
+  {% endif %}
+  {% if payday_info.next_amount is not none %}
+  <div class="mt-2">
+    <span class="font-mono fw-bold">${{ "{:,.2f}".format(payday_info.next_amount|float) }}</span>
+    <small class="text-muted d-block">projected net pay</small>
+  </div>
+  {% else %}
+  <div class="mt-2">
+    <small class="text-muted">
+      <a href="{{ url_for('salary.list_profiles') }}">Set up salary</a> to see projections
+    </small>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<p class="text-muted mb-0">No upcoming pay periods</p>
+{% endif %}
