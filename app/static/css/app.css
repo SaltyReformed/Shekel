@@ -1139,3 +1139,36 @@ td.htmx-loading::after {
     height: 8px;
   }
 }
+
+/* ── Year-End Summary ──────────────────────────────────────────── */
+
+.year-end-section .card-header {
+  background-color: var(--shekel-surface-raised);
+}
+
+.year-end-table {
+  margin-bottom: 0;
+}
+
+.year-end-table td,
+.year-end-table th {
+  padding: 0.5rem 0.75rem;
+  vertical-align: middle;
+}
+
+.year-end-subtotal td {
+  border-top: 2px solid var(--shekel-border-strong);
+}
+
+.year-end-delta-positive {
+  color: var(--shekel-done);
+}
+
+.year-end-delta-negative {
+  color: var(--shekel-danger);
+}
+
+.year-end-chart-wrap {
+  min-height: 280px;
+  position: relative;
+}

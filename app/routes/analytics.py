@@ -15,8 +15,9 @@ from flask_login import current_user, login_required
 from markupsafe import escape
 
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.user import UserSettings
-from app.services import calendar_service
+from app.services import calendar_service, year_end_summary_service
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -72,15 +73,37 @@ def calendar_tab():
 @analytics_bp.route("/analytics/year-end")
 @login_required
 def year_end_tab():
-    """HTMX partial: year-end summary tab placeholder.
+    """HTMX partial: year-end financial summary.
 
-    Returns a placeholder fragment until the full year-end summary
-    is implemented.  Non-HTMX requests redirect to the main
-    analytics page.
+    Renders a structured annual report with income/tax breakdown,
+    spending by category, transfers summary, net worth chart,
+    debt progress, and savings progress.
+
+    Query parameters:
+        year: Calendar year (default: current year).
+
+    Non-HTMX requests redirect to the main analytics page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
-    return "<p class='text-muted'>Year-end summary -- coming soon.</p>"
+
+    today = date.today()
+    year = request.args.get("year", today.year, type=int)
+    year = max(2000, min(2100, year))
+
+    data = year_end_summary_service.compute_year_end_summary(
+        current_user.id, year,
+    )
+
+    # Build available years for the year selector.
+    available_years = _get_available_years(current_user.id, today.year)
+
+    return render_template(
+        "analytics/_year_end.html",
+        data=data,
+        year=year,
+        available_years=available_years,
+    )
 
 
 @analytics_bp.route("/analytics/variance")
@@ -253,3 +276,32 @@ def _build_popover_html(entries):
             f'<div class="text-muted"><small>+{len(entries) - 5} more</small></div>'
         )
     return "".join(lines)
+
+
+# ── Year-end helpers ───────────────────────────────────────────────
+
+
+def _get_available_years(user_id, current_year):
+    """Build the list of years for the year selector dropdown.
+
+    Spans from the user's earliest pay period year through the
+    current year, or just the current year if no periods exist.
+
+    Args:
+        user_id: The authenticated user's ID.
+        current_year: Today's year as an upper bound.
+
+    Returns:
+        List of year integers in descending order.
+    """
+    earliest_period = (
+        db.session.query(PayPeriod)
+        .filter(PayPeriod.user_id == user_id)
+        .order_by(PayPeriod.start_date)
+        .first()
+    )
+    start_year = (
+        earliest_period.start_date.year if earliest_period
+        else current_year
+    )
+    return list(range(current_year, start_year - 1, -1))
