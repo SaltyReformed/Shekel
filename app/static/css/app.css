@@ -1225,3 +1225,42 @@ td.htmx-loading::after {
 [aria-expanded="true"] > td .variance-chevron {
   transform: rotate(90deg);
 }
+
+/* ── Spending Trends ───────────────────────────────────────────── */
+
+.trend-up {
+  color: var(--shekel-danger);
+}
+
+.trend-down {
+  color: var(--shekel-done);
+}
+
+.trend-flat {
+  color: var(--shekel-text-muted);
+}
+
+.trend-arrow {
+  font-size: 0.875rem;
+}
+
+.trend-item {
+  padding: 0.625rem 1rem;
+}
+
+.trend-pct {
+  font-weight: 600;
+}
+
+.trend-abs {
+  font-size: 0.8125rem;
+}
+
+.trend-flagged {
+  font-size: 0.75rem;
+}
+
+.trend-payment-late {
+  color: var(--shekel-danger);
+  font-size: 0.8125rem;
+}

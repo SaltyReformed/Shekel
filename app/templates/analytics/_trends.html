@@ -1,0 +1,230 @@
+{# Spending Trends -- HTMX partial.
+   Rendered by analytics.trends_tab() into #tab-content. #}
+
+{% macro fmt(value) -%}
+  ${{ "{:,.2f}".format(value|float) }}
+{%- endmacro %}
+
+{% macro fmt_pct(value) -%}
+  {% if value > 0 %}+{{ "{:.2f}".format(value|float) }}%{% elif value < 0 %}{{ "{:.2f}".format(value|float) }}%{% else %}0.00%{% endif %}
+{%- endmacro %}
+
+{% macro fmt_change(value) -%}
+  {% if value > 0 %}+{{ fmt(value) }}{% elif value < 0 %}-{{ fmt(value|abs) }}{% else %}{{ fmt(value) }}{% endif %}
+{%- endmacro %}
+
+{% macro dir_class(direction) -%}
+  {% if direction == "up" %}trend-up{% elif direction == "down" %}trend-down{% else %}trend-flat{% endif %}
+{%- endmacro %}
+
+{% macro dir_icon(direction) -%}
+  {% if direction == "up" %}<i class="bi bi-arrow-up-right trend-arrow"></i>{% elif direction == "down" %}<i class="bi bi-arrow-down-right trend-arrow"></i>{% else %}<i class="bi bi-arrow-right trend-arrow"></i>{% endif %}
+{%- endmacro %}
+
+<h5 class="mb-3">Spending Trends</h5>
+
+{# ── Data Sufficiency Banner ───────────────────────────────────── #}
+
+{% if report.data_sufficiency == "insufficient" %}
+<div class="alert alert-warning alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  <strong>Not enough data for trend analysis.</strong>
+  Continue using the app and check back after 3 months of transaction history.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+
+{% elif report.data_sufficiency == "preliminary" %}
+<div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-info-circle me-1"></i>
+  Trends are <strong>preliminary</strong> -- based on {{ report.window_months }} months of data.
+  At least 6 months of history is needed for reliable trend detection.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
+{% if report.data_sufficiency != "insufficient" %}
+
+{# ── Window Info ───────────────────────────────────────────────── #}
+<p class="text-muted small mb-3">
+  Based on {{ report.window_months }}-month window ({{ report.window_periods }} pay periods).
+  Alert threshold: {{ "{:.0f}".format((report.threshold * 100)|float) }}%.
+</p>
+
+{# ── Top-5 Ranked Lists ───────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  {# ── Trending Up (increases) ─────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header trend-up">
+        <i class="bi bi-arrow-up-right"></i> Trending Up (Spending Increases)
+      </div>
+      <div class="card-body p-0">
+        {% if report.top_increasing %}
+        <ul class="list-group list-group-flush">
+          {% for item in report.top_increasing %}
+          <li class="list-group-item trend-item">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <span class="trend-up">{{ dir_icon("up") }}</span>
+                <strong>{{ item.group_name }}: {{ item.item_name }}</strong>
+                {% if item.avg_days_before_due is not none %}
+                <br>
+                <small class="{% if item.avg_days_before_due < 0 %}trend-payment-late{% else %}text-muted{% endif %}">
+                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|float|abs) }}
+                  days {% if item.avg_days_before_due >= 0 %}before due{% else %}late{% endif %}
+                </small>
+                {% endif %}
+              </div>
+              <div class="text-end">
+                <span class="trend-pct trend-up">{{ fmt_pct(item.pct_change) }}</span><br>
+                <small class="trend-abs text-muted">{{ fmt_change(item.absolute_change) }}/period</small><br>
+                <small class="text-muted">Avg: {{ fmt(item.period_average) }}/period ({{ item.data_points }} periods)</small>
+              </div>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="p-3 text-muted">No significant spending increases detected.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Trending Down (decreases) ───────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header trend-down">
+        <i class="bi bi-arrow-down-right"></i> Trending Down (Spending Decreases)
+      </div>
+      <div class="card-body p-0">
+        {% if report.top_decreasing %}
+        <ul class="list-group list-group-flush">
+          {% for item in report.top_decreasing %}
+          <li class="list-group-item trend-item">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <span class="trend-down">{{ dir_icon("down") }}</span>
+                <strong>{{ item.group_name }}: {{ item.item_name }}</strong>
+                {% if item.avg_days_before_due is not none %}
+                <br>
+                <small class="{% if item.avg_days_before_due < 0 %}trend-payment-late{% else %}text-muted{% endif %}">
+                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|float|abs) }}
+                  days {% if item.avg_days_before_due >= 0 %}before due{% else %}late{% endif %}
+                </small>
+                {% endif %}
+              </div>
+              <div class="text-end">
+                <span class="trend-pct trend-down">{{ fmt_pct(item.pct_change) }}</span><br>
+                <small class="trend-abs text-muted">{{ fmt_change(item.absolute_change) }}/period</small><br>
+                <small class="text-muted">Avg: {{ fmt(item.period_average) }}/period ({{ item.data_points }} periods)</small>
+              </div>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="p-3 text-muted">No significant spending decreases detected.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Group Drill-Down ──────────────────────────────────────────── #}
+{% if report.group_trends %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-collection"></i> Category Groups</h6>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+    <table class="table variance-table mb-0">
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th class="text-end">Total</th>
+          <th class="text-end">Change</th>
+          <th class="text-center">Direction</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in report.group_trends %}
+        {% set gidx = loop.index %}
+        <tr class="variance-group-row"
+            data-bs-toggle="collapse" data-bs-target=".tg-{{ gidx }}"
+            role="button" aria-expanded="false">
+          <td class="fw-semibold">
+            <i class="bi bi-chevron-right variance-chevron me-1 small"></i>
+            {{ group.group_name }}
+            {% if group.is_flagged %}<span class="trend-flagged badge bg-warning bg-opacity-25 text-warning ms-1">!</span>{% endif %}
+          </td>
+          <td class="text-end font-mono">{{ fmt(group.total_spending) }}</td>
+          <td class="text-end font-mono {{ dir_class(group.trend_direction) }}">{{ fmt_pct(group.pct_change) }}</td>
+          <td class="text-center {{ dir_class(group.trend_direction) }}">{{ dir_icon(group.trend_direction) }}</td>
+        </tr>
+        {% for item in group.items %}
+        <tr class="collapse tg-{{ gidx }}">
+          <td class="ps-4">
+            {{ item.item_name }}
+            {% if item.is_flagged %}<span class="trend-flagged badge bg-warning bg-opacity-25 text-warning ms-1">!</span>{% endif %}
+          </td>
+          <td class="text-end font-mono">{{ fmt(item.total_spending) }}</td>
+          <td class="text-end font-mono {{ dir_class(item.trend_direction) }}">{{ fmt_pct(item.pct_change) }}</td>
+          <td class="text-center {{ dir_class(item.trend_direction) }}">{{ dir_icon(item.trend_direction) }}</td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── All Items (Collapsible) ──────────────────────────────────── #}
+{% if report.all_items %}
+<div class="mb-3">
+  <button class="btn btn-sm btn-outline-secondary" type="button"
+          data-bs-toggle="collapse" data-bs-target="#all-items-section"
+          aria-expanded="false" aria-controls="all-items-section">
+    Show all categories ({{ report.all_items|length }})
+  </button>
+  <div class="collapse mt-2" id="all-items-section">
+    <div class="card">
+      <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table table-sm variance-table mb-0">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th class="text-center">Direction</th>
+              <th class="text-end">% Change</th>
+              <th class="text-end">$/Period</th>
+              <th class="text-end">Avg $/Period</th>
+              <th class="text-center">Flagged</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in report.all_items %}
+            <tr>
+              <td>{{ item.group_name }}: {{ item.item_name }}</td>
+              <td class="text-center {{ dir_class(item.trend_direction) }}">{{ dir_icon(item.trend_direction) }}</td>
+              <td class="text-end font-mono {{ dir_class(item.trend_direction) }}">{{ fmt_pct(item.pct_change) }}</td>
+              <td class="text-end font-mono">{{ fmt_change(item.absolute_change) }}</td>
+              <td class="text-end font-mono">{{ fmt(item.period_average) }}</td>
+              <td class="text-center">
+                {% if item.is_flagged %}<i class="bi bi-exclamation-triangle text-warning"></i>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}{# end data_sufficiency != insufficient #}

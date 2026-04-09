@@ -9,6 +9,7 @@ via nav-pills navigation.
 
 import calendar as cal_mod
 from datetime import date
+from decimal import Decimal
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -21,6 +22,7 @@ from app.services import (
     budget_variance_service,
     calendar_service,
     pay_period_service,
+    spending_trend_service,
     year_end_summary_service,
 )
 
@@ -188,15 +190,34 @@ def variance_tab():
 @analytics_bp.route("/analytics/trends")
 @login_required
 def trends_tab():
-    """HTMX partial: spending trends tab placeholder.
+    """HTMX partial: spending trends analysis.
 
-    Returns a placeholder fragment until the full trends view is
-    implemented.  Non-HTMX requests redirect to the main analytics
-    page.
+    Renders ranked lists of top-5 trending-up and trending-down
+    categories, data sufficiency banners, group drill-down, and
+    OP-3 payment timing data.
+
+    Non-HTMX requests redirect to the main analytics page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
-    return "<p class='text-muted'>Spending trends -- coming soon.</p>"
+
+    settings = db.session.query(UserSettings).filter_by(
+        user_id=current_user.id,
+    ).first()
+    threshold = (
+        settings.trend_alert_threshold if settings
+        else Decimal("0.1000")
+    )
+
+    report = spending_trend_service.compute_trends(
+        user_id=current_user.id,
+        threshold=threshold,
+    )
+
+    return render_template(
+        "analytics/_trends.html",
+        report=report,
+    )
 
 
 # ── Calendar helpers ────────────────────────────────────────────────

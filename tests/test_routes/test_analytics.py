@@ -49,6 +49,224 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     db.session.commit()
 
 
+def _seed_long_periods(db, seed_user, count):
+    """Generate pay periods starting ~8 months ago for trend tests.
+
+    The spending trend service uses a window relative to today, so
+    periods must be recent enough to fall within that window.
+
+    Args:
+        db: Database session.
+        seed_user: User fixture dict.
+        count: Number of biweekly periods to generate.
+
+    Returns:
+        List of PayPeriod objects.
+    """
+    from app.services import pay_period_service
+    # Start 8 months before today to ensure 6-month window coverage.
+    today = date.today()
+    start_month = today.month - 8
+    start_year = today.year
+    while start_month < 1:
+        start_month += 12
+        start_year -= 1
+    start = date(start_year, start_month, 3)
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_user["user"].id,
+        start_date=start,
+        num_periods=count,
+        cadence_days=14,
+    )
+    db.session.flush()
+    seed_user["account"].current_anchor_period_id = periods[0].id
+    db.session.commit()
+    return periods
+
+
+def _seed_multi_month_expenses(db, seed_user, periods, num_months):
+    """Create paid expenses spread across num_months distinct months.
+
+    Distributes one expense per month, attributed by due_date.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    months_seeded = set()
+    for p in periods:
+        month_key = (p.start_date.year, p.start_date.month)
+        if month_key in months_seeded:
+            continue
+        if len(months_seeded) >= num_months:
+            break
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent {p.start_date.strftime('%b %Y')}",
+            estimated_amount=Decimal("1200.00"),
+            actual_amount=Decimal("1200.00"),
+            category_id=cat.id,
+            due_date=p.start_date,
+        )
+        db.session.add(txn)
+        months_seeded.add(month_key)
+    db.session.commit()
+
+
+def _seed_increasing_trend(db, seed_user, periods):
+    """Create expenses in every period with increasing amounts.
+
+    The trend service runs linear regression on per-period data,
+    so we need one expense per period with a clear upward slope.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    amount = Decimal("100.00")
+    for p in periods:
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent {p.start_date.strftime('%b %d')}",
+            estimated_amount=amount,
+            actual_amount=amount,
+            category_id=cat.id,
+            due_date=p.start_date,
+        )
+        db.session.add(txn)
+        amount += Decimal("20.00")
+    db.session.commit()
+
+
+def _seed_decreasing_trend(db, seed_user, periods):
+    """Create expenses in every period with decreasing amounts.
+
+    Clear downward slope for the regression.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    amount = Decimal("600.00")
+    for p in periods:
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent {p.start_date.strftime('%b %d')}",
+            estimated_amount=amount,
+            actual_amount=amount,
+            category_id=cat.id,
+            due_date=p.start_date,
+        )
+        db.session.add(txn)
+        amount = max(Decimal("50.00"), amount - Decimal("20.00"))
+    db.session.commit()
+
+
+def _seed_flat_expenses(db, seed_user, periods):
+    """Create expenses with consistent spending across 7+ months.
+
+    Creates one expense per period (not per month) with the same
+    amount so per-period averages remain stable.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    months_seen = set()
+    count = 0
+    for p in periods:
+        month_key = (p.start_date.year, p.start_date.month)
+        months_seen.add(month_key)
+        if len(months_seen) > 8:
+            break
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent P{count}",
+            estimated_amount=Decimal("400.00"),
+            actual_amount=Decimal("400.00"),
+            category_id=cat.id,
+            due_date=p.start_date,
+        )
+        db.session.add(txn)
+        count += 1
+    db.session.commit()
+
+
+def _seed_increasing_trend_with_timing(db, seed_user, periods):
+    """Create increasing per-period expenses with paid_at for OP-3.
+
+    Payments made 3 days before due date.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    amount = Decimal("100.00")
+    for p in periods:
+        due = p.start_date
+        paid = datetime(due.year, due.month, max(1, due.day - 3),
+                        tzinfo=timezone.utc)
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent {p.start_date.strftime('%b %d')}",
+            estimated_amount=amount,
+            actual_amount=amount,
+            category_id=cat.id,
+            due_date=due,
+            paid_at=paid,
+        )
+        db.session.add(txn)
+        amount += Decimal("20.00")
+    db.session.commit()
+
+
+def _seed_increasing_trend_with_late_timing(db, seed_user, periods):
+    """Create increasing per-period expenses paid 5 days AFTER due.
+
+    Ensures avg_days_before_due is negative (late payments).
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+    cat = seed_user["categories"]["Rent"]
+    amount = Decimal("100.00")
+    for p in periods:
+        due = p.start_date
+        paid = datetime(due.year, due.month, min(28, due.day + 5),
+                        tzinfo=timezone.utc)
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            pay_period_id=p.id,
+            status_id=paid_status_id,
+            transaction_type_id=expense_type_id,
+            name=f"Rent {p.start_date.strftime('%b %d')}",
+            estimated_amount=amount,
+            actual_amount=amount,
+            category_id=cat.id,
+            due_date=due,
+            paid_at=paid,
+        )
+        db.session.add(txn)
+        amount += Decimal("20.00")
+    db.session.commit()
+
+
 # ── Auth Tests ──────────────────────────────────────────────────────
 
 
@@ -995,21 +1213,296 @@ class TestVarianceTab:
 class TestTrendsTab:
     """Tests for GET /analytics/trends HTMX partial endpoint."""
 
-    def test_trends_tab_htmx(self, app, auth_client, seed_user):
-        """GET /analytics/trends with HX-Request returns 200."""
+    def test_trends_tab_renders(self, app, auth_client, seed_user,
+                                 seed_periods):
+        """C16-1: Trends tab renders with heading."""
         with app.app_context():
             resp = auth_client.get(
                 "/analytics/trends",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
+            assert b"Spending Trends" in resp.data
 
-    def test_trends_tab_no_htmx_redirects(self, app, auth_client, seed_user):
-        """GET /analytics/trends without HX-Request redirects to /analytics."""
+    def test_trends_requires_auth(self, app, client):
+        """C16-extra1: Unauthenticated request redirects to login."""
+        with app.app_context():
+            resp = client.get("/analytics/trends")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
+    def test_trends_no_htmx_redirects(self, app, auth_client, seed_user):
+        """C16-extra2: Non-HTMX request redirects to /analytics."""
         with app.app_context():
             resp = auth_client.get("/analytics/trends")
             assert resp.status_code == 302
             assert "/analytics" in resp.headers["Location"]
+
+    def test_trends_insufficient_banner(self, app, auth_client, seed_user,
+                                         seed_periods, db):
+        """C16-2: < 3 months of paid data shows insufficient banner."""
+        with app.app_context():
+            # Create paid expense in only 1 month.
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Single Month Expense", Decimal("100.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"Not enough data" in resp.data
+
+    def test_trends_preliminary_banner(self, app, auth_client, seed_user,
+                                       seed_periods, db):
+        """C16-3: 3-5 months of data shows preliminary banner."""
+        with app.app_context():
+            # Create paid expenses in 3 distinct months.
+            _seed_multi_month_expenses(db, seed_user, seed_periods, 3)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"preliminary" in resp.data
+
+    def test_trends_sufficient_no_banner(self, app, auth_client, seed_user,
+                                          db):
+        """C16-extra3: 6+ months of data shows no banner."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_multi_month_expenses(db, seed_user, periods, 6)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "preliminary" not in html
+            assert "Not enough data" not in html
+
+    def test_trends_insufficient_hides_lists(self, app, auth_client,
+                                              seed_user, seed_periods, db):
+        """C16-extra4: Insufficient data hides trend lists."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "One Expense", Decimal("50.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Trending Up" not in html
+            assert "Trending Down" not in html
+
+    def test_trends_up_list(self, app, auth_client, seed_user, db):
+        """C16-4: Trending up list shows red arrow and positive pct."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "bi-arrow-up-right" in html
+            assert "Trending Up" in html
+
+    def test_trends_down_list(self, app, auth_client, seed_user, db):
+        """C16-5: Trending down list shows green arrow and negative pct."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_decreasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "bi-arrow-down-right" in html
+            assert "Trending Down" in html
+
+    def test_trends_up_list_empty(self, app, auth_client, seed_user, db):
+        """C16-extra5: No flagged increases shows empty message.
+
+        Uses only decreasing-trend data so top_increasing is empty.
+        """
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_decreasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"No significant spending increases" in resp.data
+
+    def test_trends_down_list_empty(self, app, auth_client, seed_user, db):
+        """C16-extra6: No flagged decreases shows empty message.
+
+        Uses only increasing-trend data so top_decreasing is empty.
+        """
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"No significant spending decreases" in resp.data
+
+    def test_trends_item_shows_category_label(self, app, auth_client,
+                                               seed_user, db):
+        """C16-extra7: Items show 'Group: Item' format."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            # The category is "Home: Rent".
+            assert "Home" in html
+            assert "Rent" in html
+
+    def test_trends_item_shows_pct_change(self, app, auth_client,
+                                           seed_user, db):
+        """C16-extra8: Items show percentage with % suffix."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"%" in resp.data
+
+    def test_trends_item_shows_absolute_change(self, app, auth_client,
+                                                seed_user, db):
+        """C16-extra9: Items show dollar change per period."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"/period" in resp.data
+
+    def test_trends_item_shows_period_average(self, app, auth_client,
+                                               seed_user, db):
+        """C16-extra10: Items show period average value."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"Avg" in resp.data
+
+    def test_trends_group_drilldown(self, app, auth_client, seed_user, db):
+        """C16-6: Group drill-down content present (via collapse)."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Category Groups" in html
+            assert "collapse" in html
+
+    def test_trends_group_drilldown_shows_items(self, app, auth_client,
+                                                 seed_user, db):
+        """C16-extra11: Group shows all items in collapsed section."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            # "Rent" is the item inside "Home" group.
+            assert b"Rent" in resp.data
+
+    def test_trends_window_info_displayed(self, app, auth_client,
+                                           seed_user, db):
+        """C16-extra14: Window info shows months and threshold."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_flat_expenses(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "month window" in html or "pay periods" in html
+            assert "threshold" in html.lower() or "%" in html
+
+    def test_trends_all_items_section(self, app, auth_client, seed_user, db):
+        """C16-extra15: All items collapsible section present."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_flat_expenses(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"Show all categories" in resp.data
+
+    def test_trends_all_items_flagged_indicator(self, app, auth_client,
+                                                 seed_user, db):
+        """C16-extra16: Flagged items have warning indicator."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"bi-exclamation-triangle" in resp.data
+
+    def test_trends_payment_timing_shown(self, app, auth_client,
+                                          seed_user, db):
+        """C16-op3-1: Items with avg_days_before_due show timing text."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend_with_timing(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "days before due" in html or "days late" in html
+
+    def test_trends_late_payment_red(self, app, auth_client, seed_user, db):
+        """C16-op3-2: Late payment timing has danger styling."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_increasing_trend_with_late_timing(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            assert b"trend-payment-late" in resp.data
 
 
 # ── Nav Bar Tests ─────────────────────────────────────────────────
