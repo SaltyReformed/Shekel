@@ -1505,6 +1505,215 @@ class TestTrendsTab:
             assert b"trend-payment-late" in resp.data
 
 
+# ── CSV Export Tests ──────────────────────────────────────────────
+
+
+class TestCsvExport:
+    """Tests for CSV export on all analytics tabs."""
+
+    def test_calendar_csv_export(self, app, auth_client, seed_user,
+                                  seed_periods):
+        """C17-1: Calendar CSV returns 200 with text/csv content type."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
+            )
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_calendar_csv_content(self, app, auth_client, seed_user,
+                                   seed_periods, db):
+        """C17-2: Calendar CSV body contains transaction names."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "January Rent", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                f"/analytics/calendar?format=csv&view=month&year=2026&month=1"
+                f"&period_id={seed_periods[0].id}",
+            )
+            assert resp.status_code == 200
+            assert b"January Rent" in resp.data
+
+    def test_year_end_csv_export(self, app, auth_client, seed_user,
+                                  seed_periods):
+        """C17-3: Year-end CSV returns 200 with text/csv."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/year-end?format=csv&year=2026",
+            )
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_year_end_csv_sections(self, app, auth_client, seed_user,
+                                    seed_periods):
+        """C17-4: Year-end CSV contains section headers."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/year-end?format=csv&year=2026",
+            )
+            assert b"[Income and Taxes]" in resp.data
+
+    def test_variance_csv_export(self, app, auth_client, seed_user,
+                                  seed_periods, db):
+        """C17-5: Variance CSV returns 200 with text/csv."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Test Expense", Decimal("500.00"), "Rent",
+            )
+            resp = auth_client.get(
+                f"/analytics/variance?format=csv&window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+            )
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_variance_csv_hierarchy(self, app, auth_client, seed_user,
+                                     seed_periods, db):
+        """C17-6: Variance CSV contains Group and Transaction levels."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent Bill", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                f"/analytics/variance?format=csv&window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+            )
+            body = resp.data.decode()
+            assert "Group" in body
+            assert "Transaction" in body
+
+    def test_trends_csv_export(self, app, auth_client, seed_user, db):
+        """C17-7: Trends CSV returns 200 with text/csv."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_flat_expenses(db, seed_user, periods)
+            resp = auth_client.get("/analytics/trends?format=csv")
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_csv_requires_auth(self, app, client):
+        """C17-8: CSV export requires authentication."""
+        with app.app_context():
+            resp = client.get("/analytics/calendar?format=csv")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
+    def test_csv_content_disposition(self, app, auth_client, seed_user,
+                                      seed_periods):
+        """C17-9: CSV has Content-Disposition with attachment and .csv."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
+            )
+            cd = resp.headers.get("Content-Disposition", "")
+            assert "attachment" in cd
+            assert ".csv" in cd
+
+    def test_csv_does_not_require_htmx(self, app, auth_client, seed_user,
+                                        seed_periods):
+        """C17-extra12: CSV works without HX-Request header."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/year-end?format=csv&year=2026",
+            )
+            # Should NOT redirect -- CSV bypasses HTMX guard.
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_csv_preserves_window_params(self, app, auth_client, seed_user,
+                                          seed_periods, db):
+        """C17-extra13: Variance CSV with month window reflects correct data."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?format=csv&window=month&month=1&year=2026",
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "Total" in body
+
+    def test_csv_filename_includes_context(self, app, auth_client,
+                                            seed_user, seed_periods):
+        """C17-extra14: Calendar CSV filename contains year and month."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month&year=2026&month=4",
+            )
+            cd = resp.headers.get("Content-Disposition", "")
+            assert "2026_04" in cd
+
+    def test_calendar_year_csv_export(self, app, auth_client, seed_user,
+                                       seed_periods):
+        """C17-extra15: Calendar year CSV returns year overview data."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=year&year=2026",
+            )
+            assert resp.status_code == 200
+            assert b"January" in resp.data
+
+    def test_html_still_works_without_format(self, app, auth_client,
+                                              seed_user, seed_periods):
+        """C17-extra16: Without format=csv, normal HTMX HTML is returned."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"calendar-grid" in resp.data
+            assert "text/csv" not in resp.headers.get("Content-Type", "")
+
+    def test_calendar_has_export_button(self, app, auth_client, seed_user,
+                                         seed_periods):
+        """C17-extra17: Calendar tab contains CSV export link."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?view=month",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+            assert "bi-download" in html
+
+    def test_variance_has_export_button(self, app, auth_client, seed_user,
+                                         seed_periods):
+        """C17-extra18: Variance tab contains CSV export link."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+
+    def test_year_end_has_export_button(self, app, auth_client, seed_user,
+                                         seed_periods):
+        """C17-extra19: Year-end tab contains CSV export link."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/year-end",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+
+    def test_trends_has_export_button(self, app, auth_client, seed_user, db):
+        """C17-extra20: Trends tab contains CSV export link when data sufficient."""
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 26)
+            _seed_flat_expenses(db, seed_user, periods)
+            resp = auth_client.get(
+                "/analytics/trends",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+
+
 # ── Nav Bar Tests ─────────────────────────────────────────────────
 
 

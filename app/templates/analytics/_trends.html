@@ -21,7 +21,15 @@
   {% if direction == "up" %}<i class="bi bi-arrow-up-right trend-arrow"></i>{% elif direction == "down" %}<i class="bi bi-arrow-down-right trend-arrow"></i>{% else %}<i class="bi bi-arrow-right trend-arrow"></i>{% endif %}
 {%- endmacro %}
 
-<h5 class="mb-3">Spending Trends</h5>
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h5 class="mb-0">Spending Trends</h5>
+  {% if report.data_sufficiency != "insufficient" %}
+  <a href="{{ url_for('analytics.trends_tab', format='csv') }}"
+     class="btn btn-sm btn-outline-secondary" download>
+    <i class="bi bi-download"></i> CSV
+  </a>
+  {% endif %}
+</div>
 
 {# ── Data Sufficiency Banner ───────────────────────────────────── #}
 

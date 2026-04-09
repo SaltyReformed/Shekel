@@ -21,7 +21,12 @@
 
 <div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
   <h5 class="mb-0 me-3">Budget Variance</h5>
-  <div class="btn-group" role="group" aria-label="Time window">
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.variance_tab', window=window_type, period_id=period_id, month=month, year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <div class="btn-group" role="group" aria-label="Time window">
     <button class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.variance_tab', window='pay_period') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
@@ -40,6 +45,7 @@
             hx-indicator="#tab-spinner">
       Year
     </button>
+    </div>
   </div>
 </div>
 

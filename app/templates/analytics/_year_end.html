@@ -9,7 +9,12 @@
 
 <div class="d-flex align-items-center justify-content-between mb-3">
   <h5 class="mb-0">Year-End Summary</h5>
-  <select class="form-select form-select-sm w-auto"
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.year_end_tab', year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <select class="form-select form-select-sm w-auto"
           hx-get="{{ url_for('analytics.year_end_tab') }}"
           hx-target="#tab-content" hx-swap="innerHTML"
           hx-indicator="#tab-spinner"
@@ -17,7 +22,8 @@
     {% for y in available_years %}
     <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
     {% endfor %}
-  </select>
+    </select>
+  </div>
 </div>
 
 {% set has_income = data.income_tax.gross_wages > 0 or data.income_tax.mortgage_interest_total > 0 %}

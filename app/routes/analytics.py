@@ -11,7 +11,9 @@ import calendar as cal_mod
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, redirect, render_template, request, url_for
+from flask import (
+    Blueprint, make_response, redirect, render_template, request, url_for,
+)
 from flask_login import current_user, login_required
 from markupsafe import escape
 
@@ -21,6 +23,7 @@ from app.models.user import UserSettings
 from app.services import (
     budget_variance_service,
     calendar_service,
+    csv_export_service,
     pay_period_service,
     spending_trend_service,
     year_end_summary_service,
@@ -44,26 +47,24 @@ def page():
 @analytics_bp.route("/analytics/calendar")
 @login_required
 def calendar_tab():
-    """HTMX partial: calendar tab with month detail or year overview.
+    """HTMX partial or CSV: calendar tab with month detail or year overview.
 
     Query parameters:
         view: 'month' (default) or 'year'.
         year: Calendar year (default: current year).
         month: Calendar month 1-12 (default: current month).
         account_id: Optional account filter.
+        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page.
+    Non-HTMX requests redirect to the main analytics page unless
+    format=csv (CSV downloads are regular browser navigations).
     """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
     today = date.today()
     view = request.args.get("view", "month")
     year = request.args.get("year", today.year, type=int)
     month = request.args.get("month", today.month, type=int)
     account_id = request.args.get("account_id", None, type=int)
 
-    # Clamp to valid ranges.
     year = max(2000, min(2100, year))
     month = max(1, min(12, month))
 
@@ -71,6 +72,27 @@ def calendar_tab():
         user_id=current_user.id,
     ).first()
     threshold = settings.large_transaction_threshold if settings else 500
+
+    # CSV export -- before HTMX guard.
+    if request.args.get("format") == "csv":
+        if view == "year":
+            data = calendar_service.get_year_overview(
+                user_id=current_user.id, year=year,
+                account_id=account_id, large_threshold=threshold,
+            )
+            csv_str = csv_export_service.export_calendar_csv(data, "year")
+            fname = f"calendar_{year}_year.csv"
+        else:
+            data = calendar_service.get_month_detail(
+                user_id=current_user.id, year=year, month=month,
+                account_id=account_id, large_threshold=threshold,
+            )
+            csv_str = csv_export_service.export_calendar_csv(data, "month")
+            fname = f"calendar_{year}_{month:02d}.csv"
+        return _csv_response(csv_str, fname)
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
 
     if view == "year":
         return _render_year_view(year, account_id, threshold)
@@ -80,20 +102,12 @@ def calendar_tab():
 @analytics_bp.route("/analytics/year-end")
 @login_required
 def year_end_tab():
-    """HTMX partial: year-end financial summary.
-
-    Renders a structured annual report with income/tax breakdown,
-    spending by category, transfers summary, net worth chart,
-    debt progress, and savings progress.
+    """HTMX partial or CSV: year-end financial summary.
 
     Query parameters:
         year: Calendar year (default: current year).
-
-    Non-HTMX requests redirect to the main analytics page.
+        format: 'csv' for CSV download.
     """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
     today = date.today()
     year = request.args.get("year", today.year, type=int)
     year = max(2000, min(2100, year))
@@ -102,9 +116,14 @@ def year_end_tab():
         current_user.id, year,
     )
 
-    # Build available years for the year selector.
-    available_years = _get_available_years(current_user.id, today.year)
+    if request.args.get("format") == "csv":
+        csv_str = csv_export_service.export_year_end_csv(data)
+        return _csv_response(csv_str, f"year_end_{year}.csv")
 
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
+
+    available_years = _get_available_years(current_user.id, today.year)
     return render_template(
         "analytics/_year_end.html",
         data=data,
@@ -116,51 +135,17 @@ def year_end_tab():
 @analytics_bp.route("/analytics/variance")
 @login_required
 def variance_tab():
-    """HTMX partial: budget variance analysis.
-
-    Renders a grouped bar chart and drill-down table comparing
-    estimated vs. actual amounts per category.
+    """HTMX partial or CSV: budget variance analysis.
 
     Query parameters:
         window: 'pay_period' (default), 'month', or 'year'.
         period_id: Pay period ID (for pay_period window).
         month: Month number 1-12 (for month window).
         year: Calendar year (for month/year windows).
-
-    Non-HTMX requests redirect to the main analytics page.
+        format: 'csv' for CSV download.
     """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
     today = date.today()
-    window_type = request.args.get("window", "pay_period")
-    if window_type not in ("pay_period", "month", "year"):
-        window_type = "pay_period"
-
-    period_id = request.args.get("period_id", type=int)
-    month = request.args.get("month", type=int)
-    year = request.args.get("year", type=int)
-
-    # Apply defaults for missing params.
-    if window_type == "pay_period" and period_id is None:
-        current = pay_period_service.get_current_period(current_user.id)
-        if current is None:
-            all_p = pay_period_service.get_all_periods(current_user.id)
-            current = all_p[-1] if all_p else None
-        if current is not None:
-            period_id = current.id
-        else:
-            # No periods exist -- fall back to month view.
-            window_type = "month"
-            month = today.month
-            year = today.year
-    if window_type == "month":
-        if month is None:
-            month = today.month
-        if year is None:
-            year = today.year
-    if window_type == "year" and year is None:
-        year = today.year
+    window_type, period_id, month, year = _resolve_variance_params(today)
 
     report = budget_variance_service.compute_variance(
         user_id=current_user.id,
@@ -169,6 +154,14 @@ def variance_tab():
         month=month,
         year=year,
     )
+
+    if request.args.get("format") == "csv":
+        fname = _variance_csv_filename(window_type, period_id, month, year)
+        csv_str = csv_export_service.export_variance_csv(report)
+        return _csv_response(csv_str, fname)
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
 
     chart_data = _build_variance_chart_data(report)
     periods = pay_period_service.get_all_periods(current_user.id)
@@ -190,17 +183,11 @@ def variance_tab():
 @analytics_bp.route("/analytics/trends")
 @login_required
 def trends_tab():
-    """HTMX partial: spending trends analysis.
+    """HTMX partial or CSV: spending trends analysis.
 
-    Renders ranked lists of top-5 trending-up and trending-down
-    categories, data sufficiency banners, group drill-down, and
-    OP-3 payment timing data.
-
-    Non-HTMX requests redirect to the main analytics page.
+    Query parameters:
+        format: 'csv' for CSV download.
     """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
     settings = db.session.query(UserSettings).filter_by(
         user_id=current_user.id,
     ).first()
@@ -213,6 +200,14 @@ def trends_tab():
         user_id=current_user.id,
         threshold=threshold,
     )
+
+    if request.args.get("format") == "csv":
+        fname = f"trends_{report.window_months}month.csv"
+        csv_str = csv_export_service.export_trends_csv(report)
+        return _csv_response(csv_str, fname)
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
 
     return render_template(
         "analytics/_trends.html",
@@ -364,7 +359,91 @@ def _build_popover_html(entries):
     return "".join(lines)
 
 
+# ── CSV helpers ────────────────────────────────────────────────────
+
+
+def _csv_response(csv_content: str, filename: str):
+    """Build a Flask response for CSV file download.
+
+    Args:
+        csv_content: The CSV string body.
+        filename: Suggested download filename.
+
+    Returns:
+        Flask Response with CSV headers.
+    """
+    response = make_response(csv_content)
+    response.headers["Content-Type"] = "text/csv; charset=utf-8"
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{filename}"'
+    )
+    return response
+
+
 # ── Variance helpers ───────────────────────────────────────────────
+
+
+def _resolve_variance_params(today):
+    """Parse and apply defaults for variance tab query parameters.
+
+    Args:
+        today: The current date.
+
+    Returns:
+        Tuple of (window_type, period_id, month, year).
+    """
+    window_type = request.args.get("window", "pay_period")
+    if window_type not in ("pay_period", "month", "year"):
+        window_type = "pay_period"
+
+    period_id = request.args.get("period_id", type=int)
+    month = request.args.get("month", type=int)
+    year = request.args.get("year", type=int)
+
+    if window_type == "pay_period" and period_id is None:
+        current = pay_period_service.get_current_period(current_user.id)
+        if current is None:
+            all_p = pay_period_service.get_all_periods(current_user.id)
+            current = all_p[-1] if all_p else None
+        if current is not None:
+            period_id = current.id
+        else:
+            window_type = "month"
+            month = today.month
+            year = today.year
+    if window_type == "month":
+        if month is None:
+            month = today.month
+        if year is None:
+            year = today.year
+    if window_type == "year" and year is None:
+        year = today.year
+
+    return window_type, period_id, month, year
+
+
+def _variance_csv_filename(window_type, period_id, month, year):
+    """Build a descriptive CSV filename for variance export.
+
+    Args:
+        window_type: 'pay_period', 'month', or 'year'.
+        period_id: Pay period ID (if pay_period window).
+        month: Month number (if month window).
+        year: Year (if month or year window).
+
+    Returns:
+        Filename string like 'variance_2026_01.csv'.
+    """
+    if window_type == "pay_period" and period_id is not None:
+        period = db.session.get(PayPeriod, period_id)
+        if period:
+            return f"variance_period_{period.start_date.isoformat()}.csv"
+        return "variance_period.csv"
+    if window_type == "month" and month and year:
+        return f"variance_{year}_{month:02d}.csv"
+    if window_type == "year" and year:
+        return f"variance_{year}.csv"
+    return "variance.csv"
 
 
 def _build_variance_chart_data(report):

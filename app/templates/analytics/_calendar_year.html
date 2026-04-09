@@ -14,6 +14,10 @@
             hx-target="#tab-content" hx-swap="innerHTML">
       <i class="bi bi-calendar"></i> Month
     </button>
+    <a href="{{ url_for('analytics.calendar_tab', view='year', year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
     <button class="btn btn-sm btn-outline-secondary"
             hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year + 1) }}"
             hx-target="#tab-content" hx-swap="innerHTML">
