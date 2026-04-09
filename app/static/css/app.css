@@ -1172,3 +1172,56 @@ td.htmx-loading::after {
   min-height: 280px;
   position: relative;
 }
+
+/* ── Budget Variance ───────────────────────────────────────────── */
+
+.variance-over {
+  color: var(--shekel-danger);
+}
+
+.variance-under {
+  color: var(--shekel-done);
+}
+
+.variance-zero {
+  color: var(--shekel-text-muted);
+}
+
+.variance-table td,
+.variance-table th {
+  padding: 0.5rem 0.75rem;
+  vertical-align: middle;
+}
+
+.variance-group-row {
+  cursor: pointer;
+}
+
+.variance-group-row:hover {
+  background-color: var(--shekel-row-hover);
+}
+
+.variance-item-row {
+  cursor: pointer;
+}
+
+.variance-txn-row td {
+  font-size: 0.875rem;
+}
+
+.variance-total-row td {
+  border-top: 2px solid var(--shekel-border-strong);
+}
+
+.variance-chart-wrap {
+  min-height: 280px;
+  position: relative;
+}
+
+.variance-chevron {
+  transition: transform 0.15s;
+}
+
+[aria-expanded="true"] > td .variance-chevron {
+  transform: rotate(90deg);
+}

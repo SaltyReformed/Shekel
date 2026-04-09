@@ -17,7 +17,12 @@ from markupsafe import escape
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.user import UserSettings
-from app.services import calendar_service, year_end_summary_service
+from app.services import (
+    budget_variance_service,
+    calendar_service,
+    pay_period_service,
+    year_end_summary_service,
+)
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -109,15 +114,75 @@ def year_end_tab():
 @analytics_bp.route("/analytics/variance")
 @login_required
 def variance_tab():
-    """HTMX partial: budget variance tab placeholder.
+    """HTMX partial: budget variance analysis.
 
-    Returns a placeholder fragment until the full variance analysis
-    is implemented.  Non-HTMX requests redirect to the main
-    analytics page.
+    Renders a grouped bar chart and drill-down table comparing
+    estimated vs. actual amounts per category.
+
+    Query parameters:
+        window: 'pay_period' (default), 'month', or 'year'.
+        period_id: Pay period ID (for pay_period window).
+        month: Month number 1-12 (for month window).
+        year: Calendar year (for month/year windows).
+
+    Non-HTMX requests redirect to the main analytics page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
-    return "<p class='text-muted'>Budget variance -- coming soon.</p>"
+
+    today = date.today()
+    window_type = request.args.get("window", "pay_period")
+    if window_type not in ("pay_period", "month", "year"):
+        window_type = "pay_period"
+
+    period_id = request.args.get("period_id", type=int)
+    month = request.args.get("month", type=int)
+    year = request.args.get("year", type=int)
+
+    # Apply defaults for missing params.
+    if window_type == "pay_period" and period_id is None:
+        current = pay_period_service.get_current_period(current_user.id)
+        if current is None:
+            all_p = pay_period_service.get_all_periods(current_user.id)
+            current = all_p[-1] if all_p else None
+        if current is not None:
+            period_id = current.id
+        else:
+            # No periods exist -- fall back to month view.
+            window_type = "month"
+            month = today.month
+            year = today.year
+    if window_type == "month":
+        if month is None:
+            month = today.month
+        if year is None:
+            year = today.year
+    if window_type == "year" and year is None:
+        year = today.year
+
+    report = budget_variance_service.compute_variance(
+        user_id=current_user.id,
+        window_type=window_type,
+        period_id=period_id,
+        month=month,
+        year=year,
+    )
+
+    chart_data = _build_variance_chart_data(report)
+    periods = pay_period_service.get_all_periods(current_user.id)
+    available_years = _get_available_years(current_user.id, today.year)
+
+    return render_template(
+        "analytics/_variance.html",
+        report=report,
+        chart_data=chart_data,
+        window_type=window_type,
+        period_id=period_id,
+        month=month,
+        year=year,
+        periods=periods,
+        available_years=available_years,
+    )
 
 
 @analytics_bp.route("/analytics/trends")
@@ -276,6 +341,28 @@ def _build_popover_html(entries):
             f'<div class="text-muted"><small>+{len(entries) - 5} more</small></div>'
         )
     return "".join(lines)
+
+
+# ── Variance helpers ───────────────────────────────────────────────
+
+
+def _build_variance_chart_data(report):
+    """Build chart data dict from a VarianceReport.
+
+    Converts Decimal values to float for JSON serialization in
+    template data attributes.
+
+    Args:
+        report: VarianceReport from the variance service.
+
+    Returns:
+        dict with labels, estimated, and actual lists.
+    """
+    return {
+        "labels": [g.group_name for g in report.groups],
+        "estimated": [float(g.estimated_total) for g in report.groups],
+        "actual": [float(g.actual_total) for g in report.groups],
+    }
 
 
 # ── Year-end helpers ───────────────────────────────────────────────

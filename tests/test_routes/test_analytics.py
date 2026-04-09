@@ -652,21 +652,344 @@ class TestYearEndTab:
 class TestVarianceTab:
     """Tests for GET /analytics/variance HTMX partial endpoint."""
 
-    def test_variance_tab_htmx(self, app, auth_client, seed_user):
-        """GET /analytics/variance with HX-Request returns 200."""
+    def test_variance_tab_renders(self, app, auth_client, seed_user,
+                                   seed_periods):
+        """C15-1: Variance tab renders with heading."""
         with app.app_context():
             resp = auth_client.get(
                 "/analytics/variance",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
+            assert b"Budget Variance" in resp.data
 
-    def test_variance_tab_no_htmx_redirects(self, app, auth_client, seed_user):
-        """GET /analytics/variance without HX-Request redirects to /analytics."""
+    def test_variance_pay_period_default(self, app, auth_client, seed_user,
+                                          seed_periods, db):
+        """C15-2: Default pay_period window shows period label."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent", Decimal("1000.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            # Should contain the period date range.
+            assert b"Jan" in resp.data
+
+    def test_variance_monthly_window(self, app, auth_client, seed_user,
+                                      seed_periods):
+        """C15-3: Monthly window contains month name and year."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?window=month&month=1&year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"January" in resp.data
+            assert b"2026" in resp.data
+
+    def test_variance_annual_window(self, app, auth_client, seed_user,
+                                     seed_periods):
+        """C15-4: Annual window contains the year."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?window=year&year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"2026" in resp.data
+
+    def test_variance_requires_auth(self, app, client):
+        """C15-extra1: Unauthenticated request redirects to login."""
+        with app.app_context():
+            resp = client.get("/analytics/variance")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
+    def test_variance_no_htmx_redirects(self, app, auth_client, seed_user):
+        """C15-extra2: Non-HTMX request redirects to /analytics."""
         with app.app_context():
             resp = auth_client.get("/analytics/variance")
             assert resp.status_code == 302
             assert "/analytics" in resp.headers["Location"]
+
+    def test_variance_chart_present(self, app, auth_client, seed_user,
+                                     seed_periods, db):
+        """C15-5: Response contains canvas with chart data attributes."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Groceries", Decimal("200.00"), "Groceries",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "<canvas" in html
+            assert "data-labels" in html
+            assert "data-estimated" in html
+            assert "data-actual" in html
+
+    def test_variance_chart_data_matches_report(self, app, auth_client,
+                                                 seed_user, seed_periods, db):
+        """C15-extra3: Chart data-labels contains expected category names."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Groceries", Decimal("150.00"), "Groceries",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Family" in html  # group_name for Groceries
+
+    def test_variance_table_has_categories(self, app, auth_client,
+                                            seed_user, seed_periods, db):
+        """C15-extra4: Table shows both category group names."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent", Decimal("1200.00"), "Rent",
+            )
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Groceries", Decimal("100.00"), "Groceries",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Home" in html
+            assert "Family" in html
+
+    def test_variance_table_amounts_present(self, app, auth_client,
+                                             seed_user, seed_periods, db):
+        """C15-extra5: Estimated and actual amounts visible in table."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "1,200.00" in html
+
+    def test_variance_over_budget_colored(self, app, auth_client,
+                                           seed_user, seed_periods, db):
+        """C15-extra6: Over-budget row has variance-over class."""
+        with app.app_context():
+            # Create a txn where actual > estimated (over budget).
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+            cat = seed_user["categories"]["Rent"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                pay_period_id=seed_periods[0].id,
+                status_id=paid_status_id,
+                transaction_type_id=expense_type_id,
+                name="Rent Over",
+                estimated_amount=Decimal("1000.00"),
+                actual_amount=Decimal("1200.00"),
+                category_id=cat.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert b"variance-over" in resp.data
+
+    def test_variance_under_budget_colored(self, app, auth_client,
+                                            seed_user, seed_periods, db):
+        """C15-extra7: Under-budget row has variance-under class."""
+        with app.app_context():
+            # Create a txn where actual < estimated (under budget).
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+            cat = seed_user["categories"]["Rent"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                pay_period_id=seed_periods[0].id,
+                status_id=paid_status_id,
+                transaction_type_id=expense_type_id,
+                name="Rent Under",
+                estimated_amount=Decimal("1200.00"),
+                actual_amount=Decimal("1000.00"),
+                category_id=cat.id,
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert b"variance-under" in resp.data
+
+    def test_variance_totals_row(self, app, auth_client, seed_user,
+                                  seed_periods, db):
+        """C15-extra8: Total row shows summed estimated and actual."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert b"Total" in resp.data
+
+    def test_variance_detail_drilldown(self, app, auth_client, seed_user,
+                                       seed_periods, db):
+        """C15-6: Drill-down shows transaction names (collapse present)."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "January Rent", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            # Transaction name should be in the collapsed section.
+            assert "January Rent" in html
+
+    def test_variance_detail_shows_transactions(self, app, auth_client,
+                                                 seed_user, seed_periods, db):
+        """C15-extra9: All transaction names visible in drill-down."""
+        with app.app_context():
+            for name in ["Rent A", "Rent B", "Rent C"]:
+                _create_paid_expense_for_route_test(
+                    db, seed_user, seed_periods,
+                    name, Decimal("400.00"), "Rent",
+                )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Rent A" in html
+            assert "Rent B" in html
+            assert "Rent C" in html
+
+    def test_variance_detail_shows_paid_status(self, app, auth_client,
+                                                seed_user, seed_periods, db):
+        """C15-extra10: Paid indicator shown on settled transactions."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Paid Bill", Decimal("500.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert b"Paid" in resp.data
+
+    def test_variance_window_toggle_buttons(self, app, auth_client,
+                                             seed_user, seed_periods):
+        """C15-extra11: Response contains buttons for all three windows."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Pay Period" in html
+            assert "Month" in html
+            assert "Year" in html
+
+    def test_variance_active_window_highlighted(self, app, auth_client,
+                                                 seed_user, seed_periods):
+        """C15-extra12: Active window button has primary class."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?window=month&month=1&year=2026",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            # The Month button should have btn-primary class.
+            assert 'btn-primary' in html
+
+    def test_variance_period_selector_present(self, app, auth_client,
+                                               seed_user, seed_periods):
+        """C15-extra13: Period selector with period labels shown."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "<select" in html
+            # Period dates should appear in the selector.
+            assert "Jan 02" in html
+
+    def test_variance_empty_period(self, app, auth_client, seed_user,
+                                    seed_periods):
+        """C15-extra14: Period with no transactions shows empty message."""
+        with app.app_context():
+            # Use a period with no transactions.
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[5].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"No transactions in this period" in resp.data
+
+    def test_variance_no_current_period(self, app, auth_client, seed_user):
+        """C15-extra15: No periods at all -- graceful handling."""
+        with app.app_context():
+            # seed_user has no periods (seed_periods not used).
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"No transactions in this period" in resp.data
+
+    def test_variance_show_variances_toggle(self, app, auth_client,
+                                             seed_user, seed_periods, db):
+        """C15-extra16: Toggle element present in response."""
+        with app.app_context():
+            _create_paid_expense_for_route_test(
+                db, seed_user, seed_periods,
+                "Rent", Decimal("1200.00"), "Rent",
+            )
+            resp = auth_client.get(
+                "/analytics/variance?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "Show only variances" in html
+            assert "variance-filter-toggle" in html
 
 
 class TestTrendsTab:
