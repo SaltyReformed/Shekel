@@ -278,6 +278,8 @@
           <th class="text-end">Jan 1</th>
           <th class="text-end">Dec 31</th>
           <th class="text-end">Contributions</th>
+          <th class="text-end">Employer</th>
+          <th class="text-end">Growth</th>
         </tr>
       </thead>
       <tbody>
@@ -287,6 +289,8 @@
           <td class="text-end font-mono">{{ fmt(s.jan1_balance) }}</td>
           <td class="text-end font-mono">{{ fmt(s.dec31_balance) }}</td>
           <td class="text-end font-mono">{{ fmt(s.total_contributions) }}</td>
+          <td class="text-end font-mono">{{ fmt(s.employer_contributions) }}</td>
+          <td class="text-end font-mono">{{ fmt(s.investment_growth) }}</td>
         </tr>
         {% endfor %}
       </tbody>

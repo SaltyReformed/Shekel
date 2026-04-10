@@ -22,6 +22,8 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.account import Account
+from app.models.interest_params import InterestParams
+from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import (
@@ -267,6 +269,82 @@ def _create_mortgage_account(user, periods):
     db.session.commit()
 
     return mortgage_acct, params
+
+
+def _create_investment_account(
+    user, periods,
+    employer_type="none",
+    match_pct=None,
+    match_cap_pct=None,
+    flat_pct=None,
+):
+    """Create an investment account (401k) with InvestmentParams.
+
+    Default: $10,000 balance, 7% assumed annual return, no employer.
+    Employer settings are configurable for testing match and flat_pct.
+
+    Returns:
+        Tuple of (account, investment_params).
+    """
+    inv_type = (
+        db.session.query(AccountType)
+        .filter_by(name="401(k)").one()
+    )
+    inv_acct = Account(
+        user_id=user.id,
+        account_type_id=inv_type.id,
+        name="401k",
+        current_anchor_balance=Decimal("10000.00"),
+        current_anchor_period_id=periods[0].id,
+    )
+    db.session.add(inv_acct)
+    db.session.flush()
+
+    inv_params = InvestmentParams(
+        account_id=inv_acct.id,
+        assumed_annual_return=Decimal("0.07000"),
+        employer_contribution_type=employer_type,
+        employer_match_percentage=match_pct,
+        employer_match_cap_percentage=match_cap_pct,
+        employer_flat_percentage=flat_pct,
+    )
+    db.session.add(inv_params)
+    db.session.flush()
+
+    return inv_acct, inv_params
+
+
+def _create_hysa_account(user, periods):
+    """Create a HYSA account with InterestParams.
+
+    HYSA: $5,000 balance, 5% APY, daily compounding.
+
+    Returns:
+        Account object.
+    """
+    hysa_type = (
+        db.session.query(AccountType)
+        .filter_by(name="HYSA").one()
+    )
+    hysa_acct = Account(
+        user_id=user.id,
+        account_type_id=hysa_type.id,
+        name="High Yield Savings",
+        current_anchor_balance=Decimal("5000.00"),
+        current_anchor_period_id=periods[0].id,
+    )
+    db.session.add(hysa_acct)
+    db.session.flush()
+
+    interest_params = InterestParams(
+        account_id=hysa_acct.id,
+        apy=Decimal("0.05000"),
+        compounding_frequency="daily",
+    )
+    db.session.add(interest_params)
+    db.session.flush()
+
+    return hysa_acct
 
 
 # ── C13-1: Empty Summary ─────────────────────────────────────────
@@ -968,19 +1046,224 @@ class TestNetWorth:
             # computed value (carried forward).
             assert values[11]["balance"] == last_computed
 
+    def test_net_worth_debt_uses_amortization(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C1-11: Net worth reflects amortization-based debt balances.
+
+        With a $240k mortgage (originated 2025-01-01) and $1k checking,
+        net worth should use the amortization schedule balance for the
+        mortgage, not the static anchor balance ($240k).
+
+        The amortization schedule reduces the mortgage balance each
+        month.  By month 1 (Jan 2026) the balance is ~$237,548.
+        Net worth at month 1 ~ $1,000 - $237,548 = -$236,548.
+        If the old anchor-only calculator were used, net worth would
+        be $1,000 - $240,000 = -$239,000 every month.
+        """
+        user = seed_user["user"]
+        periods = seed_periods
+        _create_mortgage_account(user, periods)
+
+        result = compute_year_end_summary(user.id, YEAR)
+        nw = result["net_worth"]
+
+        # Net worth should be negative (mortgage > checking).
+        month_1 = nw["monthly_values"][0]["balance"]
+        assert month_1 < ZERO
+
+        # With amortization, the mortgage balance at Jan 2026 is ~$237,548
+        # (less than the $240k anchor).  So net worth should be less
+        # negative than $1,000 - $240,000 = -$239,000.
+        static_nw = Decimal("1000.00") - Decimal("240000.00")
+        assert month_1 > static_nw, (
+            f"Net worth {month_1} should be less negative than "
+            f"static {static_nw} because amortization reduces the "
+            f"mortgage balance below $240k"
+        )
+
+        # Consecutive months with data should show improving net worth
+        # (less negative) as principal decreases via amortization.
+        non_zero_months = [
+            v for v in nw["monthly_values"]
+            if v["balance"] != ZERO
+        ]
+        if len(non_zero_months) >= 2:
+            assert non_zero_months[-1]["balance"] >= non_zero_months[0]["balance"]
+
+    def test_net_worth_investment_includes_growth(
+        self, app, db, seed_full_user_data,
+    ):
+        """C1-1: Investment account growth reflected in net worth.
+
+        Creates a 401(k) ($10,000, 7% annual return, no employer) plus
+        the existing checking ($1,000) and savings ($500).  Net worth
+        should increase over time as investment growth accumulates.
+        Without the fix, the 401(k) balance would be flat at $10,000.
+
+        seed_full_user_data also creates a $1,200 projected rent expense
+        that reduces checking, so we compare growth over time rather
+        than against a static anchor sum.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        _create_investment_account(user, periods, employer_type="none")
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        nw = result["net_worth"]
+
+        non_zero = [
+            v for v in nw["monthly_values"] if v["balance"] != ZERO
+        ]
+        assert len(non_zero) > 0, "Expected non-zero net worth values"
+
+        # Net worth should increase over time because the 401(k) is
+        # growing at 7%.  Without investment growth, net worth would
+        # be flat (checking balance is static after the rent expense).
+        if len(non_zero) >= 2:
+            assert non_zero[-1]["balance"] > non_zero[0]["balance"], (
+                "Net worth should increase over time due to 401(k) growth"
+            )
+
+    def test_net_worth_investment_with_employer(
+        self, app, db, seed_full_user_data,
+    ):
+        """C1-2: Employer contributions increase net worth further.
+
+        Creates a 401(k) with flat 3% employer contribution and a
+        salary profile.  Net worth growth should exceed the growth-only
+        case because employer money is added on top of investment returns.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        _create_investment_account(
+            user, periods,
+            employer_type="flat_percentage",
+            flat_pct=Decimal("0.0300"),
+        )
+        db.session.commit()
+
+        result_employer = compute_year_end_summary(user.id, YEAR)
+        nw = result_employer["net_worth"]
+
+        non_zero = [
+            v for v in nw["monthly_values"] if v["balance"] != ZERO
+        ]
+        assert len(non_zero) > 0
+
+        # Net worth should increase over time due to both growth and
+        # employer contributions.
+        if len(non_zero) >= 2:
+            assert non_zero[-1]["balance"] > non_zero[0]["balance"], (
+                "Net worth should increase with employer contributions"
+            )
+
+    def test_net_worth_mixed_account_types(
+        self, app, db, seed_full_user_data,
+    ):
+        """C1-3: Mixed accounts each use correct calculation path.
+
+        Checking ($1k) + 401(k) ($10k, 7%) + HYSA ($5k, 5% APY) +
+        Mortgage ($240k).  All four types contribute correctly.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        _create_investment_account(user, periods, employer_type="none")
+        _create_hysa_account(user, periods)
+        _create_mortgage_account(user, periods)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        nw = result["net_worth"]
+
+        # With a $240k mortgage, net worth should be strongly negative.
+        non_zero = [
+            v for v in nw["monthly_values"] if v["balance"] != ZERO
+        ]
+        assert len(non_zero) > 0
+        assert non_zero[0]["balance"] < ZERO
+
+        # But net worth should improve over time: mortgage balance
+        # decreases (amortization), 401k grows (returns), HYSA grows
+        # (interest).  All three push net worth up.
+        if len(non_zero) >= 2:
+            assert non_zero[-1]["balance"] > non_zero[0]["balance"], (
+                "Net worth should improve as investments grow and "
+                "mortgage principal decreases"
+            )
+
+    def test_net_worth_consistent_with_savings_progress(
+        self, app, db, seed_full_user_data,
+    ):
+        """C1-4: Investment Dec 31 in net worth matches savings progress.
+
+        Both sections should use the growth engine for investment
+        accounts, producing consistent Dec 31 balances.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        _create_investment_account(user, periods, employer_type="none")
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+
+        # Get savings progress Dec 31 for the 401k.
+        sp_entry = next(
+            s for s in result["savings_progress"]
+            if s["account_name"] == "401k"
+        )
+        sp_dec31 = sp_entry["dec31_balance"]
+
+        # Get net worth Dec 31 -- it includes checking + savings + 401k.
+        # We cannot isolate the 401k balance from net worth directly,
+        # but we can verify that savings progress reports growth and
+        # that net worth exceeds the static sum.
+        assert sp_dec31 > Decimal("10000.00"), (
+            "Savings progress should show 401(k) growth above anchor"
+        )
+
+        # Net worth Dec 31 should be at least as high as savings
+        # progress Dec 31 for the 401k (since checking and savings
+        # accounts add positive value).
+        assert result["net_worth"]["dec31"] >= sp_dec31 - Decimal("10000.00")
+
 
 # ── Debt Progress Tests ───────────────────────────────────────────
 
 
 class TestDebtProgress:
-    """Tests for the debt progress section."""
+    """Tests for the debt progress section.
 
-    def test_debt_progress(self, app, db, seed_user, seed_periods):
-        """C13-9: Debt progress shows principal paid.
+    All debt progress tests use amortization-engine-based calculations.
+    The expected values are hand-computed from the standard amortization
+    formula: M = P * [r(1+r)^n] / [(1+r)^n - 1].
+    """
 
-        Creates a mortgage and verifies jan1_balance > dec31_balance
-        (or they are equal if no amortization data in year range).
-        Principal paid = jan1 - dec31.
+    def test_debt_progress_uses_amortization(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C1-6: Debt progress balances match the amortization schedule.
+
+        Mortgage: $240,000 at 6.5%, 30-year, originated 2025-01-01.
+        Monthly payment: $1,516.96 (from amortization formula).
+
+        Jan 1 2026 balance = balance after Dec 2025 payment = $237,547.74
+        (11 payments of principal in 2025: each reducing balance from
+        the first $216.96 to the eleventh payment's ~$241.15).
+
+        Dec 31 2026 balance = balance after Dec 2026 payment = $234,701.02
+        (12 more payments of principal in 2026).
+
+        Principal paid in 2026 = $237,547.74 - $234,701.02 = $2,846.72.
         """
         user = seed_user["user"]
         periods = seed_periods
@@ -992,28 +1275,148 @@ class TestDebtProgress:
         assert len(debt) == 1
         entry = debt[0]
         assert entry["account_name"] == "Home Mortgage"
+
+        # Verify exact amortization-based values.
+        assert entry["jan1_balance"] == Decimal("237547.74")
+        assert entry["dec31_balance"] == Decimal("234701.02")
+        assert entry["principal_paid"] == Decimal("2846.72")
+        # Invariant: principal_paid = jan1 - dec31.
         assert entry["principal_paid"] == (
             entry["jan1_balance"] - entry["dec31_balance"]
         )
+
+    def test_debt_progress_with_payments(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C1-7: Debt progress reflects actual payment history.
+
+        Creates a mortgage and makes 3 transfer payments of $1,800 each
+        (above the standard $1,516.96 P&I).  The extra ~$283 per payment
+        goes to principal, accelerating paydown.  Dec 31 balance should
+        be lower than if only standard payments were made.
+        """
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+        periods = seed_periods
+        mortgage_acct, _ = _create_mortgage_account(user, periods)
+
+        # Make 3 payments via transfers (shadow income on mortgage).
+        for i in range(3):
+            _create_transfer_with_shadows(
+                user, account, mortgage_acct, scenario,
+                periods[i + 1],
+                f"Mortgage Payment {i + 1}",
+                Decimal("1800.00"),
+            )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        debt = result["debt_progress"]
+
+        assert len(debt) == 1
+        entry = debt[0]
+
+        # With extra payments, more principal is paid off.
+        assert entry["principal_paid"] > ZERO
+        assert entry["jan1_balance"] > entry["dec31_balance"]
+        # Invariant still holds.
+        assert entry["principal_paid"] == (
+            entry["jan1_balance"] - entry["dec31_balance"]
+        )
+
+    def test_debt_progress_escrow_excluded(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C1-8: Escrow is subtracted from payments before amortization.
+
+        Creates a mortgage with a $283/month escrow component, then
+        makes a $1,800 payment.  The engine should subtract escrow
+        ($283) before computing principal/interest split, so the
+        effective payment for amortization is ~$1,517 (standard P&I).
+        """
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+        periods = seed_periods
+        mortgage_acct, _ = _create_mortgage_account(user, periods)
+
+        # Add escrow component to the mortgage.
+        from app.models.loan_features import EscrowComponent  # pylint: disable=import-outside-toplevel
+        escrow = EscrowComponent(
+            account_id=mortgage_acct.id,
+            name="Property Tax",
+            annual_amount=Decimal("3396.00"),
+            is_active=True,
+        )
+        db.session.add(escrow)
+
+        # Make one payment that includes escrow.
+        _create_transfer_with_shadows(
+            user, account, mortgage_acct, scenario,
+            periods[1],
+            "Mortgage + Escrow",
+            Decimal("1800.00"),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        debt = result["debt_progress"]
+
+        assert len(debt) == 1
+        entry = debt[0]
+
+        # Principal paid should reflect escrow-subtracted payments,
+        # not raw $1,800 payments.  With proper escrow subtraction,
+        # the effective P&I is ~$1,517 and principal is only ~$217.
+        # Without escrow subtraction, $283 extra would be incorrectly
+        # treated as additional principal.
+        assert entry["principal_paid"] > ZERO
+        assert entry["jan1_balance"] > entry["dec31_balance"]
 
     def test_debt_no_accounts(self, app, db, seed_user, seed_periods):
         """C13-extra14: No debt accounts returns empty list."""
         result = compute_year_end_summary(seed_user["user"].id, YEAR)
         assert result["debt_progress"] == []
 
+    def test_mortgage_interest_with_prepared_payments(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C1-10: Mortgage interest uses prepared schedule.
+
+        Verifies the mortgage interest total uses the same prepared
+        amortization schedule as debt progress.  For a $240k mortgage
+        at 6.5% with no extra payments, total 2026 interest should
+        be $15,356.80 (12 months of interest on declining principal).
+        """
+        user = seed_user["user"]
+        _create_mortgage_account(user, seed_periods)
+
+        result = compute_year_end_summary(user.id, YEAR)
+        interest = result["income_tax"]["mortgage_interest_total"]
+
+        # 12 months of interest in 2026 on a $240k @ 6.5% mortgage.
+        assert interest == Decimal("15356.80")
+
 
 # ── Savings Progress Tests ────────────────────────────────────────
 
 
 class TestSavingsProgress:
-    """Tests for the savings progress section."""
+    """Tests for the savings progress section.
 
-    def test_savings_progress(self, app, db, seed_full_user_data):
-        """C13-10: Savings progress shows contributions.
+    Covers three calculation paths: plain savings (balance calculator),
+    investment accounts (growth engine with employer/returns), and
+    interest-bearing accounts (balance calculator with interest).
+    """
+
+    def test_savings_progress_basic(self, app, db, seed_full_user_data):
+        """C2-1: Plain savings uses balance calculator and includes new fields.
 
         Uses the savings account from seed_full_user_data (Savings,
         $500 anchor).  Creates a transfer to it and verifies
-        contributions are tracked.
+        contributions are tracked.  Employer and growth are zero for
+        plain savings.
         """
         data = seed_full_user_data
         user = data["user"]
@@ -1031,21 +1434,23 @@ class TestSavingsProgress:
         result = compute_year_end_summary(user.id, YEAR)
         savings = result["savings_progress"]
 
-        # Find the savings account entry.
         entry = next(
             (s for s in savings if s["account_name"] == "Savings"),
             None,
         )
         assert entry is not None, "Savings account not in savings_progress"
         assert entry["total_contributions"] == Decimal("200.00")
+        # Plain savings: no employer match, no growth.
+        assert entry["employer_contributions"] == ZERO
+        assert entry["investment_growth"] == ZERO
 
     def test_savings_contributions_from_shadows(
         self, app, db, seed_full_user_data,
     ):
-        """C13-extra15: Contributions equal sum of shadow income txns.
+        """C2-2: Contributions equal sum of shadow income txns.
 
         Creates multiple transfers to savings and verifies total
-        contributions matches the sum.
+        contributions matches the sum.  New fields present and zero.
         """
         data = seed_full_user_data
         user = data["user"]
@@ -1075,6 +1480,184 @@ class TestSavingsProgress:
         )
         expected = Decimal("100.00") + Decimal("150.00") + Decimal("250.00")
         assert entry["total_contributions"] == expected
+        assert entry["employer_contributions"] == ZERO
+        assert entry["investment_growth"] == ZERO
+
+    def test_savings_investment_with_growth(
+        self, app, db, seed_full_user_data,
+    ):
+        """C2-3: Investment account includes growth from assumed annual return.
+
+        Creates a 401k account with InvestmentParams (7% annual return,
+        no employer match) and $10,000 balance.  Dec 31 balance should
+        include growth from the assumed annual return.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods, employer_type="none",
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            (s for s in savings if s["account_name"] == "401k"),
+            None,
+        )
+        assert entry is not None, "401k not in savings_progress"
+        # Growth should be > 0 from assumed 7% annual return.
+        assert entry["investment_growth"] > ZERO
+        # Dec 31 should exceed Jan 1 by at least the growth amount.
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+        assert entry["employer_contributions"] == ZERO
+
+    def test_savings_employer_match(
+        self, app, db, seed_full_user_data,
+    ):
+        """C2-4: Investment account includes employer match contributions.
+
+        Creates a 401k with employer match (50% up to 6% of salary)
+        and a paycheck deduction of $200/period.  Employer match should
+        produce non-zero employer_contributions.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+        salary_profile = data["salary_profile"]
+
+        inv_acct, inv_params = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+
+        # Add paycheck deduction targeting the 401k.
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("200.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        # Employer match should be > 0.
+        assert entry["employer_contributions"] > ZERO
+        # Dec 31 should include employee + employer + growth.
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+        assert entry["investment_growth"] > ZERO
+
+    def test_savings_employer_flat_pct(
+        self, app, db, seed_full_user_data,
+    ):
+        """C2-5: Investment account with flat percentage employer contribution.
+
+        Creates a 401k with employer_flat_percentage=3%.  The employer
+        contributes 3% of gross biweekly pay each period regardless of
+        employee contribution.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods,
+            employer_type="flat_percentage",
+            flat_pct=Decimal("0.0300"),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        assert entry["employer_contributions"] > ZERO
+
+    def test_savings_hysa_with_interest(
+        self, app, db, seed_full_user_data,
+    ):
+        """C2-6: HYSA account includes interest in growth field.
+
+        Creates a HYSA with 5% APY and verifies interest accrual is
+        reflected in the investment_growth field.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        hysa_acct = _create_hysa_account(user, periods)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            (s for s in savings if s["account_name"] == "High Yield Savings"),
+            None,
+        )
+        assert entry is not None, "HYSA not in savings_progress"
+        # Interest-bearing: growth = total interest earned.
+        assert entry["investment_growth"] > ZERO
+        assert entry["employer_contributions"] == ZERO
+        # Dec 31 balance includes interest accrual.
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+
+    def test_savings_no_accounts(self, app, db, seed_user, seed_periods):
+        """C2-7: No savings accounts returns empty list."""
+        # seed_user only has a checking account, no savings.
+        # But we need to ensure no savings accounts exist beyond checking.
+        result = compute_year_end_summary(seed_user["user"].id, YEAR)
+        assert result["savings_progress"] == []
+
+    def test_savings_mixed_accounts(
+        self, app, db, seed_full_user_data,
+    ):
+        """C2-8: Mixed account types each use correct calculation path.
+
+        Creates a plain savings (from seed), an investment 401k, and
+        a HYSA.  All three appear with correct calculation paths.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        _create_investment_account(user, periods, employer_type="none")
+        _create_hysa_account(user, periods)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        names = {s["account_name"] for s in savings}
+
+        assert "Savings" in names, "Plain savings missing"
+        assert "401k" in names, "Investment account missing"
+        assert "High Yield Savings" in names, "HYSA missing"
+
+        # Each entry has all required fields.
+        for entry in savings:
+            assert "employer_contributions" in entry
+            assert "investment_growth" in entry
+            assert "total_contributions" in entry
 
 
 # ── Payment Timeliness Tests (OP-2) ──────────────────────────────

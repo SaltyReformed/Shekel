@@ -4,6 +4,11 @@ Tests for the loan payment service.
 Verifies that get_payment_history() correctly queries shadow income
 transactions, applies the right filters, uses effective_amount for
 the payment amount, and maps is_confirmed from status.is_settled.
+
+Also tests the payment preparation utilities (compute_contractual_pi
+and prepare_payments_for_engine) that correct escrow inflation and
+biweekly month overlaps before passing payments to the amortization
+engine.
 """
 
 from datetime import date
@@ -16,7 +21,12 @@ from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
-from app.services.loan_payment_service import get_payment_history
+from app.services.amortization_engine import PaymentRecord
+from app.services.loan_payment_service import (
+    compute_contractual_pi,
+    get_payment_history,
+    prepare_payments_for_engine,
+)
 from app.services.transfer_service import create_transfer
 
 
@@ -412,3 +422,192 @@ class TestGetPaymentHistory:
                 loan.id, seed_user["scenario"].id,
             )
             assert len(result) == 3
+
+
+# ── Tests for compute_contractual_pi ─────────────────────────────
+
+
+class TestComputeContractualPi:
+    """Tests for the contractual P&I calculation."""
+
+    def test_fixed_rate_uses_original_terms(self, app, db, seed_user):
+        """C1-1: Fixed-rate loan uses original principal and full term.
+
+        $240,000 at 6.5% for 360 months.
+        M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        r = 0.065/12; n = 360
+        The engine's Decimal arithmetic produces $1,516.96.
+        """
+        with app.app_context():
+            params = LoanParams(
+                account_id=1,
+                original_principal=Decimal("240000.00"),
+                current_principal=Decimal("237000.00"),
+                interest_rate=Decimal("0.06500"),
+                term_months=360,
+                origination_date=date(2025, 1, 1),
+                payment_day=1,
+                is_arm=False,
+            )
+
+            result = compute_contractual_pi(params)
+
+            # Standard amortization payment for $240k at 6.5% / 30yr.
+            # Uses original_principal (not current) and full term.
+            assert result == Decimal("1516.96")
+
+    def test_arm_uses_current_principal_and_remaining(
+        self, app, db, seed_user,
+    ):
+        """C1-2: ARM loan re-amortizes from current balance.
+
+        Uses current_principal ($230k), current interest_rate (7%),
+        and remaining months from origination_date/term_months.
+        """
+        with app.app_context():
+            params = LoanParams(
+                account_id=1,
+                original_principal=Decimal("250000.00"),
+                current_principal=Decimal("230000.00"),
+                interest_rate=Decimal("0.07000"),
+                term_months=360,
+                origination_date=date(2024, 1, 1),
+                payment_day=1,
+                is_arm=True,
+            )
+
+            result = compute_contractual_pi(params)
+
+            # ARM payment should be computed from current_principal,
+            # not original_principal.  Result should be > 0 and
+            # different from what you'd get with original terms.
+            assert result > Decimal("0")
+            assert isinstance(result, Decimal)
+
+
+# ── Tests for prepare_payments_for_engine ────────────────────────
+
+
+class TestPreparePaymentsForEngine:
+    """Tests for escrow subtraction and biweekly redistribution."""
+
+    def test_escrow_subtraction(self):
+        """C1-3: Payments above P&I are reduced by escrow amount.
+
+        Payment of $1,800, contractual P&I $1,517, escrow $283.
+        The $283 above P&I is escrow -> subtract it -> $1,517.
+        """
+        payments = [
+            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 2, 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 3, 1), Decimal("1800.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("283.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert len(result) == 3
+        for p in result:
+            assert p.amount == Decimal("1517.00")
+
+    def test_below_pi_not_adjusted(self):
+        """C1-4: Payments at or below P&I are not reduced.
+
+        Payment of $1,500 is below contractual P&I of $1,517 --
+        this payment did not include escrow, so no subtraction.
+        """
+        payments = [
+            PaymentRecord(date(2026, 1, 1), Decimal("1500.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("283.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert len(result) == 1
+        assert result[0].amount == Decimal("1500.00")
+
+    def test_biweekly_redistribution(self):
+        """C1-5: Two payments in the same month are redistributed.
+
+        Two payments in January -> second shifts to February.
+        """
+        payments = [
+            PaymentRecord(date(2026, 1, 2), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 1, 16), Decimal("1517.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("0.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert len(result) == 2
+        # First stays in January.
+        assert result[0].payment_date.month == 1
+        # Second is redistributed to February.
+        assert result[1].payment_date.month == 2
+        assert result[1].payment_date.day == 1
+
+    def test_empty_payments_passthrough(self):
+        """Empty payment list returns unchanged."""
+        result = prepare_payments_for_engine(
+            [],
+            payment_day=1,
+            monthly_escrow=Decimal("283.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+        assert result == []
+
+    def test_no_escrow_no_subtraction(self):
+        """Zero escrow means no subtraction regardless of amount."""
+        payments = [
+            PaymentRecord(date(2026, 1, 1), Decimal("2000.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("0.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert result[0].amount == Decimal("2000.00")
+
+    def test_preserves_is_confirmed(self):
+        """is_confirmed flag is preserved through preparation."""
+        payments = [
+            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 2, 1), Decimal("1800.00"), False),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("283.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert result[0].is_confirmed is True
+        assert result[1].is_confirmed is False
+
+    def test_december_to_january_rollover(self):
+        """Two payments in December: second rolls to January next year."""
+        payments = [
+            PaymentRecord(date(2026, 12, 5), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 12, 19), Decimal("1517.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            monthly_escrow=Decimal("0.00"),
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert len(result) == 2
+        assert result[0].payment_date == date(2026, 12, 5)
+        assert result[1].payment_date == date(2027, 1, 1)

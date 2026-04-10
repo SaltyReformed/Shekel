@@ -298,11 +298,16 @@ def _add_savings_section(rows: list, savings: list) -> None:
     """Append the Savings Progress section rows."""
     rows.append([])
     rows.append(["[Savings Progress]"])
-    rows.append(["Account", "Jan 1 Balance ($)", "Dec 31 Balance ($)", "Contributions ($)"])
+    rows.append([
+        "Account", "Jan 1 Balance ($)", "Dec 31 Balance ($)",
+        "Contributions ($)", "Employer ($)", "Growth ($)",
+    ])
     for s in savings:
         rows.append([
             s["account_name"], _dec(s["jan1_balance"]),
             _dec(s["dec31_balance"]), _dec(s["total_contributions"]),
+            _dec(s.get("employer_contributions", 0)),
+            _dec(s.get("investment_growth", 0)),
         ])
 
 
