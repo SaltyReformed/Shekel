@@ -1989,3 +1989,143 @@ class TestCalendarYearView:
             assert b"Annual Income" in resp.data
             assert b"Annual Expenses" in resp.data
             assert b"Annual Net" in resp.data
+
+
+# ── Calendar Inline Totals and Day Detail Tests ───────────────────────
+
+
+class TestCalendarInlineTotals:
+    """Tests for inline day totals and day detail section."""
+
+    def test_calendar_day_totals_rendered(self, app, auth_client, seed_user, seed_periods, db):
+        """Day with transactions shows inline income/expense totals."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn_inc = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Test Paycheck",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("2500.00"),
+                due_date=date(2026, 1, 5),
+            )
+            txn_exp = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Test Rent",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("1200.00"),
+                due_date=date(2026, 1, 5),
+            )
+            db.session.add_all([txn_inc, txn_exp])
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert resp.status_code == 200
+            assert "calendar-day-income" in html
+            assert "calendar-day-expense" in html
+
+    def test_calendar_day_detail_template(self, app, auth_client, seed_user, seed_periods, db):
+        """Day with entries has a template element containing the transaction name."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Electric Bill Detail",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("150.00"),
+                due_date=date(2026, 1, 10),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert resp.status_code == 200
+            assert 'data-detail-day="10"' in html
+            assert "Electric Bill Detail" in html
+
+    def test_calendar_no_popover_attributes(self, app, auth_client, seed_user, seed_periods, db):
+        """Calendar month view does not contain Bootstrap popover attributes."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Popover Check",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("100.00"),
+                due_date=date(2026, 1, 15),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert resp.status_code == 200
+            assert 'data-bs-toggle="popover"' not in html
+
+    def test_calendar_day_click_attributes(self, app, auth_client, seed_user, seed_periods, db):
+        """Day with entries has data-day and role=button attributes."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Click Test",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("200.00"),
+                due_date=date(2026, 1, 20),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert resp.status_code == 200
+            assert 'data-day="20"' in html
+            assert 'role="button"' in html

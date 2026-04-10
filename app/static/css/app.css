@@ -1063,45 +1063,37 @@ td.htmx-loading::after {
   color: var(--shekel-text-secondary, var(--bs-body-color));
 }
 
-.calendar-markers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
+.calendar-day-totals {
   margin-top: 2px;
+  line-height: 1.2;
 }
 
-.calendar-marker {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
+.calendar-day-income {
+  font-size: 0.8rem;
+  color: var(--shekel-done);
 }
 
-.calendar-income {
-  background-color: var(--shekel-done);
+.calendar-day-expense {
+  font-size: 0.8rem;
+  color: var(--shekel-danger);
 }
 
-.calendar-expense {
-  background-color: var(--shekel-danger);
+.calendar-day[data-day] {
+  cursor: pointer;
 }
 
-.calendar-large {
-  width: 10px;
-  height: 10px;
-  box-shadow: 0 0 0 2px var(--shekel-surface, var(--bs-body-bg)),
-              0 0 0 3px currentColor;
+.calendar-day[data-day]:hover {
+  background-color: var(--shekel-surface-raised, var(--bs-tertiary-bg));
 }
 
-.calendar-infrequent {
-  border: 1.5px dashed currentColor;
-  background-color: transparent;
+.calendar-day--selected {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: -2px;
+  z-index: 1;
 }
 
-.calendar-more {
-  font-size: 0.6rem;
-  color: var(--shekel-text-muted);
-  line-height: 1;
-  align-self: center;
+#calendar-day-detail:empty {
+  display: none;
 }
 
 .calendar-month-card {
@@ -1129,14 +1121,9 @@ td.htmx-loading::after {
     font-size: 0.7rem;
   }
 
-  .calendar-marker {
-    width: 6px;
-    height: 6px;
-  }
-
-  .calendar-large {
-    width: 8px;
-    height: 8px;
+  .calendar-day-income,
+  .calendar-day-expense {
+    font-size: 0.7rem;
   }
 }
 

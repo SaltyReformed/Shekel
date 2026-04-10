@@ -60,13 +60,18 @@ These are requirements, not suggestions. Violating them is never acceptable.
 12. **Write complete code.** Never use placeholder comments like "repeat for remaining cases" or
     "similar for other types." Write every line, every branch, every mapping entry.
 
+13. **No gold-plating.** Implement exactly what was requested. No speculative abstractions, no
+    "flexibility" or "configurability" that was not asked for, no error handling for impossible
+    scenarios. If a simpler approach exists, propose it before building the complex one. If 200
+    lines could be 50, rewrite it.
+
 ## Common Commands
 
 ```bash
 # Dev server
 flask run
 
-# Tests -- full suite: ~11 minutes (2822 tests), always run in batches
+# Tests -- full suite: ~13 minutes (3200+ tests), always run in batches
 pytest tests/path/test_file.py -v             # single file (fast feedback)
 pytest tests/path/test_file.py::test_name -v  # single test
 

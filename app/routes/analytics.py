@@ -15,7 +15,6 @@ from flask import (
     Blueprint, make_response, redirect, render_template, request, url_for,
 )
 from flask_login import current_user, login_required
-from markupsafe import escape
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -291,8 +290,8 @@ def _build_calendar_weeks(year, month, data, today):
     """Build a list of week rows for the calendar grid.
 
     Each week is a list of 7 day dicts with keys: number, entries,
-    is_paycheck, is_today, popover_html.  Empty cells have number=0.
-    Uses Sunday as the first day of the week.
+    is_paycheck, is_today, income_total, expense_total.  Empty cells
+    have number=0.  Uses Sunday as the first day of the week.
     """
     # Sunday-start calendar (firstweekday=6 in Python's calendar).
     cal = cal_mod.Calendar(firstweekday=6)
@@ -310,7 +309,8 @@ def _build_calendar_weeks(year, month, data, today):
                     "entries": [],
                     "is_paycheck": False,
                     "is_today": False,
-                    "popover_html": "",
+                    "income_total": Decimal("0"),
+                    "expense_total": Decimal("0"),
                 })
             else:
                 entries = data.day_entries.get(day_num, [])
@@ -319,44 +319,22 @@ def _build_calendar_weeks(year, month, data, today):
                     and month == today.month
                     and day_num == today.day
                 )
-                popover = _build_popover_html(entries) if entries else ""
+                income_total = sum(
+                    e.amount for e in entries if e.is_income
+                )
+                expense_total = sum(
+                    abs(e.amount) for e in entries if not e.is_income
+                )
                 row.append({
                     "number": day_num,
                     "entries": entries,
                     "is_paycheck": day_num in paycheck_set,
                     "is_today": is_today,
-                    "popover_html": popover,
+                    "income_total": income_total,
+                    "expense_total": expense_total,
                 })
         weeks.append(row)
     return weeks
-
-
-def _build_popover_html(entries):
-    """Build HTML content for a day's Bootstrap popover.
-
-    Returns a plain string (not Markup) so Jinja auto-escapes it when
-    placed inside a data-bs-content attribute.  Bootstrap's popover
-    with data-bs-html="true" will parse the entity-decoded HTML at
-    display time.
-    """
-    lines = []
-    for entry in entries[:5]:
-        name = escape(entry.name)
-        amount = f"${entry.amount:,.2f}"
-        status = "Paid" if entry.is_paid else "Projected"
-        marker = "text-success" if entry.is_income else "text-danger"
-        lines.append(
-            f'<div class="mb-1">'
-            f'<span class="{marker}">&#9679;</span> '
-            f'{name} <span class="font-mono">{amount}</span> '
-            f'<small class="text-muted">-- {status}</small>'
-            f'</div>'
-        )
-    if len(entries) > 5:
-        lines.append(
-            f'<div class="text-muted"><small>+{len(entries) - 5} more</small></div>'
-        )
-    return "".join(lines)
 
 
 # ── CSV helpers ────────────────────────────────────────────────────

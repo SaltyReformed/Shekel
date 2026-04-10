@@ -1,4 +1,4 @@
-{# Month detail calendar -- 7-column Sun-Sat grid with transaction markers. #}
+{# Month detail calendar -- 7-column Sun-Sat grid with inline totals. #}
 
 {# Navigation #}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -45,29 +45,67 @@
   <div class="calendar-day calendar-day--empty"></div>
   {% else %}
   <div class="calendar-day{% if day.is_today %} calendar-day--today{% endif %}{% if day.is_paycheck %} calendar-paycheck{% endif %}"
-       {% if day.entries %}
-       data-bs-toggle="popover"
-       data-bs-trigger="click focus"
-       data-bs-html="true"
-       data-bs-content="{{ day.popover_html }}"
-       tabindex="0"
-       role="button"
-       {% endif %}>
+       {% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0"{% endif %}>
     <div class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</div>
-    <div class="calendar-markers">
-      {% for entry in day.entries[:3] %}
-      <span class="calendar-marker {% if entry.is_income %}calendar-income{% else %}calendar-expense{% endif %}{% if entry.is_large %} calendar-large{% endif %}{% if entry.is_infrequent %} calendar-infrequent{% endif %}"
-            title="{{ entry.name }}"></span>
-      {% endfor %}
-      {% if day.entries|length > 3 %}
-      <span class="calendar-more">+{{ day.entries|length - 3 }}</span>
+    {% if day.entries %}
+    <div class="calendar-day-totals">
+      {% if day.income_total %}
+      <div class="calendar-day-income font-mono">${{ "{:,.0f}".format(day.income_total|float) }}</div>
+      {% endif %}
+      {% if day.expense_total %}
+      <div class="calendar-day-expense font-mono">${{ "{:,.0f}".format(day.expense_total|float) }}</div>
       {% endif %}
     </div>
+    {% endif %}
   </div>
   {% endif %}
   {% endfor %}
   {% endfor %}
 </div>
+
+{# Day detail -- shown when a day cell is clicked #}
+<div id="calendar-day-detail" class="mb-3"></div>
+
+{# Pre-rendered detail content, hidden until selected #}
+{% for week in weeks %}
+{% for day in week %}
+{% if day.entries %}
+<template data-detail-day="{{ day.number }}">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h6 class="mb-0">{{ month_name }} {{ day.number }}, {{ year }}</h6>
+    <button type="button" class="btn-close btn-close-sm" aria-label="Close"
+            id="calendar-detail-close"></button>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Category</th>
+          <th class="text-end">Amount</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in day.entries %}
+        <tr>
+          <td>{{ entry.name }}</td>
+          <td class="text-muted">{{ entry.category_group|default("--", true) }}</td>
+          <td class="text-end font-mono {{ 'text-success' if entry.is_income else 'text-danger' }}">
+            ${{ "{:,.2f}".format(entry.amount|float) }}
+          </td>
+          <td><span class="badge {{ 'bg-success' if entry.is_paid else 'bg-secondary' }}">
+            {{ "Paid" if entry.is_paid else "Projected" }}
+          </span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</template>
+{% endif %}
+{% endfor %}
+{% endfor %}
 
 {# Monthly summary #}
 <div class="row g-2 text-center">
