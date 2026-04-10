@@ -1,15 +1,16 @@
 'use strict';
 
 /**
- * Shekel Budget App -- Net Worth Over Time Chart
+ * Shekel Budget App -- Year-End Net Worth Chart
  *
- * Renders a line chart with area fill showing total assets minus
- * total liabilities over time. Fill is green when positive,
- * red when negative.
+ * Renders a line chart with area fill showing net worth at 12
+ * monthly endpoints for the selected calendar year.  Follows the
+ * established ShekelChart.create() pattern with data-* attributes
+ * for CSP compliance.
  *
  * @param {string} canvasId - The canvas element ID.
  */
-function renderNetWorth(canvasId) {
+function renderYearEndNetWorth(canvasId) {
   var canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
@@ -18,7 +19,12 @@ function renderNetWorth(canvasId) {
 
   if (labels.length === 0) return;
 
-  // Determine if net worth is mostly positive or negative for fill color.
+  // Abbreviate month names for compact x-axis labels.
+  var shortLabels = labels.map(function(name) {
+    return name.substring(0, 3);
+  });
+
+  // Determine fill color based on whether net worth is positive.
   var minVal = Math.min.apply(null, data);
   var fillColor = minVal >= 0
     ? ShekelChart.getColor(1) + '30'
@@ -27,7 +33,7 @@ function renderNetWorth(canvasId) {
   ShekelChart.create(canvasId, {
     type: 'line',
     data: {
-      labels: labels,
+      labels: shortLabels,
       datasets: [{
         label: 'Net Worth',
         data: data,
@@ -36,7 +42,7 @@ function renderNetWorth(canvasId) {
         borderWidth: 2,
         fill: true,
         tension: 0.3,
-        pointRadius: 0,
+        pointRadius: 3,
         pointHitRadius: 10,
       }],
     },
@@ -46,7 +52,7 @@ function renderNetWorth(canvasId) {
       interaction: { mode: 'index', intersect: false },
       scales: {
         x: {
-          ticks: { maxTicksLimit: 12 },
+          grid: { display: false },
         },
         y: {
           ticks: {
@@ -57,8 +63,13 @@ function renderNetWorth(canvasId) {
         },
       },
       plugins: {
+        legend: { display: false },
         tooltip: {
           callbacks: {
+            title: function(items) {
+              // Show full month name from original labels.
+              return labels[items[0].dataIndex] || items[0].label;
+            },
             label: function(context) {
               var val = context.parsed.y;
               var prefix = val < 0 ? '-$' : '$';
@@ -74,9 +85,9 @@ function renderNetWorth(canvasId) {
   });
 }
 
-// Initialize after HTMX swap.
+// Initialize after HTMX swap (year-end tab is lazy-loaded).
 document.addEventListener('htmx:afterSwap', function() {
-  if (document.getElementById('chart-net-worth')) {
-    renderNetWorth('chart-net-worth');
+  if (document.getElementById('chart-year-end-nw')) {
+    renderYearEndNetWorth('chart-year-end-nw');
   }
 });

@@ -186,6 +186,18 @@ def update():
     if "low_balance_threshold" in data and data["low_balance_threshold"] is not None:
         settings.low_balance_threshold = data["low_balance_threshold"]
 
+    if "large_transaction_threshold" in data and data["large_transaction_threshold"] is not None:
+        settings.large_transaction_threshold = data["large_transaction_threshold"]
+
+    if "trend_alert_threshold" in data and data["trend_alert_threshold"] is not None:
+        # User enters integer percentage (e.g. 15 for 15%); store as decimal fraction.
+        settings.trend_alert_threshold = (
+            Decimal(str(data["trend_alert_threshold"])) / Decimal("100")
+        )
+
+    if "anchor_staleness_days" in data and data["anchor_staleness_days"] is not None:
+        settings.anchor_staleness_days = data["anchor_staleness_days"]
+
     # Account ownership check stays in the route (can't be in schema).
     if "default_grid_account_id" in data:
         acct_id = data["default_grid_account_id"]

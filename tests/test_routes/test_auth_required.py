@@ -28,8 +28,9 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/mfa/disable"),  # auth.mfa_disable
     ("POST", "/mfa/disable"),  # auth.mfa_disable_confirm
 
+    # -- dashboard blueprint --
+    ("GET", "/"),  # dashboard.page
     # -- grid blueprint --
-    ("GET", "/"),  # grid.index
     ("GET", "/grid/balance-row"),  # grid.balance_row
 
     # -- transactions blueprint --
@@ -239,17 +240,8 @@ PROTECTED_ENDPOINTS = [
     # retirement.update_settings
     ("POST", "/retirement/settings"),
 
-    # -- charts blueprint --
-    ("GET", "/charts"),  # charts.dashboard
-    # charts.balance_over_time
-    ("GET", "/charts/balance-over-time"),
-    # charts.spending_by_category
-    ("GET", "/charts/spending-by-category"),
-    # charts.budget_vs_actuals
-    ("GET", "/charts/budget-vs-actuals"),
-    ("GET", "/charts/amortization"),  # charts.amortization
-    ("GET", "/charts/net-worth"),  # charts.net_worth
-    ("GET", "/charts/net-pay"),  # charts.net_pay
+    # -- charts blueprint (fragment endpoints removed in Section 8) --
+    ("GET", "/charts"),  # charts.dashboard (301 redirect to /analytics)
 ]
 
 

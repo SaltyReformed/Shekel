@@ -1,0 +1,39 @@
+{# Spending comparison section partial. #}
+{% if spending_comparison.direction is not none %}
+<div class="text-center">
+  <div class="d-flex justify-content-around mb-2">
+    <div>
+      <small class="text-muted d-block">This Period</small>
+      <span class="font-mono fw-bold">${{ "{:,.2f}".format(spending_comparison.current_total|float) }}</span>
+    </div>
+    <div>
+      <small class="text-muted d-block">Last Period</small>
+      <span class="font-mono">${{ "{:,.2f}".format(spending_comparison.prior_total|float) }}</span>
+    </div>
+  </div>
+  {% if spending_comparison.delta is not none %}
+  <div class="mt-1">
+    {% if spending_comparison.direction == 'higher' %}
+    <span class="text-danger">
+      <i class="bi bi-arrow-up"></i>
+      ${{ "{:,.2f}".format(spending_comparison.delta|abs|float) }} more
+    </span>
+    {% elif spending_comparison.direction == 'lower' %}
+    <span class="text-success">
+      <i class="bi bi-arrow-down"></i>
+      ${{ "{:,.2f}".format(spending_comparison.delta|abs|float) }} less
+    </span>
+    {% else %}
+    <span class="text-muted">
+      <i class="bi bi-dash"></i> Same as last period
+    </span>
+    {% endif %}
+    {% if spending_comparison.delta_pct is not none %}
+    <small class="text-muted d-block">({{ "{:.1f}".format(spending_comparison.delta_pct|float) }}%)</small>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<p class="text-muted mb-0 text-center">First pay period -- no comparison available</p>
+{% endif %}

@@ -22,6 +22,7 @@ Supported patterns (§4.7):
   - once:              Single occurrence (no auto-generation -- user assigns manually).
 """
 
+import calendar as cal
 import logging
 from datetime import date
 from decimal import InvalidOperation
@@ -131,6 +132,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             template, salary_profile, period, periods
         )
 
+        # Compute the due date from the rule and period context.
+        due = _compute_due_date(rule, period)
+
         # No existing entry -- create a new one.
         txn = Transaction(
             account_id=template.account_id,
@@ -144,6 +148,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             estimated_amount=amount,
             is_override=False,
             is_deleted=False,
+            due_date=due,
         )
         db.session.add(txn)
         created.append(txn)
@@ -351,7 +356,6 @@ def _match_monthly(periods, day_of_month):
     For each unique (year, month) in the periods, find the period whose
     date range includes that month's target day.
     """
-    import calendar  # pylint: disable=import-outside-toplevel
 
     matched = []
     seen_months = set()
@@ -364,7 +368,7 @@ def _match_monthly(periods, day_of_month):
                 continue
 
             # Clamp day_of_month to the actual last day of the month.
-            last_day = calendar.monthrange(dt.year, dt.month)[1]
+            last_day = cal.monthrange(dt.year, dt.month)[1]
             target_day = min(day_of_month, last_day)
             target_date = date(dt.year, dt.month, target_day)
 
@@ -409,8 +413,6 @@ def _match_semi_annual(periods, start_month, day_of_month):
 
 def _match_specific_months(periods, target_months, day_of_month):
     """Find pay periods that contain a target day in any of the specified months."""
-    import calendar  # pylint: disable=import-outside-toplevel
-
     matched = []
     seen = set()
 
@@ -420,7 +422,7 @@ def _match_specific_months(periods, target_months, day_of_month):
             if key in seen or dt.month not in target_months:
                 continue
 
-            last_day = calendar.monthrange(dt.year, dt.month)[1]
+            last_day = cal.monthrange(dt.year, dt.month)[1]
             target_day = min(day_of_month, last_day)
             target_date = date(dt.year, dt.month, target_day)
 
@@ -433,8 +435,6 @@ def _match_specific_months(periods, target_months, day_of_month):
 
 def _match_annual(periods, month, day):
     """Find the pay period that contains a specific month/day each year."""
-    import calendar  # pylint: disable=import-outside-toplevel
-
     matched = []
     seen_years = set()
 
@@ -443,7 +443,7 @@ def _match_annual(periods, month, day):
             if dt.year in seen_years:
                 continue
 
-            last_day = calendar.monthrange(dt.year, month)[1]
+            last_day = cal.monthrange(dt.year, month)[1]
             target_day = min(day, last_day)
             target_date = date(dt.year, month, target_day)
 
@@ -452,6 +452,76 @@ def _match_annual(periods, month, day):
                 seen_years.add(dt.year)
 
     return matched
+
+
+def _compute_due_date(rule, period):
+    """Compute the due_date for a generated transaction.
+
+    Derives the calendar date the bill is actually due, using the
+    recurrence rule's scheduling day and optional due-day override.
+
+    Source priority:
+      1. rule.due_day_of_month (if set and differs from day_of_month)
+      2. rule.day_of_month (placed within the period's month context)
+      3. period.start_date (for every-paycheck patterns with no day)
+
+    Next-month convention: if due_day_of_month < day_of_month, the due
+    date falls in the following calendar month.  Example: day_of_month=22
+    with due_day_of_month=1 means the bill is due on the 1st of the
+    next month after the scheduling month.
+
+    Month-end clamping: day values exceeding the month's last day are
+    clamped (e.g. day 31 in April becomes 30, day 30 in Feb becomes 28).
+
+    Args:
+        rule: The RecurrenceRule with day_of_month and due_day_of_month.
+        period: The PayPeriod the transaction was assigned to.
+
+    Returns:
+        A date object representing the due date.
+    """
+    dom = rule.day_of_month
+    due_dom = rule.due_day_of_month
+
+    # Patterns without day_of_month (every-paycheck, every-N): use period start.
+    if dom is None:
+        return period.start_date
+
+    # Determine the base month by finding which month within the period
+    # contains the day_of_month target.  Mirrors the logic in
+    # _match_monthly() which checks both start_date and end_date months.
+    base_year = period.start_date.year
+    base_month = period.start_date.month
+
+    for dt in (period.start_date, period.end_date):
+        last_day = cal.monthrange(dt.year, dt.month)[1]
+        target_day = min(dom, last_day)
+        target = date(dt.year, dt.month, target_day)
+        if period.start_date <= target <= period.end_date:
+            base_year = dt.year
+            base_month = dt.month
+            break
+
+    if due_dom is None or due_dom == dom:
+        # No separate due date -- use day_of_month in the base month.
+        last_day = cal.monthrange(base_year, base_month)[1]
+        return date(base_year, base_month, min(dom, last_day))
+
+    # Next-month convention: due_day_of_month < day_of_month means the
+    # due date falls in the month after the scheduling month.
+    if due_dom < dom:
+        if base_month == 12:
+            due_year = base_year + 1
+            due_month = 1
+        else:
+            due_year = base_year
+            due_month = base_month + 1
+    else:
+        due_year = base_year
+        due_month = base_month
+
+    last_day = cal.monthrange(due_year, due_month)[1]
+    return date(due_year, due_month, min(due_dom, last_day))
 
 
 def _get_existing_map(template_id, scenario_id, periods):

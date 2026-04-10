@@ -1086,3 +1086,132 @@ class TestTemplateHardDelete:
             assert b"archived" in resp.data
             # Must NOT contain the old terminology.
             assert b"deactivated" not in resp.data
+
+
+# ── Due Day of Month Tests ──────────────────────────────────────────
+
+
+class TestDueDayOfMonth:
+    """Tests for due_day_of_month on template create/update."""
+
+    def test_create_template_with_due_day(self, app, auth_client, seed_user, seed_periods):
+        """POST template with Monthly pattern and due_day_of_month=1."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            category = seed_user["categories"]["Rent"]
+            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
+
+            resp = auth_client.post("/templates", data={
+                "name": "Rent w/ Due Day",
+                "default_amount": "1200.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "22",
+                "due_day_of_month": "1",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Rent w/ Due Day",
+            ).one()
+            assert template.recurrence_rule.due_day_of_month == 1
+
+    def test_create_template_without_due_day(self, app, auth_client, seed_user, seed_periods):
+        """POST template with Monthly pattern, no due_day -> None."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            category = seed_user["categories"]["Rent"]
+            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
+
+            auth_client.post("/templates", data={
+                "name": "Rent No Due",
+                "default_amount": "1200.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "15",
+            }, follow_redirects=True)
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Rent No Due",
+            ).one()
+            assert template.recurrence_rule.due_day_of_month is None
+
+    def test_update_template_add_due_day(self, app, auth_client, seed_user, seed_periods):
+        """Update existing template to add due_day_of_month=15."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            category = seed_user["categories"]["Rent"]
+            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
+
+            # Create without due_day first.
+            auth_client.post("/templates", data={
+                "name": "Updatable",
+                "default_amount": "1000.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "10",
+            }, follow_redirects=True)
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Updatable",
+            ).one()
+            assert template.recurrence_rule.due_day_of_month is None
+
+            # Update to add due_day.
+            auth_client.post(f"/templates/{template.id}", data={
+                "name": "Updatable",
+                "default_amount": "1000.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "10",
+                "due_day_of_month": "15",
+            }, follow_redirects=True)
+
+            db.session.refresh(template)
+            assert template.recurrence_rule.due_day_of_month == 15
+
+    def test_update_template_remove_due_day(self, app, auth_client, seed_user, seed_periods):
+        """Update template to remove due_day_of_month (set to None)."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            category = seed_user["categories"]["Rent"]
+            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
+
+            # Create with due_day.
+            auth_client.post("/templates", data={
+                "name": "Removable",
+                "default_amount": "1000.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "10",
+                "due_day_of_month": "15",
+            }, follow_redirects=True)
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Removable",
+            ).one()
+            assert template.recurrence_rule.due_day_of_month == 15
+
+            # Update without due_day (empty string stripped by schema).
+            auth_client.post(f"/templates/{template.id}", data={
+                "name": "Removable",
+                "default_amount": "1000.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(monthly.id),
+                "day_of_month": "10",
+            }, follow_redirects=True)
+
+            db.session.refresh(template)
+            assert template.recurrence_rule.due_day_of_month is None

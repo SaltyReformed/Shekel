@@ -1072,3 +1072,167 @@ class TestRestoreTransfer:
 
             with pytest.raises(ValidationError, match="integrity"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+
+class TestDueDateAndPaidAtShadows:
+    """Tests for due_date and paid_at propagation to shadow transactions."""
+
+    def test_shadow_due_date_propagation(self, app, db, transfer_data):
+        """create_transfer with due_date propagates to both shadows."""
+        from datetime import date
+
+        with app.app_context():
+            td = transfer_data
+            xfer = transfer_service.create_transfer(
+                user_id=td["user"].id,
+                from_account_id=td["account"].id,
+                to_account_id=td["savings_account"].id,
+                pay_period_id=td["periods"][0].id,
+                scenario_id=td["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=td["projected_status"].id,
+                category_id=td["categories"]["Rent"].id,
+                due_date=date(2026, 1, 15),
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.due_date == date(2026, 1, 15)
+
+    def test_shadow_due_date_null_propagation(self, app, db, transfer_data):
+        """create_transfer with due_date=None produces shadows with due_date=None."""
+        with app.app_context():
+            td = transfer_data
+            xfer = transfer_service.create_transfer(
+                user_id=td["user"].id,
+                from_account_id=td["account"].id,
+                to_account_id=td["savings_account"].id,
+                pay_period_id=td["periods"][0].id,
+                scenario_id=td["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=td["projected_status"].id,
+                category_id=td["categories"]["Rent"].id,
+                due_date=None,
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.due_date is None
+
+    def test_shadow_due_date_update(self, app, db, transfer_data):
+        """update_transfer with due_date propagates to both shadows."""
+        from datetime import date
+
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, due_date=date(2026, 2, 1)
+            )
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.due_date == date(2026, 2, 1)
+
+    def test_paid_at_transfer_shadow_both_set(self, app, db, transfer_data):
+        """update_transfer with paid_at sets paid_at on both shadows."""
+        from datetime import datetime, timezone
+
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+
+            now = datetime.now(timezone.utc)
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, paid_at=now
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.paid_at is not None
+
+    def test_paid_at_transfer_shadow_revert(self, app, db, transfer_data):
+        """Setting paid_at then reverting to None clears paid_at on both shadows."""
+        from datetime import datetime, timezone
+
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+
+            # Set paid_at.
+            now = datetime.now(timezone.utc)
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, paid_at=now
+            )
+            db.session.flush()
+
+            # Verify it was set.
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            for s in shadows:
+                assert s.paid_at is not None
+
+            # Revert to None.
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, paid_at=None
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            for s in shadows:
+                assert s.paid_at is None
+
+    def test_shadow_paid_at_null_propagation(self, app, db, transfer_data):
+        """update_transfer with paid_at=None sets both shadows to None."""
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, paid_at=None
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.paid_at is None

@@ -6,6 +6,7 @@ assigned to a specific pay period and scenario, with estimated and
 actual amounts plus a status workflow.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -29,6 +30,11 @@ class Transaction(db.Model):
             "idx_transactions_transfer",
             "transfer_id",
             postgresql_where=db.text("transfer_id IS NOT NULL"),
+        ),
+        db.Index(
+            "idx_transactions_due_date",
+            "due_date",
+            postgresql_where=db.text("due_date IS NOT NULL"),
         ),
         # One non-deleted transaction per template per period per scenario.
         db.Index(
@@ -94,6 +100,8 @@ class Transaction(db.Model):
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
+    due_date = db.Column(db.Date, nullable=True)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -153,6 +161,31 @@ class Transaction(db.Model):
     def is_expense(self):
         """True if this transaction is an expense."""
         return self.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+
+    @property
+    def days_until_due(self):
+        """Days remaining until the due date, or None.
+
+        Returns a positive integer for future due dates and a negative
+        integer for overdue transactions.  Returns None when there is no
+        due date or the transaction is already settled (no action needed).
+        """
+        if self.due_date is None:
+            return None
+        if self.status is not None and self.status.is_settled:
+            return None
+        return (self.due_date - date.today()).days
+
+    @property
+    def days_paid_before_due(self):
+        """Days between due date and payment, or None.
+
+        Positive means paid early, negative means paid late, zero means
+        paid on the due date.  Returns None when either field is missing.
+        """
+        if self.due_date is None or self.paid_at is None:
+            return None
+        return (self.due_date - self.paid_at.date()).days
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

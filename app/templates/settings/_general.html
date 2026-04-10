@@ -34,6 +34,26 @@
                     help_text="Account used for the budget grid balance display.",
                     errors=errors) }}
 
+  <hr class="my-4">
+  <h6 class="mb-3"><i class="bi bi-graph-up"></i> Dashboard & Analytics</h6>
+
+  {{ render_input_group("large_transaction_threshold", "Large Transaction Threshold",
+                         value=settings.large_transaction_threshold if settings.large_transaction_threshold is not none else 500, prefix="$",
+                         input_attrs='min="0"',
+                         help_text="Transactions above this amount are flagged on the dashboard calendar.",
+                         errors=errors) }}
+
+  {{ render_input_group("trend_alert_threshold", "Spending Trend Alert Threshold",
+                         value=(settings.trend_alert_threshold * 100)|round(0)|int if settings.trend_alert_threshold else 10, suffix="%",
+                         input_attrs='min="1" max="100"',
+                         help_text="Alert when category spending changes by more than this percentage between periods.",
+                         errors=errors) }}
+
+  {{ render_field("anchor_staleness_days", "Anchor Staleness Warning",
+                   type="number", value=settings.anchor_staleness_days if settings.anchor_staleness_days is not none else 14,
+                   help_text="Show a warning when the anchor balance has not been updated in this many days.",
+                   input_attrs='min="1"', errors=errors) }}
+
   <button type="submit" class="btn btn-primary w-100">
     <i class="bi bi-check-circle"></i> Save Settings
   </button>

@@ -1,0 +1,130 @@
+{# Month detail calendar -- 7-column Sun-Sat grid with inline totals. #}
+
+{# Navigation #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <button class="btn btn-sm btn-outline-secondary"
+          hx-get="{{ url_for('analytics.calendar_tab', view='month', year=prev_year, month=prev_month) }}"
+          hx-target="#tab-content" hx-swap="innerHTML">
+    <i class="bi bi-chevron-left"></i> Prev
+  </button>
+  <div class="text-center">
+    <h5 class="mb-0">{{ month_name }} {{ year }}</h5>
+    {% if data.is_third_paycheck_month %}
+    <span class="badge bg-info mt-1">3rd paycheck</span>
+    {% endif %}
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-primary"
+            hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year) }}"
+            hx-target="#tab-content" hx-swap="innerHTML">
+      <i class="bi bi-grid-3x3-gap"></i> Year
+    </button>
+    <a href="{{ url_for('analytics.calendar_tab', view='month', year=year, month=month, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <button class="btn btn-sm btn-outline-secondary"
+            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=next_year, month=next_month) }}"
+            hx-target="#tab-content" hx-swap="innerHTML">
+      Next <i class="bi bi-chevron-right"></i>
+    </button>
+  </div>
+</div>
+
+{# Calendar grid #}
+<div class="calendar-grid mb-3">
+  {# Day-of-week headers #}
+  {% for dow in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] %}
+  <div class="calendar-header text-center text-muted small fw-bold py-1">{{ dow }}</div>
+  {% endfor %}
+
+  {# Day cells #}
+  {% for week in weeks %}
+  {% for day in week %}
+  {% if day.number == 0 %}
+  <div class="calendar-day calendar-day--empty"></div>
+  {% else %}
+  <div class="calendar-day{% if day.is_today %} calendar-day--today{% endif %}{% if day.is_paycheck %} calendar-paycheck{% endif %}"
+       {% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0"{% endif %}>
+    <div class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</div>
+    {% if day.entries %}
+    <div class="calendar-day-totals">
+      {% if day.income_total %}
+      <div class="calendar-day-income font-mono">${{ "{:,.0f}".format(day.income_total|float) }}</div>
+      {% endif %}
+      {% if day.expense_total %}
+      <div class="calendar-day-expense font-mono">${{ "{:,.0f}".format(day.expense_total|float) }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endfor %}
+  {% endfor %}
+</div>
+
+{# Day detail -- shown when a day cell is clicked #}
+<div id="calendar-day-detail" class="mb-3"></div>
+
+{# Pre-rendered detail content, hidden until selected #}
+{% for week in weeks %}
+{% for day in week %}
+{% if day.entries %}
+<template data-detail-day="{{ day.number }}">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h6 class="mb-0">{{ month_name }} {{ day.number }}, {{ year }}</h6>
+    <button type="button" class="btn-close btn-close-sm" aria-label="Close"
+            id="calendar-detail-close"></button>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Category</th>
+          <th class="text-end">Amount</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in day.entries %}
+        <tr>
+          <td>{{ entry.name }}</td>
+          <td class="text-muted">{{ entry.category_group|default("--", true) }}</td>
+          <td class="text-end font-mono {{ 'text-success' if entry.is_income else 'text-danger' }}">
+            ${{ "{:,.2f}".format(entry.amount|float) }}
+          </td>
+          <td><span class="badge {{ 'bg-success' if entry.is_paid else 'bg-secondary' }}">
+            {{ "Paid" if entry.is_paid else "Projected" }}
+          </span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</template>
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+{# Monthly summary #}
+<div class="row g-2 text-center">
+  <div class="col-6 col-md-3">
+    <small class="text-muted d-block">Income</small>
+    <span class="font-mono text-success">${{ "{:,.2f}".format(data.total_income|float) }}</span>
+  </div>
+  <div class="col-6 col-md-3">
+    <small class="text-muted d-block">Expenses</small>
+    <span class="font-mono text-danger">${{ "{:,.2f}".format(data.total_expenses|float) }}</span>
+  </div>
+  <div class="col-6 col-md-3">
+    <small class="text-muted d-block">Net</small>
+    <span class="font-mono fw-bold {% if data.net|float >= 0 %}text-success{% else %}text-danger{% endif %}">
+      ${{ "{:,.2f}".format(data.net|float) }}
+    </span>
+  </div>
+  <div class="col-6 col-md-3">
+    <small class="text-muted d-block">End Balance</small>
+    <span class="font-mono">${{ "{:,.2f}".format(data.projected_end_balance|float) }}</span>
+  </div>
+</div>

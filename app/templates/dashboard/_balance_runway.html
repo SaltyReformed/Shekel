@@ -1,0 +1,29 @@
+{# Balance and cash runway section partial. #}
+{% if balance_info %}
+<div id="balance-display" class="text-center">
+  <div class="balance-display mb-1"
+       hx-get="{{ url_for('accounts.anchor_form', account_id=balance_info.account_id) }}"
+       hx-target="#balance-display"
+       hx-swap="innerHTML"
+       title="Click to update balance"
+       role="button" tabindex="0">
+    <span class="font-mono">${{ "{:,.2f}".format(balance_info.current_balance|float) }}</span>
+  </div>
+  <small class="text-muted d-block">{{ balance_info.account_name }}</small>
+  {% if balance_info.last_true_up_date %}
+  <small class="text-muted d-block" id="anchor-as-of">
+    as of {{ balance_info.last_true_up_date.strftime('%b %-d') }}
+  </small>
+  {% endif %}
+  <hr class="my-2">
+  {% if balance_info.cash_runway_days is not none %}
+  <div class="runway-badge">
+    <small class="text-muted">~{{ balance_info.cash_runway_days }} days at current pace</small>
+  </div>
+  {% else %}
+  <small class="text-muted">Cash runway: N/A</small>
+  {% endif %}
+</div>
+{% else %}
+<p class="text-muted mb-0">No balance data available</p>
+{% endif %}

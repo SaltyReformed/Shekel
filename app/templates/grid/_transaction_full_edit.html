@@ -57,6 +57,16 @@
              placeholder="Notes">
     </div>
 
+    {# Due Date #}
+    {% if txn.due_date is not none %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Due Date</label>
+      <input type="date" name="due_date"
+             value="{{ txn.due_date.isoformat() }}"
+             class="form-control form-control-sm">
+    </div>
+    {% endif %}
+
     {# Save / Cancel buttons #}
     <div class="d-flex gap-1 mb-2">
       <button type="submit" class="btn btn-sm btn-primary flex-grow-1">

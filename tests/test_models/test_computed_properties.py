@@ -9,7 +9,7 @@ Tests for computed properties on models:
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
@@ -462,3 +462,108 @@ class TestPaycheckBreakdownTotals:
             - breakdown.total_post_tax
         )
         assert expected == Decimal("-200.00")
+
+
+# ── Transaction.days_until_due / days_paid_before_due ──────────────
+
+
+class TestDaysUntilDue:
+    """Tests for Transaction.days_until_due computed property."""
+
+    def _make_txn(self, seed_user, seed_periods, status_name, due_date_val):
+        """Helper: create a transaction with given status and due_date."""
+        status = db.session.query(Status).filter_by(name=status_name).one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+        txn = Transaction(
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=status.id,
+            name="Test Due",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("100.00"),
+            due_date=due_date_val,
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_days_until_due_future(self, app, db, seed_user, seed_periods):
+        """Projected transaction with future due_date returns positive days."""
+        with app.app_context():
+            future = date.today().replace(year=date.today().year + 1)
+            txn = self._make_txn(seed_user, seed_periods, "Projected", future)
+            assert txn.days_until_due is not None
+            assert txn.days_until_due > 0
+
+    def test_days_until_due_past(self, app, db, seed_user, seed_periods):
+        """Projected transaction with past due_date returns negative days."""
+        with app.app_context():
+            past = date(2020, 1, 1)
+            txn = self._make_txn(seed_user, seed_periods, "Projected", past)
+            assert txn.days_until_due is not None
+            assert txn.days_until_due < 0
+
+    def test_days_until_due_settled(self, app, db, seed_user, seed_periods):
+        """Settled transaction returns None -- no action needed."""
+        with app.app_context():
+            future = date.today().replace(year=date.today().year + 1)
+            txn = self._make_txn(seed_user, seed_periods, "Paid", future)
+            assert txn.days_until_due is None
+
+    def test_days_until_due_no_due_date(self, app, db, seed_user, seed_periods):
+        """Transaction with no due_date returns None."""
+        with app.app_context():
+            txn = self._make_txn(seed_user, seed_periods, "Projected", None)
+            assert txn.days_until_due is None
+
+
+class TestDaysPaidBeforeDue:
+    """Tests for Transaction.days_paid_before_due computed property."""
+
+    def _make_txn(self, seed_user, seed_periods, due_date_val, paid_at_val):
+        """Helper: create a transaction with given due_date and paid_at."""
+        status = db.session.query(Status).filter_by(name="Paid").one()
+        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+        txn = Transaction(
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=status.id,
+            name="Test Paid Timing",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("100.00"),
+            due_date=due_date_val,
+            paid_at=paid_at_val,
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_days_paid_before_due_early(self, app, db, seed_user, seed_periods):
+        """Paid 3 days before due returns 3 (positive = early)."""
+        with app.app_context():
+            due = date(2026, 3, 15)
+            paid = datetime(2026, 3, 12, 10, 0, 0, tzinfo=timezone.utc)
+            txn = self._make_txn(seed_user, seed_periods, due, paid)
+            assert txn.days_paid_before_due == 3
+
+    def test_days_paid_before_due_late(self, app, db, seed_user, seed_periods):
+        """Paid 2 days after due returns -2 (negative = late)."""
+        with app.app_context():
+            due = date(2026, 3, 15)
+            paid = datetime(2026, 3, 17, 10, 0, 0, tzinfo=timezone.utc)
+            txn = self._make_txn(seed_user, seed_periods, due, paid)
+            assert txn.days_paid_before_due == -2
+
+    def test_days_paid_before_due_no_paid_at(self, app, db, seed_user, seed_periods):
+        """No paid_at timestamp returns None."""
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods,
+                due_date_val=date(2026, 3, 15),
+                paid_at_val=None,
+            )
+            assert txn.days_paid_before_due is None

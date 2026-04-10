@@ -18,7 +18,7 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 
 ## Test Run Guidelines
 
-- **Full suite:** ~10 minutes (2300+ tests). Always use `timeout 720`.
+- **Full suite:** ~12 minutes (3100+ tests). Always use `timeout 720`.
 - **During development:** Run only relevant test files. Typically under 30 seconds.
 - **Before reporting done:** Full suite once: `timeout 720 pytest -v --tb=short`.
 - **If tests appear stuck:** Wait for the full timeout. The slowest test is ~3 seconds.

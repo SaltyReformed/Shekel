@@ -421,3 +421,116 @@ class TestRegularTransactionUnaffected:
             assert "estimated_amount" in html
             # Does not contain transfer-specific endpoint.
             assert "/transfers/instance/" not in html
+
+
+# ── Due Date PATCH Tests ────────────────────────────────────────────
+
+
+class TestDueDatePatch:
+    """Tests for PATCH due_date on transactions."""
+
+    def test_patch_due_date_override(self, app, auth_client, seed_user, seed_periods):
+        """PATCH due_date updates the transaction's due_date."""
+        with app.app_context():
+            from datetime import date
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Test Bill",
+                transaction_type_id=expense.id,
+                estimated_amount=Decimal("500.00"),
+                due_date=date(2026, 1, 15),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"due_date": "2026-01-20"},
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.due_date == date(2026, 1, 20)
+
+    def test_patch_due_date_shadow_propagates(self, app, auth_client, seed_user, seed_periods):
+        """PATCH due_date on transfer shadow updates both shadows."""
+        with app.app_context():
+            from datetime import date
+
+            transfer, exp_shadow, inc_shadow = _create_test_transfer(
+                seed_user, seed_periods,
+            )
+
+            resp = auth_client.patch(
+                f"/transactions/{exp_shadow.id}",
+                data={"due_date": "2026-01-20"},
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(exp_shadow)
+            db.session.refresh(inc_shadow)
+            assert exp_shadow.due_date == date(2026, 1, 20)
+            assert inc_shadow.due_date == date(2026, 1, 20)
+
+    def test_patch_due_date_does_not_affect_other_fields(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """PATCH only due_date leaves amount, status, notes unchanged."""
+        with app.app_context():
+            from datetime import date
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="Stable",
+                transaction_type_id=expense.id,
+                estimated_amount=Decimal("750.00"),
+                notes="original note",
+                due_date=date(2026, 1, 5),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"due_date": "2026-01-25"},
+            )
+            db.session.refresh(txn)
+            assert txn.estimated_amount == Decimal("750.00")
+            assert txn.notes == "original note"
+            assert txn.status_id == projected.id
+
+    def test_full_edit_shows_due_date(self, app, auth_client, seed_user, seed_periods):
+        """GET full-edit popover contains due_date input for txn with due_date."""
+        with app.app_context():
+            from datetime import date
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected.id,
+                name="With Due",
+                transaction_type_id=expense.id,
+                estimated_amount=Decimal("100.00"),
+                due_date=date(2026, 1, 10),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            assert b"due_date" in resp.data
+            assert b"2026-01-10" in resp.data

@@ -32,6 +32,8 @@ class TransactionUpdateSchema(BaseSchema):
     pay_period_id = fields.Integer()
     category_id = fields.Integer()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+    due_date = fields.Date(allow_none=True)
+    paid_at = fields.DateTime(allow_none=True, dump_only=True)
 
 
 class TransactionCreateSchema(BaseSchema):
@@ -47,6 +49,7 @@ class TransactionCreateSchema(BaseSchema):
     transaction_type_id = fields.Integer(required=True)
     status_id = fields.Integer()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+    due_date = fields.Date(allow_none=True)
 
 
 class InlineTransactionCreateSchema(BaseSchema):
@@ -99,6 +102,9 @@ class TemplateCreateSchema(BaseSchema):
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
+    due_day_of_month = fields.Integer(
+        validate=validate.Range(min=1, max=31), allow_none=True,
+    )
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
     start_period_id = fields.Integer()
     end_date = fields.Date(allow_none=True)
@@ -1195,6 +1201,15 @@ class UserSettingsSchema(BaseSchema):
     )
     low_balance_threshold = fields.Integer(
         validate=validate.Range(min=0),
+    )
+    large_transaction_threshold = fields.Integer(
+        validate=validate.Range(min=0),
+    )
+    trend_alert_threshold = fields.Integer(
+        validate=validate.Range(min=1, max=100),
+    )
+    anchor_staleness_days = fields.Integer(
+        validate=validate.Range(min=1),
     )
     default_grid_account_id = fields.Integer(allow_none=True)
 

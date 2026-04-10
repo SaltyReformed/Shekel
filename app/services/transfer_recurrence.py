@@ -95,6 +95,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
         # Delegate to the transfer service so shadow transactions are
         # created atomically alongside the transfer record.
+        # Transfer shadows use the paycheck date (period start) as
+        # due date since transfers typically happen on payday.
         xfer = transfer_service.create_transfer(
             user_id=template.user_id,
             from_account_id=template.from_account_id,
@@ -106,6 +108,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             category_id=template.category_id,
             name=template.name,
             transfer_template_id=template.id,
+            due_date=period.start_date,
         )
         created.append(xfer)
 

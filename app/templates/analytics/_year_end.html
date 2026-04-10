@@ -1,0 +1,329 @@
+{# Year-End Financial Summary -- HTMX partial.
+   Rendered by analytics.year_end_tab() into #tab-content. #}
+
+{% macro fmt(value) -%}
+  ${{ "{:,.2f}".format(value|float) }}
+{%- endmacro %}
+
+{# ── Year Selector ─────────────────────────────────────────────── #}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h5 class="mb-0">Year-End Summary</h5>
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.year_end_tab', year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.year_end_tab') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          name="year">
+    {% for y in available_years %}
+    <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+    {% endfor %}
+    </select>
+  </div>
+</div>
+
+{% set has_income = data.income_tax.gross_wages > 0 or data.income_tax.mortgage_interest_total > 0 %}
+{% set has_spending = data.spending_by_category|length > 0 %}
+{% set has_transfers = data.transfers_summary|length > 0 %}
+{% set has_debt = data.debt_progress|length > 0 %}
+{% set has_savings = data.savings_progress|length > 0 %}
+{% set has_timeliness = data.payment_timeliness is not none %}
+{% set has_net_worth = data.net_worth.jan1 != 0 or data.net_worth.dec31 != 0 %}
+{% set has_any = has_income or has_spending or has_transfers or has_debt or has_savings or has_net_worth %}
+
+{% if not has_any %}
+{# ── Empty State ────────────────────────────────────────────────── #}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-calendar-x" style="font-size: 2rem;"></i>
+  <p class="mt-2">No financial data for {{ year }}.</p>
+</div>
+
+{% else %}
+
+{# ── Section 1: Income & Taxes ──────────────────────────────────── #}
+{% if has_income %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-receipt"></i> Income &amp; Taxes</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table year-end-table mb-0">
+      <thead class="visually-hidden">
+        <tr><th>Item</th><th>Amount</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Gross Wages <small class="text-muted">(W-2 Box 1)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.gross_wages) }}</td>
+        </tr>
+        <tr class="table-group-divider">
+          <td colspan="2" class="text-muted small fw-semibold">Taxes Withheld</td>
+        </tr>
+        <tr>
+          <td class="ps-4">Federal Income Tax <small class="text-muted">(Box 2)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.federal_tax) }}</td>
+        </tr>
+        <tr>
+          <td class="ps-4">Social Security Tax <small class="text-muted">(Box 4)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.social_security_tax) }}</td>
+        </tr>
+        <tr>
+          <td class="ps-4">Medicare Tax <small class="text-muted">(Box 6)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.medicare_tax) }}</td>
+        </tr>
+        <tr>
+          <td class="ps-4">State Income Tax <small class="text-muted">(Box 17)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.state_tax) }}</td>
+        </tr>
+
+        {% if data.income_tax.pretax_deductions %}
+        <tr class="table-group-divider">
+          <td colspan="2" class="text-muted small fw-semibold">Pre-Tax Deductions</td>
+        </tr>
+        {% for ded in data.income_tax.pretax_deductions %}
+        <tr>
+          <td class="ps-4">{{ ded.name }}</td>
+          <td class="text-end font-mono">{{ fmt(ded.annual_total) }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="year-end-subtotal">
+          <td class="ps-4 fw-semibold">Total Pre-Tax Deductions</td>
+          <td class="text-end font-mono fw-semibold">{{ fmt(data.income_tax.total_pretax) }}</td>
+        </tr>
+        {% endif %}
+
+        {% if data.income_tax.posttax_deductions %}
+        <tr class="table-group-divider">
+          <td colspan="2" class="text-muted small fw-semibold">Post-Tax Deductions</td>
+        </tr>
+        {% for ded in data.income_tax.posttax_deductions %}
+        <tr>
+          <td class="ps-4">{{ ded.name }}</td>
+          <td class="text-end font-mono">{{ fmt(ded.annual_total) }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="year-end-subtotal">
+          <td class="ps-4 fw-semibold">Total Post-Tax Deductions</td>
+          <td class="text-end font-mono fw-semibold">{{ fmt(data.income_tax.total_posttax) }}</td>
+        </tr>
+        {% endif %}
+
+        <tr class="year-end-subtotal">
+          <td class="fw-bold">Net Pay</td>
+          <td class="text-end font-mono fw-bold">{{ fmt(data.income_tax.net_pay_total) }}</td>
+        </tr>
+
+        {% if data.income_tax.mortgage_interest_total > 0 %}
+        <tr class="table-group-divider">
+          <td>Mortgage Interest Paid <small class="text-muted">(Schedule A)</small></td>
+          <td class="text-end font-mono">{{ fmt(data.income_tax.mortgage_interest_total) }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Section 2: Spending by Category ────────────────────────────── #}
+{% if has_spending %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-tags"></i> Spending by Category</h6>
+  </div>
+  <div class="card-body p-0">
+    <div class="accordion accordion-flush" id="spending-accordion">
+      {% for group in data.spending_by_category %}
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button collapsed" type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#spending-group-{{ loop.index }}"
+                  aria-expanded="false">
+            <span class="flex-grow-1">{{ group.group_name }}</span>
+            <span class="font-mono me-3">{{ fmt(group.group_total) }}</span>
+          </button>
+        </h2>
+        <div id="spending-group-{{ loop.index }}"
+             class="accordion-collapse collapse"
+             data-bs-parent="#spending-accordion">
+          <div class="accordion-body p-0">
+            <table class="table table-sm year-end-table mb-0">
+              <tbody>
+                {% for item in group["items"] %}
+                <tr>
+                  <td class="ps-4">{{ item.item_name }}</td>
+                  <td class="text-end font-mono">{{ fmt(item.item_total) }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Section 3: Transfers Summary ───────────────────────────────── #}
+{% if has_transfers %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-arrow-left-right"></i> Transfers Summary</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table year-end-table mb-0">
+      <thead>
+        <tr>
+          <th>Destination Account</th>
+          <th class="text-end">Total Transferred</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in data.transfers_summary %}
+        <tr>
+          <td>{{ t.destination_account }}</td>
+          <td class="text-end font-mono">{{ fmt(t.total_amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Section 4: Net Worth Trend ─────────────────────────────────── #}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-graph-up"></i> Net Worth Change</h6>
+  </div>
+  <div class="card-body">
+    <div class="row text-center mb-3">
+      <div class="col-4">
+        <div class="text-muted small">Jan 1</div>
+        <div class="font-mono">{{ fmt(data.net_worth.jan1) }}</div>
+      </div>
+      <div class="col-4">
+        <div class="text-muted small">Dec 31</div>
+        <div class="font-mono">{{ fmt(data.net_worth.dec31) }}</div>
+      </div>
+      <div class="col-4">
+        <div class="text-muted small">Change</div>
+        {% if data.net_worth.delta >= 0 %}
+        <div class="font-mono year-end-delta-positive">+{{ fmt(data.net_worth.delta) }}</div>
+        {% else %}
+        <div class="font-mono year-end-delta-negative">-{{ fmt(data.net_worth.delta|abs) }}</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="year-end-chart-wrap">
+      <canvas id="chart-year-end-nw"
+              data-labels='{{ data.net_worth.monthly_values | map(attribute="month_name") | list | tojson }}'
+              data-data='{{ data.net_worth.monthly_values | map(attribute="balance") | map("float") | list | tojson }}'>
+      </canvas>
+    </div>
+  </div>
+</div>
+
+{# ── Section 5: Debt Progress ───────────────────────────────────── #}
+{% if has_debt %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-bank"></i> Debt Progress</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table year-end-table mb-0">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th class="text-end">Jan 1</th>
+          <th class="text-end">Dec 31</th>
+          <th class="text-end">Principal Paid</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in data.debt_progress %}
+        <tr>
+          <td>{{ d.account_name }}</td>
+          <td class="text-end font-mono">{{ fmt(d.jan1_balance) }}</td>
+          <td class="text-end font-mono">{{ fmt(d.dec31_balance) }}</td>
+          <td class="text-end font-mono {% if d.principal_paid > 0 %}year-end-delta-positive{% endif %}">
+            {{ fmt(d.principal_paid) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Section 6: Savings Progress ────────────────────────────────── #}
+{% if has_savings %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-piggy-bank"></i> Savings Progress</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table year-end-table mb-0">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th class="text-end">Jan 1</th>
+          <th class="text-end">Dec 31</th>
+          <th class="text-end">Contributions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in data.savings_progress %}
+        <tr>
+          <td>{{ s.account_name }}</td>
+          <td class="text-end font-mono">{{ fmt(s.jan1_balance) }}</td>
+          <td class="text-end font-mono">{{ fmt(s.dec31_balance) }}</td>
+          <td class="text-end font-mono">{{ fmt(s.total_contributions) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Section 7: Payment Timeliness (OP-2) ───────────────────────── #}
+{% if has_timeliness %}
+<div class="card year-end-section mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Payment Timeliness</h6>
+  </div>
+  <div class="card-body">
+    <div class="row text-center">
+      <div class="col-6 col-md-3 mb-2">
+        <div class="text-muted small">Bills Paid</div>
+        <div class="fs-5">{{ data.payment_timeliness.total_bills_paid }}</div>
+      </div>
+      <div class="col-6 col-md-3 mb-2">
+        <div class="text-muted small">On Time</div>
+        <div class="fs-5 text-success">{{ data.payment_timeliness.paid_on_time }}</div>
+      </div>
+      <div class="col-6 col-md-3 mb-2">
+        <div class="text-muted small">Late</div>
+        <div class="fs-5 {% if data.payment_timeliness.paid_late > 0 %}text-danger{% endif %}">
+          {{ data.payment_timeliness.paid_late }}
+        </div>
+      </div>
+      <div class="col-6 col-md-3 mb-2">
+        <div class="text-muted small">Avg. Days Early</div>
+        <div class="fs-5">{{ data.payment_timeliness.avg_days_before_due }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}{# end has_any #}

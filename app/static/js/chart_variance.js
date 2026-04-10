@@ -1,14 +1,16 @@
 'use strict';
 
 /**
- * Shekel Budget App -- Budget vs. Actuals Chart
+ * Shekel Budget App -- Budget Variance Chart
  *
  * Renders a grouped bar chart comparing estimated and actual amounts
- * per category. Overspend is highlighted in red.
+ * per category group.  Actual bars are color-coded: green when under
+ * budget, red/coral when over budget.  Follows the pattern from
+ * chart_budget.js.
  *
  * @param {string} canvasId - The canvas element ID.
  */
-function renderBudgetVsActuals(canvasId) {
+function renderVarianceChart(canvasId) {
   var canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
@@ -54,10 +56,23 @@ function renderBudgetVsActuals(canvasId) {
         tooltip: {
           callbacks: {
             label: function(context) {
-              return context.dataset.label + ': $' + context.parsed.y.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              });
+              return context.dataset.label + ': $' +
+                context.parsed.y.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                });
+            },
+            afterBody: function(items) {
+              var idx = items[0].dataIndex;
+              var est = estimated[idx];
+              var act = actual[idx];
+              var diff = act - est;
+              var prefix = diff >= 0 ? '+$' : '-$';
+              return 'Variance: ' + prefix +
+                Math.abs(diff).toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                });
             },
           },
         },
@@ -78,9 +93,29 @@ function renderBudgetVsActuals(canvasId) {
   });
 }
 
-// Initialize after HTMX swap.
+// Initialize after HTMX swap (variance tab is lazy-loaded).
 document.addEventListener('htmx:afterSwap', function() {
-  if (document.getElementById('chart-budget-vs-actuals')) {
-    renderBudgetVsActuals('chart-budget-vs-actuals');
+  if (document.getElementById('chart-variance')) {
+    renderVarianceChart('chart-variance');
   }
+});
+
+// "Show only variances" toggle -- hides rows with zero variance.
+document.addEventListener('htmx:afterSwap', function() {
+  var toggle = document.getElementById('variance-filter-toggle');
+  if (!toggle) return;
+
+  toggle.addEventListener('change', function() {
+    var rows = document.querySelectorAll(
+      '#variance-table tbody tr[data-variance]'
+    );
+    rows.forEach(function(row) {
+      var v = parseFloat(row.getAttribute('data-variance'));
+      if (toggle.checked && v === 0) {
+        row.classList.add('d-none');
+      } else {
+        row.classList.remove('d-none');
+      }
+    });
+  });
 });

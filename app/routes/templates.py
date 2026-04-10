@@ -142,6 +142,7 @@ def create_template():
             interval_n=interval_n,
             offset_periods=offset_periods,
             day_of_month=data.pop("day_of_month", None),
+            due_day_of_month=data.pop("due_day_of_month", None),
             month_of_year=data.pop("month_of_year", None),
             start_period_id=start_period_id,
             end_date=end_date,
@@ -150,7 +151,7 @@ def create_template():
         db.session.flush()
     else:
         # Remove recurrence-related keys if no pattern.
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "due_day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     # Create the template.
@@ -251,6 +252,7 @@ def update_template(template_id):
             template.recurrence_rule.interval_n = data.pop("interval_n", 1)
             template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
             template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
+            template.recurrence_rule.due_day_of_month = data.pop("due_day_of_month", None)
             template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
             template.recurrence_rule.end_date = end_date
         else:
@@ -260,6 +262,7 @@ def update_template(template_id):
                 interval_n=data.pop("interval_n", 1),
                 offset_periods=data.pop("offset_periods", 0),
                 day_of_month=data.pop("day_of_month", None),
+                due_day_of_month=data.pop("due_day_of_month", None),
                 month_of_year=data.pop("month_of_year", None),
                 end_date=end_date,
             )
@@ -267,7 +270,7 @@ def update_template(template_id):
             db.session.flush()
             template.recurrence_rule_id = rule.id
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
+        for key in ("interval_n", "offset_periods", "day_of_month", "due_day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
     # Validate ownership if account or category is being changed.

@@ -1,0 +1,221 @@
+{# Budget Variance Analysis -- HTMX partial.
+   Rendered by analytics.variance_tab() into #tab-content. #}
+
+{% macro fmt(value) -%}
+  ${{ "{:,.2f}".format(value|float) }}
+{%- endmacro %}
+
+{% macro fmt_var(value) -%}
+  {% if value > 0 %}+{{ fmt(value) }}{% elif value < 0 %}-{{ fmt(value|abs) }}{% else %}{{ fmt(value) }}{% endif %}
+{%- endmacro %}
+
+{% macro fmt_pct(value) -%}
+  {% if value is none %}--{% elif value > 0 %}+{{ "{:.2f}".format(value|float) }}%{% elif value < 0 %}{{ "{:.2f}".format(value|float) }}%{% else %}0.00%{% endif %}
+{%- endmacro %}
+
+{% macro var_class(value) -%}
+  {% if value > 0 %}variance-over{% elif value < 0 %}variance-under{% else %}variance-zero{% endif %}
+{%- endmacro %}
+
+{# ── Header & Window Toggle ────────────────────────────────────── #}
+
+<div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
+  <h5 class="mb-0 me-3">Budget Variance</h5>
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.variance_tab', window=window_type, period_id=period_id, month=month, year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <div class="btn-group" role="group" aria-label="Time window">
+    <button class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.variance_tab', window='pay_period') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Pay Period
+    </button>
+    <button class="btn btn-sm {% if window_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.variance_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Month
+    </button>
+    <button class="btn btn-sm {% if window_type == 'year' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.variance_tab', window='year') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Year
+    </button>
+    </div>
+  </div>
+</div>
+
+{# ── Window-Specific Selector ──────────────────────────────────── #}
+
+<div class="mb-3">
+{% if window_type == 'pay_period' %}
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.variance_tab', window='pay_period') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          name="period_id">
+    {% for p in periods %}
+    <option value="{{ p.id }}" {{ 'selected' if p.id == period_id }}>
+      {{ p.start_date.strftime('%b %d') }} - {{ p.end_date.strftime('%b %d, %Y') }}
+    </option>
+    {% endfor %}
+    {% if not periods %}
+    <option disabled selected>No periods available</option>
+    {% endif %}
+  </select>
+
+{% elif window_type == 'month' %}
+  <div class="d-flex gap-2">
+    <select class="form-select form-select-sm w-auto"
+            hx-get="{{ url_for('analytics.variance_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            hx-include="[name=year]"
+            name="month">
+      {% for m in range(1, 13) %}
+      <option value="{{ m }}" {{ 'selected' if m == month }}>
+        {{ ['', 'January', 'February', 'March', 'April', 'May', 'June',
+             'July', 'August', 'September', 'October', 'November', 'December'][m] }}
+      </option>
+      {% endfor %}
+    </select>
+    <select class="form-select form-select-sm w-auto"
+            hx-get="{{ url_for('analytics.variance_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            hx-include="[name=month]"
+            name="year">
+      {% for y in available_years %}
+      <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+{% elif window_type == 'year' %}
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.variance_tab', window='year') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          name="year">
+    {% for y in available_years %}
+    <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+    {% endfor %}
+  </select>
+{% endif %}
+</div>
+
+<p class="text-muted small mb-3">{{ report.window_label }}</p>
+
+{% if report.groups|length == 0 %}
+{# ── Empty State ────────────────────────────────────────────────── #}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-clipboard-x" style="font-size: 2rem;"></i>
+  <p class="mt-2">No transactions in this period.</p>
+</div>
+
+{% else %}
+
+{# ── Chart ──────────────────────────────────────────────────────── #}
+<div class="card variance-section mb-3">
+  <div class="card-body">
+    <div class="variance-chart-wrap">
+      <canvas id="chart-variance"
+              data-labels='{{ chart_data.labels | tojson }}'
+              data-estimated='{{ chart_data.estimated | tojson }}'
+              data-actual='{{ chart_data.actual | tojson }}'>
+      </canvas>
+    </div>
+  </div>
+</div>
+
+{# ── Show Only Variances Toggle ─────────────────────────────────── #}
+<div class="form-check form-switch mb-3">
+  <input class="form-check-input" type="checkbox" id="variance-filter-toggle">
+  <label class="form-check-label small" for="variance-filter-toggle">
+    Show only variances
+  </label>
+</div>
+
+{# ── Variance Table ─────────────────────────────────────────────── #}
+<div class="card variance-section mb-3">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+    <table class="table variance-table mb-0" id="variance-table">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th class="text-end">Estimated</th>
+          <th class="text-end">Actual</th>
+          <th class="text-end">Variance ($)</th>
+          <th class="text-end">Variance (%)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in report.groups %}
+        {% set gidx = loop.index %}
+        {# ── Group Row ──────────────────────────────────────────── #}
+        <tr class="variance-group-row" data-variance="{{ group.variance }}"
+            data-bs-toggle="collapse" data-bs-target=".vg-{{ gidx }}"
+            role="button" aria-expanded="false">
+          <td class="fw-semibold">
+            <i class="bi bi-chevron-right variance-chevron me-1 small"></i>
+            {{ group.group_name }}
+          </td>
+          <td class="text-end font-mono">{{ fmt(group.estimated_total) }}</td>
+          <td class="text-end font-mono">{{ fmt(group.actual_total) }}</td>
+          <td class="text-end font-mono {{ var_class(group.variance) }}">{{ fmt_var(group.variance) }}</td>
+          <td class="text-end font-mono {{ var_class(group.variance) }}">{{ fmt_pct(group.variance_pct) }}</td>
+        </tr>
+
+        {# ── Item Rows (collapsed) ──────────────────────────────── #}
+        {% for item in group.items %}
+        {% set iidx = loop.index %}
+        <tr class="collapse vg-{{ gidx }} variance-item-row"
+            data-variance="{{ item.variance }}"
+            data-bs-toggle="collapse" data-bs-target=".vi-{{ gidx }}-{{ iidx }}"
+            role="button">
+          <td class="ps-4">{{ item.item_name }}</td>
+          <td class="text-end font-mono">{{ fmt(item.estimated_total) }}</td>
+          <td class="text-end font-mono">{{ fmt(item.actual_total) }}</td>
+          <td class="text-end font-mono {{ var_class(item.variance) }}">{{ fmt_var(item.variance) }}</td>
+          <td class="text-end font-mono {{ var_class(item.variance) }}">{{ fmt_pct(item.variance_pct) }}</td>
+        </tr>
+
+        {# ── Transaction Rows (collapsed under item) ────────────── #}
+        {% for txn in item.transactions %}
+        <tr class="collapse vi-{{ gidx }}-{{ iidx }} variance-txn-row"
+            data-variance="{{ txn.variance }}">
+          <td class="ps-5 text-muted">
+            {{ txn.name }}
+            {% if txn.is_paid %}
+            <span class="badge bg-success bg-opacity-25 text-success ms-1">Paid</span>
+            {% endif %}
+          </td>
+          <td class="text-end font-mono">{{ fmt(txn.estimated) }}</td>
+          <td class="text-end font-mono">{{ fmt(txn.actual) }}</td>
+          <td class="text-end font-mono {{ var_class(txn.variance) }}">{{ fmt_var(txn.variance) }}</td>
+          <td class="text-end font-mono {{ var_class(txn.variance) }}">{{ fmt_pct(txn.variance_pct) }}</td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+        {% endfor %}
+
+        {# ── Totals Row ────────────────────────────────────────── #}
+        <tr class="variance-total-row">
+          <td class="fw-bold">Total</td>
+          <td class="text-end font-mono fw-bold">{{ fmt(report.total_estimated) }}</td>
+          <td class="text-end font-mono fw-bold">{{ fmt(report.total_actual) }}</td>
+          <td class="text-end font-mono fw-bold {{ var_class(report.total_variance) }}">{{ fmt_var(report.total_variance) }}</td>
+          <td class="text-end font-mono fw-bold {{ var_class(report.total_variance) }}">{{ fmt_pct(report.total_variance_pct) }}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+{% endif %}

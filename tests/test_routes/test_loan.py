@@ -1568,22 +1568,6 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
 
-    def test_charts_page_amortization_not_broken(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """Charts page amortization endpoint still renders.
-
-        The Charts page uses get_amortization_breakdown() which is
-        unchanged.  This test verifies no side effects from the
-        multi-scenario changes in the loan route.
-        """
-        acct = _create_mortgage(seed_user, db.session)
-        resp = auth_client.get(
-            "/charts/amortization",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-
     def test_dashboard_arm_original_excludes_rate_changes(
         self, auth_client, seed_user, db, seed_periods,
     ):
@@ -3331,3 +3315,80 @@ class TestRefinanceCalculator:
         assert "$186,513.24" in html
         # Interest savings.
         assert "$68,572.58" in html
+
+
+# ── Nav-Pills Consistency Tests ─────────────────────────────────────
+
+
+class TestLoanNavPills:
+    """Tests verifying loan dashboard uses nav-pills instead of nav-tabs."""
+
+    def test_loan_dashboard_renders_pills(self, auth_client, seed_user, db, seed_periods):
+        """GET loan dashboard contains nav-pills markup."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"nav-pills" in resp.data
+
+    def test_loan_dashboard_no_nav_tabs(self, auth_client, seed_user, db, seed_periods):
+        """GET loan dashboard does not contain nav-tabs markup."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"nav-tabs" not in resp.data
+
+    def test_loan_payoff_nested_pills(self, auth_client, seed_user, db, seed_periods):
+        """Payoff Calculator section contains a second nav-pills instance."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        html = resp.data.decode()
+        # Two nav-pills: primary navigation and nested payoff calculator.
+        assert html.count("nav-pills") >= 2
+
+    def test_loan_uses_scroll_pills(self, auth_client, seed_user, db, seed_periods):
+        """GET loan dashboard contains shekel-scroll-pills class."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"shekel-scroll-pills" in resp.data
+
+    def test_no_mobile_scroll_tabs_in_loan(self, auth_client, seed_user, db, seed_periods):
+        """GET loan dashboard does not contain mobile-scroll-tabs class."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"mobile-scroll-tabs" not in resp.data
+
+    def test_loan_tab_ids_preserved(self, auth_client, seed_user, db, seed_periods):
+        """All expected tab pane IDs are present in the loan dashboard."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        html = resp.data.decode()
+        expected_ids = [
+            'id="tab-overview"',
+            'id="tab-escrow"',
+            'id="tab-schedule"',
+            'id="tab-payoff"',
+            'id="tab-refinance"',
+        ]
+        for tab_id in expected_ids:
+            assert tab_id in html, f"Missing tab pane: {tab_id}"
+
+    def test_loan_tab_ids_arm_rate_history(self, auth_client, seed_user, db, seed_periods):
+        """ARM loan dashboard includes the rate-history tab pane."""
+        acct = _create_loan_account(
+            seed_user, db.session, "Auto Loan", "ARM Auto",
+            Decimal("20000.00"), Decimal("0.04500"), 60,
+            date(2025, 1, 1), 15, is_arm=True,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        html = resp.data.decode()
+        assert 'id="tab-rates"' in html
+
+    def test_loan_data_bs_toggle_pill(self, auth_client, seed_user, db, seed_periods):
+        """All toggle attributes use pill, not tab."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        html = resp.data.decode()
+        assert 'data-bs-toggle="pill"' in html
+        assert 'data-bs-toggle="tab"' not in html

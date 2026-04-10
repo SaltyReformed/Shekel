@@ -41,7 +41,7 @@ def _freeze_today_to_period_5(monkeypatch):
 
 
 class TestGridIsolation:
-    """Verify the budget grid (/) shows only the logged-in user's transactions."""
+    """Verify the budget grid (/grid) shows only the logged-in user's transactions."""
 
     def test_user_a_sees_own_transactions(
         self, app, auth_client, seed_full_user_data, seed_full_second_user_data,
@@ -52,7 +52,7 @@ class TestGridIsolation:
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created (default view starts at the current period).
-            response = auth_client.get("/?offset=-5")
+            response = auth_client.get("/grid?offset=-5")
             assert response.status_code == 200
 
             # Positive: User A's transaction name is present (in aria-label
@@ -71,7 +71,7 @@ class TestGridIsolation:
         with app.app_context():
             # Navigate back to show period 0 where the fixture transaction
             # was created.
-            response = second_auth_client.get("/?offset=-5")
+            response = second_auth_client.get("/grid?offset=-5")
             assert response.status_code == 200
 
             # Positive: User B's transaction name is present.
@@ -343,68 +343,25 @@ class TestCategoriesIsolation:
 
 
 class TestChartsIsolation:
-    """Verify the charts dashboard and fragments load per-user."""
+    """Verify /charts redirects to /analytics (Section 8 cleanup)."""
 
-    def test_charts_dashboard_loads_for_user_a(
+    def test_charts_redirects_for_user_a(
         self, app, auth_client, seed_full_user_data, seed_full_second_user_data
     ):
-        """User A can load the charts dashboard shell."""
+        """User A gets 301 redirect from /charts to /analytics."""
         with app.app_context():
             response = auth_client.get("/charts")
-            assert response.status_code == 200
+            assert response.status_code == 301
+            assert "/analytics" in response.headers["Location"]
 
-            # Positive: the charts heading is present.
-            assert b"Charts" in response.data
-
-    def test_charts_dashboard_loads_for_user_b(
+    def test_charts_redirects_for_user_b(
         self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
     ):
-        """User B can load the charts dashboard shell."""
+        """User B gets 301 redirect from /charts to /analytics."""
         with app.app_context():
             response = second_auth_client.get("/charts")
-            assert response.status_code == 200
-
-            # Positive: the charts heading is present.
-            assert b"Charts" in response.data
-
-    def test_balance_chart_user_a(
-        self, app, auth_client, seed_full_user_data, seed_full_second_user_data
-    ):
-        """User A's balance chart fragment contains User A's account ID."""
-        with app.app_context():
-            response = auth_client.get(
-                "/charts/balance-over-time",
-                headers={"HX-Request": "true"},
-            )
-            assert response.status_code == 200
-
-            # Positive: User A's account ID appears in the chart fragment
-            # (in checkbox value or data attributes).
-            user_a_acct_id = seed_full_user_data["account"].id
-            assert str(user_a_acct_id).encode() in response.data
-
-            # Negative: User B's account ID does not appear.
-            user_b_acct_id = seed_full_second_user_data["account"].id
-            assert str(user_b_acct_id).encode() not in response.data
-
-    def test_balance_chart_user_b(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
-    ):
-        """User B's balance chart fragment contains User B's account ID."""
-        with app.app_context():
-            response = second_auth_client.get(
-                "/charts/balance-over-time",
-                headers={"HX-Request": "true"},
-            )
-            assert response.status_code == 200
-
-            # Positive: User B's account ID appears in the chart fragment.
-            user_b_acct_id = seed_full_second_user_data["account"].id
-            assert str(user_b_acct_id).encode() in response.data
-
-            # Negative: User A's account ID does not appear.
-            user_a_acct_id = seed_full_user_data["account"].id
-            assert str(user_a_acct_id).encode() not in response.data
+            assert response.status_code == 301
+            assert "/analytics" in response.headers["Location"]
 
 
 class TestSettingsIsolation:

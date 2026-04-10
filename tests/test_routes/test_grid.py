@@ -27,7 +27,7 @@ class TestGridView:
     def test_grid_loads_with_periods(self, app, auth_client, seed_user, seed_periods):
         """GET / renders the budget grid with pay period columns."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             # Check for key grid elements.
             assert b"Checking Balance" in response.data
@@ -36,21 +36,21 @@ class TestGridView:
     def test_grid_shows_no_periods_page(self, app, auth_client, seed_user):
         """GET / shows the no-periods prompt when none exist."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             assert b"No Pay Periods" in response.data
 
     def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods):
         """GET / shows the resolved account name in the header."""
         with app.app_context():
-            response = auth_client.get("/")
+            response = auth_client.get("/grid")
             assert response.status_code == 200
             assert b"Checking Balance" in response.data
 
     def test_grid_period_controls(self, app, auth_client, seed_user, seed_periods):
         """Grid respects the periods query parameter."""
         with app.app_context():
-            response = auth_client.get("/?periods=3")
+            response = auth_client.get("/grid?periods=3")
             assert response.status_code == 200
             assert b"01/02" in response.data
             assert b"Projected End Balance" in response.data
@@ -88,7 +88,7 @@ class TestBalanceRow:
         """GET / with periods larger than available still renders."""
         with app.app_context():
             # Request 100 periods when only 10 exist -- should render what's available.
-            resp = auth_client.get("/?periods=100")
+            resp = auth_client.get("/grid?periods=100")
             assert resp.status_code == 200
             assert b"Projected End Balance" in resp.data
             assert b"01/02" in resp.data
@@ -1052,7 +1052,7 @@ class TestAccountScopedGrid:
                          txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         assert resp.status_code == 200
         html = resp.data.decode()
 
@@ -1082,7 +1082,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Savings grid: should show the $567 deposit, not the $1234 rent.
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
 
@@ -1096,7 +1096,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "Savings Balance" in html
 
@@ -1115,12 +1115,12 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Checking grid: balance should reflect $1000 anchor.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$1,000" in html
 
         # Savings grid: balance should reflect $5000 anchor.
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "$5,000" in html
 
@@ -1141,7 +1141,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Savings grid: balance should still be $5000 (the expense is on checking).
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         assert "$5,000" in html
 
@@ -1203,7 +1203,7 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Full grid page for checking account -- subtotals reflect checking only.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$2,000" in html  # Total Income (checking).
         assert "$800" in html    # Total Expenses (checking).
@@ -1227,7 +1227,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "INCOME" in html
@@ -1251,12 +1251,12 @@ class TestAccountScopedGrid:
         db.session.commit()
 
         # Checking grid: Rent row visible.
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "Rent" in html
 
         # Savings grid: no Rent row (no transactions for this category on savings).
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         html = resp.data.decode()
         # The category name "Rent" should not appear as a row label.
         # It may appear in the "Add Transaction" modal dropdown, so check
@@ -1278,7 +1278,7 @@ class TestAccountScopedGrid:
         db.session.add(savings)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "New Savings Balance" in html
@@ -1298,7 +1298,7 @@ class TestAccountScopedGrid:
         db.session.add(savings)
         db.session.commit()
 
-        resp = auth_client.get(f"/?account_id={savings.id}")
+        resp = auth_client.get(f"/grid?account_id={savings.id}")
         assert resp.status_code == 200
 
     # --- Cancelled and deleted transaction edge cases ---
@@ -1323,7 +1323,7 @@ class TestAccountScopedGrid:
                                      category=seed_user["categories"]["Car Payment"])
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         # The active transaction's cell should be rendered with its ID.
         assert f"txn-cell-{active.id}" in html
@@ -1342,7 +1342,7 @@ class TestAccountScopedGrid:
         txn.is_deleted = True
         db.session.commit()
 
-        resp = auth_client.get("/")
+        resp = auth_client.get("/grid")
         html = resp.data.decode()
         assert "$999" not in html
 
@@ -1473,7 +1473,7 @@ class TestTransfersSectionRemoved:
     def test_grid_no_transfers_section(self, app, auth_client, seed_user, seed_periods):
         """Grid does not contain a TRANSFERS section banner."""
         with app.app_context():
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "section-banner-transfer" not in html
@@ -1482,7 +1482,7 @@ class TestTransfersSectionRemoved:
     def test_grid_renders_without_transfers(self, app, auth_client, seed_user, seed_periods):
         """Grid renders normally with no transfers or shadows."""
         with app.app_context():
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "section-banner-income" in html
@@ -1532,7 +1532,7 @@ class TestInlineSubtotalRows:
             db.session.add_all([txn_inc, txn_exp])
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             assert "subtotal-row-income" in html
@@ -1569,7 +1569,7 @@ class TestInlineSubtotalRows:
                 db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             # Total Income = 2000 + 100 = 2100.
@@ -1612,7 +1612,7 @@ class TestInlineSubtotalRows:
             db.session.add_all([txn_ok, txn_bad])
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
 
             # Only $1,000 counted (cancelled $500 excluded).
@@ -1677,7 +1677,7 @@ class TestNetCashFlowRow:
         """Grid contains a net-cash-flow-row with correct label."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "2000", "1400")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             assert "Net Cash Flow" in html
@@ -1687,7 +1687,7 @@ class TestNetCashFlowRow:
         """Negative net cash flow shows warning indicator."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "1000", "1500")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "balance-negative" in html
             # Warning icon for negative net.
@@ -1697,7 +1697,7 @@ class TestNetCashFlowRow:
         """Breakeven period shows empty net cash flow cell."""
         with app.app_context():
             self._seed_txns(seed_user, seed_periods, "1000", "1000")
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             # Net is zero -- cell should be empty (matching footer behavior).
@@ -1748,7 +1748,7 @@ class TestFooterCondensation:
     def test_footer_htmx_refresh_cycle(self, app, db, auth_client, seed_user, seed_periods):
         """Initial page and balance-row both produce tfoot with HTMX attributes."""
         with app.app_context():
-            page_resp = auth_client.get("/")
+            page_resp = auth_client.get("/grid")
             page_html = page_resp.data.decode()
             assert 'id="grid-summary"' in page_html
 
@@ -1783,7 +1783,7 @@ class TestFooterCondensation:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "subtotal-row-income" in html
             assert "subtotal-row-expense" in html
@@ -1829,7 +1829,7 @@ class TestPeriodHeaderDateFormat:
             )
             assert current is not None, "No period covers today"
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1863,7 +1863,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = next_year_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1884,7 +1884,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             first_offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={first_offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={first_offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1912,7 +1912,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = future_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1944,7 +1944,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = last_current.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -1987,7 +1987,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=6&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2006,7 +2006,7 @@ class TestPeriodHeaderDateFormat:
             start = today - timedelta(days=14)
             self._make_periods(db, seed_user, start)
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "<thead" in html
@@ -2039,7 +2039,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2069,7 +2069,7 @@ class TestPeriodHeaderDateFormat:
                 seed_user["user"].id
             )
             offset = dec_period.period_index - current_period.period_index
-            resp = auth_client.get(f"/?periods=3&offset={offset}")
+            resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2165,7 +2165,7 @@ class TestTransactionNameRows:
             db.session.add_all([txn_sf, txn_geico])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2206,7 +2206,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2280,7 +2280,7 @@ class TestTransactionNameRows:
             db.session.add(shadow)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2318,7 +2318,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2361,7 +2361,7 @@ class TestTransactionNameRows:
             db.session.add_all([txn_home, txn_auto])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2434,7 +2434,7 @@ class TestTransactionNameRows:
             db.session.commit()
 
             # Extract the quick-create URL from an empty cell.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             import re
@@ -2478,7 +2478,7 @@ class TestTransactionNameRows:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             # Group header rows have the correct class.
@@ -2498,7 +2498,7 @@ class TestTransactionNameRows:
         subtotal rows with zeros, and no crash.
         """
         with app.app_context():
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2555,7 +2555,7 @@ class TestTransactionNameRows:
             db.session.add_all([income, expense1, expense2])
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2726,10 +2726,10 @@ class TestTransactionNameRows:
                     html_str,
                 )
 
-            resp1 = auth_client.get("/?periods=3")
+            resp1 = auth_client.get("/grid?periods=3")
             labels1 = extract_row_labels(resp1.data.decode())
 
-            resp2 = auth_client.get("/?periods=3")
+            resp2 = auth_client.get("/grid?periods=3")
             labels2 = extract_row_labels(resp2.data.decode())
 
             assert labels1 == labels2
@@ -2764,7 +2764,7 @@ class TestTransactionNameRows:
             assert resp.status_code == 200
 
             # GET the grid showing the next period where the payback lives.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2809,7 +2809,7 @@ class TestTransactionNameRows:
             assert resp.status_code == 200
 
             # GET the grid.
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -2865,7 +2865,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2901,7 +2901,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2933,7 +2933,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2966,7 +2966,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -2995,7 +2995,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3025,7 +3025,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3056,7 +3056,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3092,7 +3092,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3121,7 +3121,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3152,7 +3152,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3226,7 +3226,7 @@ class TestTooltipContent:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/?periods=3")
+            resp = auth_client.get("/grid?periods=3")
             html = resp.data.decode()
 
             titles = self._extract_txn_titles(html)
@@ -3294,7 +3294,7 @@ class TestSubtotalDecimalPrecision:
             db.session.commit()
 
             # Fetch the grid page.
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -3361,7 +3361,7 @@ class TestGridSubtotalsRegressionBaseline:
             db.session.add(txn)
             db.session.commit()
 
-            resp = auth_client.get("/")
+            resp = auth_client.get("/grid")
             assert resp.status_code == 200
             html = resp.data.decode()
 
@@ -3374,3 +3374,240 @@ class TestGridSubtotalsRegressionBaseline:
             assert "subtotal-row-income" in html, (
                 "Income subtotal row must be present in grid"
             )
+
+
+class TestPaidAtLifecycle:
+    """Tests for paid_at timestamp management during status changes."""
+
+    def _create_test_txn(self, seed_user, seed_periods):
+        """Create a projected expense transaction for testing."""
+        from app import ref_cache
+        from app.enums import StatusEnum, TxnTypeEnum
+
+        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+        expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=projected_id,
+            name="Test Expense",
+            category_id=seed_user["categories"]["Rent"].id,
+            transaction_type_id=expense_type_id,
+            estimated_amount=Decimal("100.00"),
+            due_date=seed_periods[0].start_date,
+        )
+        db.session.add(txn)
+        db.session.commit()
+        return txn
+
+    def _create_income_txn(self, seed_user, seed_periods):
+        """Create a projected income transaction for testing."""
+        from app import ref_cache
+        from app.enums import StatusEnum, TxnTypeEnum
+
+        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+        income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=projected_id,
+            name="Test Income",
+            category_id=seed_user["categories"]["Salary"].id,
+            transaction_type_id=income_type_id,
+            estimated_amount=Decimal("2000.00"),
+            due_date=seed_periods[0].start_date,
+        )
+        db.session.add(txn)
+        db.session.commit()
+        return txn
+
+    def test_paid_at_set_on_mark_done(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions/<id>/mark-done sets paid_at timestamp for expenses."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+            assert txn.paid_at is None
+
+            response = auth_client.post(f"/transactions/{txn.id}/mark-done")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.paid_at is not None
+
+    def test_paid_at_set_on_mark_received(self, app, auth_client, seed_user, seed_periods):
+        """POST /transactions/<id>/mark-done sets paid_at timestamp for income."""
+        with app.app_context():
+            txn = self._create_income_txn(seed_user, seed_periods)
+            assert txn.paid_at is None
+
+            response = auth_client.post(f"/transactions/{txn.id}/mark-done")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.paid_at is not None
+
+    def test_paid_at_nulled_on_status_revert(self, app, auth_client, seed_user, seed_periods):
+        """PATCH /transactions/<id> with status_id reverted to projected nulls paid_at."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            # Mark done to set paid_at.
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+            db.session.refresh(txn)
+            assert txn.paid_at is not None
+
+            # Revert to projected via PATCH.
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(projected_id)},
+            )
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.paid_at is None
+
+    def test_paid_at_re_mark_sets_new_timestamp(self, app, auth_client, seed_user, seed_periods):
+        """Mark done, revert to projected, mark done again -- paid_at is set both times."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            # First mark done.
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+            db.session.refresh(txn)
+            first_paid_at = txn.paid_at
+            assert first_paid_at is not None
+
+            # Revert to projected.
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(projected_id)},
+            )
+            db.session.refresh(txn)
+            assert txn.paid_at is None
+
+            # Mark done again.
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+            db.session.refresh(txn)
+            second_paid_at = txn.paid_at
+            assert second_paid_at is not None
+            assert second_paid_at >= first_paid_at
+
+    def test_paid_at_not_set_on_non_settling_status_change(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions/<id>/cancel does not set paid_at."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+            assert txn.paid_at is None
+
+            response = auth_client.post(f"/transactions/{txn.id}/cancel")
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.paid_at is None
+
+    def test_paid_at_preserved_on_non_status_update(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """PATCH /transactions/<id> updating amount only preserves paid_at."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            # Mark done to set paid_at.
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+            db.session.refresh(txn)
+            original_paid_at = txn.paid_at
+            assert original_paid_at is not None
+
+            # Update estimated_amount only -- no status change.
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"estimated_amount": "200.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.paid_at is not None
+
+    def test_mark_done_idempotent_updates_paid_at(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """POST /transactions/<id>/mark-done twice both succeed; paid_at is set each time."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods)
+
+            # First mark done.
+            resp1 = auth_client.post(f"/transactions/{txn.id}/mark-done")
+            assert resp1.status_code == 200
+            db.session.refresh(txn)
+            first_paid_at = txn.paid_at
+            assert first_paid_at is not None
+
+            # Second mark done (idempotent).
+            resp2 = auth_client.post(f"/transactions/{txn.id}/mark-done")
+            assert resp2.status_code == 200
+            db.session.refresh(txn)
+            second_paid_at = txn.paid_at
+            assert second_paid_at is not None
+            assert second_paid_at >= first_paid_at
+
+
+class TestSchemaValidation:
+    """Tests for due_day_of_month and due_date schema validation."""
+
+    def test_schema_due_day_of_month_zero(self, app):
+        """due_day_of_month=0 is rejected by the template schema."""
+        from app.schemas.validation import TemplateCreateSchema
+        with app.app_context():
+            schema = TemplateCreateSchema()
+            errors = schema.validate({"due_day_of_month": "0"})
+            assert "due_day_of_month" in errors
+
+    def test_schema_due_day_of_month_32(self, app):
+        """due_day_of_month=32 is rejected by the template schema."""
+        from app.schemas.validation import TemplateCreateSchema
+        with app.app_context():
+            schema = TemplateCreateSchema()
+            errors = schema.validate({"due_day_of_month": "32"})
+            assert "due_day_of_month" in errors
+
+    def test_schema_due_day_of_month_valid_range(self, app):
+        """due_day_of_month values 1-31 are all accepted."""
+        from app.schemas.validation import TemplateCreateSchema
+        with app.app_context():
+            schema = TemplateCreateSchema()
+            for day in range(1, 32):
+                errors = schema.validate({"due_day_of_month": str(day)})
+                assert "due_day_of_month" not in errors, (
+                    f"day {day} should be valid but got: {errors.get('due_day_of_month')}"
+                )
+
+    def test_schema_due_date_on_transaction_update(self, app):
+        """due_date accepted as a valid Date field in TransactionUpdateSchema."""
+        from app.schemas.validation import TransactionUpdateSchema
+        with app.app_context():
+            schema = TransactionUpdateSchema()
+            errors = schema.validate({"due_date": "2026-04-15"})
+            assert "due_date" not in errors
+
+    def test_schema_paid_at_is_dump_only(self, app):
+        """paid_at is dump_only so it is ignored when submitted in PATCH data.
+
+        The field should not appear in loaded data even when submitted.
+        """
+        from app.schemas.validation import TransactionUpdateSchema
+        with app.app_context():
+            schema = TransactionUpdateSchema()
+            data = schema.load({"paid_at": "2026-04-15T10:00:00"})
+            assert "paid_at" not in data

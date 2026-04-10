@@ -39,6 +39,17 @@ class RecurrenceRule(db.Model):
             name="ck_recurrence_rules_dom",
         ),
     )
+    # Optional: the actual bill due day when it differs from the
+    # pay-period scheduling day.  When NULL, day_of_month serves as
+    # both the scheduling day and the due date.
+    due_day_of_month = db.Column(
+        db.Integer,
+        db.CheckConstraint(
+            "due_day_of_month IS NULL OR "
+            "(due_day_of_month >= 1 AND due_day_of_month <= 31)",
+            name="ck_recurrence_rules_due_dom",
+        ),
+    )
     # Used by 'annual' pattern.
     month_of_year = db.Column(
         db.Integer,
