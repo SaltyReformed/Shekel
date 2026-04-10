@@ -1568,22 +1568,6 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
 
-    def test_charts_page_amortization_not_broken(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """Charts page amortization endpoint still renders.
-
-        The Charts page uses get_amortization_breakdown() which is
-        unchanged.  This test verifies no side effects from the
-        multi-scenario changes in the loan route.
-        """
-        acct = _create_mortgage(seed_user, db.session)
-        resp = auth_client.get(
-            "/charts/amortization",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-
     def test_dashboard_arm_original_excludes_rate_changes(
         self, auth_client, seed_user, db, seed_periods,
     ):

@@ -1736,11 +1736,12 @@ class TestAnalyticsNav:
             html = resp.data.decode()
             assert 'href="/charts"' not in html
 
-    def test_charts_route_still_works(self, app, auth_client, seed_user):
-        """GET /charts still returns 200 -- route is unlinked, not removed."""
+    def test_charts_route_redirects(self, app, auth_client, seed_user):
+        """GET /charts returns 301 redirect to /analytics."""
         with app.app_context():
             resp = auth_client.get("/charts")
-            assert resp.status_code == 200
+            assert resp.status_code == 301
+            assert "/analytics" in resp.headers["Location"]
 
     def test_analytics_active_nav_state(self, app, auth_client, seed_user):
         """GET /analytics shows the Analytics nav item as active."""

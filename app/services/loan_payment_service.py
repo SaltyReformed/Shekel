@@ -17,7 +17,6 @@ related services must never depend on the transfers table directly.
 
 Shared by:
   - app/routes/loan.py (dashboard and payoff calculator)
-  - app/services/chart_data_service.py (loan chart data, future 5.5-1)
 """
 
 import logging
