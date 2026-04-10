@@ -788,28 +788,36 @@ class LoanProjection:
 
 def get_loan_projection(
     params,
-    schedule_start=None,
+    schedule_start=None,  # pylint: disable=unused-argument  # kept for callers
     payments=None,
     rate_changes=None,
 ):
     """Compute remaining months, summary, and schedule for a loan in one call.
 
+    Generates the full life-of-loan schedule from ``origination_date``
+    using ``original_principal`` as the starting balance.  This allows
+    all payment records -- past confirmed and future projected -- to be
+    matched by the engine's year-month lookup.  Without starting from
+    origination, the schedule begins at today and past confirmed payments
+    are never matched, making them invisible to the schedule table and
+    balance computations.
+
+    This matches the pattern used by the year-end service
+    (``year_end_summary_service._generate_debt_schedules``).
+
     For fixed-rate loans, the contractual monthly payment is computed from
     ``original_principal`` and ``term_months`` (what the borrower pays each
     month for the life of the loan).  For ARM loans (``params.is_arm``),
-    the payment is always re-amortized from ``current_principal`` and
-    ``remaining_months`` at the current rate, since the "contractual"
-    payment changes at each rate adjustment.  This applies regardless of
-    whether *rate_changes* is populated -- a newly created ARM with no
-    rate history still uses the re-amortized path.
+    ``original_principal`` is passed as ``None`` to force re-amortization
+    at the current rate, since the "contractual" payment changes at each
+    rate adjustment.
 
     Args:
         params: An object with ``origination_date``, ``term_months``,
                 ``original_principal``, ``current_principal``,
                 ``interest_rate``, ``payment_day``, and optionally
                 ``is_arm`` attributes (e.g. a LoanParams model instance).
-        schedule_start: Date to use as schedule start.  Defaults to the
-                        first day of the current month.
+        schedule_start: Unused.  Retained for backward compatibility.
         payments: Optional list of PaymentRecord instances passed
                   through to generate_schedule() and calculate_summary().
         rate_changes: Optional list of RateChangeRecord instances
@@ -818,14 +826,11 @@ def get_loan_projection(
     Returns:
         LoanProjection with remaining_months, summary, and schedule.
     """
-    if schedule_start is None:
-        schedule_start = date.today().replace(day=1)
-
     remaining = calculate_remaining_months(
         params.origination_date, params.term_months,
     )
 
-    principal = Decimal(str(params.current_principal))
+    orig_principal = Decimal(str(params.original_principal))
     rate = Decimal(str(params.interest_rate))
 
     # For ARM loans, the "contractual" payment from original terms is
@@ -835,13 +840,18 @@ def get_loan_projection(
     # number.  Pass original_principal=None to force re-amortization
     # from current_principal at the current rate.
     is_arm = getattr(params, "is_arm", False)
-    original = None if is_arm else Decimal(str(params.original_principal))
+    original = None if is_arm else orig_principal
 
+    # Generate full life-of-loan schedule from origination, replaying
+    # all payments month-by-month.  Past confirmed payments produce
+    # is_confirmed=True rows with balances reflecting actual amounts.
+    # Future projected payments use committed amounts.  Months without
+    # payment records use the contractual payment.
     summary = calculate_summary(
-        current_principal=principal,
+        current_principal=orig_principal,
         annual_rate=rate,
-        remaining_months=remaining,
-        origination_date=schedule_start,
+        remaining_months=params.term_months,
+        origination_date=params.origination_date,
         payment_day=params.payment_day,
         term_months=params.term_months,
         original_principal=original,
@@ -850,13 +860,28 @@ def get_loan_projection(
     )
 
     schedule = generate_schedule(
-        principal, rate, remaining,
+        orig_principal, rate, params.term_months,
+        origination_date=params.origination_date,
         payment_day=params.payment_day,
         original_principal=original,
         term_months=params.term_months,
         payments=payments,
         rate_changes=rate_changes,
     )
+
+    # For ARM loans, the summary's monthly_payment was computed from
+    # original_principal/term_months, but the displayed payment should
+    # be the current re-amortized value.  Derive the real principal
+    # from confirmed schedule rows and recompute.
+    if is_arm and remaining > 0:
+        real_principal = Decimal(str(params.current_principal))
+        for row in reversed(schedule):
+            if row.is_confirmed:
+                real_principal = row.remaining_balance
+                break
+        summary.monthly_payment = calculate_monthly_payment(
+            real_principal, rate, remaining,
+        )
 
     return LoanProjection(
         remaining_months=remaining,

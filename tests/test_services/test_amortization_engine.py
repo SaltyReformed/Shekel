@@ -550,8 +550,10 @@ class TestGetLoanProjection:
 
         Regression test for the int-vs-Decimal sum() bug.  The monthly
         payment still reflects the contractual amount (from original
-        principal and term), but the schedule is empty and total interest
-        is zero since there are no remaining months.
+        principal and term).  The schedule now contains the full
+        life-of-loan history from origination (not empty), and
+        total_interest is the life-of-loan total (not zero).
+        remaining_months is 0 because the term has fully elapsed.
         """
         params = type("P", (), {
             "origination_date": date(2015, 1, 1),
@@ -564,10 +566,14 @@ class TestGetLoanProjection:
 
         proj = get_loan_projection(params)
         assert proj.remaining_months == 0
-        assert proj.schedule == []
+        # Schedule shows full history from origination.
+        assert len(proj.schedule) > 0
+        # Last row should have zero remaining balance.
+        assert proj.schedule[-1].remaining_balance == Decimal("0.00")
         # Contractual payment is still computed from original terms.
         assert proj.summary.monthly_payment > Decimal("0.00")
-        assert proj.summary.total_interest == Decimal("0.00")
+        # Total interest is the life-of-loan amount.
+        assert proj.summary.total_interest > Decimal("0.00")
 
     def test_contractual_payment_uses_original_principal(self):
         """Monthly payment reflects original loan terms, not current balance.
@@ -714,13 +720,10 @@ class TestAmortizationEngineRegression:
         Section 5 may refactor the projection pipeline.  This ensures the
         wrapper stays in sync with the underlying functions.
 
-        Note: get_loan_projection uses schedule_start (defaulting to
-        today's 1st) as the origination_date for summary/schedule, and
-        computes remaining_months from today.  We must replicate that
-        exact behavior for a valid cross-check.
+        get_loan_projection now generates the full life-of-loan schedule
+        from origination_date using original_principal and term_months.
+        Replicate that exact behavior for a valid cross-check.
         """
-        schedule_start = date.today().replace(day=1)
-
         params = type("P", (), {
             "origination_date": self.ORIGINATION,
             "term_months": self.MONTHS,
@@ -730,13 +733,14 @@ class TestAmortizationEngineRegression:
             "payment_day": self.PAYMENT_DAY,
         })()
 
-        projection = get_loan_projection(params, schedule_start=schedule_start)
+        projection = get_loan_projection(params)
 
         # Replicate what get_loan_projection does internally:
-        # summary uses schedule_start as origination_date.
+        # summary and schedule start from origination with original
+        # principal and full term.
         standalone_summary = calculate_summary(
-            self.PRINCIPAL, self.RATE, projection.remaining_months,
-            schedule_start, self.PAYMENT_DAY, self.MONTHS,
+            self.PRINCIPAL, self.RATE, self.MONTHS,
+            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
             original_principal=self.PRINCIPAL,
         )
 

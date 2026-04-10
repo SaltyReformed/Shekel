@@ -466,16 +466,19 @@ def dashboard(account_id):
     )
 
     # --- Multi-scenario chart data ---
-    # Values from the shared loan context.
-    principal = ctx["principal"]
+    # All schedules start from origination with original_principal so
+    # payment records are matched by the engine's year-month lookup.
+    # This matches the year-end service pattern and ensures confirmed
+    # payments produce correct balances and chart trajectories.
     rate = ctx["rate"]
-    remaining = ctx["remaining"]
     original_for_engine = ctx["original_for_engine"]
+    orig_principal = Decimal(str(params.original_principal))
 
     # Original schedule: contractual baseline, no payments, no rate
     # changes.  "What the bank expects."
     original_schedule = amortization_engine.generate_schedule(
-        principal, rate, remaining,
+        orig_principal, rate, params.term_months,
+        origination_date=params.origination_date,
         payment_day=params.payment_day,
         original_principal=original_for_engine,
         term_months=params.term_months,
@@ -495,7 +498,8 @@ def dashboard(account_id):
     if has_payments:
         confirmed_payments = [p for p in payments if p.is_confirmed]
         floor_schedule = amortization_engine.generate_schedule(
-            principal, rate, remaining,
+            orig_principal, rate, params.term_months,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             original_principal=original_for_engine,
             term_months=params.term_months,

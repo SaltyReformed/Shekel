@@ -12,6 +12,7 @@ plain dicts/lists.  No Flask imports.
 
 import logging
 from collections import OrderedDict
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
@@ -346,12 +347,34 @@ def _compute_account_projections(
 
         if acct_loan_params:
             proj = amortization_engine.get_loan_projection(acct_loan_params)
-            current_bal = Decimal(str(acct_loan_params.current_principal))
             monthly = proj.summary.monthly_payment
             summary = proj.summary
+
+            # The schedule now starts from origination (full loan
+            # history), so derive the current balance from the last
+            # schedule row on or before today rather than using the
+            # static current_principal field.
+            today = date.today()
+            current_bal = Decimal(str(acct_loan_params.original_principal))
+            if proj.schedule:
+                for row in proj.schedule:
+                    if row.payment_date <= today:
+                        current_bal = row.remaining_balance
+                    else:
+                        break
+
+            # Projected balances: find the schedule row at each
+            # target date.  Walk backward to find the last row on
+            # or before the target month.
             for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
-                if month_offset <= len(proj.schedule):
-                    projected[label] = proj.schedule[month_offset - 1].remaining_balance
+                target_m = today.month + month_offset
+                target_y = today.year + (target_m - 1) // 12
+                target_m = (target_m - 1) % 12 + 1
+                target_dt = date(target_y, target_m, 1)
+                for row in reversed(proj.schedule):
+                    if row.payment_date <= target_dt:
+                        projected[label] = row.remaining_balance
+                        break
         elif acct_investment_params and current_period:
             projected = _project_investment(
                 acct, acct_investment_params, params, all_shadow_income,
