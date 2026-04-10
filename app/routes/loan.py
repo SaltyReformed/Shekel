@@ -5,7 +5,6 @@ Unified dashboard, parameter updates, escrow management, rate history,
 and payoff calculator for all installment loan account types.
 """
 
-import calendar
 import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
@@ -43,10 +42,13 @@ from app.services import (
 from app.services.amortization_engine import (
     AmortizationRow,
     AmortizationSummary,
-    PaymentRecord,
     RateChangeRecord,
 )
-from app.services.loan_payment_service import get_payment_history
+from app.services.loan_payment_service import (
+    compute_contractual_pi,
+    get_payment_history,
+    prepare_payments_for_engine,
+)
 from app.utils.formatting import pct_to_decimal
 from app.utils.log_events import BUSINESS, log_event
 
@@ -321,120 +323,7 @@ def _update_transfer_end_date(
     )
 
 
-def _compute_contractual_pi(params):
-    """Compute the standard monthly P&I payment from loan params.
 
-    For ARM loans, the payment is re-amortized from current balance at
-    the current rate.  For fixed-rate loans, use original terms.
-
-    Args:
-        params: LoanParams model instance.
-
-    Returns:
-        Decimal monthly P&I payment.
-    """
-    remaining = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-    if params.is_arm:
-        return amortization_engine.calculate_monthly_payment(
-            Decimal(str(params.current_principal)),
-            Decimal(str(params.interest_rate)),
-            remaining,
-        )
-    return amortization_engine.calculate_monthly_payment(
-        Decimal(str(params.original_principal)),
-        Decimal(str(params.interest_rate)),
-        params.term_months,
-    )
-
-
-def _prepare_payments_for_engine(payments, payment_day, monthly_escrow,
-                                contractual_pi):
-    """Prepare payment records for the amortization engine.
-
-    Corrects two mismatches between biweekly shadow transactions and
-    the monthly amortization schedule:
-
-    1. Escrow subtraction: Recurring transfers include escrow in their
-       total amount, but the engine handles P&I only.  Without this
-       correction, the engine treats escrow as extra principal, inflating
-       paydown speed and showing escrow as spurious "Extra" entries.
-       Only subtracts escrow from the portion that exceeds the standard
-       P&I payment, so payments that do not include escrow are unaffected.
-
-    2. Biweekly redistribution: Pay period start dates are biweekly and
-       sometimes place two mortgage payments in the same calendar month
-       (e.g., the Aug 1 payment falls in a Jul 29 pay period).  The
-       engine sums same-month payments, double-counting one month and
-       leaving the next empty.  This shifts extra same-month payments
-       to subsequent months to restore one-payment-per-month alignment.
-
-    Args:
-        payments: List of PaymentRecord from get_payment_history().
-        payment_day: Mortgage payment day of month (from LoanParams).
-        monthly_escrow: Monthly escrow amount from escrow_calculator.
-        contractual_pi: Standard monthly P&I payment (no escrow).
-
-    Returns:
-        Corrected list of PaymentRecord.
-    """
-    if not payments:
-        return payments
-
-    sorted_payments = sorted(payments, key=lambda p: p.payment_date)
-
-    # Step 1: Subtract escrow from payments that include it.
-    # Only subtract from the excess above contractual P&I so that
-    # payments equal to or below P&I (no escrow included) are untouched.
-    if monthly_escrow > Decimal("0.00"):
-        adjusted = []
-        for p in sorted_payments:
-            if p.amount > contractual_pi:
-                escrow_portion = min(monthly_escrow, p.amount - contractual_pi)
-                new_amount = p.amount - escrow_portion
-            else:
-                new_amount = p.amount
-            adjusted.append(PaymentRecord(
-                payment_date=p.payment_date,
-                amount=new_amount,
-                is_confirmed=p.is_confirmed,
-            ))
-        sorted_payments = adjusted
-
-    # Step 2: Redistribute same-month payments to consecutive months.
-    # Biweekly pay periods produce at most one extra payment per month
-    # (~2 times per year), so cascading collisions are not expected,
-    # but the while-loop handles them defensively.
-    result = []
-    allocated_months = set()
-
-    for p in sorted_payments:
-        ym = (p.payment_date.year, p.payment_date.month)
-        if ym not in allocated_months:
-            result.append(p)
-            allocated_months.add(ym)
-        else:
-            y, m = ym
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-            while (y, m) in allocated_months:
-                m += 1
-                if m > 12:
-                    m = 1
-                    y += 1
-            max_day = calendar.monthrange(y, m)[1]
-            new_date = date(y, m, min(payment_day, max_day))
-            result.append(PaymentRecord(
-                payment_date=new_date,
-                amount=p.amount,
-                is_confirmed=p.is_confirmed,
-            ))
-            allocated_months.add((y, m))
-
-    return result
 
 
 def _load_loan_context(account, params):
@@ -478,9 +367,9 @@ def _load_loan_context(account, params):
     raw_payments = get_payment_history(account.id, scenario.id) if scenario else []
 
     # Prepare: subtract escrow and fix biweekly month overlaps.
-    payments = _prepare_payments_for_engine(
+    payments = prepare_payments_for_engine(
         raw_payments, params.payment_day, monthly_escrow,
-        _compute_contractual_pi(params),
+        compute_contractual_pi(params),
     )
 
     # Rate history for ARM loans.
@@ -1064,7 +953,7 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
-        monthly_payment = _compute_contractual_pi(params)
+        monthly_payment = compute_contractual_pi(params)
 
         return render_template(
             "loan/_payoff_results.html",

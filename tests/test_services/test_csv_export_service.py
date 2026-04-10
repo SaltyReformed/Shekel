@@ -434,6 +434,8 @@ def _build_year_end_data(with_timeliness=False):
                 "jan1_balance": Decimal("500.00"),
                 "dec31_balance": Decimal("6500.00"),
                 "total_contributions": Decimal("6000.00"),
+                "employer_contributions": Decimal("0.00"),
+                "investment_growth": Decimal("0.00"),
             },
         ],
         "payment_timeliness": None,

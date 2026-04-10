@@ -16,7 +16,7 @@ request/session imports.
 
 import calendar
 import logging
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -26,8 +26,12 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.interest_params import InterestParams
+from app.models.investment_params import InvestmentParams
+from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import Status
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
@@ -36,9 +40,17 @@ from app.models.transfer import Transfer
 from app.services import (
     amortization_engine,
     balance_calculator,
+    escrow_calculator,
+    growth_engine,
     paycheck_calculator,
 )
-from app.services.loan_payment_service import get_payment_history
+from app.services.amortization_engine import RateChangeRecord
+from app.services.investment_projection import calculate_investment_inputs
+from app.services.loan_payment_service import (
+    compute_contractual_pi,
+    get_payment_history,
+    prepare_payments_for_engine,
+)
 from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
@@ -79,6 +91,9 @@ def _load_common_data(
 ) -> dict:
     """Load all shared data needed by the section helpers.
 
+    Includes investment/interest params and paycheck deductions for
+    the savings progress section's growth engine calculations.
+
     Args:
         user_id: The authenticated user's ID.
         year: The target calendar year.
@@ -87,7 +102,9 @@ def _load_common_data(
     Returns:
         dict with year_periods, all_periods, accounts,
         salary_profiles, year_period_ids, debt_accounts,
-        savings_accounts.
+        savings_accounts, investment_params_map,
+        interest_params_map, deductions_by_account,
+        salary_gross_biweekly.
     """
     year_start = date(year, 1, 1)
     year_end = date(year, 12, 31)
@@ -137,6 +154,14 @@ def _load_common_data(
     liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
     checking_id = _get_primary_checking_id(accounts)
 
+    savings_accounts = [
+        a for a in accounts
+        if a.account_type
+        and not a.account_type.has_amortization
+        and a.account_type.category_id != liability_cat_id
+        and a.id != checking_id
+    ]
+
     return {
         "year_periods": year_periods,
         "all_periods": all_periods,
@@ -147,13 +172,15 @@ def _load_common_data(
             a for a in accounts
             if a.account_type and a.account_type.has_amortization
         ],
-        "savings_accounts": [
-            a for a in accounts
-            if a.account_type
-            and not a.account_type.has_amortization
-            and a.account_type.category_id != liability_cat_id
-            and a.id != checking_id
-        ],
+        "savings_accounts": savings_accounts,
+        "investment_params_map": _load_investment_params(savings_accounts),
+        "interest_params_map": _load_interest_params(savings_accounts),
+        "deductions_by_account": _load_deductions_by_account(
+            savings_accounts, user_id,
+        ),
+        "salary_gross_biweekly": _load_salary_gross_biweekly(
+            user_id, scenario,
+        ),
     }
 
 
@@ -161,6 +188,9 @@ def _build_summary(
     user_id: int, year: int, scenario: Scenario, ctx: dict,
 ) -> dict:
     """Compute each section and assemble the final summary dict.
+
+    Generates amortization schedules once for all debt accounts and
+    shares them across mortgage interest, debt progress, and net worth.
 
     Args:
         user_id: The authenticated user's ID.
@@ -171,12 +201,17 @@ def _build_summary(
     Returns:
         Fully assembled year-end summary dict.
     """
+    # Pre-compute amortization schedules with properly prepared payments
+    # (escrow subtracted, biweekly overlaps redistributed).  Shared by
+    # mortgage interest, debt progress, and net worth sections.
+    debt_schedules = _generate_debt_schedules(
+        ctx["debt_accounts"], scenario.id,
+    )
+
     income_tax = _compute_income_tax(
         user_id, year, ctx["year_periods"], ctx["salary_profiles"],
     )
-    mortgage_interest = _compute_mortgage_interest(
-        year, ctx["debt_accounts"], scenario.id,
-    )
+    mortgage_interest = _compute_mortgage_interest(year, debt_schedules)
     income_tax["mortgage_interest_total"] = mortgage_interest
 
     return {
@@ -189,12 +224,14 @@ def _build_summary(
         ),
         "net_worth": _compute_net_worth(
             year, ctx["accounts"], ctx["all_periods"], scenario,
+            debt_schedules=debt_schedules,
         ),
         "debt_progress": _compute_debt_progress(
-            year, ctx["debt_accounts"], ctx["all_periods"], scenario,
+            year, ctx["debt_accounts"], debt_schedules,
         ),
         "savings_progress": _compute_savings_progress(
-            ctx["savings_accounts"], ctx["year_period_ids"], scenario.id,
+            ctx["savings_accounts"], ctx["year_period_ids"],
+            scenario.id, ctx["all_periods"], year, scenario, ctx,
         ),
         "payment_timeliness": _compute_payment_timeliness(
             user_id, year, ctx["year_period_ids"], scenario.id,
@@ -341,14 +378,12 @@ def _assemble_income_result(
 
 def _compute_mortgage_interest(
     year: int,
-    loan_accounts: list,
-    scenario_id: int,
+    debt_schedules: dict[int, list],
 ) -> Decimal:
     """Sum mortgage/loan interest paid during the calendar year.
 
-    For each loan account with amortization parameters, generates the
-    full amortization schedule from origination (using payment history
-    for accuracy) and sums the interest portion of payments whose
+    Uses pre-generated amortization schedules (with properly prepared
+    payments) and sums the interest portion of payments whose
     payment_date falls in the target year.
 
     This number appears on Schedule A (itemized deductions) so
@@ -356,39 +391,15 @@ def _compute_mortgage_interest(
 
     Args:
         year: Calendar year to sum interest for.
-        loan_accounts: Accounts with has_amortization=True.
-        scenario_id: Baseline scenario ID for payment history.
+        debt_schedules: account_id -> list[AmortizationRow] mapping
+            from _generate_debt_schedules().
 
     Returns:
         Total interest paid across all loan accounts in the year.
     """
-    if not loan_accounts:
-        return ZERO
-
     total_interest = ZERO
 
-    for account in loan_accounts:
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=account.id)
-            .first()
-        )
-        if params is None:
-            continue
-
-        payments = get_payment_history(account.id, scenario_id)
-
-        schedule = amortization_engine.generate_schedule(
-            current_principal=params.original_principal,
-            annual_rate=params.interest_rate,
-            remaining_months=params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=params.original_principal,
-            term_months=params.term_months,
-            payments=payments if payments else None,
-        )
-
+    for schedule in debt_schedules.values():
         for row in schedule:
             if row.payment_date.year == year:
                 total_interest += row.interest
@@ -503,6 +514,7 @@ def _compute_net_worth(
     accounts: list,
     all_periods: list,
     scenario: Scenario,
+    debt_schedules: dict[int, list] | None = None,
 ) -> dict:
     """Compute net worth at 12 monthly endpoints for the year.
 
@@ -511,14 +523,18 @@ def _compute_net_worth(
     Liability accounts contribute negative values.
 
     Uses the balance calculator for checking/savings, interest
-    calculator for HYSA-type accounts, and amortization calculator
-    for loan accounts -- matching the pattern in chart_data_service.
+    calculator for HYSA-type accounts, and amortization schedule
+    for loan accounts (when debt_schedules is provided).
 
     Args:
         year: Target calendar year.
         accounts: All active user accounts.
         all_periods: All user pay periods (for anchor-based projection).
         scenario: Baseline scenario.
+        debt_schedules: Optional account_id -> list[AmortizationRow]
+            mapping.  When provided, debt account balances are derived
+            from the amortization schedule instead of the naive balance
+            calculator.
 
     Returns:
         dict with monthly_values (list of 12 {month, month_name,
@@ -528,7 +544,9 @@ def _compute_net_worth(
         return _empty_net_worth()
 
     month_end_periods = _get_month_end_periods(year, all_periods)
-    account_data = _build_account_data(accounts, scenario, all_periods)
+    account_data = _build_account_data(
+        accounts, scenario, all_periods, debt_schedules,
+    )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
     jan1_nw = (
@@ -550,7 +568,10 @@ def _compute_net_worth(
 
 
 def _build_account_data(
-    accounts: list, scenario: Scenario, all_periods: list,
+    accounts: list,
+    scenario: Scenario,
+    all_periods: list,
+    debt_schedules: dict[int, list] | None = None,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
 
@@ -558,6 +579,8 @@ def _build_account_data(
         accounts: All active user accounts.
         scenario: Baseline scenario.
         all_periods: All user pay periods.
+        debt_schedules: Optional account_id -> list[AmortizationRow]
+            mapping for debt accounts.
 
     Returns:
         List of dicts with 'balances' and 'is_liability' keys.
@@ -565,7 +588,10 @@ def _build_account_data(
     liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
     result = []
     for account in accounts:
-        balances = _get_account_balance_map(account, scenario, all_periods)
+        balances = _get_account_balance_map(
+            account, scenario, all_periods,
+            debt_schedules=debt_schedules,
+        )
         if balances is None:
             continue
         result.append({
@@ -615,19 +641,20 @@ def _compute_monthly_values(
 def _compute_debt_progress(
     year: int,
     debt_accounts: list,
-    all_periods: list,
-    scenario: Scenario,
+    debt_schedules: dict[int, list],
 ) -> list[dict]:
     """Compute principal paid for each debt account during the year.
 
-    Uses the balance calculator with amortization to get accurate
-    loan balances at the start and end of the year.
+    Uses the pre-generated amortization schedules to find the loan
+    balance at Jan 1 and Dec 31 of the target year.  This matches the
+    amortization engine used by the loan dashboard, ensuring consistent
+    values.
 
     Args:
         year: Target calendar year.
         debt_accounts: Accounts with has_amortization=True.
-        all_periods: All user pay periods.
-        scenario: Baseline scenario.
+        debt_schedules: account_id -> list[AmortizationRow] mapping
+            from _generate_debt_schedules().
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
@@ -636,27 +663,28 @@ def _compute_debt_progress(
     if not debt_accounts:
         return []
 
-    jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
-    dec31_period = _find_period_on_or_before_date(
-        date(year, 12, 31), all_periods,
-    )
-
     result = []
     for account in debt_accounts:
-        balances = _get_account_balance_map(
-            account, scenario, all_periods,
-        )
-        if balances is None:
+        schedule = debt_schedules.get(account.id)
+        if not schedule:
             continue
 
-        jan1_bal = ZERO
-        if jan1_period is not None:
-            jan1_bal = abs(balances.get(jan1_period.id, ZERO))
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=account.id)
+            .first()
+        )
+        original = params.original_principal if params else ZERO
 
-        dec31_bal = ZERO
-        if dec31_period is not None:
-            dec31_bal = abs(balances.get(dec31_period.id, ZERO))
-
+        # Jan 1 balance = balance at end of prior year, BEFORE any
+        # payments in the target year.  Use Dec 31 of the prior year
+        # so a Jan 1 payment is not counted in the starting balance.
+        jan1_bal = _balance_from_schedule_at_date(
+            schedule, date(year - 1, 12, 31), original,
+        )
+        dec31_bal = _balance_from_schedule_at_date(
+            schedule, date(year, 12, 31), original,
+        )
         principal_paid = jan1_bal - dec31_bal
 
         result.append({
@@ -677,55 +705,84 @@ def _compute_savings_progress(
     savings_accounts: list,
     period_ids: list[int],
     scenario_id: int,
+    all_periods: list,
+    year: int,
+    scenario: Scenario,
+    ctx: dict,
 ) -> list[dict]:
-    """Compute balance growth and contributions for savings accounts.
+    """Compute balance growth, contributions, and returns for savings accounts.
 
-    For each savings/investment account, computes total contributions
-    (shadow income transactions from transfers into the account)
-    and approximate balances.
+    Dispatches to three calculation paths based on account type:
+    - Investment accounts (with InvestmentParams): growth engine with
+      employer contributions and assumed annual return.
+    - Interest-bearing accounts (with InterestParams): balance
+      calculator with interest accrual.
+    - Plain savings accounts: standard balance calculator.
 
     Args:
         savings_accounts: Non-debt, non-checking accounts.
         period_ids: IDs of pay periods in the target year.
         scenario_id: Baseline scenario ID.
+        all_periods: All user pay periods.
+        year: Target calendar year.
+        scenario: Baseline scenario.
+        ctx: Common data dict containing investment_params_map,
+            interest_params_map, deductions_by_account, and
+            salary_gross_biweekly.
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
-        dec31_balance, total_contributions}].
+        dec31_balance, total_contributions, employer_contributions,
+        investment_growth}].
     """
     if not savings_accounts:
         return []
 
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    investment_params_map = ctx["investment_params_map"]
+    interest_params_map = ctx["interest_params_map"]
 
     result = []
     for account in savings_accounts:
-        # Get contributions: shadow income transactions from transfers.
-        contributions = ZERO
-        if period_ids:
-            shadow_txns = (
-                db.session.query(Transaction)
-                .join(Transaction.status)
-                .filter(
-                    Transaction.account_id == account.id,
-                    Transaction.scenario_id == scenario_id,
-                    Transaction.pay_period_id.in_(period_ids),
-                    Transaction.transfer_id.isnot(None),
-                    Transaction.transaction_type_id == income_type_id,
-                    Transaction.is_deleted.is_(False),
-                    Status.excludes_from_balance.is_(False),
-                )
-                .all()
-            )
-            for txn in shadow_txns:
-                contributions += txn.effective_amount
+        contributions = _sum_shadow_income(
+            account.id, period_ids, scenario_id,
+        )
 
-        # Balances are computed via the main net_worth section
-        # using the balance calculator.  For savings progress we
-        # report contributions only -- balances come from the
-        # account's anchor and transaction history.
-        jan1_bal = account.current_anchor_balance or ZERO
-        dec31_bal = jan1_bal + contributions
+        inv_params = investment_params_map.get(account.id)
+        int_params = interest_params_map.get(account.id)
+
+        if inv_params:
+            jan1_bal, dec31_bal, employer_total, growth_total = (
+                _project_investment_for_year(
+                    account, inv_params, all_periods, year,
+                    scenario, ctx, period_ids, scenario_id,
+                )
+            )
+        elif int_params:
+            balances = _get_account_balance_map(
+                account, scenario, all_periods,
+            )
+            jan1_bal = _lookup_period_balance(
+                balances, year, 1, all_periods,
+            )
+            dec31_bal = _lookup_period_balance(
+                balances, year, 12, all_periods,
+            )
+            employer_total = ZERO
+            growth_total = _compute_interest_for_year(
+                account, int_params, scenario, all_periods, year,
+            )
+        else:
+            balances = _get_account_balance_map(
+                account, scenario, all_periods,
+            )
+            jan1_bal = _lookup_period_balance(
+                balances, year, 1, all_periods,
+            )
+            dec31_bal = _lookup_period_balance(
+                balances, year, 12, all_periods,
+            )
+            employer_total = ZERO
+            growth_total = ZERO
 
         result.append({
             "account_name": account.name,
@@ -733,9 +790,257 @@ def _compute_savings_progress(
             "jan1_balance": jan1_bal,
             "dec31_balance": dec31_bal,
             "total_contributions": contributions,
+            "employer_contributions": employer_total,
+            "investment_growth": growth_total,
         })
 
     return result
+
+
+def _sum_shadow_income(
+    account_id: int,
+    period_ids: list[int],
+    scenario_id: int,
+) -> Decimal:
+    """Sum shadow income transactions (transfers in) for an account.
+
+    Args:
+        account_id: Target account ID.
+        period_ids: Pay period IDs to query.
+        scenario_id: Baseline scenario ID.
+
+    Returns:
+        Decimal total contributions from shadow income transactions.
+    """
+    if not period_ids:
+        return ZERO
+
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+
+    shadow_txns = (
+        db.session.query(Transaction)
+        .join(Transaction.status)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            Status.excludes_from_balance.is_(False),
+        )
+        .all()
+    )
+
+    total = ZERO
+    for txn in shadow_txns:
+        total += txn.effective_amount
+    return total
+
+
+def _project_investment_for_year(
+    account: Account,
+    investment_params: InvestmentParams,
+    all_periods: list,
+    year: int,
+    scenario: Scenario,
+    ctx: dict,
+    year_period_ids: list[int],
+    scenario_id: int,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Project investment account balance through the target year.
+
+    Uses the growth engine with employer contributions and assumed
+    annual return, following the same pattern as
+    savings_dashboard_service._project_investment().
+
+    Args:
+        account: The investment account.
+        investment_params: InvestmentParams for the account.
+        all_periods: All user pay periods.
+        year: Target calendar year.
+        scenario: Baseline scenario.
+        ctx: Common data dict with deductions_by_account and
+            salary_gross_biweekly.
+        year_period_ids: Pay period IDs in the target year.
+        scenario_id: Baseline scenario ID.
+
+    Returns:
+        Tuple of (jan1_balance, dec31_balance, employer_contributions,
+        investment_growth).
+    """
+    deductions_by_account = ctx["deductions_by_account"]
+    salary_gross_biweekly = ctx["salary_gross_biweekly"]
+
+    # Get base balance from the balance calculator (anchor + transactions).
+    balances = _get_account_balance_map(account, scenario, all_periods)
+    jan1_bal = _lookup_period_balance(balances, year, 1, all_periods)
+
+    # Find pay periods that fall within the target year.
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+    year_periods = [
+        p for p in all_periods
+        if year_start <= p.start_date <= year_end
+    ]
+
+    if not year_periods:
+        return jan1_bal, jan1_bal, ZERO, ZERO
+
+    # Adapt paycheck deductions for calculate_investment_inputs().
+    # Same pattern as savings_dashboard_service._project_investment().
+    acct_deductions = deductions_by_account.get(account.id, [])
+    adapted_deductions = []
+    for ded in acct_deductions:
+        profile = ded.salary_profile
+        adapted_deductions.append(type("D", (), {
+            "amount": ded.amount,
+            "calc_method_id": ded.calc_method_id,
+            "annual_salary": profile.annual_salary,
+            "pay_periods_per_year": profile.pay_periods_per_year or 26,
+        })())
+
+    # Shadow income transactions in the year for contribution history.
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    acct_contributions = (
+        db.session.query(Transaction)
+        .join(Transaction.status)
+        .options(
+            joinedload(Transaction.status),
+            joinedload(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.pay_period_id.in_(year_period_ids),
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            Status.excludes_from_balance.is_(False),
+        )
+        .all()
+    ) if year_period_ids else []
+
+    # Use the first year period as the "current_period" context.
+    current_period = year_periods[0]
+
+    inputs = calculate_investment_inputs(
+        account_id=account.id,
+        investment_params=investment_params,
+        deductions=adapted_deductions,
+        all_contributions=acct_contributions,
+        all_periods=all_periods,
+        current_period=current_period,
+        salary_gross_biweekly=salary_gross_biweekly,
+    )
+
+    projection = growth_engine.project_balance(
+        current_balance=jan1_bal,
+        assumed_annual_return=investment_params.assumed_annual_return,
+        periods=year_periods,
+        periodic_contribution=inputs.periodic_contribution,
+        employer_params=inputs.employer_params,
+        annual_contribution_limit=inputs.annual_contribution_limit,
+        ytd_contributions_start=ZERO,
+    )
+
+    if not projection:
+        return jan1_bal, jan1_bal, ZERO, ZERO
+
+    dec31_bal = projection[-1].end_balance
+    employer_total = sum(
+        (pb.employer_contribution for pb in projection), ZERO,
+    )
+    growth_total = sum((pb.growth for pb in projection), ZERO)
+
+    return jan1_bal, dec31_bal, employer_total, growth_total
+
+
+def _lookup_period_balance(
+    balances: dict | None,
+    year: int,
+    month: int,
+    all_periods: list,
+) -> Decimal:
+    """Look up the balance at the end of a specific month.
+
+    Finds the last pay period ending on or before the month's last day
+    and returns its balance from the balance map.
+
+    Args:
+        balances: period_id -> Decimal balance map, or None.
+        year: Calendar year.
+        month: Month number (1-12).
+        all_periods: All user pay periods.
+
+    Returns:
+        Decimal balance, or ZERO if no matching period.
+    """
+    if not balances:
+        return ZERO
+
+    last_day = date(
+        year, month, calendar.monthrange(year, month)[1],
+    )
+    target_period = _find_period_on_or_before_date(
+        last_day, all_periods,
+    )
+    if target_period is None:
+        return ZERO
+    return balances.get(target_period.id, ZERO)
+
+
+def _compute_interest_for_year(
+    account: Account,
+    interest_params: InterestParams,
+    scenario: Scenario,
+    all_periods: list,
+    year: int,
+) -> Decimal:
+    """Compute total interest earned on an account during the year.
+
+    Calls calculate_balances_with_interest() and sums the interest
+    from periods whose start_date falls in the target year.
+
+    Args:
+        account: Interest-bearing account.
+        interest_params: InterestParams for the account.
+        scenario: Baseline scenario.
+        all_periods: All user pay periods.
+        year: Target calendar year.
+
+    Returns:
+        Decimal total interest earned in the year.
+    """
+    if account.current_anchor_period_id is None:
+        return ZERO
+
+    period_ids = [p.id for p in all_periods]
+    transactions = (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.scenario_id == scenario.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    )
+
+    anchor_balance = account.current_anchor_balance or ZERO
+    _, interest_by_period = balance_calculator.calculate_balances_with_interest(
+        anchor_balance=anchor_balance,
+        anchor_period_id=account.current_anchor_period_id,
+        periods=all_periods,
+        transactions=transactions,
+        interest_params=interest_params,
+    )
+
+    total = ZERO
+    for period in all_periods:
+        if period.start_date.year == year:
+            total += interest_by_period.get(period.id, ZERO)
+    return total
 
 
 # ── OP-2: Payment Timeliness ──────────────────────────────────────
@@ -896,6 +1201,181 @@ def _build_spending_hierarchy(
     return result
 
 
+# ── Amortization Schedule Helpers ────────────────────────────────
+
+
+def _generate_debt_schedules(
+    debt_accounts: list,
+    scenario_id: int,
+) -> dict[int, list]:
+    """Generate amortization schedules for all debt accounts.
+
+    Loads loan params, payment history, escrow components, and rate
+    changes for each debt account, then generates the full amortization
+    schedule using properly prepared payments (escrow subtracted,
+    biweekly overlaps redistributed).
+
+    Schedules are generated once and shared across mortgage interest,
+    debt progress, and net worth calculations to avoid redundant
+    computation and ensure consistency.
+
+    Args:
+        debt_accounts: Accounts with has_amortization=True.
+        scenario_id: Baseline scenario ID for payment history.
+
+    Returns:
+        dict mapping account_id to list[AmortizationRow].
+    """
+    schedules: dict[int, list] = {}
+
+    for account in debt_accounts:
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=account.id)
+            .first()
+        )
+        if params is None:
+            continue
+
+        # Payment history from shadow income transactions.
+        raw_payments = get_payment_history(account.id, scenario_id)
+
+        # Escrow components for payment preparation.
+        components = (
+            db.session.query(EscrowComponent)
+            .filter_by(account_id=account.id, is_active=True)
+            .all()
+        )
+        monthly_escrow = escrow_calculator.calculate_monthly_escrow(
+            components,
+        )
+
+        # Prepare payments: subtract escrow, fix biweekly overlaps.
+        contractual_pi = compute_contractual_pi(params)
+        payments = prepare_payments_for_engine(
+            raw_payments, params.payment_day,
+            monthly_escrow, contractual_pi,
+        )
+
+        # Rate changes for ARM loans.
+        rate_changes = None
+        if params.is_arm:
+            rate_history = (
+                db.session.query(RateHistory)
+                .filter_by(account_id=account.id)
+                .order_by(RateHistory.effective_date.desc())
+                .all()
+            )
+            if rate_history:
+                rate_changes = [
+                    RateChangeRecord(
+                        effective_date=rh.effective_date,
+                        interest_rate=Decimal(str(rh.interest_rate)),
+                    )
+                    for rh in rate_history
+                ]
+
+        # For ARM loans, omit original_principal so the engine
+        # re-amortizes from current balance at the current rate.
+        original_for_engine = (
+            None if params.is_arm
+            else params.original_principal
+        )
+
+        schedule = amortization_engine.generate_schedule(
+            current_principal=params.original_principal,
+            annual_rate=params.interest_rate,
+            remaining_months=params.term_months,
+            origination_date=params.origination_date,
+            payment_day=params.payment_day,
+            original_principal=original_for_engine,
+            term_months=params.term_months,
+            payments=payments if payments else None,
+            rate_changes=rate_changes,
+        )
+
+        schedules[account.id] = schedule
+
+    return schedules
+
+
+def _balance_from_schedule_at_date(
+    schedule: list,
+    target: date,
+    original_principal: Decimal,
+) -> Decimal:
+    """Return the loan balance at a given date from an amortization schedule.
+
+    Finds the last schedule row whose payment_date is on or before
+    the target date and returns its remaining_balance.  If the target
+    is before the first payment, returns the original principal.
+
+    Args:
+        schedule: List of AmortizationRow from generate_schedule().
+        target: The date to look up the balance for.
+        original_principal: The loan's original principal (balance
+            before any payments).
+
+    Returns:
+        Decimal remaining balance at the target date.
+    """
+    if not schedule:
+        return original_principal
+
+    best_balance = original_principal
+    for row in schedule:
+        if row.payment_date <= target:
+            best_balance = row.remaining_balance
+        else:
+            # Schedule is chronological; no need to check further.
+            break
+
+    return best_balance
+
+
+def _schedule_to_period_balance_map(
+    schedule: list,
+    periods: list,
+    original_principal: Decimal,
+) -> dict:
+    """Map amortization schedule balances to pay period IDs.
+
+    For each pay period, finds the last schedule row whose
+    payment_date is on or before the period's end_date.  Returns the
+    remaining_balance from that row.  Periods before the first payment
+    use original_principal.
+
+    Args:
+        schedule: List of AmortizationRow sorted chronologically.
+        periods: List of PayPeriod objects sorted by period_index.
+        original_principal: Balance before any payments.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance.
+    """
+    balances = OrderedDict()
+
+    if not schedule:
+        for period in periods:
+            balances[period.id] = original_principal
+        return balances
+
+    # Pre-sort schedule by payment_date (should already be sorted).
+    sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
+
+    for period in periods:
+        # Find the last schedule row on or before this period's end_date.
+        bal = original_principal
+        for row in sorted_schedule:
+            if row.payment_date <= period.end_date:
+                bal = row.remaining_balance
+            else:
+                break
+        balances[period.id] = bal
+
+    return balances
+
+
 # ── Internal Helpers ──────────────────────────────────────────────
 
 
@@ -922,6 +1402,149 @@ def _get_primary_checking_id(accounts: list) -> int | None:
     return None
 
 
+def _load_investment_params(
+    accounts: list,
+) -> dict[int, InvestmentParams]:
+    """Batch-load InvestmentParams for investment/retirement accounts.
+
+    Filters to accounts whose account_type has has_parameters=True and
+    does not have has_interest or has_amortization (i.e., investment
+    and retirement accounts that use the growth engine).
+
+    Args:
+        accounts: List of Account objects with loaded account_type.
+
+    Returns:
+        dict mapping account_id to InvestmentParams.
+    """
+    inv_ids = [
+        a.id for a in accounts
+        if a.account_type
+        and getattr(a.account_type, "has_parameters", False)
+        and not a.account_type.has_interest
+        and not a.account_type.has_amortization
+    ]
+    if not inv_ids:
+        return {}
+
+    params_list = (
+        db.session.query(InvestmentParams)
+        .filter(InvestmentParams.account_id.in_(inv_ids))
+        .all()
+    )
+    return {p.account_id: p for p in params_list}
+
+
+def _load_interest_params(
+    accounts: list,
+) -> dict[int, InterestParams]:
+    """Batch-load InterestParams for interest-bearing accounts.
+
+    Filters to accounts whose account_type has has_interest=True
+    (HYSA, Money Market, CD, HSA).
+
+    Args:
+        accounts: List of Account objects with loaded account_type.
+
+    Returns:
+        dict mapping account_id to InterestParams.
+    """
+    interest_ids = [
+        a.id for a in accounts
+        if a.account_type and a.account_type.has_interest
+    ]
+    if not interest_ids:
+        return {}
+
+    params_list = (
+        db.session.query(InterestParams)
+        .filter(InterestParams.account_id.in_(interest_ids))
+        .all()
+    )
+    return {p.account_id: p for p in params_list}
+
+
+def _load_deductions_by_account(
+    accounts: list,
+    user_id: int,
+) -> dict[int, list]:
+    """Load paycheck deductions targeting investment accounts.
+
+    Returns deductions grouped by target_account_id.  Each deduction
+    has the SalaryProfile eagerly loaded for access to annual_salary
+    and pay_periods_per_year.
+
+    Follows the batch-loading pattern from
+    savings_dashboard_service._load_account_params().
+
+    Args:
+        accounts: List of Account objects.
+        user_id: User ID for SalaryProfile ownership.
+
+    Returns:
+        dict mapping account_id to list of PaycheckDeduction.
+    """
+    inv_ids = [
+        a.id for a in accounts
+        if a.account_type
+        and getattr(a.account_type, "has_parameters", False)
+        and not a.account_type.has_interest
+        and not a.account_type.has_amortization
+    ]
+    if not inv_ids:
+        return {}
+
+    deductions = (
+        db.session.query(PaycheckDeduction)
+        .join(PaycheckDeduction.salary_profile)
+        .filter(
+            PaycheckDeduction.target_account_id.in_(inv_ids),
+            PaycheckDeduction.is_active.is_(True),
+            SalaryProfile.user_id == user_id,
+            SalaryProfile.is_active.is_(True),
+        )
+        .all()
+    )
+
+    by_account: dict[int, list] = {}
+    for ded in deductions:
+        by_account.setdefault(ded.target_account_id, []).append(ded)
+    return by_account
+
+
+def _load_salary_gross_biweekly(
+    user_id: int,
+    scenario: Scenario,
+) -> Decimal:
+    """Load the user's gross biweekly pay from their active salary profile.
+
+    Returns Decimal("0") if no active salary profile exists.
+
+    Args:
+        user_id: User ID.
+        scenario: Baseline scenario.
+
+    Returns:
+        Decimal gross biweekly pay.
+    """
+    profile = (
+        db.session.query(SalaryProfile)
+        .filter(
+            SalaryProfile.user_id == user_id,
+            SalaryProfile.scenario_id == scenario.id,
+            SalaryProfile.is_active.is_(True),
+        )
+        .first()
+    )
+    if profile is None:
+        return ZERO
+
+    ppy = profile.pay_periods_per_year or 26
+    return (profile.annual_salary / ppy).quantize(
+        TWO_PLACES, rounding=ROUND_HALF_UP,
+    )
+
+
 def _get_settled_status_ids() -> list[int]:
     """Return status IDs that represent settled transactions."""
     return [
@@ -943,17 +1566,21 @@ def _get_account_balance_map(
     account: Account,
     scenario: Scenario,
     periods: list,
+    debt_schedules: dict[int, list] | None = None,
 ) -> dict | None:
     """Compute period_id -> balance mapping for one account.
 
-    Follows the pattern in chart_data_service._calculate_account_balances:
-    uses interest calculator for HYSA-type accounts, amortization
-    calculator for loans, and plain calculator for everything else.
+    Uses interest calculator for HYSA-type accounts, amortization
+    schedule for loans (when debt_schedules is provided), and plain
+    calculator for everything else.
 
     Args:
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
+        debt_schedules: Optional account_id -> list[AmortizationRow]
+            mapping.  When provided and the account is a debt account,
+            balances are derived from the amortization schedule.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None
@@ -961,6 +1588,21 @@ def _get_account_balance_map(
     """
     if account.current_anchor_period_id is None:
         return None
+
+    acct_type = account.account_type
+
+    # Amortizing loan accounts: use pre-generated schedule when available.
+    if (acct_type and acct_type.has_amortization
+            and debt_schedules and account.id in debt_schedules):
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=account.id)
+            .first()
+        )
+        original = params.original_principal if params else ZERO
+        return _schedule_to_period_balance_map(
+            debt_schedules[account.id], periods, original,
+        )
 
     period_ids = [p.id for p in periods]
 
@@ -983,8 +1625,6 @@ def _get_account_balance_map(
         "transactions": transactions,
     }
 
-    acct_type = account.account_type
-
     # Interest-bearing accounts (HYSA, Money Market, CD, HSA).
     if (acct_type and acct_type.has_interest
             and hasattr(account, "interest_params")
@@ -994,7 +1634,7 @@ def _get_account_balance_map(
         )
         return balances
 
-    # Amortizing loan accounts (Mortgage, Auto Loan, etc.).
+    # Amortizing loan accounts without pre-generated schedule (fallback).
     if acct_type and acct_type.has_amortization:
         loan_params = (
             db.session.query(LoanParams)
