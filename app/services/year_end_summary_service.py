@@ -224,7 +224,7 @@ def _build_summary(
         ),
         "net_worth": _compute_net_worth(
             year, ctx["accounts"], ctx["all_periods"], scenario,
-            debt_schedules=debt_schedules,
+            debt_schedules=debt_schedules, ctx=ctx,
         ),
         "debt_progress": _compute_debt_progress(
             year, ctx["debt_accounts"], debt_schedules,
@@ -515,6 +515,7 @@ def _compute_net_worth(
     all_periods: list,
     scenario: Scenario,
     debt_schedules: dict[int, list] | None = None,
+    ctx: dict | None = None,
 ) -> dict:
     """Compute net worth at 12 monthly endpoints for the year.
 
@@ -523,8 +524,9 @@ def _compute_net_worth(
     Liability accounts contribute negative values.
 
     Uses the balance calculator for checking/savings, interest
-    calculator for HYSA-type accounts, and amortization schedule
-    for loan accounts (when debt_schedules is provided).
+    calculator for HYSA-type accounts, amortization schedule for loan
+    accounts, and growth engine for investment accounts (when ctx is
+    provided with investment params).
 
     Args:
         year: Target calendar year.
@@ -533,8 +535,9 @@ def _compute_net_worth(
         scenario: Baseline scenario.
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping.  When provided, debt account balances are derived
-            from the amortization schedule instead of the naive balance
-            calculator.
+            from the amortization schedule.
+        ctx: Optional common data dict.  When provided, investment
+            account balances include growth engine projections.
 
     Returns:
         dict with monthly_values (list of 12 {month, month_name,
@@ -545,7 +548,7 @@ def _compute_net_worth(
 
     month_end_periods = _get_month_end_periods(year, all_periods)
     account_data = _build_account_data(
-        accounts, scenario, all_periods, debt_schedules,
+        accounts, scenario, all_periods, debt_schedules, ctx=ctx,
     )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
@@ -572,6 +575,7 @@ def _build_account_data(
     scenario: Scenario,
     all_periods: list,
     debt_schedules: dict[int, list] | None = None,
+    ctx: dict | None = None,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
 
@@ -581,6 +585,8 @@ def _build_account_data(
         all_periods: All user pay periods.
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping for debt accounts.
+        ctx: Optional common data dict.  When provided, investment
+            account balances include growth engine projections.
 
     Returns:
         List of dicts with 'balances' and 'is_liability' keys.
@@ -590,7 +596,7 @@ def _build_account_data(
     for account in accounts:
         balances = _get_account_balance_map(
             account, scenario, all_periods,
-            debt_schedules=debt_schedules,
+            debt_schedules=debt_schedules, ctx=ctx,
         )
         if balances is None:
             continue
@@ -1376,6 +1382,131 @@ def _schedule_to_period_balance_map(
     return balances
 
 
+def _build_investment_balance_map(
+    account: Account,
+    investment_params: InvestmentParams,
+    scenario: Scenario,
+    periods: list,
+    base_args: dict,
+    ctx: dict,
+) -> OrderedDict:
+    """Build period_id -> balance map using the growth engine.
+
+    Starts from the base balance calculator (anchor + transactions) for
+    pre-anchor periods, then projects forward using the growth engine
+    with employer contributions and assumed annual return.
+
+    Args:
+        account: Investment account.
+        investment_params: InvestmentParams for the account.
+        scenario: Baseline scenario.
+        periods: All user pay periods.
+        base_args: Pre-built dict with anchor_balance, anchor_period_id,
+            periods, and transactions for calculate_balances().
+        ctx: Common data dict with deductions_by_account,
+            salary_gross_biweekly, year_period_ids.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance.
+    """
+    # Base balances: anchor + transactions (no growth).  This gives
+    # accurate values at the anchor period and handles settled
+    # transactions correctly.
+    base_balances, _ = balance_calculator.calculate_balances(**base_args)
+
+    anchor_pid = account.current_anchor_period_id
+    anchor_balance = base_balances.get(anchor_pid, ZERO)
+
+    # Find the anchor period's index to split pre/post-anchor.
+    anchor_idx = None
+    for p in periods:
+        if p.id == anchor_pid:
+            anchor_idx = p.period_index
+            break
+
+    if anchor_idx is None:
+        return base_balances
+
+    # Post-anchor periods need growth engine projection.
+    post_anchor = [
+        p for p in periods if p.period_index > anchor_idx
+    ]
+
+    if not post_anchor:
+        return base_balances
+
+    # Adapt paycheck deductions (same pattern as _project_investment_for_year).
+    deductions_by_account = ctx["deductions_by_account"]
+    salary_gross_biweekly = ctx["salary_gross_biweekly"]
+    scenario_id = scenario.id
+
+    acct_deductions = deductions_by_account.get(account.id, [])
+    adapted_deductions = []
+    for ded in acct_deductions:
+        profile = ded.salary_profile
+        adapted_deductions.append(type("D", (), {
+            "amount": ded.amount,
+            "calc_method_id": ded.calc_method_id,
+            "annual_salary": profile.annual_salary,
+            "pay_periods_per_year": profile.pay_periods_per_year or 26,
+        })())
+
+    # Shadow income transactions for contribution history.
+    period_ids = [p.id for p in post_anchor]
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    acct_contributions = (
+        db.session.query(Transaction)
+        .join(Transaction.status)
+        .options(
+            joinedload(Transaction.status),
+            joinedload(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            Status.excludes_from_balance.is_(False),
+        )
+        .all()
+    ) if period_ids else []
+
+    inputs = calculate_investment_inputs(
+        account_id=account.id,
+        investment_params=investment_params,
+        deductions=adapted_deductions,
+        all_contributions=acct_contributions,
+        all_periods=periods,
+        current_period=post_anchor[0],
+        salary_gross_biweekly=salary_gross_biweekly,
+    )
+
+    projection = growth_engine.project_balance(
+        current_balance=anchor_balance,
+        assumed_annual_return=investment_params.assumed_annual_return,
+        periods=post_anchor,
+        periodic_contribution=inputs.periodic_contribution,
+        employer_params=inputs.employer_params,
+        annual_contribution_limit=inputs.annual_contribution_limit,
+        ytd_contributions_start=inputs.ytd_contributions,
+    )
+
+    # Merge: base balances for anchor-and-earlier, growth engine for
+    # post-anchor periods.
+    result = OrderedDict()
+    proj_by_pid = {pb.period_id: pb.end_balance for pb in projection}
+
+    for period in periods:
+        if period.id in proj_by_pid:
+            result[period.id] = proj_by_pid[period.id]
+        elif period.id in base_balances:
+            result[period.id] = base_balances[period.id]
+
+    return result
+
+
 # ── Internal Helpers ──────────────────────────────────────────────
 
 
@@ -1567,12 +1698,15 @@ def _get_account_balance_map(
     scenario: Scenario,
     periods: list,
     debt_schedules: dict[int, list] | None = None,
+    ctx: dict | None = None,
 ) -> dict | None:
     """Compute period_id -> balance mapping for one account.
 
-    Uses interest calculator for HYSA-type accounts, amortization
-    schedule for loans (when debt_schedules is provided), and plain
-    calculator for everything else.
+    Dispatches to the correct calculation engine based on account type:
+    - Amortizing loans: pre-generated amortization schedule
+    - Interest-bearing (HYSA, CD, etc.): balance calculator with interest
+    - Investment (401k, IRA, etc.): growth engine with employer and returns
+    - Everything else: plain balance calculator
 
     Args:
         account: The account to project.
@@ -1581,6 +1715,8 @@ def _get_account_balance_map(
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping.  When provided and the account is a debt account,
             balances are derived from the amortization schedule.
+        ctx: Optional common data dict.  When provided, investment
+            account balances include growth engine projections.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None
@@ -1634,24 +1770,20 @@ def _get_account_balance_map(
         )
         return balances
 
-    # Amortizing loan accounts without pre-generated schedule (fallback).
-    if acct_type and acct_type.has_amortization:
-        loan_params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=account.id)
-            .first()
-        )
-        if loan_params:
-            balances, _ = (
-                balance_calculator.calculate_balances_with_amortization(
-                    **base_args,
-                    account_id=account.id,
-                    loan_params=loan_params,
-                )
+    # Investment accounts: use growth engine when context is available.
+    if (ctx is not None
+            and acct_type
+            and getattr(acct_type, "has_parameters", False)
+            and not acct_type.has_interest
+            and not acct_type.has_amortization):
+        inv_params = ctx["investment_params_map"].get(account.id)
+        if inv_params:
+            return _build_investment_balance_map(
+                account, inv_params, scenario, periods,
+                base_args, ctx,
             )
-            return balances
 
-    # Standard checking/savings.
+    # Standard checking/savings (and any unmatched types).
     balances, _ = balance_calculator.calculate_balances(**base_args)
     return balances
 
