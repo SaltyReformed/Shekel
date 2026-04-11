@@ -24,7 +24,7 @@ alembic==1.18.4
 bcrypt==5.0.0
 pyotp==2.9.0
 qrcode[pil]==8.2
-cryptography==46.0.5
+cryptography==46.0.7
 
 # Input validation
 marshmallow==3.26.2
