@@ -365,8 +365,11 @@ def _register_error_handlers(app):
         """Handle 500 Internal Server Error.
 
         Triggers on unhandled exceptions in route handlers or
-        service layer code.
+        service layer code.  The rollback clears any failed transaction
+        so context-processor queries (e.g. inject_onboarding) can run
+        and the custom error template renders instead of a blank page.
         """
+        db.session.rollback()
         return render_template("errors/500.html"), 500
 
 

@@ -339,6 +339,15 @@ def update_transfer_template(template_id):
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
 
+    # Flush template changes first so name-uniqueness violations are caught
+    # before regeneration dirties the session with transfer deletes/creates.
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        flash("A recurring transfer with that name already exists.", "warning")
+        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+
     # Regenerate future transfers.
     scenario = (
         db.session.query(Scenario)
