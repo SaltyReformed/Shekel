@@ -2022,20 +2022,22 @@ class TestPaidOffBadge:
         uses == Decimal("0.00"), not a threshold.
         """
         with app.app_context():
-            # A $100 loan at 5% for 12 months.  Monthly payment
-            # is ~$8.56.  First month interest is ~$0.42.
-            # A payment of $100.41 leaves $0.01 remaining
-            # ($100 - ($100.41 - $0.42) = $0.01).
+            # A $100 loan at 5% for 12 months, originating Jan 2026.
+            # The schedule starts from origination, so two contractual
+            # payments (Feb, Mar) reduce the balance before the
+            # confirmed payment in April (seed_periods[7]).
+            #
+            # After month 1 (Feb): balance = $91.86
+            # After month 2 (Mar): balance = $83.68
+            # Month 3 (Apr) interest: $83.68 * 0.05/12 = $0.35
+            # Payment of $84.02 -> principal = $84.02 - $0.35 = $83.67
+            # Remaining: $83.68 - $83.67 = $0.01
             acct = _create_small_loan(
                 seed_user, name="Sub Penny Loan",
                 principal=Decimal("100.00"), rate=Decimal("0.05000"), term=12,
             )
-            # Pay slightly less than principal + interest to leave a
-            # sub-penny balance.  $100 at 5% = $0.42 monthly interest.
-            # Payment of $100.41 -> principal_portion = $100.41 - $0.42
-            # = $99.99, remaining = $0.01.
             _make_confirmed_transfer(
-                seed_user, acct, seed_periods[7], Decimal("100.41"),
+                seed_user, acct, seed_periods[7], Decimal("84.02"),
             )
             db.session.commit()
 

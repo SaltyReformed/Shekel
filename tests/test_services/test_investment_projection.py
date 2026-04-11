@@ -2,7 +2,7 @@
 Tests for the investment projection helper.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -33,10 +33,18 @@ class FakeDeduction:
 
 
 @dataclass
+class FakeStatus:
+    """Minimal status stub for contribution filtering."""
+    excludes_from_balance: bool = False
+    is_settled: bool = False
+
+
+@dataclass
 class FakeContribution:
     """Shadow income transaction representing a contribution (transfer into account)."""
     estimated_amount: Decimal
     pay_period_id: int
+    status: FakeStatus = field(default_factory=FakeStatus)
 
 
 @dataclass

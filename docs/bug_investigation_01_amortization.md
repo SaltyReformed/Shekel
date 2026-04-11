@@ -1,7 +1,7 @@
 # Bug Investigation: Transfers to Debt Accounts Do Not Affect Amortization Schedule
 
 **Date:** 2026-04-10
-**Status:** Root cause identified, fix not yet implemented
+**Status:** Core fix applied (d2455e8), remaining issues tracked
 
 ## Root Cause
 
@@ -24,7 +24,22 @@ The year-end service (`app/services/year_end_summary_service.py`, lines 1291--13
 the same engine correctly: it passes `params.original_principal` as the starting balance,
 `params.origination_date` as the origination date, and `params.term_months` as the term
 length. This allows the engine to replay ALL payments from origination. The loan dashboard
-does not follow this pattern.
+did not follow this pattern until the fix below.
+
+### Resolution (commit d2455e8)
+
+Commit d2455e8 (2026-04-10) corrected `get_loan_projection()` to match the year-end service
+pattern. The fix changed four things:
+
+1. Starting balance: `params.current_principal` -> `params.original_principal`
+2. Schedule length: computed `remaining` -> `params.term_months`
+3. Origination date: `date.today().replace(day=1)` -> `params.origination_date`
+4. ARM handling: derives real principal from last confirmed schedule row for display
+
+The same commit also fixed `dashboard()` original/floor chart schedules,
+`savings_dashboard_service` balance derivation (walks schedule rows by date instead of
+index), and `debt_strategy._compute_real_principal()` (uses `original_principal` and
+`term_months`).
 
 ---
 
@@ -66,34 +81,37 @@ Returns a dict with prepared payments, rate changes, escrow data, and derived va
 
 **Verdict: Works correctly.** Payments are loaded and prepared.
 
-### 4. Dashboard entry -- `app/routes/loan.py:dashboard()` (lines 433--589)
+### 4. Dashboard entry -- `app/routes/loan.py:dashboard()` (lines 433--593)
 
 - Line 447: Calls `_load_loan_context()` to get payments
 - Line 455: Calls `get_loan_projection(params, payments=payments, rate_changes=rate_changes)`
-- Lines 477--482: Generates `original_schedule` (no payments, no origination_date)
-- Lines 497--504: Generates `floor_schedule` (confirmed payments only, no origination_date)
-- Line 561: Passes `proj.schedule` to the template as `amortization_schedule`
+- Lines 479--485: Generates `original_schedule` with `orig_principal`, `params.origination_date`,
+  `params.term_months` (no payments -- intentional contractual baseline)
+- Lines 500--509: Generates `floor_schedule` with same origination params plus confirmed
+  payments only
+- Line 590: Passes `proj.schedule` to the template as `amortization_schedule`
 
-**Verdict: Payments are correctly passed to `get_loan_projection`. The bug is inside that
-function.** The `original_schedule` and `floor_schedule` also omit `origination_date` and
-use `params.current_principal`.
+**Verdict (post-fix): Correct.** All three schedule generations (committed, original, floor)
+now start from origination with `original_principal`.
 
-### 5. Projection generation -- `app/services/amortization_engine.py:get_loan_projection()` (lines 789--866)
+### 5. Projection generation -- `app/services/amortization_engine.py:get_loan_projection()` (lines 789--890)
 
-**THE BUG IS HERE.**
+**THE BUG WAS HERE (fixed by d2455e8).**
 
-- Line 822: `schedule_start = date.today().replace(day=1)` -- today, not origination
-- Line 828: `principal = Decimal(str(params.current_principal))` -- static DB value
-- Line 840--850: `calculate_summary(..., origination_date=schedule_start)` -- passes today
-  as origination to the summary computation
-- Lines 852--858: `generate_schedule(principal, rate, remaining, ...)` -- does NOT pass
-  `origination_date`, so the engine defaults to `date.today()` (line 448)
+Before the fix, this function used `date.today()` as the schedule start, `current_principal`
+as the starting balance, and computed `remaining` months as the schedule length. Past payment
+records were in `amount_by_month` but the schedule loop never generated their month keys.
 
-The `remaining` variable (line 824--826) is computed from `params.origination_date` and
-`params.term_months` via `calculate_remaining_months()` -- this correctly yields the number
-of months remaining from today. But the schedule starts from today and only iterates
-`remaining` months forward. Past months are never visited, so past payment records are
-never matched.
+After the fix:
+- Line 833: `orig_principal = Decimal(str(params.original_principal))` -- full loan amount
+- Lines 850--860: `calculate_summary(..., remaining_months=params.term_months,
+  origination_date=params.origination_date)` -- full term from origination
+- Lines 862--870: `generate_schedule(orig_principal, rate, params.term_months,
+  origination_date=params.origination_date, ...)` -- full replay from origination
+
+The schedule now starts from origination and iterates through the full loan term. Past
+confirmed payments match by year-month. Future projected payments also match. Months
+without payment records use the contractual payment.
 
 ### 6. Schedule generation -- `app/services/amortization_engine.py:generate_schedule()` (lines 326--588)
 
@@ -155,98 +173,104 @@ matched by month. The engine correctly computes the balance at every point.
 
 ---
 
-## What Is Missing or Broken
+## Remaining Issues (After d2455e8)
 
-### Primary: `get_loan_projection()` (amortization_engine.py:852--858)
+The core fix resolved `get_loan_projection()`, dashboard chart schedules,
+`_compute_real_principal()`, and the refinance calculator's principal derivation.
+Three issues remain unfixed:
 
-The `generate_schedule()` call omits `origination_date`, so the schedule starts from today.
-Past confirmed payments are in `amount_by_month` but the loop never generates their month
-keys. Uses `params.current_principal` (static) instead of `params.original_principal`.
+### 1. `_check_loan_paid_off()` (savings_dashboard_service.py:431--501)
 
-### Secondary: `dashboard()` original/floor schedules (loan.py:477--504)
+Line 467 uses `loan_params.current_principal`. Lines 469--471 compute `remaining` from
+today. Line 478 calls `generate_schedule()` without `origination_date`. The schedule starts
+from today, so confirmed payments from past months never match. The function cannot detect
+a paid-off loan from past payment history.
 
-Both `original_schedule` (line 477) and `floor_schedule` (line 497) also omit
-`origination_date` and use `principal` (= `params.current_principal`). These chart projections
-are similarly static.
+### 2. Savings dashboard debt projections (savings_dashboard_service.py:349)
 
-### Secondary: Savings dashboard (savings_dashboard_service.py:348)
+Calls `get_loan_projection(acct_loan_params)` without payments. The schedule replays from
+origination (correct since d2455e8) but uses only contractual amounts. Debt projections on
+the savings overview do not reflect actual payment data -- extra payments are not visible.
+The user has noted this is tracked separately.
 
-Calls `get_loan_projection(acct_loan_params)` WITHOUT passing payments. Debt account
-projections on the savings overview are purely static -- no payment data at all.
+### 3. Payoff calculator (loan.py:862--958)
 
-### Minor: `_compute_real_principal()` in debt_strategy.py (lines 173--182)
+Line 862 sets `schedule_start = date.today().replace(day=1)`. Lines 870 and 953 pass this
+as `origination_date` to `calculate_summary` and `calculate_payoff_by_date`. Past payments
+(loaded via `_load_loan_context`) have dates before today and never match schedule rows.
 
-Uses `current_principal` (not `original_principal`) and `remaining` (not `term_months`) as
-starting point. It does pass `origination_date=params.origination_date`, so past payments
-CAN match, but the starting balance may be incorrect if `current_principal` differs from the
-actual balance at origination.
-
-### Minor: Refinance calculator (loan.py:1012--1014)
-
-Inherits all `get_loan_projection()` issues. The `current_real_principal` derivation (lines
-1031--1035) may find no confirmed rows because the schedule starts from today.
+The chart schedules (original at line 881, committed at line 888, accelerated at line 897)
+also use `principal` (= `current_principal`) and `remaining_months` without
+`origination_date`. Past confirmed payments in the `payments` list do not match.
 
 ---
 
-## Proposed Fix Approach
+## Proposed Fix Approach (Remaining Issues Only)
 
-### Primary fix: Modify `get_loan_projection()` to match the year-end service pattern
+### 1. Fix `_check_loan_paid_off()` (savings_dashboard_service.py:431--501)
 
-Change the function to start from origination and replay the full payment history:
+Mirror the `get_loan_projection()` pattern -- use `original_principal`, `term_months`, and
+`origination_date`:
 
-- Use `params.original_principal` instead of `params.current_principal` as the starting balance
-- Pass `params.origination_date` as `origination_date` to both `generate_schedule()` and
-  `calculate_summary()`
-- Use `params.term_months` instead of the computed `remaining` as the schedule length
+```python
+orig_principal = Decimal(str(loan_params.original_principal))
+schedule = amortization_engine.generate_schedule(
+    orig_principal, rate, loan_params.term_months,
+    origination_date=loan_params.origination_date,
+    payment_day=loan_params.payment_day,
+    original_principal=original,
+    term_months=loan_params.term_months,
+    payments=confirmed,
+)
+```
 
-This allows the engine to start from origination, iterate through every month of the loan
-term, match all confirmed and projected payments, and compute correct balances.
+Remove the `remaining` computation (lines 469--471) and the `principal` variable (line 467).
 
-### Secondary fixes
+### 2. Fix savings dashboard debt projections (savings_dashboard_service.py:349)
 
-1. **`dashboard()` original/floor schedules** (loan.py:477--504): Apply the same parameter
-   changes (origination_date, original_principal, term_months).
-2. **`savings_dashboard_service.py`** (line 348): Load payment history and pass it to
-   `get_loan_projection()`.
-3. **`debt_strategy.py:_compute_real_principal()`** (lines 173--182): Use `original_principal`
-   and `term_months` instead of `current_principal` and `remaining`.
+Load payment history for each debt account and pass it to `get_loan_projection()`. Requires
+calling `get_payment_history()` and `prepare_payments_for_engine()` with escrow data for each
+debt account. The scenario ID is already available in `params["scenario_id"]`. This is a
+larger change and is tracked separately per the user.
 
-### Display consideration
+### 3. Fix payoff calculator (loan.py:862--958)
 
-The full schedule from origination could include hundreds of past rows. The template or route
-may need to filter displayed rows -- for example, showing from 12 months before today forward,
-or collapsing past confirmed months into a summary. The engine must generate from origination
-for correct balance computation, but the display can be trimmed.
+Use `params.origination_date`, `orig_principal`, and `params.term_months` instead of
+`schedule_start`, `principal`, and `remaining_months`:
+
+- Lines 866--877 (`extra_payment` mode): change `current_principal=principal` to
+  `orig_principal`, `remaining_months=remaining_months` to `params.term_months`,
+  `origination_date=schedule_start` to `params.origination_date`
+- Lines 881--905 (chart schedules): same parameter changes; remove `schedule_start` variable
+- Lines 948--958 (`target_date` mode): same parameter changes for `calculate_payoff_by_date`
 
 ---
 
 ## Files That Would Need to Change
 
-1. `app/services/amortization_engine.py` -- `get_loan_projection()`: origination_date,
-   original_principal, term_months
-2. `app/routes/loan.py` -- `dashboard()`: original_schedule and floor_schedule generation
-3. `app/services/savings_dashboard_service.py` -- Pass payments to `get_loan_projection()`
-4. `app/routes/debt_strategy.py` -- `_compute_real_principal()`: use original_principal and
-   term_months
-5. `app/templates/loan/_schedule.html` -- Possibly add row filtering for display
+1. `app/services/savings_dashboard_service.py` -- `_check_loan_paid_off()`: use
+   `original_principal`, `term_months`, `origination_date`
+2. `app/services/savings_dashboard_service.py` -- line 349: pass payments to
+   `get_loan_projection()` (tracked separately)
+3. `app/routes/loan.py` -- `payoff_calculate()`: use origination params instead of
+   `schedule_start` / `current_principal` / `remaining_months`
 
 ---
 
-## Tests That Should Verify the Fix
+## Tests That Should Verify the Remaining Fixes
 
-1. **Unit: `generate_schedule()` with origination in the past and confirmed payments** --
-   verify past-month payments produce `is_confirmed=True` rows with correct
-   remaining_balance.
-2. **Unit: `get_loan_projection()` with confirmed payments** -- verify schedule rows reflect
-   actual payment amounts and confirmed status.
-3. **Unit: `get_loan_projection()` balance accuracy** -- verify the balance after the last
-   confirmed row equals the expected principal from replaying actual payments.
-4. **Integration: Loan dashboard with transfer marked as Paid** -- verify the schedule table
-   shows "Confirmed" badge and green highlighting for the paid month.
-5. **Integration: Savings dashboard debt projections** -- verify projected balances
-   incorporate payment data.
-6. **Regression: Year-end schedule consistency** -- verify loan dashboard and year-end
-   service produce identical schedules for the same account.
+1. **Unit: `_check_loan_paid_off()` with past confirmed payments** -- verify the function
+   returns True when confirmed payments have driven the balance to zero. The current
+   implementation cannot detect this because past payments never match.
+2. **Unit: `_check_loan_paid_off()` with partial payoff** -- verify the function returns
+   False when confirmed payments exist but balance remains positive.
+3. **Unit: Payoff calculator `extra_payment` mode with confirmed payments** -- verify the
+   summary reflects real principal from payment replay, not the static
+   `current_principal`.
+4. **Unit: Payoff calculator chart schedules with confirmed payments** -- verify committed
+   and accelerated chart data incorporate past confirmed payments.
+5. **Integration: Savings dashboard debt projections with payments** -- verify projected
+   balances incorporate payment data (once fix #2 is implemented).
 
 ---
 
@@ -258,11 +282,14 @@ process ALL transactions (including shadow transactions from transfers) period-b
 from the anchor balance. Transfer status changes are correctly reflected via
 `effective_amount`.
 
-**Investment/retirement accounts are NOT affected.** They use the growth engine with
-contribution data derived from shadow transactions and the balance calculator's output,
-both of which correctly incorporate transfer shadows.
+**Investment/retirement accounts have a distinct issue.** The savings dashboard
+(`savings_dashboard_service.py:98--109`) loads shadow income transactions without status
+eager-loading. `investment_projection.py:220--224` then accesses `txn.status` directly,
+causing N+1 queries. This is a performance issue, not a correctness bug -- the data is
+correct, but the queries are inefficient. Tracked separately.
 
-**Debt accounts on the savings dashboard ARE affected** -- `savings_dashboard_service.py:348`
-calls `get_loan_projection()` without payments, making debt projections on the savings
-overview completely static. This is the same root cause (missing payment data in
-`get_loan_projection`), not a distinct issue.
+**Debt accounts on the savings dashboard have two issues:**
+1. `get_loan_projection()` is called without payments (remaining issue #2 above) --
+   projections are contractual-only. Tracked separately per the user.
+2. `_check_loan_paid_off()` uses the old pattern without origination params (remaining
+   issue #1 above) -- cannot detect paid-off loans from past payments.
