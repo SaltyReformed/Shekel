@@ -27,7 +27,7 @@ qrcode[pil]==8.2
 cryptography==46.0.7
 
 # Input validation
-marshmallow==3.26.2
+marshmallow==4.3.0
 
 # Environment
 python-dotenv==1.2.2
