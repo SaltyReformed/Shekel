@@ -47,6 +47,7 @@ from app.services.amortization_engine import (
 from app.services.loan_payment_service import (
     compute_contractual_pi,
     get_payment_history,
+    load_loan_context,
     prepare_payments_for_engine,
 )
 from app.utils.formatting import pct_to_decimal
@@ -329,9 +330,9 @@ def _update_transfer_end_date(
 def _load_loan_context(account, params):
     """Load payment history, escrow, and rate changes for a loan.
 
-    Centralizes the data loading that both the dashboard and payoff
-    calculator need, ensuring consistent payment preparation (escrow
-    subtraction and biweekly redistribution) across all code paths.
+    Delegates to the shared loan_payment_service.load_loan_context()
+    for data loading, then adds route-specific derived values
+    (principal, rate, remaining, original_for_engine).
 
     Returns a dict with:
         payments: Prepared PaymentRecord list (escrow-subtracted,
@@ -349,49 +350,16 @@ def _load_loan_context(account, params):
         account: Account model instance.
         params: LoanParams model instance.
     """
-    # Escrow -- loaded first because payment preparation needs it.
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
-    )
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
-
-    # Payment history from shadow income transactions.
     scenario = (
         db.session.query(Scenario)
         .filter_by(user_id=current_user.id, is_baseline=True)
         .first()
     )
-    raw_payments = get_payment_history(account.id, scenario.id) if scenario else []
+    scenario_id = scenario.id if scenario else None
 
-    # Prepare: subtract escrow and fix biweekly month overlaps.
-    payments = prepare_payments_for_engine(
-        raw_payments, params.payment_day, monthly_escrow,
-        compute_contractual_pi(params),
-    )
+    ctx = load_loan_context(account.id, scenario_id, params)
 
-    # Rate history for ARM loans.
-    rate_history = []
-    rate_changes = None
-    if params.is_arm:
-        rate_history = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account.id)
-            .order_by(RateHistory.effective_date.desc())
-            .all()
-        )
-        if rate_history:
-            rate_changes = [
-                RateChangeRecord(
-                    effective_date=rh.effective_date,
-                    interest_rate=Decimal(str(rh.interest_rate)),
-                )
-                for rh in rate_history
-            ]
-
-    # Derived values used by both dashboard and payoff calculator.
+    # Derived values used by dashboard and payoff calculator.
     principal = Decimal(str(params.current_principal))
     rate = Decimal(str(params.interest_rate))
     remaining = amortization_engine.calculate_remaining_months(
@@ -403,11 +371,11 @@ def _load_loan_context(account, params):
     )
 
     return {
-        "payments": payments,
-        "rate_changes": rate_changes,
-        "rate_history": rate_history,
-        "escrow_components": escrow_components,
-        "monthly_escrow": monthly_escrow,
+        "payments": ctx.payments,
+        "rate_changes": ctx.rate_changes,
+        "rate_history": ctx.rate_history,
+        "escrow_components": ctx.escrow_components,
+        "monthly_escrow": ctx.monthly_escrow,
         "principal": principal,
         "rate": rate,
         "remaining": remaining,
@@ -494,9 +462,15 @@ def dashboard(account_id):
 
     # Floor schedule: confirmed payments only, standard payments
     # forward.  "Where I stand if I cancel all extras today."
+    # ARM anchor ensures the floor projects from current_principal,
+    # not the drifted origination-forward balance.
     chart_floor = []
     if has_payments:
         confirmed_payments = [p for p in payments if p.is_confirmed]
+        floor_anchor_bal = (
+            Decimal(str(params.current_principal)) if params.is_arm else None
+        )
+        floor_anchor_dt = date.today() if params.is_arm else None
         floor_schedule = amortization_engine.generate_schedule(
             orig_principal, rate, params.term_months,
             origination_date=params.origination_date,
@@ -505,6 +479,8 @@ def dashboard(account_id):
             term_months=params.term_months,
             payments=confirmed_payments if confirmed_payments else None,
             rate_changes=rate_changes,
+            anchor_balance=floor_anchor_bal,
+            anchor_date=floor_anchor_dt,
         )
         _, chart_floor = _build_chart_data(floor_schedule)
 
@@ -860,6 +836,14 @@ def payoff_calculate(account_id):
     original = ctx["original_for_engine"]
     orig_principal = Decimal(str(params.original_principal))
 
+    # ARM anchor values: committed and accelerated schedules use the
+    # anchor so forward projections start from the verified balance.
+    # Original schedule (contractual baseline) does not use an anchor.
+    anchor_bal = (
+        Decimal(str(params.current_principal)) if params.is_arm else None
+    )
+    anchor_dt = date.today() if params.is_arm else None
+
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
         payoff_summary = amortization_engine.calculate_summary(
@@ -873,6 +857,8 @@ def payoff_calculate(account_id):
             original_principal=original,
             payments=payments,
             rate_changes=rate_changes,
+            anchor_balance=anchor_bal,
+            anchor_date=anchor_dt,
         )
 
         # --- Multi-scenario chart data for payoff calculator ---
@@ -893,6 +879,8 @@ def payoff_calculate(account_id):
             term_months=params.term_months,
             payments=payments,
             rate_changes=rate_changes,
+            anchor_balance=anchor_bal,
+            anchor_date=anchor_dt,
         )
         # Accelerated: committed payments + extra_monthly.
         accelerated_schedule = amortization_engine.generate_schedule(
@@ -904,6 +892,8 @@ def payoff_calculate(account_id):
             term_months=params.term_months,
             payments=payments,
             rate_changes=rate_changes,
+            anchor_balance=anchor_bal,
+            anchor_date=anchor_dt,
         )
 
         chart_labels, chart_original = _build_chart_data(original_schedule)
@@ -947,18 +937,14 @@ def payoff_calculate(account_id):
                 error="Target date is required.",
             )
 
-        # Derive the real current principal from payment replay so the
-        # payoff calculation reflects actual payments, not the static
-        # current_principal field.  Matches the refinance calculator
-        # pattern (loan.py:1032-1039).
+        # Derive the real current principal from the committed
+        # projection.  For ARM loans, current_balance is the
+        # user-verified anchor; for fixed-rate, it is derived from
+        # the schedule.
         committed_proj = amortization_engine.get_loan_projection(
             params, payments=payments, rate_changes=rate_changes,
         )
-        real_principal = Decimal(str(params.current_principal))
-        for row in reversed(committed_proj.schedule):
-            if row.is_confirmed:
-                real_principal = row.remaining_balance
-                break
+        real_principal = committed_proj.current_balance
 
         required_extra = amortization_engine.calculate_payoff_by_date(
             current_principal=real_principal,
@@ -1043,15 +1029,10 @@ def refinance_calculate(account_id):
             ),
         )
 
-    # Derive current real principal from confirmed payment replay.
-    # The remaining_balance of the last confirmed row reflects what
-    # the borrower actually owes right now.  If no confirmed payments
-    # exist, use the stored current_principal from LoanParams.
-    current_real_principal = principal
-    for row in reversed(current_schedule):
-        if row.is_confirmed:
-            current_real_principal = row.remaining_balance
-            break
+    # Current real principal from the projection.  For ARM loans this
+    # is the user-verified anchor; for fixed-rate, derived from the
+    # schedule.
+    current_real_principal = proj.current_balance
 
     # Determine refinance principal: user override or auto-calculated
     # from current real balance + closing costs.

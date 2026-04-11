@@ -4,7 +4,8 @@ Shekel Budget App -- Loan Payment Service
 Queries shadow income transactions on debt accounts and converts them
 to PaymentRecord instances for the amortization engine.  Also provides
 payment preparation utilities (escrow subtraction, biweekly
-redistribution) shared by all consumers of amortization schedules.
+redistribution) and a unified data-loading function (load_loan_context)
+shared by all consumers of amortization schedules.
 
 Shadow income transactions represent payments received by a debt
 account via transfers.  When a user transfers money from checking to
@@ -19,11 +20,14 @@ related services must never depend on the transfers table directly.
 
 Shared by:
   - app/routes/loan.py (dashboard and payoff calculator)
+  - app/services/savings_dashboard_service.py (savings projections)
   - app/services/year_end_summary_service.py (annual aggregation)
+  - app/routes/debt_strategy.py (debt payoff strategies)
 """
 
 import calendar
 import logging
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -32,14 +36,121 @@ from sqlalchemy.orm import joinedload
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
+from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.models.transaction import Transaction
-from app.services import amortization_engine
-from app.services.amortization_engine import PaymentRecord
+from app.services import amortization_engine, escrow_calculator
+from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LoanContext:
+    """All context data needed for loan projection.
+
+    Loaded once per account via load_loan_context(), shared across all
+    projection consumers (loan dashboard, savings dashboard, year-end
+    service, debt strategy).  Eliminates duplicated data loading logic.
+
+    Attributes:
+        payments: Prepared PaymentRecord list (escrow-subtracted,
+            biweekly month-aligned).  Ready for the amortization engine.
+        rate_changes: List of RateChangeRecord for ARM loans, or None.
+        escrow_components: Active EscrowComponent ORM objects for
+            display and escrow calculation.
+        monthly_escrow: Aggregated monthly escrow Decimal.
+        contractual_pi: Standard monthly P&I payment (no escrow).
+        rate_history: RateHistory ORM objects for ARM rate display.
+            Empty list for fixed-rate loans.
+    """
+
+    payments: list[PaymentRecord]
+    rate_changes: list[RateChangeRecord] | None
+    escrow_components: list  # list[EscrowComponent]
+    monthly_escrow: Decimal
+    contractual_pi: Decimal
+    rate_history: list = field(default_factory=list)  # list[RateHistory]
+
+
+def load_loan_context(
+    account_id: int,
+    scenario_id: int | None,
+    loan_params: LoanParams,
+) -> LoanContext:
+    """Load and prepare all context data for a loan account.
+
+    Consolidates the data loading pattern repeated in loan routes,
+    savings dashboard, year-end service, and debt strategy: payment
+    history retrieval, escrow loading, payment preparation (escrow
+    subtraction + biweekly redistribution), and rate change loading
+    for ARM loans.
+
+    This is a pure data-loading function -- no Flask request/session
+    imports.  Callers pass the scenario_id explicitly.
+
+    Args:
+        account_id: The loan account ID.
+        scenario_id: Baseline scenario ID for payment history lookup.
+            None means no payments are loaded (empty list).
+        loan_params: LoanParams model instance for the account.
+
+    Returns:
+        LoanContext with all data needed for amortization projection.
+    """
+    # Escrow -- loaded first because payment preparation needs it.
+    escrow_components = (
+        db.session.query(EscrowComponent)
+        .filter_by(account_id=account_id, is_active=True)
+        .order_by(EscrowComponent.name)
+        .all()
+    )
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(
+        escrow_components,
+    )
+
+    # Payment history from shadow income transactions.
+    raw_payments = (
+        get_payment_history(account_id, scenario_id)
+        if scenario_id else []
+    )
+
+    # Prepare: subtract escrow and fix biweekly month overlaps.
+    contractual_pi = compute_contractual_pi(loan_params)
+    payments = prepare_payments_for_engine(
+        raw_payments, loan_params.payment_day,
+        monthly_escrow, contractual_pi,
+    )
+
+    # Rate history for ARM loans.
+    rate_history_records: list = []
+    rate_changes: list[RateChangeRecord] | None = None
+    if loan_params.is_arm:
+        rate_history_records = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=account_id)
+            .order_by(RateHistory.effective_date.desc())
+            .all()
+        )
+        if rate_history_records:
+            rate_changes = [
+                RateChangeRecord(
+                    effective_date=rh.effective_date,
+                    interest_rate=Decimal(str(rh.interest_rate)),
+                )
+                for rh in rate_history_records
+            ]
+
+    return LoanContext(
+        payments=payments,
+        rate_changes=rate_changes,
+        escrow_components=escrow_components,
+        monthly_escrow=monthly_escrow,
+        contractual_pi=contractual_pi,
+        rate_history=rate_history_records,
+    )
 
 
 def get_payment_history(

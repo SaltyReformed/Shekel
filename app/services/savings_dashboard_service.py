@@ -23,7 +23,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, Status
@@ -42,11 +42,9 @@ from app.services import (
     savings_goal_service,
 )
 from app.services.investment_projection import calculate_investment_inputs
-from app.services.amortization_engine import RateChangeRecord
 from app.services.loan_payment_service import (
-    compute_contractual_pi,
     get_payment_history,
-    prepare_payments_for_engine,
+    load_loan_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -356,67 +354,29 @@ def _compute_account_projections(
         projected = {}
 
         if acct_loan_params:
-            # Load payment history so the projection reflects actual
-            # payments, not just the contractual schedule.
+            # Load all context data via the shared loader.
             scenario_id = params.get("scenario_id")
-            raw_payments = (
-                get_payment_history(acct.id, scenario_id)
-                if scenario_id else []
+            loan_ctx = load_loan_context(
+                acct.id, scenario_id, acct_loan_params,
             )
-            acct_escrow = [
-                ec for ec in params["escrow_map"].get(acct.id, [])
-                if ec.is_active
-            ]
-            monthly_escrow = escrow_calculator.calculate_monthly_escrow(
-                acct_escrow,
-            )
-            contractual_pi = compute_contractual_pi(acct_loan_params)
-            acct_payments = prepare_payments_for_engine(
-                raw_payments, acct_loan_params.payment_day,
-                monthly_escrow, contractual_pi,
-            )
-
-            # Rate changes for ARM loans.
-            acct_rate_changes = None
-            if getattr(acct_loan_params, "is_arm", False):
-                rate_history = (
-                    db.session.query(RateHistory)
-                    .filter_by(account_id=acct.id)
-                    .order_by(RateHistory.effective_date.desc())
-                    .all()
-                )
-                if rate_history:
-                    acct_rate_changes = [
-                        RateChangeRecord(
-                            effective_date=rh.effective_date,
-                            interest_rate=Decimal(str(rh.interest_rate)),
-                        )
-                        for rh in rate_history
-                    ]
 
             proj = amortization_engine.get_loan_projection(
                 acct_loan_params,
-                payments=acct_payments,
-                rate_changes=acct_rate_changes,
+                payments=loan_ctx.payments,
+                rate_changes=loan_ctx.rate_changes,
             )
             monthly = proj.summary.monthly_payment
             summary = proj.summary
 
-            # The schedule starts from origination (full loan history),
-            # so derive the current balance from the last schedule row
-            # on or before today rather than using a static DB field.
-            today = date.today()
-            current_bal = Decimal(str(acct_loan_params.original_principal))
-            if proj.schedule:
-                for row in proj.schedule:
-                    if row.payment_date <= today:
-                        current_bal = row.remaining_balance
-                    else:
-                        break
+            # Current balance from the projection.  For ARM loans
+            # this is the user-verified anchor; for fixed-rate it is
+            # derived from the schedule.
+            current_bal = proj.current_balance
 
             # Projected balances: find the schedule row at each
             # target date.  Walk backward to find the last row on
             # or before the target month.
+            today = date.today()
             for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
                 target_m = today.month + month_offset
                 target_y = today.year + (target_m - 1) // 12
