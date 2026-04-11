@@ -12,7 +12,10 @@ plain dicts/lists.  No Flask imports.
 
 import logging
 from collections import OrderedDict
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+
+from sqlalchemy.orm import joinedload
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum, GoalModeEnum, TxnTypeEnum
@@ -20,10 +23,10 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_features import EscrowComponent
+from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import AccountType
+from app.models.ref import AccountType, Status
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
@@ -39,7 +42,12 @@ from app.services import (
     savings_goal_service,
 )
 from app.services.investment_projection import calculate_investment_inputs
-from app.services.loan_payment_service import get_payment_history
+from app.services.amortization_engine import RateChangeRecord
+from app.services.loan_payment_service import (
+    compute_contractual_pi,
+    get_payment_history,
+    prepare_payments_for_engine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +105,15 @@ def compute_dashboard_data(user_id):
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     all_shadow_income = (
         db.session.query(Transaction)
+        .join(Transaction.status)
+        .options(joinedload(Transaction.status))
         .filter(
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
+            Status.excludes_from_balance.is_(False),
         )
         .all()
     ) if scenario and period_ids else []
@@ -345,13 +356,76 @@ def _compute_account_projections(
         projected = {}
 
         if acct_loan_params:
-            proj = amortization_engine.get_loan_projection(acct_loan_params)
-            current_bal = Decimal(str(acct_loan_params.current_principal))
+            # Load payment history so the projection reflects actual
+            # payments, not just the contractual schedule.
+            scenario_id = params.get("scenario_id")
+            raw_payments = (
+                get_payment_history(acct.id, scenario_id)
+                if scenario_id else []
+            )
+            acct_escrow = [
+                ec for ec in params["escrow_map"].get(acct.id, [])
+                if ec.is_active
+            ]
+            monthly_escrow = escrow_calculator.calculate_monthly_escrow(
+                acct_escrow,
+            )
+            contractual_pi = compute_contractual_pi(acct_loan_params)
+            acct_payments = prepare_payments_for_engine(
+                raw_payments, acct_loan_params.payment_day,
+                monthly_escrow, contractual_pi,
+            )
+
+            # Rate changes for ARM loans.
+            acct_rate_changes = None
+            if getattr(acct_loan_params, "is_arm", False):
+                rate_history = (
+                    db.session.query(RateHistory)
+                    .filter_by(account_id=acct.id)
+                    .order_by(RateHistory.effective_date.desc())
+                    .all()
+                )
+                if rate_history:
+                    acct_rate_changes = [
+                        RateChangeRecord(
+                            effective_date=rh.effective_date,
+                            interest_rate=Decimal(str(rh.interest_rate)),
+                        )
+                        for rh in rate_history
+                    ]
+
+            proj = amortization_engine.get_loan_projection(
+                acct_loan_params,
+                payments=acct_payments,
+                rate_changes=acct_rate_changes,
+            )
             monthly = proj.summary.monthly_payment
             summary = proj.summary
+
+            # The schedule starts from origination (full loan history),
+            # so derive the current balance from the last schedule row
+            # on or before today rather than using a static DB field.
+            today = date.today()
+            current_bal = Decimal(str(acct_loan_params.original_principal))
+            if proj.schedule:
+                for row in proj.schedule:
+                    if row.payment_date <= today:
+                        current_bal = row.remaining_balance
+                    else:
+                        break
+
+            # Projected balances: find the schedule row at each
+            # target date.  Walk backward to find the last row on
+            # or before the target month.
             for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
-                if month_offset <= len(proj.schedule):
-                    projected[label] = proj.schedule[month_offset - 1].remaining_balance
+                target_m = today.month + month_offset
+                target_y = today.year + (target_m - 1) // 12
+                target_m = (target_m - 1) % 12 + 1
+                target_dt = date(target_y, target_m, 1)
+                for row in reversed(proj.schedule):
+                    if row.payment_date <= target_dt:
+                        projected[label] = row.remaining_balance
+                        break
         elif acct_investment_params and current_period:
             projected = _project_investment(
                 acct, acct_investment_params, params, all_shadow_income,
@@ -441,19 +515,20 @@ def _check_loan_paid_off(
     if not confirmed:
         return False
 
-    principal = Decimal(str(loan_params.current_principal))
+    orig_principal = Decimal(str(loan_params.original_principal))
     rate = Decimal(str(loan_params.interest_rate))
-    remaining = amortization_engine.calculate_remaining_months(
-        loan_params.origination_date, loan_params.term_months,
-    )
 
     # For ARM loans, pass original_principal=None to force
     # re-amortization from current state.
     is_arm = getattr(loan_params, "is_arm", False)
-    original = None if is_arm else Decimal(str(loan_params.original_principal))
+    original = None if is_arm else orig_principal
 
+    # Start from origination with full term so past confirmed
+    # payments match the schedule's year-month lookup.  Matches
+    # the get_loan_projection() pattern from d2455e8.
     schedule = amortization_engine.generate_schedule(
-        principal, rate, remaining,
+        orig_principal, rate, loan_params.term_months,
+        origination_date=loan_params.origination_date,
         payment_day=loan_params.payment_day,
         original_principal=original,
         term_months=loan_params.term_months,

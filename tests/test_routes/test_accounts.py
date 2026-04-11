@@ -721,6 +721,100 @@ class TestAccountTypeMetadataValidation:
             assert new_type.has_interest is True
             assert new_type.is_liquid is True
 
+    def test_update_account_type_multidict_checkboxes(self, app, auth_client, seed_user):
+        """Boolean flags resolve correctly from MultiDict form data.
+
+        Browsers submit hidden-input + checkbox pairs as duplicate keys
+        in a MultiDict.  Checked checkboxes send ('field', 'false') and
+        ('field', 'true'); unchecked send only ('field', 'false').  The
+        schema must take the last value so checked boxes resolve to True.
+        Regression test for a bug where Flask's MultiDict.items() returned
+        only the first value, making all booleans always False.
+        """
+        from werkzeug.datastructures import MultiDict
+
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            new_type = AccountType(
+                name="multidict_test",
+                category_id=asset_id,
+            )
+            db.session.add(new_type)
+            db.session.commit()
+
+            # Simulate browser form with checked checkboxes (hidden + checkbox).
+            resp = auth_client.post(
+                f"/accounts/types/{new_type.id}",
+                data=MultiDict([
+                    ("name", "multidict_test"),
+                    ("category_id", str(asset_id)),
+                    ("has_parameters", "false"),
+                    ("has_parameters", "true"),
+                    ("has_amortization", "false"),
+                    ("has_interest", "false"),
+                    ("has_interest", "true"),
+                    ("is_pretax", "false"),
+                    ("is_liquid", "false"),
+                    ("is_liquid", "true"),
+                    ("icon_class", "bi-cash-stack"),
+                    ("max_term_months", ""),
+                ]),
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(new_type)
+            # Checked checkboxes must resolve to True.
+            assert new_type.has_parameters is True
+            assert new_type.has_interest is True
+            assert new_type.is_liquid is True
+            # Unchecked checkboxes must resolve to False.
+            assert new_type.has_amortization is False
+            assert new_type.is_pretax is False
+
+    def test_update_account_type_multidict_all_unchecked(self, app, auth_client, seed_user):
+        """Unchecking all boolean flags via MultiDict sets them to False.
+
+        Starts with all flags True, then submits a form where every
+        checkbox is unchecked (only hidden 'false' values sent).
+        """
+        from werkzeug.datastructures import MultiDict
+
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            new_type = AccountType(
+                name="multidict_uncheck_test",
+                category_id=asset_id,
+                has_parameters=True,
+                has_interest=True,
+                is_liquid=True,
+            )
+            db.session.add(new_type)
+            db.session.commit()
+
+            # Simulate browser form with all checkboxes unchecked.
+            resp = auth_client.post(
+                f"/accounts/types/{new_type.id}",
+                data=MultiDict([
+                    ("name", "multidict_uncheck_test"),
+                    ("category_id", str(asset_id)),
+                    ("has_parameters", "false"),
+                    ("has_amortization", "false"),
+                    ("has_interest", "false"),
+                    ("is_pretax", "false"),
+                    ("is_liquid", "false"),
+                    ("icon_class", "bi-cash-stack"),
+                    ("max_term_months", ""),
+                ]),
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(new_type)
+            assert new_type.has_parameters is False
+            assert new_type.has_interest is False
+            assert new_type.is_liquid is False
+
 
 # ── Account Type Metadata Columns ────────────────────────────────
 

@@ -466,16 +466,19 @@ def dashboard(account_id):
     )
 
     # --- Multi-scenario chart data ---
-    # Values from the shared loan context.
-    principal = ctx["principal"]
+    # All schedules start from origination with original_principal so
+    # payment records are matched by the engine's year-month lookup.
+    # This matches the year-end service pattern and ensures confirmed
+    # payments produce correct balances and chart trajectories.
     rate = ctx["rate"]
-    remaining = ctx["remaining"]
     original_for_engine = ctx["original_for_engine"]
+    orig_principal = Decimal(str(params.original_principal))
 
     # Original schedule: contractual baseline, no payments, no rate
     # changes.  "What the bank expects."
     original_schedule = amortization_engine.generate_schedule(
-        principal, rate, remaining,
+        orig_principal, rate, params.term_months,
+        origination_date=params.origination_date,
         payment_day=params.payment_day,
         original_principal=original_for_engine,
         term_months=params.term_months,
@@ -495,7 +498,8 @@ def dashboard(account_id):
     if has_payments:
         confirmed_payments = [p for p in payments if p.is_confirmed]
         floor_schedule = amortization_engine.generate_schedule(
-            principal, rate, remaining,
+            orig_principal, rate, params.term_months,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             original_principal=original_for_engine,
             term_months=params.term_months,
@@ -846,24 +850,23 @@ def payoff_calculate(account_id):
     mode = data["mode"]
 
     # Shared loan context: payments (escrow-adjusted, month-aligned),
-    # rate changes, principal, rate, remaining months.  Identical to
-    # the dashboard's data loading so calculations are consistent.
+    # rate changes, rate, remaining months.  Identical to the
+    # dashboard's data loading so calculations are consistent.
     ctx = _load_loan_context(account, params)
     payments = ctx["payments"]
     rate_changes = ctx["rate_changes"]
-    principal = ctx["principal"]
     rate = ctx["rate"]
     remaining_months = ctx["remaining"]
     original = ctx["original_for_engine"]
-    schedule_start = date.today().replace(day=1)
+    orig_principal = Decimal(str(params.original_principal))
 
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
         payoff_summary = amortization_engine.calculate_summary(
-            current_principal=principal,
+            current_principal=orig_principal,
             annual_rate=rate,
-            remaining_months=remaining_months,
-            origination_date=schedule_start,
+            remaining_months=params.term_months,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             term_months=params.term_months,
             extra_monthly=extra,
@@ -875,14 +878,16 @@ def payoff_calculate(account_id):
         # --- Multi-scenario chart data for payoff calculator ---
         # Original: contractual baseline, no payments, no rate changes.
         original_schedule = amortization_engine.generate_schedule(
-            principal, rate, remaining_months,
+            orig_principal, rate, params.term_months,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
         )
         # Committed: all payments (confirmed + projected), no extra.
         committed_schedule = amortization_engine.generate_schedule(
-            principal, rate, remaining_months,
+            orig_principal, rate, params.term_months,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
@@ -891,8 +896,9 @@ def payoff_calculate(account_id):
         )
         # Accelerated: committed payments + extra_monthly.
         accelerated_schedule = amortization_engine.generate_schedule(
-            principal, rate, remaining_months,
+            orig_principal, rate, params.term_months,
             extra_monthly=extra,
+            origination_date=params.origination_date,
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,
@@ -941,12 +947,25 @@ def payoff_calculate(account_id):
                 error="Target date is required.",
             )
 
+        # Derive the real current principal from payment replay so the
+        # payoff calculation reflects actual payments, not the static
+        # current_principal field.  Matches the refinance calculator
+        # pattern (loan.py:1032-1039).
+        committed_proj = amortization_engine.get_loan_projection(
+            params, payments=payments, rate_changes=rate_changes,
+        )
+        real_principal = Decimal(str(params.current_principal))
+        for row in reversed(committed_proj.schedule):
+            if row.is_confirmed:
+                real_principal = row.remaining_balance
+                break
+
         required_extra = amortization_engine.calculate_payoff_by_date(
-            current_principal=principal,
+            current_principal=real_principal,
             annual_rate=rate,
             remaining_months=remaining_months,
             target_date=target_date,
-            origination_date=schedule_start,
+            origination_date=date.today().replace(day=1),
             payment_day=params.payment_day,
             original_principal=original,
             term_months=params.term_months,

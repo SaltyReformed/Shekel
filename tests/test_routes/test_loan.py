@@ -1837,12 +1837,22 @@ class TestPaymentBreakdown:
 
 def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00"),
                            rate=Decimal("0.06500"), term=360, payment_day=1):
-    """Create a mortgage with origination this month for predictable schedule length.
+    """Create a mortgage with origination last month for predictable schedule length.
+
+    Origination is the first of last month so the schedule's first
+    payment month is this month.  This ensures seed_periods in the
+    current month (April 2026) match schedule month 1.
 
     Sets original_principal = current_principal so the schedule aligns
     with the full term (no early-payoff due to a lower current balance).
     """
-    origination = date.today().replace(day=1)
+    # Origination one month before today so the first payment month
+    # is the current month (schedule starts month after origination).
+    first_of_this_month = date.today().replace(day=1)
+    if first_of_this_month.month == 1:
+        origination = first_of_this_month.replace(year=first_of_this_month.year - 1, month=12)
+    else:
+        origination = first_of_this_month.replace(month=first_of_this_month.month - 1)
     return _create_loan_account_exact(
         seed_user, db_session, "Mortgage", "Fresh Mortgage",
         principal, principal, rate, term, origination, payment_day,
@@ -2008,17 +2018,17 @@ class TestAmortizationSchedule:
     def test_schedule_early_payoff_fewer_rows(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.13-5: Loan with low principal pays off early (fewer than 360 rows).
+        """C-5.13-5: Loan with short term pays off early (fewer than 360 rows).
 
-        Creates a loan where current_principal ($5,000) is much lower
-        than the contractual payment from original_principal ($255,000).
-        The monthly payment (~$1,612) exceeds the balance, so the loan
-        pays off in a few months rather than the full term.
+        Creates a loan with a 12-month term.  The schedule from
+        origination runs 12 months, well under 360.  Verifies
+        the schedule table reflects the actual term, not a fixed
+        30-year assumption.
         """
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Mortgage", "Almost Paid",
-            Decimal("255000.00"), Decimal("5000.00"),
-            Decimal("0.06500"), 360, date(2023, 6, 1), 1,
+            seed_user, db.session, "Auto Loan", "Short Loan",
+            Decimal("5000.00"), Decimal("5000.00"),
+            Decimal("0.06500"), 12, date(2026, 3, 1), 1,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
@@ -2027,7 +2037,11 @@ class TestAmortizationSchedule:
         confirmed = html.count('badge bg-success">Confirmed</span>')
         total_rows = projected + confirmed
         assert total_rows < 360, (
-            f"Expected fewer than 360 rows for near-payoff loan, got {total_rows}"
+            f"Expected fewer than 360 rows for short-term loan, got {total_rows}"
+        )
+        # 12 months + possibly 1 extra for sub-penny rounding residue.
+        assert total_rows <= 13, (
+            f"Expected ~12 rows for 12-month loan, got {total_rows}"
         )
         # Last row should still reach $0.00.
         assert "$0.00" in html
@@ -2056,24 +2070,36 @@ class TestAmortizationSchedule:
     def test_schedule_hidden_empty_schedule(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.13-7: Loan with zero principal shows empty-schedule message.
+        """C-5.13-7: Paid-off loan shows short schedule ending at $0.
 
-        When current_principal is zero (paid off), the engine returns
-        an empty schedule.  The tab pane shows a message instead of a table.
+        A loan fully retired via a confirmed payment shows a very
+        short schedule (1 row) with the final balance at $0.00 and
+        the row marked as confirmed.
         """
+        # Small loan: $1000 at 5% for 12 months, origination Jan 2026.
+        # First payment month: Feb 2026 (seed_periods[3] = Feb 13).
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Mortgage", "Paid Off",
-            Decimal("250000.00"), Decimal("0.00"),
-            Decimal("0.06500"), 360, date(2023, 6, 1), 1,
+            seed_user, db.session, "Auto Loan", "Paid Off",
+            Decimal("1000.00"), Decimal("0.00"),
+            Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
+        # Large confirmed payment in Feb covers the full balance.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1100.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Tab should exist but show empty message.
-        assert "Amortization Schedule" in html
-        assert "paid off" in html.lower()
-        # No table body with data rows.
-        assert "Month-by-Month Schedule" not in html
+        # Schedule table exists with the payoff row.
+        assert "Month-by-Month Schedule" in html
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        assert confirmed == 1, (
+            f"Expected 1 confirmed row for paid-off loan, got {confirmed}"
+        )
+        assert "$0.00" in html
 
     def test_schedule_arm_rate_column_shown(
         self, auth_client, seed_user, db, seed_periods,
@@ -2546,16 +2572,18 @@ class TestRecurrenceEndDateUpdate:
         balance, the loan does not pay off within the projected term.
         The recurrence rule end_date should be None (indefinite).
 
-        Setup: ARM loan with 60% rate, 1 remaining month, and a
-        transfer payment of $100 (far below monthly interest of $5,000).
-        The schedule ends with the full balance still outstanding.
+        Setup: ARM loan with 60% rate, 1-month term originating in
+        March 2026 so the only payment month is April (seed_periods[7]).
+        The $100 payment is far below the monthly interest of $5,000,
+        producing negative amortization and a remaining balance > $0.
         """
-        # ARM loan: origination Nov 2025, term 6 months -> remaining = 1.
+        # ARM loan: origination Mar 2026, term 1 month.
+        # First (and only) payment month = April 2026.
         # 60% annual rate, $100K principal, monthly interest = $5,000.
         acct = _create_loan_account(
             seed_user, db.session, "Auto Loan", "Neg Am Loan",
-            Decimal("100000.00"), Decimal("0.60000"), 6,
-            date(2025, 11, 1), 1, is_arm=True,
+            Decimal("100000.00"), Decimal("0.60000"), 1,
+            date(2026, 3, 1), 1, is_arm=True,
         )
         _tpl, rule = _create_transfer_template(
             seed_user, db.session, acct, amount=Decimal("100.00"),
@@ -2695,18 +2723,26 @@ class TestRecurrenceEndDateUpdate:
     def test_end_date_paid_off_loan(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Loan with zero principal: end_date set to prevent future transfers.
+        """Paid-off loan via confirmed payment: end_date in the past.
 
-        When current_principal is 0 the amortization schedule is empty
-        (already paid off).  The end_date should be set to a past or
-        current date so the recurrence engine stops generating transfers.
+        When confirmed payments have retired the loan, the schedule
+        ends early.  The end_date should be set to the payoff date
+        (in the past) so the recurrence engine stops generating
+        transfers.
         """
-        # Create loan with zero current principal (already paid off).
-        acct = _create_loan_account(
+        # Small loan: $1000 at 5% for 12 months, origination Jan 2026.
+        # First payment month: Feb 2026 (seed_periods[3] = Feb 13).
+        acct = _create_loan_account_exact(
             seed_user, db.session, "Auto Loan", "Paid Off Loan",
-            Decimal("0.00"), Decimal("0.05000"), 60,
-            date(2025, 1, 1), 15,
+            Decimal("1000.00"), Decimal("0.00"),
+            Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
+        # Large confirmed payment in Feb covers the full balance.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1100.00"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")

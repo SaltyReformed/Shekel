@@ -769,7 +769,19 @@ class AccountTypeUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
+        """Drop empty-string values so optional fields don't fail validation.
+
+        When *data* is a Werkzeug MultiDict (HTML form submission), take
+        the last value for each key so the hidden-input + checkbox pattern
+        resolves correctly: checked -> 'true' (last value wins), unchecked
+        -> 'false' (sole value from hidden input).
+        """
+        if hasattr(data, "getlist"):
+            return {
+                k: vs[-1]
+                for k in data
+                if (vs := data.getlist(k)) and vs[-1] != ""
+            }
         return {k: v for k, v in data.items() if v != ""}
 
     @validates_schema

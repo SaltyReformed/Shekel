@@ -103,13 +103,19 @@ def calculate_investment_inputs(
 
     # Step 2: Transfer-based contributions (average per period).
     # all_contributions are shadow income transactions already filtered
-    # to this account by the caller.
+    # to this account by the caller.  Exclude cancelled/credit
+    # transactions (status.excludes_from_balance=True) so they do not
+    # inflate the periodic contribution average.
     if all_contributions:
+        active_contributions = [
+            t for t in all_contributions
+            if not t.status.excludes_from_balance
+        ]
         total_contrib = sum(
-            Decimal(str(t.estimated_amount)) for t in all_contributions
+            Decimal(str(t.estimated_amount)) for t in active_contributions
         )
         num_periods_with_contrib = len(
-            set(t.pay_period_id for t in all_contributions)
+            set(t.pay_period_id for t in active_contributions)
         )
         if num_periods_with_contrib > 0:
             periodic_contribution += (total_contrib / num_periods_with_contrib).quantize(
@@ -138,7 +144,8 @@ def calculate_investment_inputs(
             and p.start_date <= current_period.start_date
         }
         for t in all_contributions:
-            if t.pay_period_id in ytd_period_ids:
+            if (t.pay_period_id in ytd_period_ids
+                    and not t.status.excludes_from_balance):
                 ytd_contributions += Decimal(str(t.estimated_amount))
 
     # Step 5: Annual contribution limit.
