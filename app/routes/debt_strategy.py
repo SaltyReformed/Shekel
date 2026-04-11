@@ -143,15 +143,15 @@ def _load_debt_accounts(user_id):
 def _compute_real_principal(params, scenario_id, principal, rate):
     """Derive real principal by replaying confirmed payments.
 
-    Generates a full life-of-loan amortization schedule from origination
-    with actual payment history and returns the remaining_balance of the
-    last confirmed row.  Falls back to the stored current_principal if
-    no confirmed payments exist.
+    For ARM loans, returns the stored current_principal directly.  The
+    origination-forward replay produces wrong balances when historical
+    rate data is unavailable, and current_principal is the user-verified
+    source of truth.
 
-    Uses original_principal and term_months (not current_principal and
-    remaining) so the schedule starts from origination and correctly
-    matches all past payment records by year-month.  This matches the
-    year-end service pattern.
+    For fixed-rate loans, generates a full life-of-loan amortization
+    schedule from origination with actual payment history and returns
+    the remaining_balance of the last confirmed row.  Falls back to the
+    stored current_principal if no confirmed payments exist.
 
     Args:
         params: LoanParams model instance.
@@ -162,17 +162,17 @@ def _compute_real_principal(params, scenario_id, principal, rate):
     Returns:
         Decimal real principal reflecting confirmed payments.
     """
+    # ARM loans: current_principal is the user-verified balance.
+    # Replaying from origination without historical rates would
+    # produce a wrong result.
+    if params.is_arm:
+        return principal
+
     payments = get_payment_history(params.account_id, scenario_id)
     if not payments:
         return principal
 
     orig_principal = Decimal(str(params.original_principal))
-
-    # For ARM loans, force re-amortization from current principal.
-    original_for_engine = (
-        None if params.is_arm
-        else orig_principal
-    )
 
     schedule = amortization_engine.generate_schedule(
         current_principal=orig_principal,
@@ -180,7 +180,7 @@ def _compute_real_principal(params, scenario_id, principal, rate):
         remaining_months=params.term_months,
         origination_date=params.origination_date,
         payment_day=params.payment_day,
-        original_principal=original_for_engine,
+        original_principal=orig_principal,
         term_months=params.term_months,
         payments=payments,
     )

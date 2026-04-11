@@ -28,7 +28,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -40,17 +39,11 @@ from app.models.transfer import Transfer
 from app.services import (
     amortization_engine,
     balance_calculator,
-    escrow_calculator,
     growth_engine,
     paycheck_calculator,
 )
-from app.services.amortization_engine import RateChangeRecord
 from app.services.investment_projection import calculate_investment_inputs
-from app.services.loan_payment_service import (
-    compute_contractual_pi,
-    get_payment_history,
-    prepare_payments_for_engine,
-)
+from app.services.loan_payment_service import load_loan_context
 from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
@@ -1216,10 +1209,8 @@ def _generate_debt_schedules(
 ) -> dict[int, list]:
     """Generate amortization schedules for all debt accounts.
 
-    Loads loan params, payment history, escrow components, and rate
-    changes for each debt account, then generates the full amortization
-    schedule using properly prepared payments (escrow subtracted,
-    biweekly overlaps redistributed).
+    Uses the shared load_loan_context() for data loading, then
+    generates the full amortization schedule with ARM anchor support.
 
     Schedules are generated once and shared across mortgage interest,
     debt progress, and net worth calculations to avoid redundant
@@ -1233,6 +1224,7 @@ def _generate_debt_schedules(
         dict mapping account_id to list[AmortizationRow].
     """
     schedules: dict[int, list] = {}
+    today = date.today()
 
     for account in debt_accounts:
         params = (
@@ -1243,43 +1235,7 @@ def _generate_debt_schedules(
         if params is None:
             continue
 
-        # Payment history from shadow income transactions.
-        raw_payments = get_payment_history(account.id, scenario_id)
-
-        # Escrow components for payment preparation.
-        components = (
-            db.session.query(EscrowComponent)
-            .filter_by(account_id=account.id, is_active=True)
-            .all()
-        )
-        monthly_escrow = escrow_calculator.calculate_monthly_escrow(
-            components,
-        )
-
-        # Prepare payments: subtract escrow, fix biweekly overlaps.
-        contractual_pi = compute_contractual_pi(params)
-        payments = prepare_payments_for_engine(
-            raw_payments, params.payment_day,
-            monthly_escrow, contractual_pi,
-        )
-
-        # Rate changes for ARM loans.
-        rate_changes = None
-        if params.is_arm:
-            rate_history = (
-                db.session.query(RateHistory)
-                .filter_by(account_id=account.id)
-                .order_by(RateHistory.effective_date.desc())
-                .all()
-            )
-            if rate_history:
-                rate_changes = [
-                    RateChangeRecord(
-                        effective_date=rh.effective_date,
-                        interest_rate=Decimal(str(rh.interest_rate)),
-                    )
-                    for rh in rate_history
-                ]
+        ctx = load_loan_context(account.id, scenario_id, params)
 
         # For ARM loans, omit original_principal so the engine
         # re-amortizes from current balance at the current rate.
@@ -1287,6 +1243,15 @@ def _generate_debt_schedules(
             None if params.is_arm
             else params.original_principal
         )
+
+        # ARM anchor: snap the schedule to current_principal at today
+        # so forward projections are correct even without historical
+        # rate data.
+        anchor_bal = (
+            Decimal(str(params.current_principal))
+            if params.is_arm else None
+        )
+        anchor_dt = today if params.is_arm else None
 
         schedule = amortization_engine.generate_schedule(
             current_principal=params.original_principal,
@@ -1296,8 +1261,10 @@ def _generate_debt_schedules(
             payment_day=params.payment_day,
             original_principal=original_for_engine,
             term_months=params.term_months,
-            payments=payments if payments else None,
-            rate_changes=rate_changes,
+            payments=ctx.payments if ctx.payments else None,
+            rate_changes=ctx.rate_changes,
+            anchor_balance=anchor_bal,
+            anchor_date=anchor_dt,
         )
 
         schedules[account.id] = schedule
