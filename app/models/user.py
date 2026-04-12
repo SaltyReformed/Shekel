@@ -30,11 +30,22 @@ class User(UserMixin, db.Model):
     # Timestamp of most recent "log out all sessions" or password change event.
     # The user loader compares this against the session creation time to reject stale sessions.
     session_invalidated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    role_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ref.user_roles.id", ondelete="RESTRICT"),
+        nullable=False,
+        server_default="1",  # 1 = owner
+    )
+    linked_owner_id = db.Column(
+        db.Integer,
+        db.ForeignKey("auth.users.id", ondelete="SET NULL"),
+    )
 
     # Relationships
     settings = db.relationship(
         "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
+    role = db.relationship("UserRole", lazy="joined")
 
     def __repr__(self):
         return f"<User {self.email}>"

@@ -31,6 +31,7 @@ from app.models.ref import (
     Status,
     TaxType,
     TransactionType,
+    UserRole,
 )
 
 
@@ -57,6 +58,7 @@ REF_DATA = [
     (RaiseType, ["merit", "cola", "custom"]),
     (GoalMode, ["Fixed", "Income-Relative"]),
     (IncomeUnit, ["Paychecks", "Months"]),
+    (UserRole, ["owner", "companion"]),
 ]
 
 

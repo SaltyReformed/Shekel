@@ -125,6 +125,12 @@ class Transaction(db.Model):
     credit_payback_for = db.relationship(
         "Transaction", remote_side="Transaction.id", foreign_keys=[credit_payback_for_id]
     )
+    entries = db.relationship(
+        "TransactionEntry", back_populates="transaction",
+        foreign_keys="TransactionEntry.transaction_id",
+        lazy="select", cascade="all, delete-orphan",
+        order_by="TransactionEntry.entry_date",
+    )
 
     @property
     def effective_amount(self):

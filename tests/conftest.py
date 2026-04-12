@@ -30,7 +30,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
     FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
-    Status, TaxType, TransactionType,
+    Status, TaxType, TransactionType, UserRole,
 )
 from app.services.auth_service import hash_password
 
@@ -202,6 +202,7 @@ def db(app, setup_database):
             "budget.savings_goals, "
             "budget.transfers, "
             "budget.transfer_templates, "
+            "budget.transaction_entries, "
             "budget.transactions, "
             "budget.transaction_templates, "
             "budget.recurrence_rules, "
@@ -801,6 +802,126 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     }
 
 
+# --- Entry and Companion Fixtures -----------------------------------------
+
+
+@pytest.fixture()
+def seed_entry_template(app, db, seed_user, seed_periods):
+    """Create a template with track_individual_purchases=True and a transaction.
+
+    The template is an expense-type template tied to the seed_user's checking
+    account with a default amount of $500.  A single projected transaction is
+    created in the first pay period.
+
+    Returns:
+        dict with keys: template, transaction, category, recurrence_rule.
+    """
+    every_period = (
+        db.session.query(RecurrencePattern)
+        .filter_by(name="Every Period").one()
+    )
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    projected_status = (
+        db.session.query(Status).filter_by(name="Projected").one()
+    )
+
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=every_period.id,
+    )
+    db.session.add(rule)
+    db.session.flush()
+
+    category = seed_user["categories"]["Groceries"]
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=category.id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type.id,
+        name="Weekly Groceries",
+        default_amount=Decimal("500.00"),
+        track_individual_purchases=True,
+    )
+    db.session.add(template)
+    db.session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=seed_periods[0].id,
+        scenario_id=seed_user["scenario"].id,
+        account_id=seed_user["account"].id,
+        status_id=projected_status.id,
+        name="Weekly Groceries",
+        category_id=category.id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=Decimal("500.00"),
+    )
+    db.session.add(txn)
+    db.session.commit()
+
+    return {
+        "template": template,
+        "transaction": txn,
+        "category": category,
+        "recurrence_rule": rule,
+    }
+
+
+@pytest.fixture()
+def seed_companion(app, db, seed_user):
+    """Create a companion user linked to the seed_user owner.
+
+    The companion has role_id set to the companion role and
+    linked_owner_id pointing to the primary seed_user.
+
+    Returns:
+        dict with keys: user, settings.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import RoleEnum  # pylint: disable=import-outside-toplevel
+
+    companion = User(
+        email="companion@shekel.local",
+        password_hash=hash_password("companionpass"),
+        display_name="Companion User",
+        role_id=ref_cache.role_id(RoleEnum.COMPANION),
+        linked_owner_id=seed_user["user"].id,
+    )
+    db.session.add(companion)
+    db.session.flush()
+
+    settings = UserSettings(user_id=companion.id)
+    db.session.add(settings)
+    db.session.commit()
+
+    return {
+        "user": companion,
+        "settings": settings,
+    }
+
+
+@pytest.fixture()
+def companion_client(app, db, seed_companion):
+    """Provide an authenticated test client for the companion user.
+
+    Creates a new test client instance and logs in as the companion
+    user, following the same pattern as second_auth_client.
+    """
+    comp_client = app.test_client()
+    resp = comp_client.post("/login", data={
+        "email": "companion@shekel.local",
+        "password": "companionpass",
+    })
+    assert resp.status_code == 302, (
+        f"companion_client login failed with status {resp.status_code}"
+    )
+    return comp_client
+
+
 # --- Helpers --------------------------------------------------------------
 
 
@@ -1017,6 +1138,7 @@ def _seed_ref_tables():
         (RaiseType, ["merit", "cola", "custom"]),
         (GoalMode, ["Fixed", "Income-Relative"]),
         (IncomeUnit, ["Paychecks", "Months"]),
+        (UserRole, ["owner", "companion"]),
     ]
     for model_class, entries in ref_data:
         for entry in entries:

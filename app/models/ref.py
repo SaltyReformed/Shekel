@@ -240,3 +240,22 @@ class IncomeUnit(db.Model):
 
     def __repr__(self):
         return f"<IncomeUnit {self.name}>"
+
+
+class UserRole(db.Model):
+    """User role reference: 'owner', 'companion'.
+
+    Determines route access and data visibility scope.
+    Owner accounts have full access.  Companion accounts
+    see only transactions from companion-visible templates
+    belonging to their linked owner.
+    """
+
+    __tablename__ = "user_roles"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<UserRole {self.name}>"

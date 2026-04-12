@@ -31,6 +31,7 @@ from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
     RecurrencePatternEnum,
+    RoleEnum,
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
@@ -47,6 +48,7 @@ _calc_method_map = {}          # CalcMethodEnum member -> int (database PK)
 _tax_type_map = {}             # TaxTypeEnum member -> int (database PK)
 _goal_mode_map = {}            # GoalModeEnum member -> int (database PK)
 _income_unit_map = {}          # IncomeUnitEnum member -> int (database PK)
+_role_map = {}                 # RoleEnum member -> int (database PK)
 _acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
 _initialized = False
 
@@ -79,13 +81,14 @@ def init(db_session):
         Status,
         TaxType,
         TransactionType,
+        UserRole,
     )
 
     global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
     global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
     global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
     global _goal_mode_map, _income_unit_map  # pylint: disable=global-statement
-    global _acct_type_meta, _initialized  # pylint: disable=global-statement
+    global _role_map, _acct_type_meta, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
     _status_map = {}
@@ -98,6 +101,7 @@ def init(db_session):
     _tax_type_map = {}
     _goal_mode_map = {}
     _income_unit_map = {}
+    _role_map = {}
     _acct_type_meta = {}
 
     # Build name -> id lookup from the database.
@@ -111,6 +115,7 @@ def init(db_session):
     tax_type_rows = {row.name: row.id for row in db_session.query(TaxType).all()}
     goal_mode_rows = {row.name: row.id for row in db_session.query(GoalMode).all()}
     income_unit_rows = {row.name: row.id for row in db_session.query(IncomeUnit).all()}
+    role_rows = {row.name: row.id for row in db_session.query(UserRole).all()}
 
     # Map each enum member to its database ID, collecting any misses.
     missing = []
@@ -184,6 +189,13 @@ def init(db_session):
             missing.append(f"IncomeUnit.{member.name} (expected name={member.value!r})")
         else:
             _income_unit_map[member] = db_id
+
+    for member in RoleEnum:
+        db_id = role_rows.get(member.value)
+        if db_id is None:
+            missing.append(f"UserRole.{member.name} (expected name={member.value!r})")
+        else:
+            _role_map[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -383,3 +395,21 @@ def income_unit_id(member):
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     return _income_unit_map[member]
+
+
+def role_id(member):
+    """Return the integer primary key for a RoleEnum member.
+
+    Args:
+        member: A ``RoleEnum`` member (e.g. ``RoleEnum.OWNER``).
+
+    Returns:
+        int -- the ``ref.user_roles.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid RoleEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _role_map[member]
