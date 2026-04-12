@@ -83,6 +83,34 @@
         </select>
       </div>
 
+      {# Tracking & Visibility flags #}
+      <hr>
+      <h5>Tracking & Visibility</h5>
+
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input"
+               id="track_individual_purchases" name="track_individual_purchases"
+               {{ 'checked' if template and template.track_individual_purchases else '' }}>
+        <label class="form-check-label" for="track_individual_purchases">
+          Track individual purchases
+        </label>
+        <div class="form-text">
+          Record individual purchases against this budget and see remaining balance each period.
+        </div>
+      </div>
+
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input"
+               id="companion_visible" name="companion_visible"
+               {{ 'checked' if template and template.companion_visible else '' }}>
+        <label class="form-check-label" for="companion_visible">
+          Visible to companion
+        </label>
+        <div class="form-text">
+          Show transactions from this template in the companion view.
+        </div>
+      </div>
+
       {# Recurrence rule fields #}
       <hr>
       <h5>Recurrence Rule</h5>

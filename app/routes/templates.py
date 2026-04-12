@@ -22,7 +22,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, TransactionType
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
@@ -34,6 +34,32 @@ templates_bp = Blueprint("templates", __name__)
 
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
+
+
+def _is_tracking_on_non_expense(data, template=None):
+    """Check whether tracking is being set on a non-expense template.
+
+    Resolves the effective flag and type from submitted data, falling
+    back to the existing template values for partial updates.
+
+    Args:
+        data: Deserialized form data from Marshmallow schema.
+        template: Existing TransactionTemplate (for updates) or None (for creates).
+
+    Returns:
+        True if the combination is invalid (tracking on non-expense), False otherwise.
+    """
+    track = data.get(
+        "track_individual_purchases",
+        getattr(template, "track_individual_purchases", False),
+    )
+    if not track:
+        return False
+    type_id = data.get(
+        "transaction_type_id",
+        getattr(template, "transaction_type_id", None),
+    )
+    return type_id != ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
 
 @templates_bp.route("/templates")
@@ -110,6 +136,11 @@ def create_template():
     cat = db.session.get(Category, data.get("category_id"))
     if not cat or cat.user_id != current_user.id:
         flash("Invalid category.", "danger")
+        return redirect(url_for("templates.new_template"))
+
+    # Validate tracking is expense-only.
+    if _is_tracking_on_non_expense(data):
+        flash("Purchase tracking is only available for expense templates.", "danger")
         return redirect(url_for("templates.new_template"))
 
     # Extract start_period_id and end_date before creating the rule.
@@ -285,8 +316,17 @@ def update_template(template_id):
             flash("Invalid category.", "danger")
             return redirect(url_for("templates.edit_template", template_id=template_id))
 
+    # Validate tracking is expense-only (check resulting state).
+    if _is_tracking_on_non_expense(data, template):
+        flash("Purchase tracking is only available for expense templates.", "danger")
+        return redirect(url_for("templates.edit_template", template_id=template_id))
+
     # Apply remaining field updates to the template.
-    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "category_id", "transaction_type_id", "account_id", "is_active", "sort_order"}
+    _TEMPLATE_UPDATE_FIELDS = {
+        "name", "default_amount", "category_id", "transaction_type_id",
+        "account_id", "is_active", "sort_order",
+        "track_individual_purchases", "companion_visible",
+    }
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)

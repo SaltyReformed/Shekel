@@ -94,6 +94,10 @@ class TemplateCreateSchema(BaseSchema):
     transaction_type_id = fields.Integer(required=True)
     account_id = fields.Integer(required=True)
 
+    # Tracking & visibility flags.
+    track_individual_purchases = fields.Boolean(load_default=False)
+    companion_visible = fields.Boolean(load_default=False)
+
     # Recurrence rule fields (optional -- omit for one-time / manual).
     # The value is the integer primary key of a ref.recurrence_patterns row,
     # submitted as a string via HTML form data.  Route-level code validates
