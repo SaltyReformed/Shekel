@@ -1357,3 +1357,148 @@ class EntryUpdateSchema(BaseSchema):
     description = fields.String(validate=validate.Length(min=1, max=200))
     entry_date = fields.Date()
     is_credit = fields.Boolean()
+
+
+# --- Companion user management -------------------------------------------
+#
+# Email regex matches auth_service.register_user so the two code paths
+# accept the same set of addresses.  The password byte limit matches
+# bcrypt's hard 72-byte ceiling enforced by auth_service.hash_password.
+# The minimum length matches change_password and register_user.
+
+_COMPANION_EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+_COMPANION_PASSWORD_MIN_LENGTH = 12
+_COMPANION_PASSWORD_MAX_BYTES = 72
+
+
+def _normalize_companion_form(data):
+    """Strip whitespace and lowercase email for a companion form payload.
+
+    Works with both Werkzeug ImmutableMultiDict (from request.form) and
+    plain dicts.  Leaves password fields untouched because leading or
+    trailing spaces may be intentional.  Missing keys are left missing
+    so required-field validation produces the correct error.
+    """
+    cleaned = dict(data)
+    if "email" in cleaned and isinstance(cleaned["email"], str):
+        cleaned["email"] = cleaned["email"].strip().lower()
+    if "display_name" in cleaned and isinstance(cleaned["display_name"], str):
+        cleaned["display_name"] = cleaned["display_name"].strip()
+    return cleaned
+
+
+class CompanionCreateSchema(BaseSchema):
+    """Validates POST data for creating a new companion user account.
+
+    Required fields: email, display_name, password, password_confirm.
+    Email is lowercased, stripped, and matched against a simple format
+    regex.  Passwords must be at least 12 characters and at most 72
+    UTF-8 bytes (bcrypt's ceiling), and password_confirm must match.
+
+    Uniqueness of the email address is enforced by the calling route,
+    not by the schema -- it needs a live database session.
+    """
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip whitespace and lowercase the email before field validation."""
+        return _normalize_companion_form(data)
+
+    email = fields.String(
+        required=True,
+        validate=[
+            validate.Length(min=1, max=255),
+            validate.Regexp(
+                _COMPANION_EMAIL_REGEX, error="Invalid email format.",
+            ),
+        ],
+    )
+    display_name = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=100),
+    )
+    password = fields.String(
+        required=True,
+        validate=validate.Length(min=_COMPANION_PASSWORD_MIN_LENGTH),
+    )
+    password_confirm = fields.String(required=True)
+
+    @validates_schema
+    def validate_password_bytes(self, data, **kwargs):
+        """Reject passwords longer than bcrypt's 72-byte UTF-8 limit."""
+        password = data.get("password") or ""
+        if len(password.encode("utf-8")) > _COMPANION_PASSWORD_MAX_BYTES:
+            raise ValidationError(
+                "Password must be at most "
+                f"{_COMPANION_PASSWORD_MAX_BYTES} bytes.",
+                "password",
+            )
+
+    @validates_schema
+    def validate_password_match(self, data, **kwargs):
+        """Require password_confirm to equal password."""
+        if data.get("password") != data.get("password_confirm"):
+            raise ValidationError(
+                "Passwords do not match.", "password_confirm",
+            )
+
+
+class CompanionEditSchema(BaseSchema):
+    """Validates POST data for editing an existing companion account.
+
+    Email and display_name are required (same rules as the create
+    schema).  Password fields are optional: blank means "keep the
+    current password unchanged."  When a new password is supplied the
+    same 12-character / 72-byte rules apply and password_confirm must
+    match.  Email uniqueness is enforced by the calling route.
+    """
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip whitespace and lowercase the email before field validation."""
+        return _normalize_companion_form(data)
+
+    email = fields.String(
+        required=True,
+        validate=[
+            validate.Length(min=1, max=255),
+            validate.Regexp(
+                _COMPANION_EMAIL_REGEX, error="Invalid email format.",
+            ),
+        ],
+    )
+    display_name = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=100),
+    )
+    password = fields.String(load_default="")
+    password_confirm = fields.String(load_default="")
+
+    @validates_schema
+    def validate_password_change(self, data, **kwargs):
+        """Validate the password fields only when a new password is given.
+
+        Blank password fields mean "no change" and pass silently.  Any
+        non-blank password must satisfy the same length rules as the
+        create schema and match its confirmation.
+        """
+        password = data.get("password") or ""
+        confirm = data.get("password_confirm") or ""
+        if not password and not confirm:
+            return
+        if len(password) < _COMPANION_PASSWORD_MIN_LENGTH:
+            raise ValidationError(
+                "Password must be at least "
+                f"{_COMPANION_PASSWORD_MIN_LENGTH} characters.",
+                "password",
+            )
+        if len(password.encode("utf-8")) > _COMPANION_PASSWORD_MAX_BYTES:
+            raise ValidationError(
+                "Password must be at most "
+                f"{_COMPANION_PASSWORD_MAX_BYTES} bytes.",
+                "password",
+            )
+        if password != confirm:
+            raise ValidationError(
+                "Passwords do not match.", "password_confirm",
+            )
