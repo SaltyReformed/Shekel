@@ -13,7 +13,7 @@ import logging
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
@@ -609,6 +609,7 @@ def _compute_balances(
     period_ids = [p.id for p in periods]
     txns = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(
             Transaction.account_id == account.id,
             Transaction.scenario_id == scenario.id,

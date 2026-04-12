@@ -289,14 +289,79 @@ def calculate_balances_with_amortization(
     return balances, principal_by_period
 
 
+def _entry_aware_amount(txn):
+    """Compute the checking-balance impact for a single expense transaction.
+
+    For projected expenses with eagerly loaded entries (via selectinload):
+        sum_debit  = sum of entries where is_credit = False
+        sum_credit = sum of entries where is_credit = True
+        checking_impact = max(estimated_amount - sum_credit, sum_debit)
+
+    For all other cases (no entries loaded, entries empty, non-projected
+    status): returns effective_amount unchanged.
+
+    The formula semantics (scope doc Section 4.2):
+      - estimated - sum_credit = budget reservation minus the credit card portion
+      - sum_debit = actual debit purchases hitting checking
+      - max() = whichever is larger determines checking impact
+      - If no entries yet: checking_impact = estimated (full reservation)
+      - If debits exceed adjusted reservation: overspend reflected immediately
+
+    This function NEVER triggers a lazy load.  It checks __dict__
+    directly to determine if entries were eagerly loaded (via
+    selectinload).  When entries are not loaded, it falls back to
+    effective_amount -- the standard behavior for all services that
+    do not selectinload entries.  Also safe for non-ORM objects
+    (e.g. test fakes) where 'entries' is simply absent.
+
+    Args:
+        txn: A Transaction object with entries optionally eager-loaded
+             via selectinload.
+
+    Returns:
+        Decimal -- the amount this transaction contributes to checking balance.
+    """
+    # Check if entries were eagerly loaded without triggering a lazy load.
+    # For SQLAlchemy models, unloaded lazy='select' relationships are NOT
+    # in __dict__ until accessed; selectinload populates them eagerly.
+    # For non-ORM objects (e.g. test fakes), 'entries' is absent.
+    if 'entries' not in txn.__dict__:
+        return txn.effective_amount
+
+    entries = txn.__dict__['entries']
+    if not entries:
+        return txn.effective_amount
+
+    # Only apply the entry formula to projected transactions.
+    # Settled, cancelled, and credit statuses are already handled
+    # correctly by effective_amount (returns 0 for excluded statuses,
+    # actual_amount for settled statuses).
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    if txn.status_id != projected_id:
+        return txn.effective_amount
+
+    # checking_impact = max(estimated - sum_credit, sum_debit)
+    sum_debit = Decimal("0")
+    sum_credit = Decimal("0")
+    for entry in entries:
+        if entry.is_credit:
+            sum_credit += entry.amount
+        else:
+            sum_debit += entry.amount
+
+    return max(txn.estimated_amount - sum_credit, sum_debit)
+
+
 def _sum_remaining(transactions):
     """Sum only REMAINING (projected) transactions for the anchor period.
 
     Items marked done/received are already reflected in the anchor balance
     the user entered, so we exclude them.  Credit items are always excluded.
 
-    Uses effective_amount, which prefers actual_amount when populated and
-    falls back to estimated_amount otherwise.
+    Income uses effective_amount (actual if set, else estimated).
+    Expenses use _entry_aware_amount, which applies the entry-checking
+    formula for projected expenses with loaded entries, falling back
+    to effective_amount otherwise.
 
     Returns:
         (total_income, total_expenses) as Decimal tuple.
@@ -312,12 +377,10 @@ def _sum_remaining(transactions):
         if txn.status_id != projected_id:
             continue
 
-        # effective_amount returns Decimal (actual if set, else estimated).
-        amount = txn.effective_amount
         if txn.is_income:
-            income += amount
+            income += txn.effective_amount
         elif txn.is_expense:
-            expenses += amount
+            expenses += _entry_aware_amount(txn)
 
     return income, expenses
 
@@ -328,8 +391,10 @@ def _sum_all(transactions):
     Only projected items contribute to the projected balance.  Settled,
     credit, and cancelled transactions are excluded.
 
-    Uses effective_amount, which prefers actual_amount when populated and
-    falls back to estimated_amount otherwise.
+    Income uses effective_amount (actual if set, else estimated).
+    Expenses use _entry_aware_amount, which applies the entry-checking
+    formula for projected expenses with loaded entries, falling back
+    to effective_amount otherwise.
 
     Returns:
         (total_income, total_expenses) as Decimal tuple.
@@ -344,11 +409,9 @@ def _sum_all(transactions):
         if txn.status_id != projected_id:
             continue
 
-        # effective_amount returns Decimal (actual if set, else estimated).
-        amount = txn.effective_amount
         if txn.is_income:
-            income += amount
+            income += txn.effective_amount
         elif txn.is_expense:
-            expenses += amount
+            expenses += _entry_aware_amount(txn)
 
     return income, expenses

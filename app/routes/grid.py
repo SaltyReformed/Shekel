@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.orm import selectinload
 
 from app.extensions import db
 from app.models.scenario import Scenario
@@ -197,6 +198,7 @@ def index():
         txn_filters.append(Transaction.account_id == account.id)
     all_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(*txn_filters)
         .all()
     )
@@ -368,6 +370,7 @@ def balance_row():
         txn_filters.append(Transaction.account_id == account.id)
     all_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(*txn_filters)
         .all()
     )
