@@ -222,6 +222,24 @@ def _register_context_processors(app):
         if not current_user.is_authenticated:
             return {}
 
+        # Onboarding is meaningless for companion users -- they share the
+        # linked owner's budget data via linked_owner_id and cannot create
+        # their own accounts, categories, pay periods, salary profiles, or
+        # templates.  Omit the dict entirely so the banner's `onboarding is
+        # defined` guard in base.html evaluates False, and skip the five
+        # exists() queries that would otherwise run on every companion page.
+        from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
+        try:
+            if current_user.role_id == _rc.role_id(_RoleEnum.COMPANION):
+                return {}
+        except (RuntimeError, KeyError):
+            # ref_cache not yet initialized (e.g. during migration).  Fall
+            # through to the existing query path; owner users are the common
+            # case during those windows and the queries still give the right
+            # answer.
+            pass
+
         from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.category import Category  # pylint: disable=import-outside-toplevel
