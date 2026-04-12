@@ -26,6 +26,7 @@ from app.models.user import User
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services.entry_credit_workflow import sync_entry_payback
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS = frozenset({"amount", "description", "entry_date", "is_credit"})
 
 
-def _resolve_owner_id(user_id: int) -> int:
+def resolve_owner_id(user_id: int) -> int:
     """Return the data-owning user_id.
 
     For owner accounts, returns user_id unchanged.  For companion
@@ -63,6 +64,10 @@ def _resolve_owner_id(user_id: int) -> int:
             )
         return user.linked_owner_id
     return user.id
+
+
+# Backward-compatible alias -- existing tests reference the private name.
+_resolve_owner_id = resolve_owner_id
 
 
 def create_entry(
@@ -96,7 +101,7 @@ def create_entry(
         ValidationError: Transaction not entry-capable, is a transfer,
             is income, or has a blocked status (Cancelled or Credit).
     """
-    owner_id = _resolve_owner_id(user_id)
+    owner_id = resolve_owner_id(user_id)
 
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
@@ -154,6 +159,9 @@ def create_entry(
         "Created entry %d on transaction %d (amount=%s, credit=%s)",
         entry.id, transaction_id, amount, is_credit,
     )
+
+    sync_entry_payback(transaction_id, owner_id)
+
     return entry
 
 
@@ -192,7 +200,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
     # Re-validate ownership through the parent transaction chain.
-    owner_id = _resolve_owner_id(user_id)
+    owner_id = resolve_owner_id(user_id)
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
@@ -201,6 +209,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     db.session.flush()
 
     logger.info("Updated entry %d: %s", entry_id, valid_updates)
+
+    sync_entry_payback(entry.transaction_id, owner_id)
+
     return entry
 
 
@@ -226,7 +237,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
     # Re-validate ownership through the parent transaction chain.
-    owner_id = _resolve_owner_id(user_id)
+    owner_id = resolve_owner_id(user_id)
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
@@ -237,6 +248,9 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     logger.info(
         "Deleted entry %d from transaction %d", entry_id, transaction_id,
     )
+
+    sync_entry_payback(transaction_id, owner_id)
+
     return transaction_id
 
 
@@ -257,7 +271,7 @@ def get_entries_for_transaction(
     Raises:
         NotFoundError: Transaction not found or not accessible.
     """
-    owner_id = _resolve_owner_id(user_id)
+    owner_id = resolve_owner_id(user_id)
 
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
