@@ -1660,6 +1660,262 @@ class TestSavingsProgress:
             assert "total_contributions" in entry
 
 
+# ── Pre-Anchor Savings Progress Tests ────────────────────────────
+
+
+class TestSavingsProgressPreAnchor:
+    """Tests for savings progress when the anchor period is after January 1.
+
+    The balance calculator skips pre-anchor periods, so
+    _lookup_period_balance returns ZERO for January when the anchor
+    is later in the year.  These tests verify the fix that
+    reverse-projects from the anchor balance to derive the correct
+    January 1 balance.
+    """
+
+    def test_investment_pre_anchor_jan1_balance(
+        self, app, db, seed_full_user_data,
+    ):
+        """Investment account with mid-year anchor has non-zero Jan 1 balance.
+
+        Anchor at period 5 (~March 2026).  The reverse projection should
+        derive a Jan 1 balance that is positive and less than the anchor
+        balance (growth increased the balance from Jan to March).
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods, employer_type="none",
+        )
+        # Move anchor to period 5 (mid-year).
+        inv_acct.current_anchor_period_id = periods[5].id
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        # Jan 1 should be positive -- not ZERO.
+        assert entry["jan1_balance"] > ZERO
+        # Jan 1 should be less than the anchor balance (growth happened
+        # between Jan and the anchor).
+        assert entry["jan1_balance"] < Decimal("10000.00")
+
+    def test_investment_pre_anchor_dec31_growth(
+        self, app, db, seed_full_user_data,
+    ):
+        """Investment account with mid-year anchor projects Dec 31 correctly.
+
+        The forward projection from the anchor should produce a Dec 31
+        balance higher than the anchor balance, with non-zero growth
+        covering the full year.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods, employer_type="none",
+        )
+        inv_acct.current_anchor_period_id = periods[5].id
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        # Dec 31 should exceed the anchor balance from forward growth.
+        assert entry["dec31_balance"] > Decimal("10000.00")
+        # Full-year growth should be positive.
+        assert entry["investment_growth"] > ZERO
+
+    def test_investment_pre_anchor_employer(
+        self, app, db, seed_full_user_data,
+    ):
+        """Investment account with employer match and mid-year anchor.
+
+        Employer contributions should be non-zero and cover the full
+        year (both pre-anchor and post-anchor periods).
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+        salary_profile = data["salary_profile"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("200.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+
+        # Move anchor to period 5.
+        inv_acct.current_anchor_period_id = periods[5].id
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        assert entry["employer_contributions"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+        assert entry["investment_growth"] > ZERO
+
+    def test_ira_pre_anchor_not_zero(
+        self, app, db, seed_full_user_data,
+    ):
+        """IRA with mid-year anchor shows non-zero balances and growth.
+
+        IRAs typically have no paycheck deductions and no transfers.
+        With anchor at period 5, the reverse projection should still
+        derive a non-zero Jan 1 balance from the anchor balance, and
+        the forward projection should show growth.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        # Create a Roth IRA with $5,000 balance.
+        ira_type = (
+            db.session.query(AccountType)
+            .filter_by(name="Roth IRA").one()
+        )
+        ira_acct = Account(
+            user_id=user.id,
+            account_type_id=ira_type.id,
+            name="Roth IRA",
+            current_anchor_balance=Decimal("5000.00"),
+            current_anchor_period_id=periods[5].id,
+        )
+        db.session.add(ira_acct)
+        db.session.flush()
+
+        ira_params = InvestmentParams(
+            account_id=ira_acct.id,
+            assumed_annual_return=Decimal("0.10500"),
+        )
+        db.session.add(ira_params)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            (s for s in savings if s["account_name"] == "Roth IRA"),
+            None,
+        )
+        assert entry is not None, "Roth IRA not in savings_progress"
+        # Must not be zero -- this was the original bug.
+        assert entry["jan1_balance"] > ZERO
+        assert entry["dec31_balance"] > ZERO
+        assert entry["investment_growth"] > ZERO
+
+    def test_hysa_pre_anchor_jan1(
+        self, app, db, seed_full_user_data,
+    ):
+        """HYSA with mid-year anchor has non-zero Jan 1 balance and interest.
+
+        The anchor fallback should return the anchor balance for Jan 1,
+        and the pre-anchor interest supplement should be included.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        hysa_acct = _create_hysa_account(user, periods)
+        hysa_acct.current_anchor_period_id = periods[5].id
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            (s for s in savings
+             if s["account_name"] == "High Yield Savings"),
+            None,
+        )
+        assert entry is not None, "HYSA not in savings_progress"
+        # Jan 1 should use the anchor balance fallback, not ZERO.
+        assert entry["jan1_balance"] > ZERO
+        # Interest should include pre-anchor periods.
+        assert entry["investment_growth"] > ZERO
+
+    def test_plain_savings_pre_anchor_jan1(
+        self, app, db, seed_full_user_data,
+    ):
+        """Plain savings with mid-year anchor has non-zero Jan 1 balance.
+
+        The anchor fallback should return the anchor balance for Jan 1.
+        """
+        data = seed_full_user_data
+        savings_acct = data["savings_account"]
+        user = data["user"]
+        periods = data["periods"]
+
+        # Move savings anchor to period 5.
+        savings_acct.current_anchor_period_id = periods[5].id
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            (s for s in savings if s["account_name"] == "Savings"),
+            None,
+        )
+        assert entry is not None, "Savings not in savings_progress"
+        # Jan 1 should use the anchor balance fallback, not ZERO.
+        assert entry["jan1_balance"] > ZERO
+
+    def test_anchor_at_period_0_regression(
+        self, app, db, seed_full_user_data,
+    ):
+        """Anchor at period 0 (no pre-anchor gap) works as before.
+
+        Regression guard: the fix must not change behavior when the
+        anchor is at the first period.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        inv_acct, _ = _create_investment_account(
+            user, periods, employer_type="none",
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+        # Same assertions as the existing test_savings_investment_with_growth.
+        assert entry["investment_growth"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+        assert entry["employer_contributions"] == ZERO
+
+
 # ── Payment Timeliness Tests (OP-2) ──────────────────────────────
 
 

@@ -41,7 +41,10 @@ from app.services import (
     pay_period_service,
     savings_goal_service,
 )
-from app.services.investment_projection import calculate_investment_inputs
+from app.services.investment_projection import (
+    adapt_deductions,
+    calculate_investment_inputs,
+)
 from app.services.loan_payment_service import (
     get_payment_history,
     load_loan_context,
@@ -519,15 +522,7 @@ def _project_investment(
 ):
     """Compute growth projections for an investment/retirement account."""
     acct_deductions = params["deductions_by_account"].get(acct.id, [])
-    adapted_deductions = []
-    for ded in acct_deductions:
-        profile = ded.salary_profile
-        adapted_deductions.append(type("D", (), {
-            "amount": ded.amount,
-            "calc_method_id": ded.calc_method_id,
-            "annual_salary": profile.annual_salary,
-            "pay_periods_per_year": profile.pay_periods_per_year or 26,
-        })())
+    adapted_deductions = adapt_deductions(acct_deductions)
 
     acct_contributions = [
         t for t in all_shadow_income

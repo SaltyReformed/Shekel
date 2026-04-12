@@ -16,6 +16,7 @@ from app.services.growth_engine import (
     calculate_employer_contribution,
     generate_projection_periods,
     project_balance,
+    reverse_project_balance,
     ZERO,
     TWO_PLACES,
 )
@@ -919,3 +920,142 @@ class TestContributionAwareProjection:
         for pb in result:
             assert pb.employer_contribution == ZERO
         assert result[2].end_balance == Decimal("10600")
+
+
+# ── Reverse Projection Tests ────────────────────────────────────
+
+
+class TestReverseProjectBalance:
+    """Tests for reverse_project_balance -- backward growth derivation."""
+
+    def test_roundtrip_recovers_starting_balance(self):
+        """Forward-project, then reverse-project -- original balance recovered.
+
+        The reverse of the forward formula should recover the starting
+        balance within rounding tolerance ($0.01 per period).
+        """
+        periods = [
+            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
+            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
+            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
+            FakePeriod(date(2026, 2, 13), date(2026, 2, 26), 4),
+            FakePeriod(date(2026, 2, 27), date(2026, 3, 12), 5),
+        ]
+        start_balance = Decimal("10000.00")
+        annual_return = Decimal("0.07")
+        contribution = Decimal("200.00")
+
+        # Forward project from the known starting balance.
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=contribution,
+        )
+        end_balance = forward[-1].end_balance
+
+        # Reverse project from the ending balance.
+        reversed_proj = reverse_project_balance(
+            anchor_balance=end_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=contribution,
+        )
+
+        # The start_balance of the first reversed period should match
+        # the original starting balance within rounding tolerance.
+        recovered = reversed_proj[0].start_balance
+        tolerance = Decimal("0.01") * len(periods)
+        assert abs(recovered - start_balance) <= tolerance, (
+            f"Roundtrip failed: start={start_balance}, "
+            f"recovered={recovered}, diff={abs(recovered - start_balance)}"
+        )
+
+    def test_roundtrip_with_employer_match(self):
+        """Forward then reverse with employer match -- balance recovered.
+
+        Employer match complicates the formula; verify the inverse
+        still works.
+        """
+        periods = [
+            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
+            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
+            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
+        ]
+        start_balance = Decimal("25000.00")
+        annual_return = Decimal("0.105")
+        contribution = Decimal("300.00")
+        employer = {
+            "type": "flat_percentage",
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("3000.00"),
+        }
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=contribution,
+            employer_params=employer,
+        )
+        end_balance = forward[-1].end_balance
+
+        reversed_proj = reverse_project_balance(
+            anchor_balance=end_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=contribution,
+            employer_params=employer,
+        )
+
+        recovered = reversed_proj[0].start_balance
+        tolerance = Decimal("0.01") * len(periods)
+        assert abs(recovered - start_balance) <= tolerance
+
+    def test_zero_return_subtracts_contributions(self):
+        """With 0% return, reverse should just subtract contributions.
+
+        No growth to reverse -- each period's start is the end minus
+        the contribution and employer amounts.
+        """
+        periods = [
+            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
+            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
+        ]
+        anchor_balance = Decimal("1000.00")
+        contribution = Decimal("200.00")
+
+        reversed_proj = reverse_project_balance(
+            anchor_balance=anchor_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=contribution,
+        )
+
+        # With 0% return: start = end - contribution
+        # Period 2: end=1000, start=1000-200=800
+        # Period 1: end=800, start=800-200=600
+        assert reversed_proj[0].start_balance == Decimal("600.00")
+        assert reversed_proj[0].end_balance == Decimal("800.00")
+        assert reversed_proj[1].start_balance == Decimal("800.00")
+        assert reversed_proj[1].end_balance == Decimal("1000.00")
+        # Growth should be zero.
+        for pb in reversed_proj:
+            assert pb.growth == ZERO
+
+    def test_returns_forward_chronological_order(self):
+        """Result list is in forward chronological order."""
+        periods = [
+            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
+            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
+            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
+        ]
+        reversed_proj = reverse_project_balance(
+            anchor_balance=Decimal("5000.00"),
+            assumed_annual_return=Decimal("0.07"),
+            periods=periods,
+        )
+        assert len(reversed_proj) == 3
+        assert reversed_proj[0].period_id == 1
+        assert reversed_proj[1].period_id == 2
+        assert reversed_proj[2].period_id == 3

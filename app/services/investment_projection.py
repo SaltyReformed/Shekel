@@ -12,6 +12,7 @@ NULL) in the investment/retirement account.  The caller queries these
 transactions and passes them in; this module has no database access.
 """
 
+from collections import namedtuple
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -30,6 +31,43 @@ class InvestmentInputs:
     annual_contribution_limit: Optional[Decimal]
     ytd_contributions: Decimal
     gross_biweekly: Decimal
+
+
+AdaptedDeduction = namedtuple(
+    "AdaptedDeduction",
+    ["amount", "calc_method_id", "annual_salary", "pay_periods_per_year"],
+)
+
+
+def adapt_deductions(raw_deductions: list) -> list[AdaptedDeduction]:
+    """Adapt PaycheckDeduction ORM objects for calculate_investment_inputs().
+
+    Extracts the fields needed from each deduction and its parent salary
+    profile into lightweight namedtuples with no ORM dependency.  This
+    decouples the projection logic from the database layer and
+    consolidates the adaptation pattern previously duplicated across
+    year_end_summary_service, savings_dashboard_service, and
+    retirement_dashboard_service.
+
+    Args:
+        raw_deductions: List of PaycheckDeduction ORM objects.  Each
+            must have a loaded ``salary_profile`` relationship with
+            ``annual_salary`` and ``pay_periods_per_year`` attributes.
+
+    Returns:
+        List of AdaptedDeduction namedtuples ready for
+        calculate_investment_inputs() or build_contribution_timeline().
+    """
+    result = []
+    for ded in raw_deductions:
+        profile = ded.salary_profile
+        result.append(AdaptedDeduction(
+            amount=ded.amount,
+            calc_method_id=ded.calc_method_id,
+            annual_salary=profile.annual_salary,
+            pay_periods_per_year=profile.pay_periods_per_year or 26,
+        ))
+    return result
 
 
 def _compute_deduction_per_period(deduction, pct_id):
