@@ -1,4 +1,9 @@
 {# Single bill row -- used for initial render and HTMX swap after mark-paid. #}
+{% set show_progress = (
+     not bill.is_paid|default(false)
+     and bill.is_tracked|default(false)
+     and bill.entry_total is not none
+) %}
 <div class="bill-row d-flex justify-content-between align-items-center py-2 px-2 border-bottom
             {% if bill.is_paid|default(false) %}bill-row--paid{% endif %}">
   <div class="d-flex align-items-center gap-2 flex-grow-1 min-width-0">
@@ -23,9 +28,16 @@
     </div>
   </div>
   <div class="d-flex align-items-center gap-2 flex-shrink-0">
+    {% if show_progress %}
+    <span class="font-mono{% if bill.entry_over_budget %} text-danger fw-semibold{% endif %}"
+          title="${{ '{:,.2f}'.format(bill.entry_total|float) }} of ${{ '{:,.2f}'.format(bill.amount|float) }} budget -- {% if bill.entry_over_budget %}${{ '{:,.2f}'.format((bill.entry_remaining|abs)|float) }} over{% else %}${{ '{:,.2f}'.format(bill.entry_remaining|float) }} remaining{% endif %} -- {{ bill.entry_count }} entr{{ 'ies' if bill.entry_count != 1 else 'y' }}">
+      ${{ "{:,.2f}".format(bill.entry_total|float) }} / ${{ "{:,.2f}".format(bill.amount|float) }}
+    </span>
+    {% else %}
     <span class="font-mono {% if bill.is_paid|default(false) %}text-muted text-decoration-line-through{% endif %}">
       ${{ "{:,.2f}".format(bill.amount|float) }}
     </span>
+    {% endif %}
     {% if bill.due_date %}
     <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
     {% endif %}

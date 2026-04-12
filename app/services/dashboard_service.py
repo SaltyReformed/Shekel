@@ -26,6 +26,7 @@ from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import balance_calculator, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import compute_entry_sums, compute_remaining
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,13 @@ def _get_upcoming_bills(
     Returns bills sorted by due_date ascending, then name.  Bills
     without a due_date sort by their pay period's start_date.
 
+    Each bill dict includes entry progress fields (is_tracked,
+    entry_total, entry_count, entry_remaining, entry_over_budget)
+    that the template uses to show "spent / budget" progress for
+    entry-capable transactions with recorded entries.  Non-tracked
+    bills and tracked bills without entries get None/0/False values
+    and the template falls back to the standard amount display.
+
     Returns an empty list if no current period exists.
     """
     if current_period is None:
@@ -117,11 +125,16 @@ def _get_upcoming_bills(
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
+    # selectinload(entries) + joinedload(template) avoid N+1 lookups
+    # when the template checks track_individual_purchases and the
+    # helper below iterates entries for progress computation.
     txns = (
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
             joinedload(Transaction.pay_period),
+            joinedload(Transaction.template),
+            selectinload(Transaction.entries),
         )
         .filter(
             Transaction.account_id == account_id,
@@ -138,19 +151,9 @@ def _get_upcoming_bills(
     bills = []
     for txn in txns:
         sort_date = txn.due_date if txn.due_date else txn.pay_period.start_date
-        days_until = (txn.due_date - today).days if txn.due_date else None
-        bills.append({
-            "id": txn.id,
-            "name": txn.name,
-            "amount": txn.effective_amount,
-            "due_date": txn.due_date,
-            "period_start_date": txn.pay_period.start_date,
-            "category_group": txn.category.group_name if txn.category else None,
-            "category_item": txn.category.item_name if txn.category else None,
-            "is_transfer": txn.transfer_id is not None,
-            "days_until_due": days_until,
-            "_sort_date": sort_date,
-        })
+        bill = txn_to_bill_dict(txn, today)
+        bill["_sort_date"] = sort_date
+        bills.append(bill)
 
     bills.sort(key=lambda b: (b["_sort_date"], b["name"]))
     # Remove internal sort key before returning.
@@ -158,6 +161,88 @@ def _get_upcoming_bills(
         del bill["_sort_date"]
 
     return bills
+
+
+def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
+    """Build a bill dict for the dashboard bills template from a Transaction.
+
+    Shared between the service's _get_upcoming_bills loop and the
+    dashboard route's mark-paid response helper so both produce
+    dicts with the same shape.  The caller is responsible for any
+    additional fields (e.g. is_paid for the mark-paid partial).
+
+    Expects txn.template and txn.entries to be accessible -- callers
+    dealing with collections should eager-load them via selectinload
+    /joinedload to avoid N+1 queries.
+
+    Args:
+        txn: The Transaction to convert.
+        today: The reference date used to compute days_until_due.
+
+    Returns:
+        Dict matching the bills template contract, including the
+        entry progress fields from _entry_progress_fields.
+    """
+    days_until = (txn.due_date - today).days if txn.due_date else None
+    bill = {
+        "id": txn.id,
+        "name": txn.name,
+        "amount": txn.effective_amount,
+        "due_date": txn.due_date,
+        "period_start_date": txn.pay_period.start_date,
+        "category_group": txn.category.group_name if txn.category else None,
+        "category_item": txn.category.item_name if txn.category else None,
+        "is_transfer": txn.transfer_id is not None,
+        "days_until_due": days_until,
+    }
+    bill.update(_entry_progress_fields(txn))
+    return bill
+
+
+def _entry_progress_fields(txn: Transaction) -> dict:
+    """Build entry progress fields for a bill dict from a Transaction.
+
+    Returns a dict with keys is_tracked, entry_total, entry_count,
+    entry_remaining, and entry_over_budget.  When the transaction is
+    not entry-capable (no template with track_individual_purchases)
+    or has no recorded entries, the progress fields are None/0/False
+    and the dashboard template falls back to the standard amount
+    display.  Otherwise returns the debit+credit sum, the remaining
+    budget, and a flag indicating whether the sum exceeds the
+    estimated amount.
+
+    Expects txn.template and txn.entries to already be loaded on the
+    transaction object (eager-loaded by the caller).
+
+    Args:
+        txn: The Transaction to inspect.
+
+    Returns:
+        Dict with the five entry progress fields.
+    """
+    is_tracked = (
+        txn.template is not None
+        and txn.template.track_individual_purchases
+    )
+    if not is_tracked or not txn.entries:
+        return {
+            "is_tracked": is_tracked,
+            "entry_total": None,
+            "entry_count": 0,
+            "entry_remaining": None,
+            "entry_over_budget": False,
+        }
+
+    debit, credit = compute_entry_sums(txn.entries)
+    total = debit + credit
+    remaining = compute_remaining(txn.estimated_amount, txn.entries)
+    return {
+        "is_tracked": True,
+        "entry_total": total,
+        "entry_count": len(txn.entries),
+        "entry_remaining": remaining,
+        "entry_over_budget": total > txn.estimated_amount,
+    }
 
 
 # ── Section 2: Alerts ──────────────────────────────────────────────

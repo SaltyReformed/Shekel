@@ -171,19 +171,15 @@ def _parse_actual_amount():
 def _txn_to_bill(txn):
     """Convert a Transaction to a bill dict for template rendering.
 
-    Matches the structure returned by dashboard_service._get_upcoming_bills().
+    Delegates dict construction to dashboard_service.txn_to_bill_dict
+    so this partial response stays in sync with the full bills list
+    produced by dashboard_service._get_upcoming_bills.  Adds is_paid
+    based on the transaction's current settled state -- the mark-paid
+    flow always transitions out of PROJECTED, so is_paid is True
+    after the commit and the template suppresses the progress span
+    for the paid row.
     """
     from datetime import date as date_type  # pylint: disable=import-outside-toplevel
-    today = date_type.today()
-    return {
-        "id": txn.id,
-        "name": txn.name,
-        "amount": txn.effective_amount,
-        "due_date": txn.due_date,
-        "period_start_date": txn.pay_period.start_date,
-        "category_group": txn.category.group_name if txn.category else None,
-        "category_item": txn.category.item_name if txn.category else None,
-        "is_transfer": txn.transfer_id is not None,
-        "days_until_due": (txn.due_date - today).days if txn.due_date else None,
-        "is_paid": bool(txn.status and txn.status.is_settled),
-    }
+    bill = dashboard_service.txn_to_bill_dict(txn, date_type.today())
+    bill["is_paid"] = bool(txn.status and txn.status.is_settled)
+    return bill
