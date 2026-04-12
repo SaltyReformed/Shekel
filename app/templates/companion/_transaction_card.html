@@ -1,0 +1,94 @@
+{# Companion transaction card -- displays amount, progress, entries, and status.
+   Included inside a {% for txn in transactions %} loop in companion/index.html.
+
+   Expected context:
+     txn          -- Transaction object (with entries eager-loaded)
+     entry_data   -- dict mapping txn.id to {total, remaining, count, pct}
+#}
+{% set ed = entry_data.get(txn.id) %}
+{% set is_tracked = txn.template and txn.template.track_individual_purchases %}
+<div class="card mb-2">
+  <div class="card-body py-2 px-3">
+    {# Header row: name + amount/progress #}
+    <div class="d-flex justify-content-between align-items-center">
+      <span class="fw-semibold">{{ txn.name }}</span>
+      {% if is_tracked %}
+        {% if ed %}
+        <span class="font-mono{% if ed.remaining < 0 %} text-danger fw-semibold{% endif %}">
+          ${{ "{:,.0f}".format(ed.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+        </span>
+        {% else %}
+        <span class="font-mono">${{ "{:,.0f}".format(txn.estimated_amount) }}</span>
+        {% endif %}
+      {% else %}
+        <span class="font-mono">${{ "{:,.0f}".format(txn.estimated_amount) }}</span>
+      {% endif %}
+    </div>
+
+    {# Progress bar for tracked transactions with entries #}
+    {% if ed %}
+    <div class="progress mt-1" style="height: 4px;">
+      <div class="progress-bar{% if ed.remaining < 0 %} bg-danger{% endif %}"
+           role="progressbar"
+           style="width: {{ [ed.pct, 100]|min }}%"
+           aria-valuenow="{{ ed.pct|int }}"
+           aria-valuemin="0"
+           aria-valuemax="100"></div>
+    </div>
+    <div class="d-flex justify-content-between small text-muted mt-1">
+      <span>{{ ed.count }} entr{{ 'ies' if ed.count != 1 else 'y' }}</span>
+      <span class="font-mono{% if ed.remaining < 0 %} text-danger{% endif %}">
+        {% if ed.remaining >= 0 %}
+          ${{ "{:,.0f}".format(ed.remaining) }} left
+        {% else %}
+          ${{ "{:,.0f}".format(ed.remaining|abs) }} over
+        {% endif %}
+      </span>
+    </div>
+    {% endif %}
+
+    {# Status badge for non-tracked transactions #}
+    {% if not is_tracked and txn.status %}
+      {% if txn.status.is_settled %}
+      <div class="mt-1 small text-success">
+        <i class="bi bi-check-circle-fill"></i> {{ txn.status.name }}
+      </div>
+      {% elif txn.status_id != STATUS_PROJECTED %}
+      <div class="mt-1 small text-muted">
+        {{ txn.status.name }}
+      </div>
+      {% endif %}
+    {% endif %}
+
+    {# Entry section for tracked transactions -- lazy-loaded via HTMX #}
+    {% if is_tracked %}
+    <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
+         hx-trigger="load"
+         hx-target="this"
+         hx-swap="innerHTML"
+         id="companion-entries-{{ txn.id }}">
+      <div class="text-center py-2">
+        <span class="spinner-border spinner-border-sm" role="status">
+          <span class="visually-hidden">Loading entries...</span>
+        </span>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Mark as Paid button -- only for Projected transactions #}
+    {% if txn.status_id == STATUS_PROJECTED %}
+    <div class="mt-2">
+      <button class="btn btn-sm btn-success w-100"
+              hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
+              hx-swap="none"
+              hx-disabled-elt="this">
+        <i class="bi bi-check-circle"></i> Mark as Paid
+      </button>
+    </div>
+    {% elif txn.status and txn.status.is_settled %}
+    <div class="mt-1 text-center small text-success">
+      <i class="bi bi-check-circle-fill"></i> Paid
+    </div>
+    {% endif %}
+  </div>
+</div>
