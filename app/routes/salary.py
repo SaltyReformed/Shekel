@@ -10,6 +10,8 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from markupsafe import Markup
 
 from app.extensions import db
@@ -77,6 +79,7 @@ _state_tax_schema = StateTaxConfigSchema()
 
 @salary_bp.route("/salary")
 @login_required
+@require_owner
 def list_profiles():
     """List all salary profiles."""
     profiles = (
@@ -106,6 +109,7 @@ def list_profiles():
 
 @salary_bp.route("/salary/new")
 @login_required
+@require_owner
 def new_profile():
     """Display the salary profile creation form."""
     filing_statuses = db.session.query(FilingStatus).all()
@@ -122,6 +126,7 @@ def new_profile():
 
 @salary_bp.route("/salary", methods=["POST"])
 @login_required
+@require_owner
 def create_profile():
     """Create a new salary profile with auto-linked template."""
     errors = _create_schema.validate(request.form)
@@ -254,6 +259,7 @@ def create_profile():
 
 @salary_bp.route("/salary/<int:profile_id>/edit")
 @login_required
+@require_owner
 def edit_profile(profile_id):
     """Display the salary profile edit form with raises and deductions."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -281,6 +287,7 @@ def edit_profile(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_profile(profile_id):
     """Update a salary profile and recalculate linked transactions."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -329,6 +336,7 @@ def update_profile(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_profile(profile_id):
     """Soft-delete a salary profile and deactivate its template."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -351,6 +359,7 @@ def delete_profile(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/raises", methods=["POST"])
 @login_required
+@require_owner
 def add_raise(profile_id):
     """Add a raise to a salary profile."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -394,6 +403,7 @@ def add_raise(profile_id):
 
 @salary_bp.route("/salary/raises/<int:raise_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_raise(raise_id):
     """Remove a raise from a salary profile."""
     salary_raise = db.session.get(SalaryRaise, raise_id)
@@ -423,6 +433,7 @@ def delete_raise(raise_id):
 
 @salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
 @login_required
+@require_owner
 def update_raise(raise_id):
     """Update an existing raise on a salary profile."""
     salary_raise = db.session.get(SalaryRaise, raise_id)
@@ -478,6 +489,7 @@ def update_raise(raise_id):
 
 @salary_bp.route("/salary/<int:profile_id>/deductions", methods=["POST"])
 @login_required
+@require_owner
 def add_deduction(profile_id):
     """Add a deduction to a salary profile."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -522,6 +534,7 @@ def add_deduction(profile_id):
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_deduction(ded_id):
     """Remove a deduction from a salary profile."""
     deduction = db.session.get(PaycheckDeduction, ded_id)
@@ -551,6 +564,7 @@ def delete_deduction(ded_id):
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
 @login_required
+@require_owner
 def update_deduction(ded_id):
     """Update an existing deduction on a salary profile."""
     deduction = db.session.get(PaycheckDeduction, ded_id)
@@ -609,6 +623,7 @@ def update_deduction(ded_id):
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown/<int:period_id>")
 @login_required
+@require_owner
 def breakdown(profile_id, period_id):
     """Show paycheck breakdown for a specific period."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -639,6 +654,7 @@ def breakdown(profile_id, period_id):
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown")
 @login_required
+@require_owner
 def breakdown_current(profile_id):
     """Show paycheck breakdown for the current period."""
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -658,6 +674,7 @@ def breakdown_current(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/projection")
 @login_required
+@require_owner
 def projection(profile_id):
     """Show salary projection table for all periods."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -687,6 +704,7 @@ def projection(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate")
 @login_required
+@require_owner
 def calibrate_form(profile_id):
     """Display the pay stub calibration form."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -702,6 +720,7 @@ def calibrate_form(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate", methods=["POST"])
 @login_required
+@require_owner
 def calibrate_preview(profile_id):
     """Validate pay stub data and show derived rates for confirmation."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -765,6 +784,7 @@ def calibrate_preview(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate/confirm", methods=["POST"])
 @login_required
+@require_owner
 def calibrate_confirm(profile_id):
     """Save the calibration override and regenerate transactions."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -829,6 +849,7 @@ def calibrate_confirm(profile_id):
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate/delete", methods=["POST"])
 @login_required
+@require_owner
 def calibrate_delete(profile_id):
     """Remove calibration override and revert to bracket-based taxes."""
     profile = db.session.get(SalaryProfile, profile_id)
@@ -873,6 +894,7 @@ def calibrate_delete(profile_id):
 
 @salary_bp.route("/salary/tax-config")
 @login_required
+@require_owner
 def tax_config():
     """Redirect to settings dashboard tax configuration section."""
     return redirect(url_for("settings.show", section="tax"))
@@ -880,6 +902,7 @@ def tax_config():
 
 @salary_bp.route("/salary/tax-config", methods=["POST"])
 @login_required
+@require_owner
 def update_tax_config():
     """Update state tax flat rate."""
     errors = _state_tax_schema.validate(request.form)
@@ -937,6 +960,7 @@ def update_tax_config():
 
 @salary_bp.route("/salary/fica-config", methods=["POST"])
 @login_required
+@require_owner
 def update_fica_config():
     """Update FICA configuration."""
     errors = _fica_schema.validate(request.form)

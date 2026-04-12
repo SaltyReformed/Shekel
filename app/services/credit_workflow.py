@@ -59,6 +59,13 @@ def mark_as_credit(transaction_id, user_id):
     if txn.transfer_id is not None:
         raise ValidationError("Cannot mark transfer transactions as credit.")
 
+    # Block legacy credit on entry-capable transactions.
+    if txn.template is not None and txn.template.track_individual_purchases:
+        raise ValidationError(
+            "This transaction uses individual purchase tracking. "
+            "Mark individual entries as credit instead of the whole transaction."
+        )
+
     credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
@@ -88,7 +95,7 @@ def mark_as_credit(transaction_id, user_id):
     from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, txn.pay_period_id)
 
-    category = _get_or_create_cc_category(user_id)
+    category = get_or_create_cc_category(user_id)
 
     # Find the next pay period.
     next_period = pay_period_service.get_next_period(period)
@@ -161,7 +168,7 @@ def unmark_credit(transaction_id, user_id):
     logger.info("Unmarked credit on transaction %d", txn.id)
 
 
-def _get_or_create_cc_category(user_id):
+def get_or_create_cc_category(user_id: int) -> Category:
     """Find or create the 'Credit Card: Payback' category for a user.
 
     Args:

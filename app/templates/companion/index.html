@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}My Budget -- Shekel{% endblock %}
+
+{% block content %}
+<div class="container px-2" style="max-width: 600px;">
+
+  {% if period %}
+  {# Period navigation header #}
+  <div class="d-flex justify-content-between align-items-center my-3">
+    {% if prev_period %}
+    <a href="{{ url_for('companion.period_view', period_id=prev_period.id) }}"
+       class="btn btn-outline-secondary btn-sm"
+       aria-label="Previous period">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    {% else %}
+    <div style="width: 32px;"></div>
+    {% endif %}
+
+    <h5 class="mb-0 text-center">
+      {{ period.start_date.strftime('%b %-d') }} -- {{ period.end_date.strftime('%b %-d, %Y') }}
+    </h5>
+
+    {% if next_period %}
+    <a href="{{ url_for('companion.period_view', period_id=next_period.id) }}"
+       class="btn btn-outline-secondary btn-sm"
+       aria-label="Next period">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+    {% else %}
+    <div style="width: 32px;"></div>
+    {% endif %}
+  </div>
+
+  {# Transaction cards #}
+  {% for txn in transactions %}
+    {% include "companion/_transaction_card.html" %}
+  {% endfor %}
+
+  {% if not transactions %}
+  <div class="text-center text-muted py-5">
+    <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+    <p class="mt-2">No transactions for this period.</p>
+  </div>
+  {% endif %}
+
+  {% else %}
+  {# No period available (misconfigured or no periods generated) #}
+  <div class="text-center text-muted py-5">
+    <i class="bi bi-calendar-x" style="font-size: 2rem;"></i>
+    <p class="mt-2">No pay periods available yet.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/companion.js') }}"></script>
+{% endblock %}

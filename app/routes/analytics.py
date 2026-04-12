@@ -16,6 +16,8 @@ from flask import (
 )
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.user import UserSettings
@@ -33,6 +35,7 @@ analytics_bp = Blueprint("analytics", __name__)
 
 @analytics_bp.route("/analytics")
 @login_required
+@require_owner
 def page():
     """Render the main analytics page with four lazy-loaded tab pills.
 
@@ -45,6 +48,7 @@ def page():
 
 @analytics_bp.route("/analytics/calendar")
 @login_required
+@require_owner
 def calendar_tab():
     """HTMX partial or CSV: calendar tab with month detail or year overview.
 
@@ -100,6 +104,7 @@ def calendar_tab():
 
 @analytics_bp.route("/analytics/year-end")
 @login_required
+@require_owner
 def year_end_tab():
     """HTMX partial or CSV: year-end financial summary.
 
@@ -133,6 +138,7 @@ def year_end_tab():
 
 @analytics_bp.route("/analytics/variance")
 @login_required
+@require_owner
 def variance_tab():
     """HTMX partial or CSV: budget variance analysis.
 
@@ -181,6 +187,7 @@ def variance_tab():
 
 @analytics_bp.route("/analytics/trends")
 @login_required
+@require_owner
 def trends_tab():
     """HTMX partial or CSV: spending trends analysis.
 

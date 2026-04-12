@@ -11,6 +11,8 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
@@ -34,6 +36,7 @@ from app.schemas.validation import (
 )
 from app.services import transfer_recurrence, transfer_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 
 logger = logging.getLogger(__name__)
@@ -51,6 +54,7 @@ _xfer_update_schema = TransferUpdateSchema()
 
 @transfers_bp.route("/transfers")
 @login_required
+@require_owner
 def list_transfer_templates():
     """List all transfer templates for the current user.
 
@@ -74,6 +78,7 @@ def list_transfer_templates():
 
 @transfers_bp.route("/transfers/new", methods=["GET"])
 @login_required
+@require_owner
 def new_transfer_template():
     """Display the transfer template creation form."""
     accounts = (
@@ -111,6 +116,7 @@ def new_transfer_template():
 
 @transfers_bp.route("/transfers", methods=["POST"])
 @login_required
+@require_owner
 def create_transfer_template():
     """Create a new transfer template with optional recurrence rule."""
     errors = _create_schema.validate(request.form)
@@ -240,6 +246,7 @@ def create_transfer_template():
 
 @transfers_bp.route("/transfers/<int:template_id>/edit", methods=["GET"])
 @login_required
+@require_owner
 def edit_transfer_template(template_id):
     """Display the transfer template edit form."""
     template = db.session.get(TransferTemplate, template_id)
@@ -274,6 +281,7 @@ def edit_transfer_template(template_id):
 
 @transfers_bp.route("/transfers/<int:template_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_transfer_template(template_id):
     """Update a transfer template and regenerate future transfers."""
     template = db.session.get(TransferTemplate, template_id)
@@ -383,6 +391,7 @@ def update_transfer_template(template_id):
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
 @login_required
+@require_owner
 def archive_transfer_template(template_id):
     """Archive a transfer template (stops future generation, keeps history).
 
@@ -425,6 +434,7 @@ def archive_transfer_template(template_id):
 
 @transfers_bp.route("/transfers/<int:template_id>/unarchive", methods=["POST"])
 @login_required
+@require_owner
 def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
 
@@ -479,6 +489,7 @@ def unarchive_transfer_template(template_id):
 
 @transfers_bp.route("/transfers/<int:template_id>/hard-delete", methods=["POST"])
 @login_required
+@require_owner
 def hard_delete_transfer_template(template_id):
     """Permanently delete a transfer template if it has no payment history.
 
@@ -559,6 +570,7 @@ def hard_delete_transfer_template(template_id):
 
 @transfers_bp.route("/transfers/cell/<int:xfer_id>", methods=["GET"])
 @login_required
+@require_owner
 def get_cell(xfer_id):
     """HTMX partial: return the display-mode cell for a transfer."""
     xfer = _get_owned_transfer(xfer_id)
@@ -572,6 +584,7 @@ def get_cell(xfer_id):
 
 @transfers_bp.route("/transfers/quick-edit/<int:xfer_id>", methods=["GET"])
 @login_required
+@require_owner
 def get_quick_edit(xfer_id):
     """HTMX partial: return the inline amount edit form for a transfer."""
     xfer = _get_owned_transfer(xfer_id)
@@ -582,6 +595,7 @@ def get_quick_edit(xfer_id):
 
 @transfers_bp.route("/transfers/<int:xfer_id>/full-edit", methods=["GET"])
 @login_required
+@require_owner
 def get_full_edit(xfer_id):
     """HTMX partial: return the full edit popover form for a transfer."""
     xfer = _get_owned_transfer(xfer_id)
@@ -602,6 +616,7 @@ def get_full_edit(xfer_id):
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
 @login_required
+@require_owner
 def update_transfer(xfer_id):
     """Update a transfer and its shadow transactions (inline edit save)."""
     xfer = _get_owned_transfer(xfer_id)
@@ -638,7 +653,11 @@ def update_transfer(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "balanceChanged"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -650,6 +669,7 @@ def update_transfer(xfer_id):
 
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])
 @login_required
+@require_owner
 def create_ad_hoc():
     """Create an ad-hoc (one-time) transfer with shadow transactions."""
     errors = _xfer_create_schema.validate(request.form)
@@ -694,6 +714,7 @@ def create_ad_hoc():
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["DELETE"])
 @login_required
+@require_owner
 def delete_transfer(xfer_id):
     """Soft-delete a template transfer or hard-delete an ad-hoc transfer.
 
@@ -717,6 +738,7 @@ def delete_transfer(xfer_id):
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/mark-done", methods=["POST"])
 @login_required
+@require_owner
 def mark_done(xfer_id):
     """Mark a transfer and its shadows as 'done' (settled)."""
     xfer = _get_owned_transfer(xfer_id)
@@ -738,7 +760,11 @@ def mark_done(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -750,6 +776,7 @@ def mark_done(xfer_id):
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
 @login_required
+@require_owner
 def cancel_transfer(xfer_id):
     """Mark a transfer and its shadows as 'cancelled'."""
     xfer = _get_owned_transfer(xfer_id)
@@ -773,7 +800,11 @@ def cancel_transfer(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)

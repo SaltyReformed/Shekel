@@ -75,7 +75,19 @@
   <tbody>
     {% for t in active_templates %}
     <tr>
-      <td>{{ t.name }}</td>
+      <td>
+        {{ t.name }}
+        {% if t.track_individual_purchases %}
+          <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
+            <i class="bi bi-cart"></i>
+          </span>
+        {% endif %}
+        {% if t.companion_visible %}
+          <span class="badge bg-success-subtle text-success ms-1" title="Companion visible">
+            <i class="bi bi-eye"></i>
+          </span>
+        {% endif %}
+      </td>
       <td class="d-none d-md-table-cell">{{ t.category.display_name if t.category else '--' }}</td>
       <td class="d-none d-md-table-cell">
         {% if t.transaction_type_id == TXN_TYPE_INCOME %}
@@ -146,7 +158,19 @@
       <tbody>
         {% for t in archived_templates %}
         <tr class="text-muted">
-          <td>{{ t.name }}</td>
+          <td>
+            {{ t.name }}
+            {% if t.track_individual_purchases %}
+              <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
+                <i class="bi bi-cart"></i>
+              </span>
+            {% endif %}
+            {% if t.companion_visible %}
+              <span class="badge bg-success-subtle text-success ms-1" title="Companion visible">
+                <i class="bi bi-eye"></i>
+              </span>
+            {% endif %}
+          </td>
           <td class="d-none d-md-table-cell">{{ t.category.display_name if t.category else '--' }}</td>
           <td class="d-none d-md-table-cell">
             {% if t.transaction_type_id == TXN_TYPE_INCOME %}

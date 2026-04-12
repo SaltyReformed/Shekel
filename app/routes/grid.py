@@ -14,6 +14,9 @@ from decimal import Decimal
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+from sqlalchemy.orm import selectinload
+
 from app.extensions import db
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -23,6 +26,7 @@ from app.enums import StatusEnum
 from app import ref_cache
 from app.services import balance_calculator, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import build_entry_sums_dict
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +136,7 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
 
 @grid_bp.route("/grid")
 @login_required
+@require_owner
 def index():
     """Render the full budget grid page.
 
@@ -197,6 +202,7 @@ def index():
         txn_filters.append(Transaction.account_id == account.id)
     all_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(*txn_filters)
         .all()
     )
@@ -219,6 +225,11 @@ def index():
     txn_by_period = {}
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
+
+    # Pre-compute entry sums for tracked transactions with entries.
+    # The cell template uses this to show "spent / budget" progress
+    # instead of the standard single-amount display.
+    entry_sums = build_entry_sums_dict(all_transactions)
 
     # Pre-compute subtotals per period using Decimal arithmetic (H-05).
     # Only projected transactions are included in subtotals -- settled
@@ -296,11 +307,13 @@ def index():
         all_periods=all_periods,
         low_balance_threshold=low_balance_threshold,
         stale_anchor_warning=stale_anchor_warning,
+        entry_sums=entry_sums,
     )
 
 
 @grid_bp.route("/create-baseline", methods=["POST"])
 @login_required
+@require_owner
 def create_baseline():
     """Create a missing baseline scenario for the current user.
 
@@ -333,6 +346,7 @@ def create_baseline():
 
 @grid_bp.route("/grid/balance-row")
 @login_required
+@require_owner
 def balance_row():
     """HTMX partial: recalculate and return the balance summary row."""
     user_id = current_user.id
@@ -368,6 +382,7 @@ def balance_row():
         txn_filters.append(Transaction.account_id == account.id)
     all_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(*txn_filters)
         .all()
     )

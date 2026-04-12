@@ -9,6 +9,8 @@ import logging
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.models.category import Category
 from app.schemas.validation import CategoryCreateSchema, CategoryEditSchema
@@ -24,6 +26,7 @@ _edit_schema = CategoryEditSchema()
 
 @categories_bp.route("/categories")
 @login_required
+@require_owner
 def list_categories():
     """Redirect to settings dashboard categories section."""
     return redirect(url_for("settings.show", section="categories"))
@@ -31,6 +34,7 @@ def list_categories():
 
 @categories_bp.route("/categories", methods=["POST"])
 @login_required
+@require_owner
 def create_category():
     """Create a new category."""
     errors = _create_schema.validate(request.form)
@@ -91,6 +95,7 @@ def create_category():
 
 @categories_bp.route("/categories/<int:category_id>/edit", methods=["POST"])
 @login_required
+@require_owner
 def edit_category(category_id):
     """Edit a category item name and/or group assignment (re-parenting)."""
     category = db.session.get(Category, category_id)
@@ -140,6 +145,7 @@ def edit_category(category_id):
 
 @categories_bp.route("/categories/<int:category_id>/archive", methods=["POST"])
 @login_required
+@require_owner
 def archive_category(category_id):
     """Archive a category (hide from active views, preserve data)."""
     category = db.session.get(Category, category_id)
@@ -155,6 +161,7 @@ def archive_category(category_id):
 
 @categories_bp.route("/categories/<int:category_id>/unarchive", methods=["POST"])
 @login_required
+@require_owner
 def unarchive_category(category_id):
     """Unarchive a category (return to active views)."""
     category = db.session.get(Category, category_id)
@@ -170,6 +177,7 @@ def unarchive_category(category_id):
 
 @categories_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_category(category_id):
     """Permanently delete a category, or archive if in use.
 

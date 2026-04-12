@@ -109,3 +109,16 @@ class TestOnboardingBanner:
         # Grid requires login, so redirects
         assert resp.status_code in (302, 303)
         assert "/login" in resp.headers.get("Location", "")
+
+    def test_banner_not_shown_to_companion(self, companion_client):
+        """Companions cannot perform onboarding tasks, so never see the banner.
+
+        A companion user shares the linked owner's budget data and cannot
+        create accounts, categories, pay periods, salary profiles, or
+        templates on their own behalf.  Every step in the welcome checklist
+        is therefore inapplicable to them, and the banner must be suppressed
+        on the companion landing page.
+        """
+        resp = companion_client.get("/companion/")
+        assert resp.status_code == 200
+        assert b"Welcome to Shekel!" not in resp.data

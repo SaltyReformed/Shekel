@@ -13,6 +13,8 @@ from flask_login import current_user, login_required, login_user, logout_user
 
 from cryptography.fernet import InvalidToken
 
+from app import ref_cache
+from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
@@ -72,8 +74,11 @@ def _is_safe_redirect(target):
 @limiter.limit("5 per 15 minutes", methods=["POST"])
 def login():
     """Display the login form and handle authentication."""
-    # Already logged in -- go to the grid.
+    # Already logged in -- redirect to the appropriate landing page.
     if current_user.is_authenticated:
+        companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+        if current_user.role_id == companion_id:
+            return redirect(url_for("companion.index"))
         return redirect(url_for("dashboard.page"))
 
     if request.method == "POST":
@@ -107,7 +112,12 @@ def login():
             log_event(logger, logging.INFO, "login_success", AUTH,
                       "User logged in", user_id=user.id, email=email)
 
-            # Redirect to the page they originally wanted, or the grid.
+            # Companions always go to companion.index (ignore next param).
+            companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+            if user.role_id == companion_id:
+                return redirect(url_for("companion.index"))
+
+            # Redirect to the page they originally wanted, or the dashboard.
             # Validate the next parameter to prevent open redirect attacks.
             next_page = request.args.get("next")
             if not _is_safe_redirect(next_page):
@@ -131,6 +141,9 @@ def register_form():
     if not current_app.config["REGISTRATION_ENABLED"]:
         abort(404)
     if current_user.is_authenticated:
+        companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+        if current_user.role_id == companion_id:
+            return redirect(url_for("companion.index"))
         return redirect(url_for("dashboard.page"))
     return render_template("auth/register.html")
 
@@ -146,6 +159,9 @@ def register():
     if not current_app.config["REGISTRATION_ENABLED"]:
         abort(404)
     if current_user.is_authenticated:
+        companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+        if current_user.role_id == companion_id:
+            return redirect(url_for("companion.index"))
         return redirect(url_for("dashboard.page"))
 
     email = request.form.get("email", "")
@@ -319,6 +335,11 @@ def mfa_verify():
     flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
     log_event(logger, logging.INFO, "mfa_login_success", AUTH,
               "MFA login succeeded", user_id=user.id)
+
+    # Companions always go to companion.index (ignore next_page).
+    companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+    if user.role_id == companion_id:
+        return redirect(url_for("companion.index"))
 
     return redirect(next_page or url_for("dashboard.page"))
 

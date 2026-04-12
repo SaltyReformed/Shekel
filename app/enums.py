@@ -147,3 +147,13 @@ class IncomeUnitEnum(enum.Enum):
 
     PAYCHECKS = "Paychecks"
     MONTHS = "Months"
+
+
+class RoleEnum(enum.Enum):
+    """User role values.
+
+    Values match ``ref.user_roles.name`` in the database.
+    """
+
+    OWNER = "owner"
+    COMPANION = "companion"

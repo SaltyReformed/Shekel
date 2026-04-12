@@ -10,6 +10,8 @@ import logging
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.schemas.validation import PayPeriodGenerateSchema
 from app.services import pay_period_service
@@ -23,6 +25,7 @@ _generate_schema = PayPeriodGenerateSchema()
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["GET"])
 @login_required
+@require_owner
 def generate_form():
     """Redirect to settings dashboard pay periods section."""
     return redirect(url_for("settings.show", section="pay-periods"))
@@ -30,6 +33,7 @@ def generate_form():
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["POST"])
 @login_required
+@require_owner
 def generate():
     """Generate pay periods from the submitted form data."""
     errors = _generate_schema.validate(request.form)

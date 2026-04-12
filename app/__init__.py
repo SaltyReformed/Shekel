@@ -222,6 +222,24 @@ def _register_context_processors(app):
         if not current_user.is_authenticated:
             return {}
 
+        # Onboarding is meaningless for companion users -- they share the
+        # linked owner's budget data via linked_owner_id and cannot create
+        # their own accounts, categories, pay periods, salary profiles, or
+        # templates.  Omit the dict entirely so the banner's `onboarding is
+        # defined` guard in base.html evaluates False, and skip the five
+        # exists() queries that would otherwise run on every companion page.
+        from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
+        try:
+            if current_user.role_id == _rc.role_id(_RoleEnum.COMPANION):
+                return {}
+        except (RuntimeError, KeyError):
+            # ref_cache not yet initialized (e.g. during migration).  Fall
+            # through to the existing query path; owner users are the common
+            # case during those windows and the queries still give the right
+            # answer.
+            pass
+
         from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.category import Category  # pylint: disable=import-outside-toplevel
@@ -256,6 +274,17 @@ def _register_context_processors(app):
                 "complete": has_periods and has_salary and has_templates,
             }
         }
+
+    @app.context_processor
+    def inject_role_ids():
+        """Make role IDs available in all templates for role-based rendering."""
+        from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
+        try:
+            return {"COMPANION_ROLE_ID": _rc.role_id(_RoleEnum.COMPANION)}
+        except (RuntimeError, KeyError):
+            # ref_cache not yet initialized (e.g. during migration).
+            return {"COMPANION_ROLE_ID": None}
 
     @app.context_processor
     def inject_recurrence_labels():
@@ -297,6 +326,8 @@ def _register_blueprints(app):
     from app.routes.debt_strategy import debt_strategy_bp
     from app.routes.obligations import obligations_bp
     from app.routes.health import health_bp
+    from app.routes.entries import entries_bp
+    from app.routes.companion import companion_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -318,6 +349,8 @@ def _register_blueprints(app):
     app.register_blueprint(debt_strategy_bp)
     app.register_blueprint(obligations_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(entries_bp)
+    app.register_blueprint(companion_bp)
 
 
 def _register_error_handlers(app):
@@ -432,7 +465,7 @@ def _seed_ref_tables():
     from app.models.ref import (
         AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
         FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
-        Status, TaxType, TransactionType,
+        Status, TaxType, TransactionType, UserRole,
     )
 
     try:
@@ -497,6 +530,7 @@ def _seed_ref_tables():
             RaiseType: ["merit", "cola", "custom"],
             GoalMode: ["Fixed", "Income-Relative"],
             IncomeUnit: ["Paychecks", "Months"],
+            UserRole: ["owner", "companion"],
         }
 
         for model, entries in ref_data.items():

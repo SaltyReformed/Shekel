@@ -12,6 +12,8 @@ from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
+from app import ref_cache
+from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -20,8 +22,6 @@ from app.models.scenario import Scenario
 from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import Status
-from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
 from app.schemas.validation import (
     TransactionUpdateSchema,
     TransactionCreateSchema,
@@ -29,7 +29,12 @@ from app.schemas.validation import (
 )
 from app.services import credit_workflow, carry_forward_service, pay_period_service
 from app.services import transfer_service
+from app.services.entry_service import (
+    build_entry_sums_dict,
+    compute_actual_from_entries,
+)
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,29 @@ transactions_bp = Blueprint("transactions", __name__)
 _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
+
+
+def _render_cell(txn, **extra):
+    """Render the transaction cell template with entry_sums context.
+
+    Wraps render_template so every HTMX cell response includes the
+    entry_sums dict needed for the progress indicator on tracked
+    transactions.
+
+    Args:
+        txn: The Transaction object to render.
+        **extra: Additional keyword arguments forwarded to render_template
+            (e.g. wrap_div=True).
+
+    Returns:
+        Rendered HTML string.
+    """
+    return render_template(
+        "grid/_transaction_cell.html",
+        txn=txn,
+        entry_sums=build_entry_sums_dict([txn]),
+        **extra,
+    )
 
 
 def _get_owned_transaction(txn_id):
@@ -58,18 +86,54 @@ def _get_owned_transaction(txn_id):
     return txn
 
 
+def _get_accessible_transaction_for_status(txn_id):
+    """Fetch a transaction accessible to the current user for status changes.
+
+    Owners access their own transactions.  Companions access
+    transactions belonging to their linked owner's pay periods,
+    restricted to templates flagged ``companion_visible``.
+
+    Used by mark_done to allow companions to mark visible
+    transactions as Paid.  Follows the security response rule:
+    returns None for both "not found" and "not yours."
+
+    Args:
+        txn_id: Integer primary key of the transaction.
+
+    Returns:
+        Transaction if found and accessible, else None.
+    """
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return None
+    companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+    if current_user.role_id == companion_id:
+        # Companion path: linked owner's data + visible template.
+        if (txn.pay_period.user_id != current_user.linked_owner_id
+                or txn.template is None
+                or not txn.template.companion_visible):
+            return None
+    else:
+        # Owner path: standard pay-period ownership check.
+        if txn.pay_period.user_id != current_user.id:
+            return None
+    return txn
+
+
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
 @login_required
+@require_owner
 def get_cell(txn_id):
     """HTMX partial: return the display-mode cell content for a transaction."""
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return render_template("grid/_transaction_cell.html", txn=txn)
+    return _render_cell(txn)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])
 @login_required
+@require_owner
 def get_quick_edit(txn_id):
     """HTMX partial: return the minimal inline amount input."""
     txn = _get_owned_transaction(txn_id)
@@ -80,6 +144,7 @@ def get_quick_edit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
 @login_required
+@require_owner
 def get_full_edit(txn_id):
     """HTMX partial: return the full edit popover form.
 
@@ -117,6 +182,7 @@ def get_full_edit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
 @login_required
+@require_owner
 def update_transaction(txn_id):
     """Update a transaction's fields (inline edit save).
 
@@ -172,7 +238,7 @@ def update_transaction(txn_id):
             "user_id=%d updated shadow transaction %d (transfer %d)",
             current_user.id, txn_id, txn.transfer_id,
         )
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "balanceChanged"}
     # --- End guard ---
 
@@ -180,6 +246,17 @@ def update_transaction(txn_id):
     # triggering an FK violation when the session is dirtied.
     revert_paid_at = False
     if "status_id" in data:
+        # Block Credit status on entry-capable transactions -- credit
+        # handling is per-entry, not per-transaction (scope doc section 5.2).
+        credit_id = ref_cache.status_id(StatusEnum.CREDIT)
+        if (data["status_id"] == credit_id
+                and txn.template is not None
+                and txn.template.track_individual_purchases):
+            return (
+                "Cannot set Credit status on transactions with individual "
+                "purchase tracking. Use entry-level credit instead."
+            ), 400
+
         new_status = db.session.get(Status, data["status_id"])
         if new_status and not new_status.is_settled and txn.paid_at is not None:
             revert_paid_at = True
@@ -204,7 +281,7 @@ def update_transaction(txn_id):
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # Return the updated cell with a trigger to refresh balances.
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
@@ -217,9 +294,11 @@ def mark_done(txn_id):
     shadows and the parent transfer are updated atomically.
 
     Automatically picks the correct status based on transaction type.
-    Accepts an optional actual_amount from the form.
+    For entry-capable transactions with entries, auto-computes
+    actual_amount from the entry sum.  For all others, accepts an
+    optional actual_amount from the form.
     """
-    txn = _get_owned_transaction(txn_id)
+    txn = _get_accessible_transaction_for_status(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -255,20 +334,30 @@ def mark_done(txn_id):
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
         db.session.refresh(txn)
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
     txn.status_id = status_id
     txn.paid_at = db.func.now()
 
-    # Accept an actual amount from the form.
-    actual = request.form.get("actual_amount")
-    if actual:
-        try:
-            txn.actual_amount = Decimal(actual)
-        except (InvalidOperation, ValueError, ArithmeticError):
-            return "Invalid actual amount", 400
+    # Auto-populate actual from entries for entry-capable transactions.
+    # Entry sum takes precedence over any manual actual_amount from the
+    # form (scope doc section 4.2).  If no entries exist, fall through
+    # to the manual flow so non-tracked and empty-tracked transactions
+    # behave identically to pre-entry behavior.
+    if (txn.template is not None
+            and txn.template.track_individual_purchases
+            and txn.entries):
+        txn.actual_amount = compute_actual_from_entries(txn.entries)
+    else:
+        # Accept an optional manual actual amount from the form.
+        actual = request.form.get("actual_amount")
+        if actual:
+            try:
+                txn.actual_amount = Decimal(actual)
+            except (InvalidOperation, ValueError, ArithmeticError):
+                return "Invalid actual amount", 400
 
     try:
         db.session.commit()
@@ -277,12 +366,13 @@ def mark_done(txn_id):
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])
 @login_required
+@require_owner
 def mark_credit(txn_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense."""
     txn = _get_owned_transaction(txn_id)
@@ -298,12 +388,13 @@ def mark_credit(txn_id):
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/unmark-credit", methods=["DELETE"])
 @login_required
+@require_owner
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback."""
     txn = _get_owned_transaction(txn_id)
@@ -319,12 +410,13 @@ def unmark_credit(txn_id):
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
 @login_required
+@require_owner
 def cancel_transaction(txn_id):
     """Set a transaction's status to 'cancelled'.
 
@@ -343,7 +435,7 @@ def cancel_transaction(txn_id):
         )
         db.session.commit()
         db.session.refresh(txn)
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
@@ -352,12 +444,13 @@ def cancel_transaction(txn_id):
     db.session.commit()
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
 @transactions_bp.route("/transactions/new/quick", methods=["GET"])
 @login_required
+@require_owner
 def get_quick_create():
     """HTMX partial: return a quick-create input for an empty cell.
 
@@ -406,6 +499,7 @@ def get_quick_create():
 
 @transactions_bp.route("/transactions/new/full", methods=["GET"])
 @login_required
+@require_owner
 def get_full_create():
     """HTMX partial: return the full create popover form.
 
@@ -453,6 +547,7 @@ def get_full_create():
 
 @transactions_bp.route("/transactions/empty-cell", methods=["GET"])
 @login_required
+@require_owner
 def get_empty_cell():
     """HTMX partial: return the empty cell placeholder.
 
@@ -489,6 +584,7 @@ def get_empty_cell():
 
 @transactions_bp.route("/transactions/inline", methods=["POST"])
 @login_required
+@require_owner
 def create_inline():
     """Create a transaction from inline grid interaction.
 
@@ -540,16 +636,13 @@ def create_inline():
 
     # Return the cell wrapped in a div with a unique ID, matching
     # the pattern used in grid.html for existing transactions.
-    response = render_template(
-        "grid/_transaction_cell.html",
-        txn=txn,
-        wrap_div=True,
-    )
+    response = _render_cell(txn, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
 @transactions_bp.route("/transactions", methods=["POST"])
 @login_required
+@require_owner
 def create_transaction():
     """Create an ad-hoc transaction (not from a template)."""
     errors = _create_schema.validate(request.form)
@@ -586,12 +679,13 @@ def create_transaction():
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
 @login_required
+@require_owner
 def delete_transaction(txn_id):
     """Soft-delete a transaction (or hard-delete if it's ad-hoc).
 
@@ -620,6 +714,7 @@ def delete_transaction(txn_id):
 
 @transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
 @login_required
+@require_owner
 def carry_forward(period_id):
     """Carry forward all unpaid items from a period to the current period."""
     # Verify the source period belongs to the current user.

@@ -16,6 +16,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from flask import Blueprint, render_template
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
@@ -256,6 +258,7 @@ def _next_periodic_month(today, start_month, day, step):
 
 @obligations_bp.route("/obligations")
 @login_required
+@require_owner
 def summary():
     """Render the recurring obligations summary page.
 

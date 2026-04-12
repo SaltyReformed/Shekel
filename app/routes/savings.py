@@ -10,6 +10,8 @@ import logging
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -103,6 +105,7 @@ def _clean_goal_form_data(form_data):
 
 @savings_bp.route("/savings")
 @login_required
+@require_owner
 def dashboard():
     """Savings dashboard: account balances, goals, and emergency fund metrics."""
     ctx = savings_dashboard_service.compute_dashboard_data(current_user.id)
@@ -111,6 +114,7 @@ def dashboard():
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
 @login_required
+@require_owner
 def new_goal():
     """Display the savings goal creation form."""
     return render_template("savings/goal_form.html", **_goal_form_context())
@@ -118,6 +122,7 @@ def new_goal():
 
 @savings_bp.route("/savings/goals", methods=["POST"])
 @login_required
+@require_owner
 def create_goal():
     """Create a new savings goal."""
     cleaned = _clean_goal_form_data(request.form)
@@ -155,6 +160,7 @@ def create_goal():
 
 @savings_bp.route("/savings/goals/<int:goal_id>/edit", methods=["GET"])
 @login_required
+@require_owner
 def edit_goal(goal_id):
     """Display the savings goal edit form."""
     goal = db.session.get(SavingsGoal, goal_id)
@@ -169,6 +175,7 @@ def edit_goal(goal_id):
 
 @savings_bp.route("/savings/goals/<int:goal_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_goal(goal_id):
     """Update a savings goal."""
     goal = db.session.get(SavingsGoal, goal_id)
@@ -213,6 +220,7 @@ def update_goal(goal_id):
 
 @savings_bp.route("/savings/goals/<int:goal_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_goal(goal_id):
     """Deactivate a savings goal."""
     goal = db.session.get(SavingsGoal, goal_id)

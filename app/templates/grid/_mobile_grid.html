@@ -92,11 +92,17 @@
 
               {% for txn in matched %}
                 {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+                {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
+                {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
+                {% if show_progress %}
+                  {% set remaining = txn.estimated_amount - es.total %}
+                  {% set over_budget = remaining < 0 %}
+                {% endif %}
                 <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
                     data-mobile-txn-id="{{ txn.id }}"
                     {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
                     role="button" tabindex="0"
-                    aria-label="{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}">
+                    aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
                   <span class="text-truncate me-2">
                     {{ rk.display_name }}
                     {% if txn.status %}
@@ -113,8 +119,12 @@
                       <span class="badge-credit ms-1">CC</span>
                     {% endif %}
                   </span>
-                  <span class="font-mono fw-semibold text-nowrap">
-                    ${{ "{:,.0f}".format(display_amount) }}
+                  <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+                    {% if show_progress %}
+                      ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+                    {% else %}
+                      ${{ "{:,.0f}".format(display_amount) }}
+                    {% endif %}
                   </span>
                 </li>
               {% endfor %}
@@ -171,11 +181,17 @@
 
               {% for txn in matched %}
                 {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+                {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
+                {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
+                {% if show_progress %}
+                  {% set remaining = txn.estimated_amount - es.total %}
+                  {% set over_budget = remaining < 0 %}
+                {% endif %}
                 <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
                     data-mobile-txn-id="{{ txn.id }}"
                     {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
                     role="button" tabindex="0"
-                    aria-label="{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}">
+                    aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
                   <span class="text-truncate me-2">
                     {{ rk.display_name }}
                     {% if txn.status %}
@@ -192,8 +208,12 @@
                       <span class="badge-credit ms-1">CC</span>
                     {% endif %}
                   </span>
-                  <span class="font-mono fw-semibold text-nowrap">
-                    ${{ "{:,.0f}".format(display_amount) }}
+                  <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+                    {% if show_progress %}
+                      ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+                    {% else %}
+                      ${{ "{:,.0f}".format(display_amount) }}
+                    {% endif %}
                   </span>
                 </li>
               {% endfor %}

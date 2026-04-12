@@ -12,6 +12,8 @@ from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app import ref_cache
@@ -398,6 +400,7 @@ def _compute_total_payment(params, escrow_components):
 
 @loan_bp.route("/accounts/<int:account_id>/loan")
 @login_required
+@require_owner
 def dashboard(account_id):
     """Loan detail page with summary, escrow, rate history, and payoff calculator."""
     account, params, account_type = _load_loan_account(account_id)
@@ -571,6 +574,7 @@ def dashboard(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
 @login_required
+@require_owner
 def create_params(account_id):
     """Create initial loan parameters."""
     account = db.session.get(Account, account_id)
@@ -624,6 +628,7 @@ def create_params(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/params", methods=["POST"])
 @login_required
+@require_owner
 def update_params(account_id):
     """Update loan parameters."""
     account, params, account_type = _load_loan_account(account_id)
@@ -667,6 +672,7 @@ def update_params(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/rate", methods=["POST"])
 @login_required
+@require_owner
 def add_rate_change(account_id):
     """Record a variable-rate change (HTMX)."""
     account, params, account_type = _load_loan_account(account_id)
@@ -712,6 +718,7 @@ def add_rate_change(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
+@require_owner
 def add_escrow(account_id):
     """Add an escrow component (HTMX)."""
     account, params, account_type = _load_loan_account(account_id)
@@ -768,6 +775,7 @@ def add_escrow(account_id):
     methods=["POST"],
 )
 @login_required
+@require_owner
 def delete_escrow(account_id, component_id):
     """Remove an escrow component (HTMX)."""
     account, _, account_type = _load_loan_account(account_id)
@@ -809,6 +817,7 @@ def delete_escrow(account_id, component_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/payoff", methods=["POST"])
 @login_required
+@require_owner
 def payoff_calculate(account_id):
     """Calculate payoff scenario (HTMX)."""
     account, params, account_type = _load_loan_account(account_id)
@@ -975,6 +984,7 @@ def payoff_calculate(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/refinance", methods=["POST"])
 @login_required
+@require_owner
 def refinance_calculate(account_id):
     """Compute refinance what-if comparison scenario (HTMX).
 
@@ -1117,6 +1127,7 @@ def refinance_calculate(account_id):
 
 @loan_bp.route("/accounts/<int:account_id>/loan/create-transfer", methods=["POST"])
 @login_required
+@require_owner
 def create_payment_transfer(account_id):
     """Create a recurring monthly transfer to a debt account.
 

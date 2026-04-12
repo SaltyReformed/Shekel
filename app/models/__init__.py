@@ -21,6 +21,7 @@ from app.models.ref import (
     Status,
     TaxType,
     TransactionType,
+    UserRole,
 )
 
 # Authentication
@@ -34,6 +35,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.scenario import Scenario
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal

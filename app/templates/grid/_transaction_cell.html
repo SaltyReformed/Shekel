@@ -7,6 +7,12 @@
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
 {% set display_amount = t.actual_amount if t.actual_amount is not none else t.estimated_amount %}
+{% set es = entry_sums.get(t.id) if entry_sums is defined else none %}
+{% set show_progress = es is not none and t.status_id == STATUS_PROJECTED %}
+{% if show_progress %}
+  {% set remaining = t.estimated_amount - es.total %}
+  {% set over_budget = remaining < 0 %}
+{% endif %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
 <div class="txn-cell"
      hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
@@ -15,11 +21,16 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}"
-     title="${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}">
+     aria-label="{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
+     title="{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
 
+  {# Entry progress display for tracked transactions #}
+  {% if show_progress %}
+    <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
+      {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(t.estimated_amount) }}
+    </span>
   {# Show crossed-out estimate + actual when they differ #}
-  {% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
+  {% elif t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
     <span class="text-decoration-line-through small" style="color: var(--shekel-text-muted);">
       {{ "{:,.0f}".format(t.estimated_amount) }}
     </span>

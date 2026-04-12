@@ -1,0 +1,660 @@
+"""
+Shekel Budget App -- Template Tracking & Visibility Flag Tests
+
+Tests for the track_individual_purchases and companion_visible toggles
+on transaction templates. These flags control which transactions support
+sub-entries (purchase tracking) and which appear in the companion view.
+
+Introduced in Section 9, Commit 6.
+"""
+
+from decimal import Decimal
+
+from app.extensions import db
+from app.models.ref import TransactionType
+from app.models.transaction_template import TransactionTemplate
+from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _make_template(seed_user, name="Test Template",
+                   txn_type="Expense", track=False, companion=False):
+    """Create a template with configurable tracking and companion flags.
+
+    Args:
+        seed_user: The seed_user fixture dict.
+        name: Template name.
+        txn_type: 'Income' or 'Expense' (ref table name).
+        track: Value for track_individual_purchases.
+        companion: Value for companion_visible.
+
+    Returns:
+        TransactionTemplate: the created template.
+    """
+    txn_type_obj = (
+        db.session.query(TransactionType).filter_by(name=txn_type).one()
+    )
+    category = seed_user["categories"]["Rent"]
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=category.id,
+        transaction_type_id=txn_type_obj.id,
+        name=name,
+        default_amount=Decimal("100.00"),
+        track_individual_purchases=track,
+        companion_visible=companion,
+    )
+    db.session.add(template)
+    db.session.commit()
+    return template
+
+
+def _base_form_data(seed_user, txn_type="Expense", **overrides):
+    """Build minimal valid form data for creating a template.
+
+    Args:
+        seed_user: The seed_user fixture dict.
+        txn_type: 'Income' or 'Expense' (ref table name).
+        **overrides: Additional or overridden form fields.
+
+    Returns:
+        dict: Form data suitable for auth_client.post().
+    """
+    txn_type_obj = (
+        db.session.query(TransactionType).filter_by(name=txn_type).one()
+    )
+    data = {
+        "name": "Test Template",
+        "default_amount": "100.00",
+        "category_id": seed_user["categories"]["Rent"].id,
+        "transaction_type_id": txn_type_obj.id,
+        "account_id": seed_user["account"].id,
+    }
+    data.update(overrides)
+    return data
+
+
+# ── Create Tests ─────────────────────────────────────────────────────
+
+
+class TestCreateTemplateFlags:
+    """Tests for tracking and companion flags during template creation."""
+
+    def test_create_template_with_tracking(self, app, auth_client, seed_user):
+        """POST /templates with track_individual_purchases='on' sets flag to True."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, name="Groceries",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Groceries",
+            ).one()
+            assert template.track_individual_purchases is True
+
+    def test_create_template_tracking_default_false(self, app, auth_client, seed_user):
+        """POST /templates without track field defaults to False."""
+        with app.app_context():
+            form = _base_form_data(seed_user, name="Rent Payment")
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Rent Payment",
+            ).one()
+            assert template.track_individual_purchases is False
+
+    def test_create_template_with_companion_visible(self, app, auth_client, seed_user):
+        """POST /templates with companion_visible='on' sets flag to True."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, name="Gas Money",
+                companion_visible="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Gas Money",
+            ).one()
+            assert template.companion_visible is True
+
+    def test_create_template_with_both_flags(self, app, auth_client, seed_user):
+        """POST /templates with both flags enabled sets both to True."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, name="Weekly Groceries",
+                track_individual_purchases="on",
+                companion_visible="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Weekly Groceries",
+            ).one()
+            assert template.track_individual_purchases is True
+            assert template.companion_visible is True
+
+    def test_create_expense_tracking_allowed(self, app, auth_client, seed_user):
+        """Purchase tracking on an expense template is the valid case."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, txn_type="Expense", name="Tracked Expense",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Purchase tracking is only available" not in resp.data
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Tracked Expense",
+            ).one()
+            assert template.track_individual_purchases is True
+
+    def test_create_tracking_rejected_on_income(self, app, auth_client, seed_user):
+        """POST /templates rejects tracking on an income template."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, txn_type="Income", name="Bad Income Track",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Purchase tracking is only available for expense templates" in resp.data
+
+            # Template should not have been created.
+            count = db.session.query(TransactionTemplate).filter_by(
+                name="Bad Income Track",
+            ).count()
+            assert count == 0
+
+
+# ── Update Tests ─────────────────────────────────────────────────────
+
+
+class TestUpdateTemplateFlags:
+    """Tests for tracking and companion flags during template update."""
+
+    def test_update_toggle_tracking_on(self, app, auth_client, seed_user):
+        """POST /templates/<id> with track='on' enables tracking."""
+        with app.app_context():
+            template = _make_template(seed_user, name="Groceries", track=False)
+
+            form = _base_form_data(
+                seed_user, name="Groceries",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(template)
+            assert template.track_individual_purchases is True
+
+    def test_update_toggle_companion_on(self, app, auth_client, seed_user):
+        """POST /templates/<id> with companion='on' enables companion visibility."""
+        with app.app_context():
+            template = _make_template(seed_user, name="Gas", companion=False)
+
+            form = _base_form_data(
+                seed_user, name="Gas",
+                companion_visible="on",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(template)
+            assert template.companion_visible is True
+
+    def test_update_disable_both_flags(self, app, auth_client, seed_user):
+        """Unchecking both checkboxes correctly sets both flags to False.
+
+        This is the critical unchecking test: verifies that absent checkbox
+        fields (not sent by browser) result in False, not silently ignored.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Both Flags", track=True, companion=True,
+            )
+            assert template.track_individual_purchases is True
+            assert template.companion_visible is True
+
+            # Submit form WITHOUT the checkbox fields -- simulates unchecking.
+            form = _base_form_data(seed_user, name="Both Flags")
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+
+            db.session.refresh(template)
+            assert template.track_individual_purchases is False
+            assert template.companion_visible is False
+
+    def test_update_tracking_stays_true_when_checked(self, app, auth_client, seed_user):
+        """Submitting with checkbox checked preserves True value.
+
+        Ensures the round-trip works: template has True, form sends 'on',
+        template still has True after update.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Stay Tracked", track=True,
+            )
+
+            form = _base_form_data(
+                seed_user, name="Stay Tracked",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(template)
+            assert template.track_individual_purchases is True
+
+
+# ── Expense-Only Validation Tests ────────────────────────────────────
+
+
+class TestTrackingExpenseOnlyValidation:
+    """Tests that track_individual_purchases is rejected on income templates."""
+
+    def test_update_income_enable_tracking_rejected(self, app, auth_client, seed_user):
+        """Enabling tracking on an existing income template is rejected.
+
+        Template type is income. User checks tracking without changing type.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Income Template", txn_type="Income",
+            )
+
+            form = _base_form_data(
+                seed_user, txn_type="Income", name="Income Template",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Purchase tracking is only available for expense templates" in resp.data
+
+            db.session.refresh(template)
+            assert template.track_individual_purchases is False
+
+    def test_update_expense_tracking_change_type_income_rejected(
+        self, app, auth_client, seed_user,
+    ):
+        """Changing type to income while tracking is checked is rejected.
+
+        Template has tracking=True and type=Expense. User changes type to
+        Income but leaves tracking checked. The resulting state (income +
+        tracking) is invalid.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Was Expense", track=True,
+            )
+
+            form = _base_form_data(
+                seed_user, txn_type="Income", name="Was Expense",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Purchase tracking is only available for expense templates" in resp.data
+
+            # Original values should be unchanged.
+            db.session.refresh(template)
+            assert template.track_individual_purchases is True
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense").one()
+            )
+            assert template.transaction_type_id == expense_type.id
+
+    def test_update_change_type_income_and_disable_tracking_succeeds(
+        self, app, auth_client, seed_user,
+    ):
+        """Changing type to income AND disabling tracking succeeds.
+
+        Resulting state is (income + no tracking), which is valid.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Type Change", track=True,
+            )
+
+            # Don't include track_individual_purchases -- simulates unchecking.
+            form = _base_form_data(
+                seed_user, txn_type="Income", name="Type Change",
+            )
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"updated" in resp.data
+            assert b"Purchase tracking is only available" not in resp.data
+
+            db.session.refresh(template)
+            assert template.track_individual_purchases is False
+            income_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Income").one()
+            )
+            assert template.transaction_type_id == income_type.id
+
+    def test_companion_visible_on_income_allowed(self, app, auth_client, seed_user):
+        """companion_visible has no type restriction -- income templates can be visible.
+
+        Per the scope doc design note, the flags are independent. companion_visible
+        does not require expense type.
+        """
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, txn_type="Income", name="Visible Income",
+                companion_visible="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+            assert b"Purchase tracking is only available" not in resp.data
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Visible Income",
+            ).one()
+            assert template.companion_visible is True
+            assert template.track_individual_purchases is False
+
+    def test_tracking_and_companion_independent(self, app, auth_client, seed_user):
+        """track=True with companion=False succeeds -- flags are independent."""
+        with app.app_context():
+            form = _base_form_data(
+                seed_user, txn_type="Expense", name="Track Only",
+                track_individual_purchases="on",
+            )
+            resp = auth_client.post(
+                "/templates", data=form, follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Track Only",
+            ).one()
+            assert template.track_individual_purchases is True
+            assert template.companion_visible is False
+
+
+# ── Edit Form Display Tests ──────────────────────────────────────────
+
+
+class TestEditFormFlagDisplay:
+    """Tests that checkboxes reflect the template's current flag state."""
+
+    def test_edit_form_tracking_checkbox_checked(self, app, auth_client, seed_user):
+        """Edit form shows tracking checkbox as checked when flag is True."""
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Tracked", track=True,
+            )
+            resp = auth_client.get(f"/templates/{template.id}/edit")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # The checkbox input should have the "checked" attribute.
+            assert 'id="track_individual_purchases"' in html
+            assert 'name="track_individual_purchases"' in html
+            # Find the checkbox and verify it has checked.
+            # The template renders: checked if template.track_individual_purchases
+            assert "checked" in html.split('id="track_individual_purchases"')[1].split(">")[0]
+
+    def test_edit_form_tracking_checkbox_unchecked(self, app, auth_client, seed_user):
+        """Edit form shows tracking checkbox as unchecked when flag is False."""
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Untracked", track=False,
+            )
+            resp = auth_client.get(f"/templates/{template.id}/edit")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # The checkbox input should NOT have "checked".
+            track_section = html.split('id="track_individual_purchases"')[1].split(">")[0]
+            assert "checked" not in track_section
+
+    def test_edit_form_companion_checkbox_checked(self, app, auth_client, seed_user):
+        """Edit form shows companion checkbox as checked when flag is True."""
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Visible", companion=True,
+            )
+            resp = auth_client.get(f"/templates/{template.id}/edit")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert 'id="companion_visible"' in html
+            assert "checked" in html.split('id="companion_visible"')[1].split(">")[0]
+
+    def test_edit_form_companion_checkbox_unchecked(self, app, auth_client, seed_user):
+        """Edit form shows companion checkbox as unchecked when flag is False."""
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Hidden", companion=False,
+            )
+            resp = auth_client.get(f"/templates/{template.id}/edit")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            companion_section = html.split('id="companion_visible"')[1].split(">")[0]
+            assert "checked" not in companion_section
+
+    def test_new_form_shows_checkboxes(self, app, auth_client):
+        """The new template form includes both checkbox fields."""
+        with app.app_context():
+            resp = auth_client.get("/templates/new")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert 'name="track_individual_purchases"' in html
+            assert 'name="companion_visible"' in html
+            assert "Tracking &" in html
+
+
+# ── Badge Display Tests ──────────────────────────────────────────────
+
+
+class TestListBadges:
+    """Tests for badge indicators on the template list page."""
+
+    def test_badge_track_only(self, app, auth_client, seed_user):
+        """Template with track=True shows tracking badge, not companion badge."""
+        with app.app_context():
+            _make_template(
+                seed_user, name="Track Badge", track=True, companion=False,
+            )
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert "bi bi-cart" in html
+            assert "Tracks purchases" in html
+            # Companion badge should not appear.
+            assert "bi bi-eye" not in html
+
+    def test_badge_companion_only(self, app, auth_client, seed_user):
+        """Template with companion=True shows companion badge, not tracking badge."""
+        with app.app_context():
+            _make_template(
+                seed_user, name="Companion Badge", track=False, companion=True,
+            )
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert "bi bi-eye" in html
+            assert "Companion visible" in html
+            # Tracking badge should not appear.
+            assert "bi bi-cart" not in html
+
+    def test_badge_both(self, app, auth_client, seed_user):
+        """Template with both flags shows both badges."""
+        with app.app_context():
+            _make_template(
+                seed_user, name="Both Badges", track=True, companion=True,
+            )
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert "bi bi-cart" in html
+            assert "bi bi-eye" in html
+
+    def test_badge_neither(self, app, auth_client, seed_user):
+        """Template with both flags False shows no badges."""
+        with app.app_context():
+            _make_template(
+                seed_user, name="No Badges", track=False, companion=False,
+            )
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            assert "bi bi-cart" not in html
+            assert "bi bi-eye" not in html
+
+    def test_template_list_shows_badges(self, app, auth_client, seed_user):
+        """Multiple templates with mixed flags show correct badges per template.
+
+        Creates three templates: one tracked, one companion-visible, one plain.
+        Verifies correct badges appear for each.
+        """
+        with app.app_context():
+            _make_template(
+                seed_user, name="Tracked Groceries",
+                track=True, companion=False,
+            )
+            _make_template(
+                seed_user, name="Visible Bill",
+                track=False, companion=True,
+            )
+            _make_template(
+                seed_user, name="Plain Rent",
+                track=False, companion=False,
+            )
+
+            resp = auth_client.get("/templates")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # All template names present.
+            assert "Tracked Groceries" in html
+            assert "Visible Bill" in html
+            assert "Plain Rent" in html
+            # At least one tracking and one companion badge.
+            assert "bi bi-cart" in html
+            assert "bi bi-eye" in html
+
+
+# ── Schema Tests ─────────────────────────────────────────────────────
+
+
+class TestFlagSchemaValidation:
+    """Tests for Marshmallow schema handling of boolean flag fields."""
+
+    def test_schema_accepts_on_value(self):
+        """Boolean field accepts 'on' (HTML checkbox value) as True."""
+        schema = TemplateCreateSchema()
+        data = schema.load({
+            "name": "Test",
+            "default_amount": "50.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+            "track_individual_purchases": "on",
+        })
+        assert data["track_individual_purchases"] is True
+
+    def test_schema_missing_field_defaults_false(self):
+        """Boolean field defaults to False when absent from form data."""
+        schema = TemplateCreateSchema()
+        data = schema.load({
+            "name": "Test",
+            "default_amount": "50.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+        })
+        assert data["track_individual_purchases"] is False
+        assert data["companion_visible"] is False
+
+    def test_schema_rejects_invalid_boolean_string(self):
+        """Boolean field rejects unrecognized string values."""
+        schema = TemplateCreateSchema()
+        errors = schema.validate({
+            "name": "Test",
+            "default_amount": "50.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+            "track_individual_purchases": "invalid",
+        })
+        assert "track_individual_purchases" in errors
+
+    def test_update_schema_inherits_flag_fields(self):
+        """TemplateUpdateSchema inherits boolean fields from TemplateCreateSchema."""
+        schema = TemplateUpdateSchema()
+        data = schema.load({
+            "track_individual_purchases": "on",
+            "companion_visible": "on",
+        })
+        assert data["track_individual_purchases"] is True
+        assert data["companion_visible"] is True
+
+    def test_update_schema_missing_flags_default_false(self):
+        """TemplateUpdateSchema defaults missing flags to False."""
+        schema = TemplateUpdateSchema()
+        data = schema.load({
+            "name": "Updated Name",
+        })
+        assert data["track_individual_purchases"] is False
+        assert data["companion_visible"] is False
