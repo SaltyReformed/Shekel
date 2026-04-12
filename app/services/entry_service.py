@@ -337,6 +337,40 @@ def compute_entry_sums(
     return sum_debit, sum_credit
 
 
+def build_entry_sums_dict(
+    transactions: list,
+) -> dict[int, dict]:
+    """Build a {txn_id: sums_dict} mapping for transactions with entries.
+
+    Used by grid routes and HTMX cell-render endpoints to pre-compute
+    entry aggregates for the cell template.  Only transactions with
+    non-empty entries are included in the result.
+
+    Pure function -- no database access beyond what was already loaded
+    on the Transaction objects (expects entries to be accessible, either
+    via eager load or lazy access).
+
+    Args:
+        transactions: List of Transaction objects with entries accessible.
+
+    Returns:
+        dict mapping transaction ID to {"debit": Decimal, "credit": Decimal,
+        "total": Decimal, "count": int}.  Empty dict if no transactions
+        have entries.
+    """
+    result: dict[int, dict] = {}
+    for txn in transactions:
+        if txn.entries:
+            debit, credit = compute_entry_sums(txn.entries)
+            result[txn.id] = {
+                "debit": debit,
+                "credit": credit,
+                "total": debit + credit,
+                "count": len(txn.entries),
+            }
+    return result
+
+
 def compute_remaining(
     estimated_amount: Decimal,
     entries: list[TransactionEntry],

@@ -24,6 +24,7 @@ from app.enums import StatusEnum
 from app import ref_cache
 from app.services import balance_calculator, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import build_entry_sums_dict
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,11 @@ def index():
     for txn in all_transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
+    # Pre-compute entry sums for tracked transactions with entries.
+    # The cell template uses this to show "spent / budget" progress
+    # instead of the standard single-amount display.
+    entry_sums = build_entry_sums_dict(all_transactions)
+
     # Pre-compute subtotals per period using Decimal arithmetic (H-05).
     # Only projected transactions are included in subtotals -- settled
     # and excluded statuses are omitted (matching the grid display rules).
@@ -298,6 +304,7 @@ def index():
         all_periods=all_periods,
         low_balance_threshold=low_balance_threshold,
         stale_anchor_warning=stale_anchor_warning,
+        entry_sums=entry_sums,
     )
 
 

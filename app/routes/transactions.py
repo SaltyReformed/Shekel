@@ -29,7 +29,10 @@ from app.schemas.validation import (
 )
 from app.services import credit_workflow, carry_forward_service, pay_period_service
 from app.services import transfer_service
-from app.services.entry_service import compute_actual_from_entries
+from app.services.entry_service import (
+    build_entry_sums_dict,
+    compute_actual_from_entries,
+)
 from app.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,29 @@ transactions_bp = Blueprint("transactions", __name__)
 _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
+
+
+def _render_cell(txn, **extra):
+    """Render the transaction cell template with entry_sums context.
+
+    Wraps render_template so every HTMX cell response includes the
+    entry_sums dict needed for the progress indicator on tracked
+    transactions.
+
+    Args:
+        txn: The Transaction object to render.
+        **extra: Additional keyword arguments forwarded to render_template
+            (e.g. wrap_div=True).
+
+    Returns:
+        Rendered HTML string.
+    """
+    return render_template(
+        "grid/_transaction_cell.html",
+        txn=txn,
+        entry_sums=build_entry_sums_dict([txn]),
+        **extra,
+    )
 
 
 def _get_owned_transaction(txn_id):
@@ -66,7 +92,7 @@ def get_cell(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return render_template("grid/_transaction_cell.html", txn=txn)
+    return _render_cell(txn)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])
@@ -173,7 +199,7 @@ def update_transaction(txn_id):
             "user_id=%d updated shadow transaction %d (transfer %d)",
             current_user.id, txn_id, txn.transfer_id,
         )
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "balanceChanged"}
     # --- End guard ---
 
@@ -216,7 +242,7 @@ def update_transaction(txn_id):
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # Return the updated cell with a trigger to refresh balances.
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
@@ -269,7 +295,7 @@ def mark_done(txn_id):
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
         db.session.refresh(txn)
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
@@ -301,7 +327,7 @@ def mark_done(txn_id):
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -322,7 +348,7 @@ def mark_credit(txn_id):
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -343,7 +369,7 @@ def unmark_credit(txn_id):
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -367,7 +393,7 @@ def cancel_transaction(txn_id):
         )
         db.session.commit()
         db.session.refresh(txn)
-        response = render_template("grid/_transaction_cell.html", txn=txn)
+        response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
@@ -376,7 +402,7 @@ def cancel_transaction(txn_id):
     db.session.commit()
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -564,11 +590,7 @@ def create_inline():
 
     # Return the cell wrapped in a div with a unique ID, matching
     # the pattern used in grid.html for existing transactions.
-    response = render_template(
-        "grid/_transaction_cell.html",
-        txn=txn,
-        wrap_div=True,
-    )
+    response = _render_cell(txn, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
@@ -610,7 +632,7 @@ def create_transaction():
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
 
-    response = render_template("grid/_transaction_cell.html", txn=txn)
+    response = _render_cell(txn)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 

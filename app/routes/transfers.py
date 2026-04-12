@@ -34,6 +34,7 @@ from app.schemas.validation import (
 )
 from app.services import transfer_recurrence, transfer_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 
 logger = logging.getLogger(__name__)
@@ -638,7 +639,11 @@ def update_transfer(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "balanceChanged"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -738,7 +743,11 @@ def mark_done(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -773,7 +782,11 @@ def cancel_transfer(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template("grid/_transaction_cell.html", txn=shadow)
+        response = render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+        )
         return response, 200, {"HX-Trigger": "gridRefresh"}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
