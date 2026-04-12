@@ -156,7 +156,17 @@
               <tbody>
                 {% for item in group["items"] %}
                 <tr>
-                  <td class="ps-4">{{ item.item_name }}</td>
+                  <td class="ps-4">
+                    {{ item.item_name }}
+                    {% if item.entry_breakdown %}
+                    {% set bd = item.entry_breakdown %}
+                    <small class="text-muted">
+                      ({{ bd.entry_count }} entr{{ 'ies' if bd.entry_count != 1 else 'y' }},
+                      avg {{ fmt(bd.avg_entry) }}{% if bd.credit_total > 0 %},
+                      {{ fmt(bd.credit_total) }} on credit card{% endif %})
+                    </small>
+                    {% endif %}
+                  </td>
                   <td class="text-end font-mono">{{ fmt(item.item_total) }}</td>
                 </tr>
                 {% endfor %}

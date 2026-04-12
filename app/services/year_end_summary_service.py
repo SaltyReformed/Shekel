@@ -20,12 +20,14 @@ from collections import OrderedDict, defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy import case
 from sqlalchemy.orm import joinedload, subqueryload
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
@@ -35,6 +37,8 @@ from app.models.ref import Status
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
     amortization_engine,
@@ -417,7 +421,9 @@ def _compute_spending_by_category(
     Queries settled expense transactions in the year's pay periods,
     attributes each to the year using COALESCE(due_date,
     pay_period.start_date), and groups by category group_name then
-    item_name.
+    item_name.  Items whose parent template has
+    track_individual_purchases=True receive an entry_breakdown sub-dict
+    with per-purchase aggregates queried from TransactionEntry (OP-3).
 
     Args:
         user_id: User ID for ownership filtering.
@@ -427,7 +433,10 @@ def _compute_spending_by_category(
 
     Returns:
         List of dicts sorted by group_total descending:
-        [{group_name, group_total, items: [{item_name, item_total}]}]
+        [{group_name, group_total, items: [{item_name, item_total,
+        entry_breakdown?}]}].  entry_breakdown is present only for
+        items with at least one tracked, settled, year-attributed
+        parent transaction in the period.
     """
     if not period_ids:
         return []
@@ -446,7 +455,178 @@ def _compute_spending_by_category(
         group_name, item_name = _txn_category_names(txn)
         groups[group_name][item_name] += abs(txn.effective_amount)
 
-    return _build_spending_hierarchy(groups)
+    spending = _build_spending_hierarchy(groups)
+
+    # OP-3: attach per-entry breakdowns for tracked categories.
+    breakdowns = _compute_entry_breakdowns(
+        user_id, year, period_ids, scenario_id,
+    )
+    if breakdowns:
+        for group in spending:
+            for item in group["items"]:
+                key = (group["group_name"], item["item_name"])
+                if key in breakdowns:
+                    item["entry_breakdown"] = breakdowns[key]
+
+    return spending
+
+
+def _compute_entry_breakdowns(
+    user_id: int,
+    year: int,
+    period_ids: list[int],
+    scenario_id: int,
+) -> dict[tuple[str, str], dict]:
+    """Aggregate transaction entries for tracked categories in the year.
+
+    Runs one SQL query that joins TransactionEntry through Transaction
+    to its template, account, pay period, and category.  Filters with
+    the same predicates as _query_settled_expenses (settled expenses
+    in the user's year period_ids on the baseline scenario) plus
+    track_individual_purchases=True on the parent template.  Aggregates
+    per parent transaction so the same _attribution_year filter used
+    by _compute_spending_by_category can be applied in Python -- this
+    handles transactions whose due_date crosses a calendar year
+    boundary identically to the existing category aggregation.
+
+    Args:
+        user_id: User ID for ownership filtering.
+        year: Target calendar year for attribution.
+        period_ids: IDs of pay periods with start_date in the year.
+        scenario_id: Baseline scenario ID.
+
+    Returns:
+        dict mapping (group_name, item_name) tuple to a breakdown dict
+        with entry_count, entry_total, credit_total, debit_total,
+        avg_entry, and transaction_count_with_entries.  Categories
+        with no tracked entries in the attribution year are absent.
+    """
+    if not period_ids:
+        return {}
+
+    settled_status_ids = _get_settled_status_ids()
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+
+    rows = (
+        db.session.query(
+            Category.group_name.label("group_name"),
+            Category.item_name.label("item_name"),
+            Transaction.id.label("transaction_id"),
+            Transaction.due_date.label("due_date"),
+            PayPeriod.start_date.label("pp_start_date"),
+            db.func.count(TransactionEntry.id).label("entry_count"),
+            db.func.sum(TransactionEntry.amount).label("entry_total"),
+            db.func.sum(
+                case(
+                    (
+                        TransactionEntry.is_credit.is_(True),
+                        TransactionEntry.amount,
+                    ),
+                    else_=Decimal("0"),
+                )
+            ).label("credit_total"),
+        )
+        .join(
+            Transaction,
+            TransactionEntry.transaction_id == Transaction.id,
+        )
+        .join(
+            TransactionTemplate,
+            Transaction.template_id == TransactionTemplate.id,
+        )
+        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .filter(
+            Account.user_id == user_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
+            Transaction.transaction_type_id == expense_type_id,
+            Transaction.status_id.in_(settled_status_ids),
+            TransactionTemplate.track_individual_purchases.is_(True),
+        )
+        .group_by(
+            Category.group_name,
+            Category.item_name,
+            Transaction.id,
+            Transaction.due_date,
+            PayPeriod.start_date,
+        )
+        .all()
+    )
+
+    breakdowns: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        # Match _attribution_year(): COALESCE(due_date, pp.start_date).
+        attr_year = (
+            row.due_date.year if row.due_date is not None
+            else row.pp_start_date.year
+        )
+        if attr_year != year:
+            continue
+        _accumulate_entry_row(breakdowns, row)
+
+    for bd in breakdowns.values():
+        _finalize_entry_breakdown(bd)
+
+    return breakdowns
+
+
+def _accumulate_entry_row(
+    breakdowns: dict[tuple[str, str], dict], row,
+) -> None:
+    """Add one transaction's entry stats to the running breakdown.
+
+    Looks up (or creates) the breakdown dict keyed by the parent
+    transaction's category and increments the running totals.  Missing
+    categories are mapped to "Uncategorized" so the key matches what
+    _txn_category_names() produces in the existing aggregation.
+
+    Args:
+        breakdowns: Mutable mapping from (group_name, item_name) to
+            running aggregate dict.  Mutated in place.
+        row: One result row from the entry aggregation query.
+    """
+    key = (
+        row.group_name or "Uncategorized",
+        row.item_name or "Uncategorized",
+    )
+    bd = breakdowns.get(key)
+    if bd is None:
+        bd = {
+            "entry_count": 0,
+            "entry_total": ZERO,
+            "credit_total": ZERO,
+            "transaction_count_with_entries": 0,
+        }
+        breakdowns[key] = bd
+    bd["entry_count"] += int(row.entry_count or 0)
+    bd["entry_total"] += row.entry_total or ZERO
+    bd["credit_total"] += row.credit_total or ZERO
+    bd["transaction_count_with_entries"] += 1
+
+
+def _finalize_entry_breakdown(bd: dict) -> None:
+    """Compute derived debit_total and avg_entry on a breakdown dict.
+
+    Mutates the dict in place.  Called after all entry rows have been
+    accumulated.  avg_entry uses Decimal division with explicit
+    quantize so the result has exactly two decimal places without any
+    float rounding artifacts.
+
+    Args:
+        bd: Running aggregate dict produced by _accumulate_entry_row.
+    """
+    entry_total = bd["entry_total"]
+    bd["debit_total"] = entry_total - bd["credit_total"]
+    count = bd["entry_count"]
+    bd["avg_entry"] = (
+        (entry_total / Decimal(count)).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP,
+        )
+        if count > 0 else ZERO
+    )
 
 
 # ── Section 4: Transfers Summary ──────────────────────────────────
