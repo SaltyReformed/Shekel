@@ -297,6 +297,7 @@ def _register_blueprints(app):
     from app.routes.debt_strategy import debt_strategy_bp
     from app.routes.obligations import obligations_bp
     from app.routes.health import health_bp
+    from app.routes.entries import entries_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -318,6 +319,7 @@ def _register_blueprints(app):
     app.register_blueprint(debt_strategy_bp)
     app.register_blueprint(obligations_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(entries_bp)
 
 
 def _register_error_handlers(app):
@@ -432,7 +434,7 @@ def _seed_ref_tables():
     from app.models.ref import (
         AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
         FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
-        Status, TaxType, TransactionType,
+        Status, TaxType, TransactionType, UserRole,
     )
 
     try:
@@ -497,6 +499,7 @@ def _seed_ref_tables():
             RaiseType: ["merit", "cola", "custom"],
             GoalMode: ["Fixed", "Income-Relative"],
             IncomeUnit: ["Paychecks", "Months"],
+            UserRole: ["owner", "companion"],
         }
 
         for model, entries in ref_data.items():

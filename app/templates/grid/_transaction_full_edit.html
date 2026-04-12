@@ -130,4 +130,17 @@
     </button>
     {% endif %}
   </div>
+
+  {# Entry tracking section -- lazy-loaded for tracked transactions #}
+  {% if txn.template and txn.template.track_individual_purchases %}
+  <hr class="my-2">
+  <div class="small fw-semibold mb-1">Purchases</div>
+  <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
+       hx-trigger="load"
+       hx-target="this"
+       id="entry-list-{{ txn.id }}">
+    <span class="spinner-border spinner-border-sm" role="status"></span>
+    <span class="small text-muted">Loading entries...</span>
+  </div>
+  {% endif %}
 </div>

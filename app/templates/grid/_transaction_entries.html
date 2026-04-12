@@ -1,0 +1,128 @@
+{# Entry list with inline add/edit forms for entry-capable transactions.
+
+   Expected context:
+     txn               -- parent Transaction object
+     entries           -- list of TransactionEntry objects (ordered by entry_date)
+     remaining         -- Decimal remaining budget (negative = overspent)
+     today             -- ISO date string for add form default date
+     editing_id        -- int or None -- entry ID to show inline edit form
+     out_of_period_ids -- set of entry IDs with dates outside the pay period
+
+   HTMX swap target: #entry-list-{txn.id} with outerHTML.
+#}
+<div id="entry-list-{{ txn.id }}">
+  {% if entries %}
+  {% for entry in entries %}
+  {% if editing_id == entry.id %}
+  {# Inline edit form -- replaces the display row for the entry being edited #}
+  <div class="py-1 border-bottom">
+    <form hx-patch="{{ url_for('entries.update_entry', txn_id=txn.id, entry_id=entry.id) }}"
+          hx-target="#entry-list-{{ txn.id }}"
+          hx-swap="outerHTML"
+          hx-disabled-elt="find button[type=submit]">
+      <div class="d-flex gap-1 align-items-end mb-1">
+        <input type="number" step="0.01" name="amount" min="0.01"
+               value="{{ entry.amount }}"
+               class="form-control form-control-sm" style="max-width: 80px;">
+        <input type="text" name="description"
+               value="{{ entry.description }}"
+               class="form-control form-control-sm">
+      </div>
+      <div class="d-flex gap-1 align-items-center">
+        <input type="date" name="entry_date"
+               value="{{ entry.entry_date.isoformat() }}"
+               class="form-control form-control-sm" style="max-width: 130px;">
+        <div class="form-check form-check-inline mb-0">
+          <input type="checkbox" name="is_credit" value="true"
+                 class="form-check-input" id="edit-cc-{{ entry.id }}"
+                 {{ 'checked' if entry.is_credit else '' }}>
+          <input type="hidden" name="is_credit" value="false">
+          <label class="form-check-label small" for="edit-cc-{{ entry.id }}">CC</label>
+        </div>
+        <button type="submit" class="btn btn-sm btn-primary py-0 px-1">
+          <i class="bi bi-check"></i>
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
+                hx-target="#entry-list-{{ txn.id }}"
+                hx-swap="outerHTML">
+          <i class="bi bi-x"></i>
+        </button>
+      </div>
+    </form>
+  </div>
+  {% else %}
+  {# Display row #}
+  <div class="d-flex justify-content-between align-items-center py-1 border-bottom small">
+    <div class="text-truncate me-2" style="max-width: 100px;">
+      {{ entry.description }}
+    </div>
+    <div class="d-flex align-items-center gap-1">
+      <span class="text-muted" style="font-size: 0.75rem;">
+        {{ entry.entry_date.strftime('%m/%d') }}
+      </span>
+      {% if entry.is_credit %}
+      <span class="badge bg-warning-subtle text-warning" title="Credit card">CC</span>
+      {% endif %}
+      {% if entry.id in out_of_period_ids %}
+      <span class="badge bg-info-subtle text-info"
+            title="Date outside pay period range">
+        <i class="bi bi-exclamation-circle"></i>
+      </span>
+      {% endif %}
+      <span class="font-mono">${{ "{:,.2f}".format(entry.amount) }}</span>
+      <button class="btn btn-link btn-sm p-0 text-primary"
+              hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id) }}"
+              hx-target="#entry-list-{{ txn.id }}"
+              hx-swap="outerHTML"
+              aria-label="Edit entry">
+        <i class="bi bi-pencil"></i>
+      </button>
+      <button class="btn btn-link btn-sm p-0 text-danger"
+              hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id) }}"
+              hx-target="#entry-list-{{ txn.id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Delete this entry?"
+              aria-label="Delete entry">
+        <i class="bi bi-x-circle"></i>
+      </button>
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+  {% else %}
+  <div class="text-muted small py-2 text-center">No purchases recorded yet</div>
+  {% endif %}
+
+  {# Remaining balance #}
+  <div class="d-flex justify-content-between py-1 small fw-semibold">
+    <span>Remaining</span>
+    <span class="font-mono{% if remaining < 0 %} text-danger{% endif %}">
+      {% if remaining < 0 %}-{% endif %}${{ "{:,.2f}".format(remaining|abs) }}
+    </span>
+  </div>
+
+  {# Add entry form #}
+  <form class="mt-2"
+        hx-post="{{ url_for('entries.create_entry', txn_id=txn.id) }}"
+        hx-target="#entry-list-{{ txn.id }}"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]">
+    <div class="d-flex gap-1 align-items-end">
+      <input type="number" step="0.01" name="amount" min="0.01"
+             class="form-control form-control-sm" placeholder="$" required
+             style="max-width: 80px;">
+      <input type="text" name="description"
+             class="form-control form-control-sm" placeholder="Store" required>
+      <input type="hidden" name="entry_date" value="{{ today }}">
+      <div class="form-check form-check-inline mb-0">
+        <input type="checkbox" name="is_credit" class="form-check-input"
+               id="cc-{{ txn.id }}">
+        <label class="form-check-label small" for="cc-{{ txn.id }}">CC</label>
+      </div>
+      <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-plus"></i>
+      </button>
+    </div>
+  </form>
+</div>
