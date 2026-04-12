@@ -19,6 +19,8 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, render_template, request
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_params import LoanParams
@@ -199,6 +201,7 @@ def _compute_real_principal(params, scenario_id, principal, rate):
 
 @debt_strategy_bp.route("/debt-strategy")
 @login_required
+@require_owner
 def dashboard():
     """Render the debt strategy comparison page.
 
@@ -218,6 +221,7 @@ def dashboard():
 
 @debt_strategy_bp.route("/debt-strategy/calculate", methods=["POST"])
 @login_required
+@require_owner
 def calculate():
     """Compute debt payoff strategies and return comparison results.
 

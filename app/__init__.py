@@ -258,6 +258,17 @@ def _register_context_processors(app):
         }
 
     @app.context_processor
+    def inject_role_ids():
+        """Make role IDs available in all templates for role-based rendering."""
+        from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
+        try:
+            return {"COMPANION_ROLE_ID": _rc.role_id(_RoleEnum.COMPANION)}
+        except (RuntimeError, KeyError):
+            # ref_cache not yet initialized (e.g. during migration).
+            return {"COMPANION_ROLE_ID": None}
+
+    @app.context_processor
     def inject_recurrence_labels():
         """Inject recurrence pattern labels into all template contexts."""
         return {
@@ -298,6 +309,7 @@ def _register_blueprints(app):
     from app.routes.obligations import obligations_bp
     from app.routes.health import health_bp
     from app.routes.entries import entries_bp
+    from app.routes.companion import companion_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -320,6 +332,7 @@ def _register_blueprints(app):
     app.register_blueprint(obligations_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(entries_bp)
+    app.register_blueprint(companion_bp)
 
 
 def _register_error_handlers(app):

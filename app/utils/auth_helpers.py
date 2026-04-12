@@ -10,11 +10,49 @@ user_id column (Account, TransactionTemplate, SavingsGoal, etc.).
 Pattern B (indirect via parent): Use get_owned_via_parent() for
 models scoped through a FK parent (Transaction via PayPeriod,
 SalaryRaise via SalaryProfile, etc.).
+
+Pattern C (role-based): Use @require_owner on routes restricted
+to the owner role. Companions receive 404 to avoid revealing
+route existence.
 """
 
+from functools import wraps
+
+from flask import abort
 from flask_login import current_user
 
+from app import ref_cache
+from app.enums import RoleEnum
 from app.extensions import db
+
+
+def require_owner(f):
+    """Restrict a route to owner-role users only.
+
+    Must be applied AFTER ``@login_required`` so that
+    ``current_user`` is guaranteed to be authenticated.
+    Companions receive 404 (not 403) per the project security
+    response rule: "404 for both 'not found' and 'not yours.'"
+
+    The ``getattr`` fallback to ``owner_id`` ensures safe behavior
+    when ``role_id`` is absent (e.g. test fixtures that do not
+    explicitly set it) -- the user is treated as an owner.
+
+    Decorator order::
+
+        @bp.route("/example")
+        @login_required      # runs first -- ensures authenticated
+        @require_owner       # runs second -- checks role
+        def example():
+            ...
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        owner_id = ref_cache.role_id(RoleEnum.OWNER)
+        if getattr(current_user, "role_id", owner_id) != owner_id:
+            abort(404)
+        return f(*args, **kwargs)
+    return decorated
 
 
 def get_or_404(model, pk, user_id_field="user_id"):

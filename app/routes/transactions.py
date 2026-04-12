@@ -12,6 +12,8 @@ from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
+from app import ref_cache
+from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -20,8 +22,6 @@ from app.models.scenario import Scenario
 from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import Status
-from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
 from app.schemas.validation import (
     TransactionUpdateSchema,
     TransactionCreateSchema,
@@ -34,6 +34,7 @@ from app.services.entry_service import (
     compute_actual_from_entries,
 )
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,43 @@ def _get_owned_transaction(txn_id):
     return txn
 
 
+def _get_accessible_transaction_for_status(txn_id):
+    """Fetch a transaction accessible to the current user for status changes.
+
+    Owners access their own transactions.  Companions access
+    transactions belonging to their linked owner's pay periods,
+    restricted to templates flagged ``companion_visible``.
+
+    Used by mark_done to allow companions to mark visible
+    transactions as Paid.  Follows the security response rule:
+    returns None for both "not found" and "not yours."
+
+    Args:
+        txn_id: Integer primary key of the transaction.
+
+    Returns:
+        Transaction if found and accessible, else None.
+    """
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return None
+    companion_id = ref_cache.role_id(RoleEnum.COMPANION)
+    if current_user.role_id == companion_id:
+        # Companion path: linked owner's data + visible template.
+        if (txn.pay_period.user_id != current_user.linked_owner_id
+                or txn.template is None
+                or not txn.template.companion_visible):
+            return None
+    else:
+        # Owner path: standard pay-period ownership check.
+        if txn.pay_period.user_id != current_user.id:
+            return None
+    return txn
+
+
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
 @login_required
+@require_owner
 def get_cell(txn_id):
     """HTMX partial: return the display-mode cell content for a transaction."""
     txn = _get_owned_transaction(txn_id)
@@ -97,6 +133,7 @@ def get_cell(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])
 @login_required
+@require_owner
 def get_quick_edit(txn_id):
     """HTMX partial: return the minimal inline amount input."""
     txn = _get_owned_transaction(txn_id)
@@ -107,6 +144,7 @@ def get_quick_edit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
 @login_required
+@require_owner
 def get_full_edit(txn_id):
     """HTMX partial: return the full edit popover form.
 
@@ -144,6 +182,7 @@ def get_full_edit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
 @login_required
+@require_owner
 def update_transaction(txn_id):
     """Update a transaction's fields (inline edit save).
 
@@ -259,7 +298,7 @@ def mark_done(txn_id):
     actual_amount from the entry sum.  For all others, accepts an
     optional actual_amount from the form.
     """
-    txn = _get_owned_transaction(txn_id)
+    txn = _get_accessible_transaction_for_status(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -333,6 +372,7 @@ def mark_done(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])
 @login_required
+@require_owner
 def mark_credit(txn_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense."""
     txn = _get_owned_transaction(txn_id)
@@ -354,6 +394,7 @@ def mark_credit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/unmark-credit", methods=["DELETE"])
 @login_required
+@require_owner
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback."""
     txn = _get_owned_transaction(txn_id)
@@ -375,6 +416,7 @@ def unmark_credit(txn_id):
 
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
 @login_required
+@require_owner
 def cancel_transaction(txn_id):
     """Set a transaction's status to 'cancelled'.
 
@@ -408,6 +450,7 @@ def cancel_transaction(txn_id):
 
 @transactions_bp.route("/transactions/new/quick", methods=["GET"])
 @login_required
+@require_owner
 def get_quick_create():
     """HTMX partial: return a quick-create input for an empty cell.
 
@@ -456,6 +499,7 @@ def get_quick_create():
 
 @transactions_bp.route("/transactions/new/full", methods=["GET"])
 @login_required
+@require_owner
 def get_full_create():
     """HTMX partial: return the full create popover form.
 
@@ -503,6 +547,7 @@ def get_full_create():
 
 @transactions_bp.route("/transactions/empty-cell", methods=["GET"])
 @login_required
+@require_owner
 def get_empty_cell():
     """HTMX partial: return the empty cell placeholder.
 
@@ -539,6 +584,7 @@ def get_empty_cell():
 
 @transactions_bp.route("/transactions/inline", methods=["POST"])
 @login_required
+@require_owner
 def create_inline():
     """Create a transaction from inline grid interaction.
 
@@ -596,6 +642,7 @@ def create_inline():
 
 @transactions_bp.route("/transactions", methods=["POST"])
 @login_required
+@require_owner
 def create_transaction():
     """Create an ad-hoc transaction (not from a template)."""
     errors = _create_schema.validate(request.form)
@@ -638,6 +685,7 @@ def create_transaction():
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
 @login_required
+@require_owner
 def delete_transaction(txn_id):
     """Soft-delete a transaction (or hard-delete if it's ad-hoc).
 
@@ -666,6 +714,7 @@ def delete_transaction(txn_id):
 
 @transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
 @login_required
+@require_owner
 def carry_forward(period_id):
     """Carry forward all unpaid items from a period to the current period."""
     # Verify the source period belongs to the current user.

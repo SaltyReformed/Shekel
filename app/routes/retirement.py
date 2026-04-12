@@ -12,6 +12,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
@@ -34,6 +36,7 @@ _settings_schema = RetirementSettingsSchema()
 
 @retirement_bp.route("/retirement")
 @login_required
+@require_owner
 def dashboard():
     """Retirement planning dashboard with gap analysis."""
     data = retirement_dashboard_service.compute_gap_data(current_user.id)
@@ -52,6 +55,7 @@ def dashboard():
 
 @retirement_bp.route("/retirement/pension")
 @login_required
+@require_owner
 def pension_list():
     """List pension profiles."""
     pensions = (
@@ -74,6 +78,7 @@ def pension_list():
 
 @retirement_bp.route("/retirement/pension", methods=["POST"])
 @login_required
+@require_owner
 def create_pension():
     """Create a new pension profile."""
     errors = _pension_create_schema.validate(request.form)
@@ -114,6 +119,7 @@ def create_pension():
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>/edit")
 @login_required
+@require_owner
 def edit_pension(pension_id):
     """Display pension profile edit form."""
     pension = db.session.get(PensionProfile, pension_id)
@@ -136,6 +142,7 @@ def edit_pension(pension_id):
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_pension(pension_id):
     """Update a pension profile."""
     pension = db.session.get(PensionProfile, pension_id)
@@ -217,6 +224,7 @@ def update_pension(pension_id):
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_pension(pension_id):
     """Deactivate a pension profile."""
     pension = db.session.get(PensionProfile, pension_id)
@@ -236,6 +244,7 @@ def delete_pension(pension_id):
 
 @retirement_bp.route("/retirement/gap")
 @login_required
+@require_owner
 def gap_analysis():
     """HTMX fragment: recalculate gap analysis with slider overrides."""
     if not request.headers.get("HX-Request"):
@@ -272,6 +281,7 @@ def gap_analysis():
 
 @retirement_bp.route("/retirement/settings", methods=["POST"])
 @login_required
+@require_owner
 def update_settings():
     """Update retirement planning settings."""
     # Preserve original user input for form re-display on error.

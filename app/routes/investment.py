@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -60,6 +62,7 @@ TWO_PLACES = Decimal("0.01")
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
 @login_required
+@require_owner
 def dashboard(account_id):
     """Investment/retirement account dashboard with growth projection."""
     account = db.session.get(Account, account_id)
@@ -364,6 +367,7 @@ def dashboard(account_id):
 
 @investment_bp.route("/accounts/<int:account_id>/investment/growth-chart")
 @login_required
+@require_owner
 def growth_chart(account_id):
     """HTMX fragment: growth projection chart with adjustable horizon.
 
@@ -616,6 +620,7 @@ def growth_chart(account_id):
     methods=["POST"],
 )
 @login_required
+@require_owner
 def create_contribution_transfer(account_id):
     """Create a recurring biweekly transfer to an investment account.
 
@@ -743,6 +748,7 @@ def create_contribution_transfer(account_id):
 
 @investment_bp.route("/accounts/<int:account_id>/investment/params", methods=["POST"])
 @login_required
+@require_owner
 def update_params(account_id):
     """Create or update investment parameters."""
     account = db.session.get(Account, account_id)

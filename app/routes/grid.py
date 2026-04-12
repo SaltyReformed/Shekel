@@ -13,6 +13,8 @@ from decimal import Decimal
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
@@ -134,6 +136,7 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
 
 @grid_bp.route("/grid")
 @login_required
+@require_owner
 def index():
     """Render the full budget grid page.
 
@@ -310,6 +313,7 @@ def index():
 
 @grid_bp.route("/create-baseline", methods=["POST"])
 @login_required
+@require_owner
 def create_baseline():
     """Create a missing baseline scenario for the current user.
 
@@ -342,6 +346,7 @@ def create_baseline():
 
 @grid_bp.route("/grid/balance-row")
 @login_required
+@require_owner
 def balance_row():
     """HTMX partial: recalculate and return the balance summary row."""
     user_id = current_user.id

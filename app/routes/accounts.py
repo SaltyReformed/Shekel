@@ -11,6 +11,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.utils import archive_helpers
@@ -52,6 +54,7 @@ _interest_params_schema = InterestParamsUpdateSchema()
 
 @accounts_bp.route("/accounts")
 @login_required
+@require_owner
 def list_accounts():
     """List all accounts and account types (two-section page).
 
@@ -93,6 +96,7 @@ def list_accounts():
 
 @accounts_bp.route("/accounts/new", methods=["GET"])
 @login_required
+@require_owner
 def new_account():
     """Display the account creation form."""
     account_types = (
@@ -109,6 +113,7 @@ def new_account():
 
 @accounts_bp.route("/accounts", methods=["POST"])
 @login_required
+@require_owner
 def create_account():
     """Create a new account."""
     errors = _create_schema.validate(request.form)
@@ -187,6 +192,7 @@ def create_account():
 
 @accounts_bp.route("/accounts/<int:account_id>/edit", methods=["GET"])
 @login_required
+@require_owner
 def edit_account(account_id):
     """Display the account edit form."""
     account = db.session.get(Account, account_id)
@@ -208,6 +214,7 @@ def edit_account(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_account(account_id):
     """Update an account."""
     account = db.session.get(Account, account_id)
@@ -262,6 +269,7 @@ def update_account(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/archive", methods=["POST"])
 @login_required
+@require_owner
 def archive_account(account_id):
     """Archive an account (soft delete)."""
     account = db.session.get(Account, account_id)
@@ -301,6 +309,7 @@ def archive_account(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/unarchive", methods=["POST"])
 @login_required
+@require_owner
 def unarchive_account(account_id):
     """Unarchive an account."""
     account = db.session.get(Account, account_id)
@@ -317,6 +326,7 @@ def unarchive_account(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
 @login_required
+@require_owner
 def hard_delete_account(account_id):
     """Permanently delete an account if it has no blocking dependents.
 
@@ -443,6 +453,7 @@ def hard_delete_account(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/inline-anchor", methods=["PATCH"])
 @login_required
+@require_owner
 def inline_anchor_update(account_id):
     """HTMX endpoint: update anchor balance inline from the accounts list."""
     account = db.session.get(Account, account_id)
@@ -483,6 +494,7 @@ def inline_anchor_update(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/inline-anchor-form", methods=["GET"])
 @login_required
+@require_owner
 def inline_anchor_form(account_id):
     """HTMX partial: show inline anchor balance edit form on accounts list."""
     account = db.session.get(Account, account_id)
@@ -496,6 +508,7 @@ def inline_anchor_form(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/inline-anchor-display", methods=["GET"])
 @login_required
+@require_owner
 def inline_anchor_display(account_id):
     """HTMX partial: show anchor balance display on accounts list."""
     account = db.session.get(Account, account_id)
@@ -512,6 +525,7 @@ def inline_anchor_display(account_id):
 
 @accounts_bp.route("/accounts/types", methods=["POST"])
 @login_required
+@require_owner
 def create_account_type():
     """Create a new account type."""
     errors = _type_create_schema.validate(request.form)
@@ -542,6 +556,7 @@ def create_account_type():
 
 @accounts_bp.route("/accounts/types/<int:type_id>", methods=["POST"])
 @login_required
+@require_owner
 def update_account_type(type_id):
     """Update an account type's name and/or metadata fields."""
     account_type = db.session.get(AccountType, type_id)
@@ -582,6 +597,7 @@ def update_account_type(type_id):
 
 @accounts_bp.route("/accounts/types/<int:type_id>/delete", methods=["POST"])
 @login_required
+@require_owner
 def delete_account_type(type_id):
     """Delete an account type (only if no accounts reference it)."""
     account_type = db.session.get(AccountType, type_id)
@@ -614,6 +630,7 @@ def delete_account_type(type_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
 @login_required
+@require_owner
 def true_up(account_id):
     """Update the anchor balance for an account (inline edit from grid).
 
@@ -671,6 +688,7 @@ def true_up(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])
 @login_required
+@require_owner
 def anchor_form(account_id):
     """HTMX partial: return the inline edit form for the anchor balance."""
     account = db.session.get(Account, account_id)
@@ -686,6 +704,7 @@ def anchor_form(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-display", methods=["GET"])
 @login_required
+@require_owner
 def anchor_display(account_id):
     """HTMX partial: return the anchor balance display (non-editing)."""
     account = db.session.get(Account, account_id)
@@ -704,6 +723,7 @@ def anchor_display(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/interest")
 @login_required
+@require_owner
 def interest_detail(account_id):
     """Interest-bearing account detail page with interest projections."""
     account = db.session.get(Account, account_id)
@@ -805,6 +825,7 @@ def interest_detail(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/interest/params", methods=["POST"])
 @login_required
+@require_owner
 def update_interest_params(account_id):
     """Update interest parameters (APY, compounding frequency)."""
     account = db.session.get(Account, account_id)
@@ -850,6 +871,7 @@ def update_interest_params(account_id):
 
 @accounts_bp.route("/accounts/<int:account_id>/checking")
 @login_required
+@require_owner
 def checking_detail(account_id):
     """Checking account detail page with balance projections.
 

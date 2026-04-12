@@ -12,6 +12,8 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -28,6 +30,7 @@ dashboard_bp = Blueprint("dashboard", __name__)
 @dashboard_bp.route("/")
 @dashboard_bp.route("/dashboard")
 @login_required
+@require_owner
 def page():
     """Render the summary dashboard with all 7 sections.
 
@@ -40,6 +43,7 @@ def page():
 
 @dashboard_bp.route("/dashboard/mark-paid/<int:txn_id>", methods=["POST"])
 @login_required
+@require_owner
 def mark_paid(txn_id):
     """Mark a bill as paid from the dashboard.
 
@@ -97,6 +101,7 @@ def mark_paid(txn_id):
 
 @dashboard_bp.route("/dashboard/bills")
 @login_required
+@require_owner
 def bills_section():
     """HTMX partial: refresh the upcoming bills section.
 
@@ -115,6 +120,7 @@ def bills_section():
 
 @dashboard_bp.route("/dashboard/balance")
 @login_required
+@require_owner
 def balance_section():
     """HTMX partial: refresh the balance and runway section.
 

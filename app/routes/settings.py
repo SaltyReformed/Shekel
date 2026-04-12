@@ -11,6 +11,8 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from app.utils.auth_helpers import require_owner
+
 from app.extensions import db
 from app.models.account import Account
 from app.schemas.validation import UserSettingsSchema
@@ -28,6 +30,7 @@ _VALID_SECTIONS = ["general", "categories", "pay-periods", "tax", "account-types
 
 @settings_bp.route("/settings", methods=["GET"])
 @login_required
+@require_owner
 def show():
     """Display the settings dashboard."""
     section = request.args.get("section", "general")
@@ -159,6 +162,7 @@ def show():
 
 @settings_bp.route("/settings", methods=["POST"])
 @login_required
+@require_owner
 def update():
     """Update user settings."""
     schema = UserSettingsSchema()
