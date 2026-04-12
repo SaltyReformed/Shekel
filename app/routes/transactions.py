@@ -29,6 +29,7 @@ from app.schemas.validation import (
 )
 from app.services import credit_workflow, carry_forward_service, pay_period_service
 from app.services import transfer_service
+from app.services.entry_service import compute_actual_from_entries
 from app.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,17 @@ def update_transaction(txn_id):
     # triggering an FK violation when the session is dirtied.
     revert_paid_at = False
     if "status_id" in data:
+        # Block Credit status on entry-capable transactions -- credit
+        # handling is per-entry, not per-transaction (scope doc section 5.2).
+        credit_id = ref_cache.status_id(StatusEnum.CREDIT)
+        if (data["status_id"] == credit_id
+                and txn.template is not None
+                and txn.template.track_individual_purchases):
+            return (
+                "Cannot set Credit status on transactions with individual "
+                "purchase tracking. Use entry-level credit instead."
+            ), 400
+
         new_status = db.session.get(Status, data["status_id"])
         if new_status and not new_status.is_settled and txn.paid_at is not None:
             revert_paid_at = True
@@ -217,7 +229,9 @@ def mark_done(txn_id):
     shadows and the parent transfer are updated atomically.
 
     Automatically picks the correct status based on transaction type.
-    Accepts an optional actual_amount from the form.
+    For entry-capable transactions with entries, auto-computes
+    actual_amount from the entry sum.  For all others, accepts an
+    optional actual_amount from the form.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -262,13 +276,23 @@ def mark_done(txn_id):
     txn.status_id = status_id
     txn.paid_at = db.func.now()
 
-    # Accept an actual amount from the form.
-    actual = request.form.get("actual_amount")
-    if actual:
-        try:
-            txn.actual_amount = Decimal(actual)
-        except (InvalidOperation, ValueError, ArithmeticError):
-            return "Invalid actual amount", 400
+    # Auto-populate actual from entries for entry-capable transactions.
+    # Entry sum takes precedence over any manual actual_amount from the
+    # form (scope doc section 4.2).  If no entries exist, fall through
+    # to the manual flow so non-tracked and empty-tracked transactions
+    # behave identically to pre-entry behavior.
+    if (txn.template is not None
+            and txn.template.track_individual_purchases
+            and txn.entries):
+        txn.actual_amount = compute_actual_from_entries(txn.entries)
+    else:
+        # Accept an optional manual actual amount from the form.
+        actual = request.form.get("actual_amount")
+        if actual:
+            try:
+                txn.actual_amount = Decimal(actual)
+            except (InvalidOperation, ValueError, ArithmeticError):
+                return "Invalid actual amount", 400
 
     try:
         db.session.commit()

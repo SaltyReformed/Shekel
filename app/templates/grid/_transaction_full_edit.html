@@ -91,7 +91,8 @@
     </button>
     {% endif %}
 
-    {% if not txn.transfer_id and txn.is_expense and txn.status_id == STATUS_PROJECTED %}
+    {% if not txn.transfer_id and txn.is_expense and txn.status_id == STATUS_PROJECTED
+       and not (txn.template and txn.template.track_individual_purchases) %}
     <button type="button" class="btn btn-xs btn-warning flex-grow-1"
             hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"

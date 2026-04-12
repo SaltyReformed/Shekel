@@ -34,6 +34,32 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS = frozenset({"amount", "description", "entry_date", "is_credit"})
 
 
+def _update_actual_if_paid(txn: Transaction) -> None:
+    """Re-compute actual_amount if the transaction is already Paid.
+
+    Handles the edge case of entries added/edited/deleted after the
+    transaction was marked Paid (late-posting purchases).  Per scope
+    doc section 4.2: the entry sum takes precedence over any manually
+    entered actual once entries exist.
+
+    Only fires for DONE status -- RECEIVED (income) never has entries,
+    and SETTLED transactions are considered finalized.
+
+    When entries are empty (e.g. all entries deleted from a Paid txn),
+    actual_amount is left unchanged so the previous value persists.
+    The user can manually correct it via the full edit form.
+
+    Does NOT commit or flush -- the calling service function owns the
+    session boundary.
+
+    Args:
+        txn: The parent Transaction object.
+    """
+    done_id = ref_cache.status_id(StatusEnum.DONE)
+    if txn.status_id == done_id and txn.entries:
+        txn.actual_amount = compute_actual_from_entries(txn.entries)
+
+
 def resolve_owner_id(user_id: int) -> int:
     """Return the data-owning user_id.
 
@@ -161,6 +187,7 @@ def create_entry(
     )
 
     sync_entry_payback(transaction_id, owner_id)
+    _update_actual_if_paid(txn)
 
     return entry
 
@@ -211,6 +238,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     logger.info("Updated entry %d: %s", entry_id, valid_updates)
 
     sync_entry_payback(entry.transaction_id, owner_id)
+    _update_actual_if_paid(entry.transaction)
 
     return entry
 
@@ -241,6 +269,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
+    txn = entry.transaction
     transaction_id = entry.transaction_id
     db.session.delete(entry)
     db.session.flush()
@@ -250,6 +279,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     )
 
     sync_entry_payback(transaction_id, owner_id)
+    _update_actual_if_paid(txn)
 
     return transaction_id
 
