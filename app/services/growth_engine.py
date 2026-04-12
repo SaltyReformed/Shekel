@@ -294,6 +294,99 @@ def project_balance(
     return results
 
 
+def reverse_project_balance(
+    anchor_balance,
+    assumed_annual_return,
+    periods,
+    periodic_contribution=ZERO,
+    employer_params=None,
+):
+    """Reverse-project investment balance backward through pay periods.
+
+    Given the balance at the END of the last period in the list,
+    derives what the balance must have been at the START of each
+    prior period using the exact inverse of the forward growth
+    formula from project_balance():
+
+        Forward:  end = start * (1 + rate) + contribution + employer
+        Reverse:  start = (end - contribution - employer) / (1 + rate)
+
+    This is used by the year-end summary to infer the Jan 1 balance
+    when the account's anchor period is after January 1.
+
+    Annual contribution limits are NOT tracked in reverse because the
+    anchor balance already reflects historical limit enforcement.
+
+    Args:
+        anchor_balance:       Decimal balance at the end of the last period.
+        assumed_annual_return: Decimal annual return rate (e.g. 0.105 for 10.5%).
+        periods:              List of period objects in forward chronological
+                              order.  The anchor_balance corresponds to the
+                              end of the final period.
+        periodic_contribution: Decimal employee contribution per period.
+        employer_params:      dict for employer contribution calculation.
+
+    Returns:
+        List of ProjectedBalance in forward chronological order, one per
+        period.  The start_balance of the first entry is the inferred
+        balance before the first period (the "Jan 1 balance").
+    """
+    anchor_balance = Decimal(str(anchor_balance))
+    assumed_annual_return = Decimal(str(assumed_annual_return))
+    periodic_contribution = Decimal(str(periodic_contribution))
+
+    contribution = max(periodic_contribution, ZERO)
+    employer_contribution = calculate_employer_contribution(
+        employer_params, contribution,
+    )
+
+    # Work backward: end_balance of each period is the start_balance
+    # of the next period.  For the last period, end_balance = anchor.
+    reversed_results = []
+    end_balance = anchor_balance
+
+    for period in reversed(periods):
+        period_days = (period.end_date - period.start_date).days
+        if period_days <= 0:
+            period_days = 14
+
+        period_return_rate = (
+            (1 + assumed_annual_return)
+            ** (Decimal(str(period_days)) / Decimal("365"))
+            - 1
+        )
+
+        # Inverse of: end = start * (1 + rate) + contribution + employer
+        divisor = 1 + period_return_rate
+        start_balance = (
+            (end_balance - contribution - employer_contribution) / divisor
+        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        start_balance = max(start_balance, ZERO)
+
+        # Derive growth from the relationship:
+        # end = start + growth + contribution + employer
+        growth = end_balance - start_balance - contribution - employer_contribution
+
+        reversed_results.append(ProjectedBalance(
+            period_id=period.id,
+            start_balance=start_balance,
+            growth=growth,
+            contribution=contribution,
+            employer_contribution=employer_contribution,
+            end_balance=end_balance,
+            ytd_contributions=ZERO,
+            contribution_limit_remaining=None,
+            is_confirmed=False,
+        ))
+
+        # The start of this period is the end of the previous period.
+        end_balance = start_balance
+
+    # Return in forward chronological order.
+    reversed_results.reverse()
+    return reversed_results
+
+
 SyntheticPeriod = namedtuple("SyntheticPeriod", ["id", "start_date", "end_date"])
 
 

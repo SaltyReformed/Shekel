@@ -42,7 +42,10 @@ from app.services import (
     growth_engine,
     paycheck_calculator,
 )
-from app.services.investment_projection import calculate_investment_inputs
+from app.services.investment_projection import (
+    adapt_deductions,
+    calculate_investment_inputs,
+)
 from app.services.loan_payment_service import load_loan_context
 from app.services.tax_config_service import load_tax_configs
 
@@ -760,25 +763,28 @@ def _compute_savings_progress(
             balances = _get_account_balance_map(
                 account, scenario, all_periods,
             )
-            jan1_bal = _lookup_period_balance(
-                balances, year, 1, all_periods,
+            jan1_bal = _lookup_balance_with_anchor_fallback(
+                balances, year, 1, all_periods, account,
             )
-            dec31_bal = _lookup_period_balance(
-                balances, year, 12, all_periods,
+            dec31_bal = _lookup_balance_with_anchor_fallback(
+                balances, year, 12, all_periods, account,
             )
             employer_total = ZERO
             growth_total = _compute_interest_for_year(
                 account, int_params, scenario, all_periods, year,
             )
+            growth_total += _compute_pre_anchor_interest(
+                account, int_params, all_periods, year,
+            )
         else:
             balances = _get_account_balance_map(
                 account, scenario, all_periods,
             )
-            jan1_bal = _lookup_period_balance(
-                balances, year, 1, all_periods,
+            jan1_bal = _lookup_balance_with_anchor_fallback(
+                balances, year, 1, all_periods, account,
             )
-            dec31_bal = _lookup_period_balance(
-                balances, year, 12, all_periods,
+            dec31_bal = _lookup_balance_with_anchor_fallback(
+                balances, year, 12, all_periods, account,
             )
             employer_total = ZERO
             growth_total = ZERO
@@ -850,8 +856,10 @@ def _project_investment_for_year(
     """Project investment account balance through the target year.
 
     Uses the growth engine with employer contributions and assumed
-    annual return, following the same pattern as
-    savings_dashboard_service._project_investment().
+    annual return.  When the account's anchor period is after January 1
+    of the target year, the January balance is derived via reverse
+    projection from the anchor balance -- the balance calculator does
+    not compute pre-anchor periods.
 
     Args:
         account: The investment account.
@@ -873,7 +881,6 @@ def _project_investment_for_year(
 
     # Get base balance from the balance calculator (anchor + transactions).
     balances = _get_account_balance_map(account, scenario, all_periods)
-    jan1_bal = _lookup_period_balance(balances, year, 1, all_periods)
 
     # Find pay periods that fall within the target year.
     year_start = date(year, 1, 1)
@@ -884,20 +891,11 @@ def _project_investment_for_year(
     ]
 
     if not year_periods:
-        return jan1_bal, jan1_bal, ZERO, ZERO
+        return ZERO, ZERO, ZERO, ZERO
 
     # Adapt paycheck deductions for calculate_investment_inputs().
-    # Same pattern as savings_dashboard_service._project_investment().
     acct_deductions = deductions_by_account.get(account.id, [])
-    adapted_deductions = []
-    for ded in acct_deductions:
-        profile = ded.salary_profile
-        adapted_deductions.append(type("D", (), {
-            "amount": ded.amount,
-            "calc_method_id": ded.calc_method_id,
-            "annual_salary": profile.annual_salary,
-            "pay_periods_per_year": profile.pay_periods_per_year or 26,
-        })())
+    adapted_deductions = adapt_deductions(acct_deductions)
 
     # Shadow income transactions in the year for contribution history.
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -920,19 +918,55 @@ def _project_investment_for_year(
         .all()
     ) if year_period_ids else []
 
-    # Use the first year period as the "current_period" context.
-    current_period = year_periods[0]
-
+    # Compute periodic contribution and employer params.
     inputs = calculate_investment_inputs(
         account_id=account.id,
         investment_params=investment_params,
         deductions=adapted_deductions,
         all_contributions=acct_contributions,
         all_periods=all_periods,
-        current_period=current_period,
+        current_period=year_periods[0],
         salary_gross_biweekly=salary_gross_biweekly,
     )
 
+    # Determine anchor position relative to the year.
+    anchor_idx = _get_anchor_period_index(account, all_periods)
+    first_year_idx = year_periods[0].period_index
+
+    if anchor_idx is not None and anchor_idx > first_year_idx:
+        # Pre-anchor gap: the balance calculator has no data for
+        # periods before the anchor.  Reverse-project from the anchor
+        # balance to derive the January 1 starting balance.
+        anchor_pid = account.current_anchor_period_id
+        anchor_bal = (
+            balances.get(anchor_pid, account.current_anchor_balance or ZERO)
+            if balances else account.current_anchor_balance or ZERO
+        )
+
+        # Include all periods from the start of the year through the
+        # anchor so the reverse traverses every intervening period.
+        reverse_periods = [
+            p for p in all_periods
+            if first_year_idx <= p.period_index <= anchor_idx
+        ]
+
+        reversed_proj = growth_engine.reverse_project_balance(
+            anchor_balance=anchor_bal,
+            assumed_annual_return=investment_params.assumed_annual_return,
+            periods=reverse_periods,
+            periodic_contribution=inputs.periodic_contribution,
+            employer_params=inputs.employer_params,
+        )
+        jan1_bal = (
+            reversed_proj[0].start_balance if reversed_proj else ZERO
+        )
+    else:
+        # No pre-anchor gap -- the balance map covers January.
+        jan1_bal = _lookup_period_balance(
+            balances, year, 1, all_periods,
+        )
+
+    # Forward-project the full year from the (now correct) Jan 1 balance.
     projection = growth_engine.project_balance(
         current_balance=jan1_bal,
         assumed_annual_return=investment_params.assumed_annual_return,
@@ -1359,9 +1393,14 @@ def _build_investment_balance_map(
 ) -> OrderedDict:
     """Build period_id -> balance map using the growth engine.
 
-    Starts from the base balance calculator (anchor + transactions) for
-    pre-anchor periods, then projects forward using the growth engine
-    with employer contributions and assumed annual return.
+    Produces balances for all periods by combining three sources:
+
+    - **Pre-anchor periods**: reverse growth engine projection backward
+      from the anchor balance.
+    - **Anchor period**: base balance calculator (anchor + remaining
+      transactions).
+    - **Post-anchor periods**: forward growth engine projection from
+      the anchor balance.
 
     Args:
         account: Investment account.
@@ -1385,41 +1424,30 @@ def _build_investment_balance_map(
     anchor_balance = base_balances.get(anchor_pid, ZERO)
 
     # Find the anchor period's index to split pre/post-anchor.
-    anchor_idx = None
-    for p in periods:
-        if p.id == anchor_pid:
-            anchor_idx = p.period_index
-            break
-
+    anchor_idx = _get_anchor_period_index(account, periods)
     if anchor_idx is None:
         return base_balances
 
-    # Post-anchor periods need growth engine projection.
+    pre_anchor = [
+        p for p in periods if p.period_index < anchor_idx
+    ]
     post_anchor = [
         p for p in periods if p.period_index > anchor_idx
     ]
 
-    if not post_anchor:
+    if not pre_anchor and not post_anchor:
         return base_balances
 
-    # Adapt paycheck deductions (same pattern as _project_investment_for_year).
+    # Adapt paycheck deductions and compute projection inputs.
     deductions_by_account = ctx["deductions_by_account"]
     salary_gross_biweekly = ctx["salary_gross_biweekly"]
     scenario_id = scenario.id
 
     acct_deductions = deductions_by_account.get(account.id, [])
-    adapted_deductions = []
-    for ded in acct_deductions:
-        profile = ded.salary_profile
-        adapted_deductions.append(type("D", (), {
-            "amount": ded.amount,
-            "calc_method_id": ded.calc_method_id,
-            "annual_salary": profile.annual_salary,
-            "pay_periods_per_year": profile.pay_periods_per_year or 26,
-        })())
+    adapted_deductions = adapt_deductions(acct_deductions)
 
     # Shadow income transactions for contribution history.
-    period_ids = [p.id for p in post_anchor]
+    post_period_ids = [p.id for p in post_anchor]
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
@@ -1431,45 +1459,73 @@ def _build_investment_balance_map(
         .filter(
             Transaction.account_id == account.id,
             Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
+            Transaction.pay_period_id.in_(post_period_ids),
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.is_deleted.is_(False),
             Status.excludes_from_balance.is_(False),
         )
         .all()
-    ) if period_ids else []
+    ) if post_period_ids else []
 
+    current_period = post_anchor[0] if post_anchor else pre_anchor[-1]
     inputs = calculate_investment_inputs(
         account_id=account.id,
         investment_params=investment_params,
         deductions=adapted_deductions,
         all_contributions=acct_contributions,
         all_periods=periods,
-        current_period=post_anchor[0],
+        current_period=current_period,
         salary_gross_biweekly=salary_gross_biweekly,
     )
 
-    projection = growth_engine.project_balance(
-        current_balance=anchor_balance,
-        assumed_annual_return=investment_params.assumed_annual_return,
-        periods=post_anchor,
-        periodic_contribution=inputs.periodic_contribution,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=inputs.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions,
-    )
+    # Forward projection for post-anchor periods.
+    proj_by_pid = {}
+    if post_anchor:
+        projection = growth_engine.project_balance(
+            current_balance=anchor_balance,
+            assumed_annual_return=investment_params.assumed_annual_return,
+            periods=post_anchor,
+            periodic_contribution=inputs.periodic_contribution,
+            employer_params=inputs.employer_params,
+            annual_contribution_limit=inputs.annual_contribution_limit,
+            ytd_contributions_start=inputs.ytd_contributions,
+        )
+        proj_by_pid = {
+            pb.period_id: pb.end_balance for pb in projection
+        }
 
-    # Merge: base balances for anchor-and-earlier, growth engine for
-    # post-anchor periods.
+    # Reverse projection for pre-anchor periods.  Include the anchor
+    # period in the reverse list so reverse_project_balance has the
+    # correct endpoint (anchor_balance = end of anchor period).
+    rev_by_pid = {}
+    if pre_anchor:
+        anchor_period = next(
+            p for p in periods if p.id == anchor_pid
+        )
+        reverse_periods = pre_anchor + [anchor_period]
+        reversed_proj = growth_engine.reverse_project_balance(
+            anchor_balance=anchor_balance,
+            assumed_annual_return=investment_params.assumed_annual_return,
+            periods=reverse_periods,
+            periodic_contribution=inputs.periodic_contribution,
+            employer_params=inputs.employer_params,
+        )
+        rev_by_pid = {
+            pb.period_id: pb.end_balance
+            for pb in reversed_proj
+            if pb.period_id != anchor_pid
+        }
+
+    # Merge all three sources.
     result = OrderedDict()
-    proj_by_pid = {pb.period_id: pb.end_balance for pb in projection}
-
     for period in periods:
         if period.id in proj_by_pid:
             result[period.id] = proj_by_pid[period.id]
         elif period.id in base_balances:
             result[period.id] = base_balances[period.id]
+        elif period.id in rev_by_pid:
+            result[period.id] = rev_by_pid[period.id]
 
     return result
 
@@ -1498,6 +1554,151 @@ def _get_primary_checking_id(accounts: list) -> int | None:
         if a.account_type_id == checking_type_id:
             return a.id
     return None
+
+
+def _get_anchor_period_index(
+    account: Account, all_periods: list,
+) -> int | None:
+    """Return the period_index of the account's anchor period.
+
+    Args:
+        account: Account with current_anchor_period_id set.
+        all_periods: All user pay periods.
+
+    Returns:
+        int period_index, or None if the anchor period is not found.
+    """
+    anchor_pid = account.current_anchor_period_id
+    if anchor_pid is None:
+        return None
+    for p in all_periods:
+        if p.id == anchor_pid:
+            return p.period_index
+    return None
+
+
+def _lookup_balance_with_anchor_fallback(
+    balances: dict | None,
+    year: int,
+    month: int,
+    all_periods: list,
+    account: Account,
+) -> Decimal:
+    """Look up balance at a period, falling back to anchor balance for pre-anchor periods.
+
+    Unlike _lookup_period_balance which returns ZERO for pre-anchor
+    periods (because calculate_balances skips them), this function
+    returns the account's anchor balance when the target period is
+    before the anchor -- a closer approximation than ZERO.
+
+    A legitimate ZERO balance at a post-anchor period is returned
+    as-is; the fallback only triggers when the target period is
+    absent from the balance map AND precedes the anchor.
+
+    Args:
+        balances: period_id -> Decimal balance map from
+            calculate_balances, or None.
+        year: Calendar year.
+        month: Month number (1-12).
+        all_periods: All user pay periods.
+        account: Account with current_anchor_balance and
+            current_anchor_period_id.
+
+    Returns:
+        Decimal balance.
+    """
+    if not balances:
+        # No balance map at all -- fall back to anchor if available.
+        return account.current_anchor_balance or ZERO
+
+    last_day = date(
+        year, month, calendar.monthrange(year, month)[1],
+    )
+    target_period = _find_period_on_or_before_date(
+        last_day, all_periods,
+    )
+    if target_period is None:
+        return ZERO
+
+    # Period exists in the balance map -- return its value (even if ZERO).
+    if target_period.id in balances:
+        return balances[target_period.id]
+
+    # Period is NOT in the balance map.  If it precedes the anchor,
+    # the anchor balance is the best available approximation.
+    anchor_pid = account.current_anchor_period_id
+    anchor_period = next(
+        (p for p in all_periods if p.id == anchor_pid), None,
+    )
+    if anchor_period and target_period.period_index < anchor_period.period_index:
+        return account.current_anchor_balance or ZERO
+
+    return ZERO
+
+
+def _compute_pre_anchor_interest(
+    account: Account,
+    interest_params: InterestParams,
+    all_periods: list,
+    year: int,
+) -> Decimal:
+    """Estimate interest earned in pre-anchor periods of the target year.
+
+    When the anchor falls after January 1 of the target year,
+    calculate_balances_with_interest does not compute interest for
+    pre-anchor periods.  This function fills that gap using the
+    anchor balance as an approximation of the account balance during
+    those periods.
+
+    This slightly overstates interest (the actual balance was lower
+    before contributions), but is a reasonable approximation for
+    display purposes.
+
+    Args:
+        account: Interest-bearing account.
+        interest_params: InterestParams for the account.
+        all_periods: All user pay periods.
+        year: Target calendar year.
+
+    Returns:
+        Decimal estimated interest for pre-anchor year periods.
+    """
+    from app.services.interest_projection import calculate_interest  # pylint: disable=import-outside-toplevel
+
+    anchor_pid = account.current_anchor_period_id
+    if anchor_pid is None:
+        return ZERO
+
+    anchor_period = next(
+        (p for p in all_periods if p.id == anchor_pid), None,
+    )
+    if anchor_period is None:
+        return ZERO
+
+    year_start = date(year, 1, 1)
+    if anchor_period.start_date <= year_start:
+        return ZERO  # No pre-anchor gap in this year.
+
+    # Pre-anchor periods in the target year.
+    pre_anchor = [
+        p for p in all_periods
+        if p.start_date.year == year
+        and p.start_date < anchor_period.start_date
+    ]
+
+    balance = account.current_anchor_balance or ZERO
+    total_interest = ZERO
+    for period in pre_anchor:
+        interest = calculate_interest(
+            balance=balance,
+            apy=interest_params.apy,
+            compounding_frequency=interest_params.compounding_frequency,
+            period_start=period.start_date,
+            period_end=period.end_date,
+        )
+        total_interest += interest
+
+    return total_interest
 
 
 def _load_investment_params(

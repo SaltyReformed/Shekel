@@ -37,7 +37,10 @@ from app.services import (
     pension_calculator,
     retirement_gap_calculator,
 )
-from app.services.investment_projection import calculate_investment_inputs
+from app.services.investment_projection import (
+    adapt_deductions,
+    calculate_investment_inputs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,15 +384,7 @@ def _project_retirement_accounts(
 
         if params and projection_periods:
             acct_deductions = deductions_by_account.get(acct.id, [])
-            adapted_deductions = []
-            for ded in acct_deductions:
-                ded_profile = ded.salary_profile
-                adapted_deductions.append(type("D", (), {
-                    "amount": ded.amount,
-                    "calc_method_id": ded.calc_method_id,
-                    "annual_salary": ded_profile.annual_salary,
-                    "pay_periods_per_year": ded_profile.pay_periods_per_year or 26,
-                })())
+            adapted_deductions = adapt_deductions(acct_deductions)
 
             acct_contributions = [
                 t for t in all_acct_contributions
