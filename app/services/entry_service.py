@@ -20,6 +20,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
@@ -435,3 +436,115 @@ def check_entry_date_in_period(
     """
     period = transaction.pay_period
     return period.start_date <= entry_date <= period.end_date
+
+
+def clear_entries_for_anchor_true_up(owner_id: int) -> int:
+    """Mark past-dated entries on projected parents as reconciled.
+
+    Called from the checking-account anchor true-up routes.  The
+    semantic contract: "the owner just looked at their real checking
+    balance and entered it as the new anchor, so every debit purchase
+    that had already posted is now reflected in that number."  We
+    flip those entries to is_cleared=TRUE so the balance calculator
+    stops holding back the full estimated amount (see bug fix in
+    balance_calculator.py _entry_aware_amount).
+
+    Scope:
+      - Entries whose parent transaction belongs to this owner
+        (via pay_period.user_id).
+      - Parent transaction is not soft-deleted.
+      - Parent transaction is in Projected status (settled parents
+        are already excluded from the entry formula, so their entries
+        do not affect balances either way).
+      - Entry date is on or before today (future-dated entries cannot
+        have posted to checking yet, so leave them uncleared).
+      - Entry is_cleared is currently FALSE (no-op otherwise).
+
+    Credit entries are included in the flip for consistency, but the
+    balance calculator ignores is_cleared on credit entries, so this
+    has no effect on balances for credit rows.
+
+    Does NOT commit -- the calling route owns the session boundary so
+    the anchor history row and the cleared flips land in the same DB
+    transaction.
+
+    Args:
+        owner_id: The user_id whose entries should be reconciled.
+
+    Returns:
+        int -- number of entry rows updated.
+    """
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    today = date.today()
+
+    # Synchronize_session='fetch' because later code in the same request
+    # (e.g. balance calculator rendering the grid) may hold refs to the
+    # affected entry rows and needs to see the updated flag.
+    updated = (
+        db.session.query(TransactionEntry)
+        .filter(
+            TransactionEntry.is_cleared.is_(False),
+            TransactionEntry.entry_date <= today,
+            TransactionEntry.transaction_id.in_(
+                db.session.query(Transaction.id)
+                .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+                .filter(
+                    PayPeriod.user_id == owner_id,
+                    Transaction.is_deleted.is_(False),
+                    Transaction.status_id == projected_id,
+                )
+            ),
+        )
+        .update(
+            {TransactionEntry.is_cleared: True},
+            synchronize_session="fetch",
+        )
+    )
+
+    if updated:
+        logger.info(
+            "Cleared %d transaction entries on anchor true-up for user %d",
+            updated, owner_id,
+        )
+
+    return updated
+
+
+def toggle_cleared(entry_id: int, user_id: int) -> TransactionEntry:
+    """Flip the is_cleared flag on a single entry.
+
+    The manual override for cases where the auto-clear on anchor
+    true-up is wrong for a specific purchase (e.g. a debit that
+    posted after the user's most recent anchor update, or an entry
+    the user wants to exclude from the reservation before they've
+    formally updated the anchor).
+
+    Re-validates ownership through the entry's parent transaction.
+    Does NOT commit -- the caller owns the session boundary.
+
+    Args:
+        entry_id: The entry to toggle.
+        user_id: The requesting user's ID (owner or companion).
+
+    Returns:
+        The updated TransactionEntry.
+
+    Raises:
+        NotFoundError: Entry not found or not accessible.
+    """
+    entry = db.session.get(TransactionEntry, entry_id)
+    if entry is None:
+        raise NotFoundError(f"Entry {entry_id} not found.")
+
+    owner_id = resolve_owner_id(user_id)
+    if entry.transaction.pay_period.user_id != owner_id:
+        raise NotFoundError(f"Entry {entry_id} not found.")
+
+    entry.is_cleared = not entry.is_cleared
+    db.session.flush()
+
+    logger.info(
+        "Toggled entry %d is_cleared to %s", entry_id, entry.is_cleared,
+    )
+
+    return entry

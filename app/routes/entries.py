@@ -189,6 +189,43 @@ def update_entry(txn_id, entry_id):
 
 
 @entries_bp.route(
+    "/transactions/<int:txn_id>/entries/<int:entry_id>/cleared",
+    methods=["PATCH"],
+)
+@login_required
+def toggle_cleared(txn_id, entry_id):
+    """Manually flip the is_cleared flag on a single entry.
+
+    The auto-clear on anchor true-up covers the common case, but the
+    user may need to correct a specific entry (e.g. a debit that
+    posted after their most recent true-up but was auto-cleared in
+    error, or one they want to exclude from the reservation before
+    they've formally updated the anchor).
+
+    Returns the refreshed entry list and a balanceChanged HX-Trigger
+    so the grid re-renders with the new projection.
+    """
+    txn = _get_accessible_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+
+    # Guard: entry must belong to this transaction.
+    entry = db.session.get(TransactionEntry, entry_id)
+    if entry is None or entry.transaction_id != txn.id:
+        return "Not found", 404
+
+    try:
+        entry_service.toggle_cleared(entry_id, current_user.id)
+        db.session.commit()
+    except NotFoundError as exc:
+        db.session.rollback()
+        return str(exc), 404
+
+    response = _render_entry_list(txn)
+    return response, 200, {"HX-Trigger": "balanceChanged"}
+
+
+@entries_bp.route(
     "/transactions/<int:txn_id>/entries/<int:entry_id>",
     methods=["DELETE"],
 )

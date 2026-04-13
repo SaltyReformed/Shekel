@@ -1552,3 +1552,317 @@ class TestEntryAwareBalance:
             # Paycheck: 2000
             # Anchor: 5000 + 2000 - 400 = 6600
             assert balances[seed_periods[0].id] == Decimal("6600.00")
+
+
+class TestEntryClearedFlag:
+    """Tests for the is_cleared flag and the three-bucket formula.
+
+    Formula: checking_impact = max(
+        estimated - cleared_debit - sum_credit,
+        uncleared_debit,
+    )
+
+    Semantics:
+      - Cleared debits are already reflected in the anchor balance.
+      - Uncleared debits have hit checking but are not yet in the anchor.
+      - With every is_cleared=False (the default), the formula reduces
+        to max(estimated - sum_credit, sum_debit) -- the original
+        pre-fix behavior, verified by the TestEntryAwareBalance scenarios
+        above.
+
+    These tests cover the new scenarios where is_cleared=True changes
+    the projected reservation.
+    """
+
+    def _make_groceries(self, db, seed_user, seed_periods, est="500.00"):
+        """Shared setup: create a tracked Groceries transaction in period[1].
+
+        Returns the Transaction object, flushed.
+        """
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            name="Groceries",
+            default_amount=Decimal(est),
+            track_individual_purchases=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        txn = Transaction(
+            template_id=template.id,
+            pay_period_id=seed_periods[1].id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=projected.id,
+            name="Groceries",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal(est),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_grocery_bug_scenario_after_true_up(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The exact user-reported bug: $500 budget, three cleared debits.
+
+        est=500, cleared_debit=462.34, uncleared_debit=0, credit=0.
+        After anchor true-up the three purchases are all cleared.
+        checking_impact = max(500 - 462.34 - 0, 0) = 37.66.
+        Post-anchor: 5000 - 37.66 = 4962.34 (only the remainder is held).
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            for amt, desc in [
+                ("106.86", "Kroger"),
+                ("249.71", "Amazon"),
+                ("105.77", "Target"),
+            ]:
+                db.session.add(TransactionEntry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    amount=Decimal(amt),
+                    description=desc,
+                    entry_date=date(2026, 1, 20),
+                    is_credit=False,
+                    is_cleared=True,
+                ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # max(500 - 462.34, 0) = 37.66; 5000 - 37.66 = 4962.34
+            assert balances[seed_periods[1].id] == Decimal("4962.34")
+
+    def test_partial_cleared_and_uncleared(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Mix of cleared and uncleared debits.
+
+        est=500, cleared_debit=100, uncleared_debit=50, credit=0.
+        max(500 - 100 - 0, 50) = max(400, 50) = 400.
+        Post-anchor: 5000 - 400 = 4600.
+
+        Interpretation: anchor reflects the $100 cleared, we still
+        need to reserve $400 more from checking ($350 future budget +
+        $50 uncleared debit floor).
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("100.00"), description="Kroger cleared",
+                entry_date=date(2026, 1, 18),
+                is_credit=False, is_cleared=True,
+            ))
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("50.00"), description="Aldi not cleared",
+                entry_date=date(2026, 1, 20),
+                is_credit=False, is_cleared=False,
+            ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # max(500 - 100, 50) = 400; 5000 - 400 = 4600
+            assert balances[seed_periods[1].id] == Decimal("4600.00")
+
+    def test_cleared_overspend_zero_floor(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Cleared debits exceed estimated -- reservation floors at 0.
+
+        est=500, cleared_debit=600, uncleared_debit=0, credit=0.
+        max(500 - 600, 0) = max(-100, 0) = 0.
+        Post-anchor: 5000 - 0 = 5000 (overspend already in anchor).
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("600.00"), description="Overspent",
+                entry_date=date(2026, 1, 20),
+                is_credit=False, is_cleared=True,
+            ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # max(500 - 600, 0) = 0; 5000 - 0 = 5000
+            assert balances[seed_periods[1].id] == Decimal("5000.00")
+
+    def test_all_uncleared_matches_legacy(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every entry uncleared => reduces to legacy formula.
+
+        est=500, uncleared_debit=200, credit=0.
+        max(500 - 0 - 0, 200) = 500. Post-anchor: 5000 - 500 = 4500.
+        Identical to the existing debit-under-budget test.
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("200.00"), description="Kroger",
+                entry_date=date(2026, 1, 20),
+                is_credit=False, is_cleared=False,
+            ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # max(500 - 0 - 0, 200) = 500; 5000 - 500 = 4500
+            assert balances[seed_periods[1].id] == Decimal("4500.00")
+
+    def test_cleared_debit_plus_credit(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Cleared debit + credit entry.
+
+        est=500, cleared_debit=200, uncleared_debit=0, credit=100.
+        max(500 - 200 - 100, 0) = 200. Post-anchor: 5000 - 200 = 4800.
+
+        Interpretation: $200 of debit already in anchor, $100 on CC
+        will be handled by the CC Payback in the next period, so
+        we only need to hold $200 more from checking for this budget.
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("200.00"), description="Cleared debit",
+                entry_date=date(2026, 1, 18),
+                is_credit=False, is_cleared=True,
+            ))
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("100.00"), description="Amazon CC",
+                entry_date=date(2026, 1, 20),
+                is_credit=True, is_cleared=False,
+            ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # max(500 - 200 - 100, 0) = 200; 5000 - 200 = 4800
+            assert balances[seed_periods[1].id] == Decimal("4800.00")
+
+    def test_new_entries_default_uncleared(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """New entries inserted without specifying is_cleared default to False.
+
+        Verifies the model column default_server_default is wired.
+        A fresh entry with amount=$200 must fall into the uncleared
+        bucket, matching legacy behavior exactly.
+        """
+        with app.app_context():
+            txn = self._make_groceries(db, seed_user, seed_periods)
+
+            entry = TransactionEntry(
+                transaction_id=txn.id, user_id=seed_user["user"].id,
+                amount=Decimal("200.00"), description="Kroger",
+                entry_date=date(2026, 1, 20),
+                is_credit=False,
+                # is_cleared not specified -> should default to False
+            )
+            db.session.add(entry)
+            db.session.flush()
+
+            # Re-fetch to trigger server default resolution.
+            db.session.refresh(entry)
+            assert entry.is_cleared is False
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # Default uncleared => legacy formula => 500 held
+            assert balances[seed_periods[1].id] == Decimal("4500.00")

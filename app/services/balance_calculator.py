@@ -292,20 +292,45 @@ def calculate_balances_with_amortization(
 def _entry_aware_amount(txn):
     """Compute the checking-balance impact for a single expense transaction.
 
-    For projected expenses with eagerly loaded entries (via selectinload):
-        sum_debit  = sum of entries where is_credit = False
-        sum_credit = sum of entries where is_credit = True
-        checking_impact = max(estimated_amount - sum_credit, sum_debit)
+    For projected expenses with eagerly loaded entries (via selectinload),
+    the formula partitions debit entries into cleared and uncleared
+    buckets, then holds back only the portion of the budget that has not
+    yet been reconciled with the anchor:
+
+        cleared_debit   = sum(entries where not is_credit and     is_cleared)
+        uncleared_debit = sum(entries where not is_credit and not is_cleared)
+        sum_credit      = sum(entries where is_credit)
+
+        checking_impact = max(
+            estimated_amount - cleared_debit - sum_credit,
+            uncleared_debit,
+        )
 
     For all other cases (no entries loaded, entries empty, non-projected
     status): returns effective_amount unchanged.
 
-    The formula semantics (scope doc Section 4.2):
-      - estimated - sum_credit = budget reservation minus the credit card portion
-      - sum_debit = actual debit purchases hitting checking
-      - max() = whichever is larger determines checking impact
-      - If no entries yet: checking_impact = estimated (full reservation)
-      - If debits exceed adjusted reservation: overspend reflected immediately
+    Semantics:
+      - A cleared debit is already reflected in the checking anchor
+        balance, so it should not come out of the projection again --
+        we subtract it from the reservation.
+      - An uncleared debit has hit real checking but is NOT yet in the
+        anchor, so the full estimated amount must still be held back
+        (the max() floor handles this and also handles overspend where
+        uncleared debits exceed the remaining reservation).
+      - A credit entry never hits checking directly -- it flows through
+        a CC Payback sibling transaction -- so it only reduces the
+        reservation.
+      - With every is_cleared = FALSE (the default for new entries),
+        cleared_debit = 0 and the formula reduces to
+        max(estimated - sum_credit, uncleared_debit), which is the
+        original pre-fix behavior from scope doc section 4.2.  This is
+        why the fix is backward compatible.
+
+    Example (the user's grocery bug):
+      est = 500, three cleared debit purchases summing to 462.34.
+      checking_impact = max(500 - 462.34 - 0, 0) = 37.66, which is the
+      remaining budget to hold back now that the anchor reflects the
+      first three purchases.
 
     This function NEVER triggers a lazy load.  It checks __dict__
     directly to determine if entries were eagerly loaded (via
@@ -340,16 +365,25 @@ def _entry_aware_amount(txn):
     if txn.status_id != projected_id:
         return txn.effective_amount
 
-    # checking_impact = max(estimated - sum_credit, sum_debit)
-    sum_debit = Decimal("0")
+    # Three-bucket partition: cleared debit, uncleared debit, credit.
+    cleared_debit = Decimal("0")
+    uncleared_debit = Decimal("0")
     sum_credit = Decimal("0")
     for entry in entries:
         if entry.is_credit:
             sum_credit += entry.amount
+        elif entry.is_cleared:
+            cleared_debit += entry.amount
         else:
-            sum_debit += entry.amount
+            uncleared_debit += entry.amount
 
-    return max(txn.estimated_amount - sum_credit, sum_debit)
+    # Cleared debits are already in the anchor -- subtract them from the
+    # reservation.  Uncleared debits act as a floor (the reservation can
+    # never be smaller than uncleared checking hits).
+    return max(
+        txn.estimated_amount - cleared_debit - sum_credit,
+        uncleared_debit,
+    )
 
 
 def _sum_remaining(transactions):
