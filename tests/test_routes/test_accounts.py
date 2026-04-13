@@ -498,6 +498,251 @@ class TestTrueUp:
             assert other["account"].current_anchor_balance == orig_balance
 
 
+class TestTrueUpClearsEntries:
+    """Tests for the auto-clear behavior on checking anchor true-up.
+
+    When the user trues up a checking anchor balance, the service
+    flips is_cleared=TRUE on every past-dated entry whose parent
+    transaction is Projected.  See the rationale in
+    app/services/entry_service.py::clear_entries_for_anchor_true_up.
+
+    These tests verify the scope of the update: past-dated entries on
+    projected parents are cleared, while future-dated entries, entries
+    on non-projected parents, and entries on non-checking-account
+    true-ups are left alone.
+    """
+
+    def _make_grocery_txn_with_entries(self, seed_user, seed_periods, entries):
+        """Create a tracked grocery transaction with the given entries.
+
+        Args:
+            seed_user: seed_user fixture dict.
+            seed_periods: list of PayPeriods.
+            entries: list of (amount, entry_date, is_credit, is_cleared)
+                tuples.
+
+        Returns:
+            The Transaction object.
+        """
+        from app.models.transaction_entry import TransactionEntry
+        from app.models.transaction_template import TransactionTemplate
+
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            name="Groceries",
+            default_amount=Decimal("500.00"),
+            track_individual_purchases=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        txn = Transaction(
+            template_id=template.id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=projected.id,
+            name="Groceries",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("500.00"),
+        )
+        db.session.add(txn)
+        db.session.flush()
+
+        for amount, entry_date, is_credit, is_cleared in entries:
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal(amount),
+                description="Test purchase",
+                entry_date=entry_date,
+                is_credit=is_credit,
+                is_cleared=is_cleared,
+            ))
+        db.session.commit()
+        return txn
+
+    def test_past_dated_projected_entries_get_cleared(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """True-up flips past-dated uncleared debits on projected parents."""
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            past = date.today() - __import__("datetime").timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods, [
+                    ("106.86", past, False, False),
+                    ("249.71", past, False, False),
+                    ("105.77", past, False, False),
+                ],
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{seed_user['account'].id}/true-up",
+                data={"anchor_balance": "4537.66"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entries = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn.id)
+                .all()
+            )
+            assert len(entries) == 3
+            assert all(e.is_cleared for e in entries)
+
+    def test_future_dated_entries_not_cleared(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Entries with entry_date > today must NOT be flipped by true-up."""
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            future = date.today() + __import__("datetime").timedelta(days=7)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods, [
+                    ("50.00", future, False, False),
+                ],
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{seed_user['account'].id}/true-up",
+                data={"anchor_balance": "5000.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entry = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn.id)
+                .one()
+            )
+            assert entry.is_cleared is False
+
+    def test_entries_on_non_projected_parent_not_cleared(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Entries on settled (Paid) parents are not touched by true-up.
+
+        They're already excluded from the balance formula, but leaving
+        their is_cleared alone is the correct behavior -- we only flip
+        what the anchor change actually reconciles.
+        """
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            past = date.today() - __import__("datetime").timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods, [
+                    ("100.00", past, False, False),
+                ],
+            )
+            # Flip the parent to Paid after entry creation.
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            txn.status_id = paid.id
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/accounts/{seed_user['account'].id}/true-up",
+                data={"anchor_balance": "5000.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entry = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn.id)
+                .one()
+            )
+            assert entry.is_cleared is False
+
+    def test_non_checking_true_up_does_not_clear(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A true-up on a non-checking account does not affect entries.
+
+        Debit entries only hit checking, so anchor updates on savings
+        or loan accounts must not touch is_cleared.
+        """
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            past = date.today() - __import__("datetime").timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods, [
+                    ("100.00", past, False, False),
+                ],
+            )
+
+            # Create a non-checking account for the user.
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            savings = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                current_anchor_balance=Decimal("1000.00"),
+                current_anchor_period_id=seed_periods[0].id,
+            )
+            db.session.add(savings)
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/accounts/{savings.id}/true-up",
+                data={"anchor_balance": "1500.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entry = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn.id)
+                .one()
+            )
+            # Debit entries untouched because savings != checking.
+            assert entry.is_cleared is False
+
+    def test_already_cleared_entries_unchanged(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Entries that are already cleared remain cleared -- true-up is idempotent."""
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            past = date.today() - __import__("datetime").timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods, [
+                    ("100.00", past, False, True),
+                ],
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{seed_user['account'].id}/true-up",
+                data={"anchor_balance": "5000.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entry = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn.id)
+                .one()
+            )
+            assert entry.is_cleared is True
+
+
 # ── Account Type CRUD ─────────────────────────────────────────────
 
 
