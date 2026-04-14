@@ -71,6 +71,22 @@
       </span>
       {% endif %}
       <span class="font-mono">${{ "{:,.2f}".format(entry.amount) }}</span>
+      {% if not entry.is_credit %}
+      {# Reconciled toggle: a cleared entry is already reflected in the
+         checking anchor balance and is subtracted from the budget
+         reservation.  An uncleared entry keeps the full reservation
+         until the user trues up the anchor (which auto-clears past
+         debits).  Hidden for credit entries -- those are handled by
+         the CC Payback workflow and the flag is ignored there. #}
+      <button class="btn btn-link btn-sm p-0 {% if entry.is_cleared %}text-success{% else %}text-muted{% endif %}"
+              hx-patch="{{ url_for('entries.toggle_cleared', txn_id=txn.id, entry_id=entry.id) }}"
+              hx-target="#entry-list-{{ txn.id }}"
+              hx-swap="outerHTML"
+              title="{% if entry.is_cleared %}Reconciled with checking anchor -- click to mark as not reconciled{% else %}Not yet reconciled with checking anchor -- click to mark as reconciled{% endif %}"
+              aria-label="{% if entry.is_cleared %}Mark entry as not reconciled{% else %}Mark entry as reconciled{% endif %}">
+        <i class="bi bi-{% if entry.is_cleared %}check-circle-fill{% else %}circle{% endif %}"></i>
+      </button>
+      {% endif %}
       <button class="btn btn-link btn-sm p-0 text-primary"
               hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id) }}"
               hx-target="#entry-list-{{ txn.id }}"

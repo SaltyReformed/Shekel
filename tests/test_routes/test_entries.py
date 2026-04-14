@@ -790,6 +790,120 @@ class TestDeleteEntry:
             assert b"No purchases recorded yet" in resp.data
 
 
+# ---- Manual is_cleared toggle ------------------------------------------
+
+class TestToggleCleared:
+    """Tests for PATCH /transactions/<txn_id>/entries/<entry_id>/cleared."""
+
+    def test_toggle_from_false_to_true(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCHing toggles an uncleared entry to cleared."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+            assert entry.is_cleared is False
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+            )
+            assert resp.status_code == 200
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionEntry, entry.id)
+            assert reloaded.is_cleared is True
+
+    def test_toggle_from_true_to_false(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCHing toggles a cleared entry back to uncleared."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+            entry.is_cleared = True
+            db.session.commit()
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+            )
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionEntry, entry.id)
+            assert reloaded.is_cleared is False
+
+    def test_toggle_nonexistent_entry_returns_404(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCH for a nonexistent entry returns 404."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/999999/cleared",
+            )
+            assert resp.status_code == 404
+
+    def test_toggle_cross_transaction_returns_404(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCH with entry_id that doesn't belong to txn_id returns 404."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            # Create a second tracked transaction.
+            other = _create_visible_tracked_txn(seed_user, seed_periods)
+            other_txn = other["transaction"]
+
+            resp = auth_client.patch(
+                f"/transactions/{other_txn.id}/entries/{entry.id}/cleared",
+            )
+            assert resp.status_code == 404
+
+            db.session.expire_all()
+            # Entry is unchanged.
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).is_cleared is False
+
+    def test_toggle_other_users_entry_returns_404(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCH on another user's entry returns 404."""
+        with app.app_context():
+            other = _create_other_user_txn()
+            # Manually add an entry to the other user's transaction.
+            other_entry = TransactionEntry(
+                transaction_id=other["transaction"].id,
+                user_id=other["user"].id,
+                amount=Decimal("50.00"),
+                description="Other",
+                entry_date=date(2026, 1, 5),
+                is_credit=False,
+            )
+            db.session.add(other_entry)
+            db.session.commit()
+
+            resp = auth_client.patch(
+                f"/transactions/{other['transaction'].id}"
+                f"/entries/{other_entry.id}/cleared",
+            )
+            assert resp.status_code == 404
+
+            db.session.expire_all()
+            # Entry is unchanged.
+            assert db.session.get(
+                TransactionEntry, other_entry.id,
+            ).is_cleared is False
+
+
 # ---- Entry / transaction ID mismatch ------------------------------------
 
 class TestEntryTransactionMismatch:

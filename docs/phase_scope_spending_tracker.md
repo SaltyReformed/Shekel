@@ -198,32 +198,85 @@ When a transaction has `track_individual_purchases = TRUE` on its template:
 
 **Projected status with entries:**
 
+> **Addendum (April 2026, is_cleared fix):** the formula below was
+> extended to partition debit entries into cleared/uncleared buckets
+> so the balance calculator stops double-counting debit purchases
+> once the user has trued up the checking anchor. The semantics of
+> the original formula are preserved when every entry is uncleared
+> (the default for new entries). See section 4.2.1 below for details.
+
 ```
 sum_debit = sum of entries where is_credit = FALSE
 sum_credit = sum of entries where is_credit = TRUE
 sum_all = sum_debit + sum_credit
 
-checking_impact = max(estimated - sum_credit, sum_debit)
+cleared_debit   = sum of entries where not is_credit and     is_cleared
+uncleared_debit = sum of entries where not is_credit and not is_cleared
+
+checking_impact = max(
+    estimated - cleared_debit - sum_credit,
+    uncleared_debit,
+)
 ```
 
 Explanation:
 
 - The full estimated amount is reserved from checking, minus the portion covered by credit card
-  (since credit entries don't hit checking).
-- If debit spending exceeds the adjusted reservation (overspend scenario), the actual debit total
-  is used instead, immediately reflecting the overspend in projections.
-- Credit entries generate a CC Payback in the next period (see section 5).
+  (since credit entries don't hit checking) and minus the portion that has already been cleared
+  against the anchor balance (those dollars are already gone from real checking and are reflected
+  in the anchor number the user entered).
+- If uncleared debit spending exceeds the adjusted reservation (overspend scenario), the uncleared
+  debit total is used instead, immediately reflecting the overspend in projections.
+- Cleared debits that exceed the estimated amount floor the reservation at zero (the overspend
+  is already in the anchor, so no additional checking reservation is needed).
+- Credit entries generate a CC Payback in the next period (see section 5). `is_cleared` is stored
+  but ignored on credit entries.
+
+### 4.2.1 The is_cleared flag
+
+`budget.transaction_entries.is_cleared` is a boolean column, default FALSE, added by migration
+`c7e3a2f9b104_add_is_cleared_to_transaction_entries.py`. It answers the question "is this purchase
+already reflected in the current checking anchor balance?"
+
+- **New entries** default to `is_cleared = FALSE`. Until reconciled, they behave exactly like the
+  original formula: the full estimated amount stays reserved.
+- **Anchor true-up auto-clear.** When the user updates the anchor balance on a **checking**
+  account (via `accounts.true_up`, `accounts.inline_anchor_update`, or the anchor branch of
+  `accounts.update_account`), every past-dated uncleared entry whose parent transaction is
+  `Projected` and not soft-deleted is flipped to `is_cleared = TRUE`. This models the user's
+  workflow: "I just looked at my real checking balance, every purchase that has already posted
+  is in that number." Future-dated entries and entries on already-settled parents are left alone.
+  Non-checking account true-ups do not touch entries.
+- **Manual per-entry toggle.** A small check-circle icon in the entry list
+  (`_transaction_entries.html`) posts `PATCH /transactions/<txn_id>/entries/<entry_id>/cleared`
+  and flips the flag for one entry. Used to correct edge cases where auto-clear is wrong for a
+  specific purchase (e.g. a debit that posted after the most recent anchor update but was
+  incorrectly auto-cleared, or one the user wants to exclude from the reservation before they've
+  formally updated the anchor). Hidden in the UI for credit entries.
+- **Backfill on migration.** The upgrade script backfills `is_cleared = TRUE` for every existing
+  entry whose parent is `Projected` and whose `entry_date <= CURRENT_DATE`. This keeps balances
+  stable on the day the feature ships, matching the assumption that the current anchor already
+  reflects all past-dated purchases on in-flight projected transactions.
 
 **Examples:**
 
-| Scenario | Estimated | Debit | Credit | checking_impact | CC Payback | Notes |
-|----------|-----------|-------|--------|-----------------|------------|-------|
-| No entries yet | $500 | $0 | $0 | $500 | $0 | Full reservation (current behavior) |
-| Mid-period, under budget | $500 | $200 | $0 | $500 | $0 | Still fully reserved |
-| Mid-period, mixed payment | $500 | $300 | $100 | $400 | $100 | Credit reduces reservation |
-| Under budget, all credit | $500 | $0 | $400 | $100 | $400 | Remaining $100 reserved from checking |
-| Over budget, debit only | $500 | $530 | $0 | $530 | $0 | Overspend hits balance |
-| Over budget, mixed | $500 | $400 | $200 | $400 | $200 | Debit exceeds (est - credit) |
+Below "Debit" is split into cleared and uncleared, and "checking_impact" uses the new formula
+`max(estimated - cleared_debit - credit, uncleared_debit)`. The first six rows correspond to the
+original table (every row has `cleared = 0`); the bottom rows cover the new behavior when
+entries are reconciled with the anchor.
+
+| Scenario | Estimated | Cleared | Uncleared | Credit | checking_impact | CC Payback | Notes |
+|----------|-----------|---------|-----------|--------|-----------------|------------|-------|
+| No entries yet | $500 | $0 | $0 | $0 | $500 | $0 | Full reservation |
+| Mid-period, under budget (stale anchor) | $500 | $0 | $200 | $0 | $500 | $0 | Still fully reserved |
+| Mid-period, mixed payment (stale anchor) | $500 | $0 | $300 | $100 | $400 | $100 | Credit reduces reservation |
+| Under budget, all credit | $500 | $0 | $0 | $400 | $100 | $400 | Remaining $100 reserved |
+| Over budget, debit only (stale anchor) | $500 | $0 | $530 | $0 | $530 | $0 | Overspend hits balance |
+| Over budget, mixed (stale anchor) | $500 | $0 | $400 | $200 | $400 | $200 | Debit exceeds (est - credit) |
+| Grocery bug fixed (all cleared) | $500 | $462.34 | $0 | $0 | **$37.66** | $0 | Anchor reflects the purchases, only the remainder is held |
+| Partial reconcile | $500 | $100 | $50 | $0 | $400 | $0 | $350 future budget + $50 uncleared floor |
+| Cleared overspend | $500 | $600 | $0 | $0 | $0 | $0 | Overspend already in anchor -- reservation floored |
+| Cleared debit + credit | $500 | $200 | $0 | $100 | $200 | $100 | $200 in anchor, CC payback next period, $200 reserved |
 
 **Projected status without entries:**
 

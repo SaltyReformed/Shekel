@@ -35,7 +35,12 @@ from app.schemas.validation import (
     AnchorUpdateSchema,
     InterestParamsUpdateSchema,
 )
-from app.services import balance_calculator, pay_period_service, transfer_service
+from app.services import (
+    balance_calculator,
+    entry_service,
+    pay_period_service,
+    transfer_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +260,13 @@ def update_account(account_id):
                     anchor_balance=new_anchor,
                 )
                 db.session.add(history)
+            # Reconcile entries on checking true-ups (see true_up()
+            # route for rationale).  Fires whenever the balance
+            # actually changes, regardless of whether a current
+            # period exists.
+            checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+            if account.account_type_id == checking_type_id:
+                entry_service.clear_entries_for_anchor_true_up(current_user.id)
 
     _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
     for field, value in data.items():
@@ -479,6 +491,11 @@ def inline_anchor_update(account_id):
         )
         db.session.add(history)
 
+    # Reconcile entries on checking true-ups (see true_up() for rationale).
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    if account.account_type_id == checking_type_id:
+        entry_service.clear_entries_for_anchor_true_up(current_user.id)
+
     db.session.commit()
     db.session.refresh(account)
 
@@ -664,6 +681,17 @@ def true_up(account_id):
         anchor_balance=new_balance,
     )
     db.session.add(history)
+
+    # Reconcile entries: when the user trues up a checking account they
+    # are declaring "my real checking is now $X" -- by definition every
+    # past-dated debit purchase recorded against a projected transaction
+    # is already in that number, so mark those entries is_cleared=TRUE
+    # to stop the balance calculator from double-counting them.  Only
+    # fires for checking accounts (debit purchases only hit checking).
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    if account.account_type_id == checking_type_id:
+        entry_service.clear_entries_for_anchor_true_up(current_user.id)
+
     db.session.commit()
     db.session.refresh(account)
 

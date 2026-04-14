@@ -24,6 +24,18 @@ class TransactionEntry(db.Model):
         description     -- Short description of the purchase (e.g. "Kroger").
         entry_date      -- Date the purchase occurred (defaults to today).
         is_credit       -- True if this entry was paid via credit card.
+        is_cleared      -- True when this purchase is already reflected in
+                           the current checking anchor balance.  New entries
+                           default to False.  Flipped to True automatically
+                           on a checking account true-up (see
+                           app/routes/accounts.py::true_up) for past-dated
+                           entries on projected parents, and can be toggled
+                           manually per entry.  The balance calculator uses
+                           this flag to avoid double-counting debit
+                           purchases once the anchor has been reconciled
+                           with the real bank balance.  Meaningful only for
+                           debit entries -- ignored for credit entries,
+                           which are handled via the CC Payback workflow.
         credit_payback_id -- FK to the CC Payback transaction created for
                              this entry (SET NULL on payback deletion).
     """
@@ -59,6 +71,9 @@ class TransactionEntry(db.Model):
         db.Date, nullable=False, server_default=db.text("CURRENT_DATE"),
     )
     is_credit = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false",
+    )
+    is_cleared = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
     credit_payback_id = db.Column(
