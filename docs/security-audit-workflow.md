@@ -71,6 +71,204 @@ The web version has a legitimate secondary role (see "Optional: web for second
 opinion"), but for a deep audit of an app + its local deployment, the CLI has
 strictly more capability.
 
+## Tools and Concepts Glossary
+
+This workflow assumes the developer has not previously run a security audit
+and is not familiar with the tooling. Read this section before starting so
+the later sections make sense. Every tool named here is an off-the-shelf
+scanner, not a Shekel-specific script -- you do not need to understand how
+each one works internally, only what kind of thing it catches so you can
+judge its output.
+
+### Scanners Used in This Audit
+
+- **bandit.** Python security linter maintained by PyCQA. Reads every
+  `.py` file in `app/` and flags known-bad Python patterns: hardcoded
+  passwords in source, use of `eval()`/`exec()`, weak random number
+  generators used for security, SQL built with string concatenation,
+  subprocess calls with `shell=True`. Python-specific; nothing to do
+  with other languages or config files. Output is a list of issues
+  keyed by file and line with a short explanation and a CWE reference.
+
+- **semgrep.** Pattern-based static analysis. You point it at a rule
+  pack (this workflow uses `p/python`, `p/owasp-top-ten`, and `p/flask`)
+  and it greps your code for matching patterns. Unlike plain grep, it
+  understands Python syntax, so it can match "any call to
+  `request.args.get()` whose result is passed to `os.system()`"
+  instead of just matching text. Output is a list of matches per rule
+  per file:line.
+
+- **pip-audit.** Dependency CVE scanner. Takes `requirements.txt` and
+  checks every pinned version against the Python Packaging Advisory
+  Database (PyPA). Answers "do any of my pinned Python dependencies
+  have known security vulnerabilities?" Output is a list of vulnerable
+  packages with their CVE IDs, severity, and the fix version.
+
+- **cyclonedx-py.** SBOM generator. Produces a Software Bill of
+  Materials -- a JSON or XML file that lists every package and every
+  transitive dependency with exact versions and license info. It is
+  not itself a vulnerability scanner; it produces the input that
+  `trivy sbom` later scans. The SBOM is also a useful audit artifact
+  on its own -- it is the ground-truth list of what is actually
+  installed in the app.
+
+- **trivy.** Container and filesystem vulnerability scanner by Aqua
+  Security. Used in this workflow three ways:
+  - `trivy image <tag>` scans a built Docker image for CVEs in both OS
+    packages (Debian base image layers) and Python packages inside
+    the image. This catches CVEs that `pip-audit` may miss because it
+    sees the fully resolved image, not just the requirements file.
+  - `trivy sbom <path>` scans the CycloneDX SBOM -- a second-opinion
+    CVE check against a different database than `pip-audit` uses.
+    Discrepancies between the two are themselves findings.
+  - `trivy config <path>` scans Dockerfile/docker-compose/Kubernetes
+    manifests for misconfiguration (running as root, missing
+    HEALTHCHECK, privileged containers).
+
+- **gitleaks.** Git history secret scanner. Walks every commit in the
+  repo's history (not just the current working tree) looking for
+  things that match known secret patterns: AWS keys, private RSA
+  keys, Stripe tokens, JWTs, database URLs with embedded passwords,
+  and generic high-entropy strings. Crucial because a secret that was
+  committed once and later deleted is still in git history until the
+  history is rewritten. Any match is a **Critical** finding in this
+  workflow even if the secret looks fake or old.
+
+- **detect-secrets.** Second-opinion secret scanner from Yelp. Uses a
+  different ruleset than gitleaks (plugin-based, with configurable
+  entropy thresholds). Running both catches misses from either one.
+
+- **lynis.** Linux host hardening audit. Run against the host machine
+  itself, not against Shekel. Checks kernel sysctl flags
+  (`kptr_restrict`, `dmesg_restrict`), file permissions on critical
+  paths, SSH daemon config, firewall state, automatic update posture,
+  installed package hygiene. Output is a list of hardening suggestions
+  with a score at the end. This audits the bare-metal Arch box that
+  runs the Docker container.
+
+- **docker-bench-security.** A container that runs the CIS Docker
+  Benchmark against your Docker daemon and running containers. Checks
+  for containers running as root, privileged mode, missing seccomp
+  profiles, mounted Docker socket, exposed Docker daemon TCP port,
+  and similar daemon-level issues. Complements `trivy config`, which
+  is static, by looking at the actual running configuration.
+
+- **nmap.** Classic network port scanner. Used here only against
+  `127.0.0.1` to confirm which ports are actually listening on the
+  host -- a cross-check against the firewall config and the
+  docker-compose port-binding strategy. Not used against anything
+  external.
+
+### Security Concepts You Will See in Findings
+
+- **OWASP Top 10.** Ten broad categories of the most common web app
+  vulnerabilities, updated periodically (the current set is the 2021
+  revision: A01 Broken Access Control, A02 Cryptographic Failures,
+  A03 Injection, A04 Insecure Design, A05 Security Misconfiguration,
+  A06 Vulnerable Components, A07 Identification and Authentication
+  Failures, A08 Software and Data Integrity Failures, A09 Logging and
+  Monitoring Failures, A10 Server-Side Request Forgery). Every finding
+  in this audit gets tagged with an OWASP category.
+
+- **CWE (Common Weakness Enumeration).** A more granular catalog of
+  software weakness types maintained by MITRE (e.g. CWE-284 =
+  Improper Access Control, CWE-89 = SQL Injection, CWE-798 =
+  Hardcoded Credentials). Scanners report CWE IDs alongside OWASP
+  categories. Useful when you need to look up the exact definition
+  of a weakness category.
+
+- **CVE (Common Vulnerabilities and Exposures).** A specific, named
+  bug in a specific version of a specific piece of software
+  (e.g. `CVE-2024-12345` = remote code execution in Flask 3.0.0).
+  `pip-audit` and `trivy` report CVEs; you respond by bumping the
+  affected dependency to a fixed version.
+
+- **SAST (Static Application Security Testing).** Reading the source
+  code without running it. `bandit`, `semgrep`, `pip-audit`, `trivy`,
+  `gitleaks`, and the subagent manual reviews are all SAST.
+
+- **DAST (Dynamic Application Security Testing).** Running the app
+  and sending it real HTTP requests to see how it responds. Section
+  1M (the IDOR probe) is the only DAST in this workflow.
+
+- **IDOR (Insecure Direct Object Reference).** The bug where User B
+  can access User A's data by guessing or observing an ID
+  (`/transactions/123` vs `/transactions/124`). Defended against in
+  Shekel by `auth_helpers.py`, the ownership pattern that every
+  state-changing route uses, and the "404 for both 'not found' and
+  'not yours'" rule in CLAUDE.md.
+
+- **CSRF (Cross-Site Request Forgery).** An attacker tricks a victim's
+  browser into making a state-changing request to Shekel while the
+  victim is logged in. Defended against by Flask-WTF, which Shekel
+  already enables in `app/config.py`.
+
+- **XSS (Cross-Site Scripting).** An attacker injects JavaScript into
+  a page that is then rendered to other users. Defended against by
+  Jinja2's autoescape plus the Content-Security-Policy header.
+
+- **TOCTOU (Time Of Check to Time Of Use) race.** A bug where code
+  checks a condition (e.g. "does User A own this transfer?") and
+  then acts on it, but the state changes between the check and the
+  act. Relevant in Shekel for concurrent POSTs that touch the same
+  transfer or anchor balance. Covered in Section 1L.
+
+- **STRIDE.** A structured threat modeling framework with six
+  categories: Spoofing (pretending to be someone), Tampering
+  (modifying data), Repudiation (denying an action was taken),
+  Information disclosure, Denial of service, Elevation of privilege.
+  Used in Section 1J to reason about what can go wrong per asset.
+
+- **OWASP ASVS (Application Security Verification Standard).** A
+  long, structured checklist of "does your app satisfy this specific
+  security requirement?" organized into chapters (V2 Authentication,
+  V3 Session Management, V4 Access Control, etc.) and three levels:
+  L1 opportunistic, L2 standard for apps with sensitive data, L3
+  critical systems. This workflow targets L2 for Shekel in
+  Section 1O.
+
+- **SBOM (Software Bill of Materials).** A machine-readable list of
+  every dependency and transitive dependency in the app, with exact
+  versions. Produced by `cyclonedx-py`. Used by `trivy` for
+  vulnerability scanning and valuable as a standalone artifact for
+  answering "what is actually installed in production."
+
+- **Severity scale.** This audit uses Critical / High / Medium / Low
+  / Info. Rough rule of thumb:
+  - **Critical** -- exploitable now, leads to data loss, account
+    takeover, or RCE. Drop everything and fix.
+  - **High** -- exploitable under plausible conditions, or a
+    Critical defense is missing. Fix this week.
+  - **Medium** -- real weakness but requires additional conditions
+    to exploit, or defense in depth is reduced. Fix this month.
+  - **Low** -- minor hardening gap or theoretical issue.
+  - **Info** -- not a vulnerability, just recorded so a future
+    reader knows the question was considered.
+
+### Execution Modes
+
+Two execution models for the scanner-heavy sessions (S1 and S2). Pick
+one before starting the session and stick with it.
+
+- **Pre-approved scan outputs (plan mode, recommended for experienced
+  auditors).** The developer runs the scanner commands in a regular
+  shell before the Claude session starts, commits the raw outputs,
+  and Claude only reads the files. Keeps plan mode genuinely read-
+  only. Requires the developer to know how to read scanner output
+  and recognize a broken run.
+
+- **Claude drives (non-plan mode, recommended for first-time
+  auditors).** Claude runs each scanner command one at a time with
+  a narrow Bash allowlist and a write allowlist limited to
+  `docs/audits/security-2026-04-14/**`. The developer approves each
+  permission prompt as it appears and asks Claude to explain any
+  output that is unclear. Takes longer but does not assume the
+  developer can operate the tools directly.
+
+Session S4 (DAST) always runs in non-plan mode regardless of which
+execution model is chosen for S1/S2, because it has to write the
+probe script.
+
 ## Environment Preparation (before Phase 1)
 
 Run these on the local machine, not in Claude Code, before starting the audit
@@ -98,7 +296,7 @@ session:
    - `pip-audit --requirement requirements.txt --format json > /dev/null`
    - `gitleaks detect --no-banner --no-git --source /home/user/Shekel --report-format json --report-path /dev/null`
 7. Confirm the prod Docker container is up (`docker ps | grep shekel`) so
-   runtime checks work in Phase 1D.
+   runtime checks work in Section 1D.
 8. Confirm Claude Code is set to Opus 4.6 1M context (`/model` should show
    the 1M variant) so a single audit session can hold the entire codebase
    plus scan outputs without compaction.
@@ -112,36 +310,45 @@ requires write access (1M DAST probe script, which writes under
 scoped allowlist). None of the plan-mode sessions write source code -- they
 write `findings.md`, raw scan outputs, and the threat model document.
 
-**Session 1A:** subagent exploration + SAST + manual deep dives (Phases 1A,
-1B, 1C). Expect this to be the longest session because 1C was extended with
-constant-time, Fernet rotation, password policy, lockout, and PII logging
-checks.
+**Terminology note:** "Phase" refers to the three big stages of the whole
+audit project (Phase 1 = research, Phase 2 = remediation plan, Phase 3 =
+implementation). "Section" refers to the individual work units inside a
+phase and is lettered (Sections 1A through 1P inside Phase 1). "Session"
+refers to one chat session in Claude Code and is numbered S1 through S8 so
+the letters cannot be confused with section letters. One session may cover
+several sections; one section always lives inside exactly one session.
 
-**Session 1B:** runtime audit + supply chain + git history + container image
-+ host hardening (Phases 1D, 1E, 1F, 1G, 1H).
+**Session S1:** subagent exploration + SAST + manual deep dives (Sections
+1A, 1B, 1C). Expect this to be the longest session because 1C was extended
+with constant-time, Fernet rotation, password policy, lockout, and PII
+logging checks.
 
-**Session 1C:** attack-surface map + threat model (Phases 1I, 1J).
+**Session S2:** runtime audit + supply chain + git history + container
+image + host hardening (Sections 1D, 1E, 1F, 1G, 1H).
 
-**Session 1D (non-plan mode, scoped):** DAST IDOR probe script development
-and execution (Phase 1M). Write allowlist: `scripts/audit/**` and
-`docs/audits/security-2026-04-14/scans/idor-probe.json` only. Must run
+**Session S3:** attack-surface map + threat model (Sections 1I, 1J).
+
+**Session S4 (non-plan mode, scoped):** DAST IDOR probe script
+development and execution (Section 1M). Write allowlist: `scripts/audit/**`
+and `docs/audits/security-2026-04-14/scans/idor-probe.json` only. Must run
 against `shekel-dev` compose, never `shekel-prod`.
 
-**Session 1E:** financial-correctness / business-logic deep dive (Phase 1L).
+**Session S5:** financial-correctness / business-logic deep dive
+(Section 1L).
 
-**Session 1F:** migration + schema audit (Phase 1N).
+**Session S6:** migration + schema audit (Section 1N).
 
-**Session 1G:** ASVS L2 mapping (Phase 1O).
+**Session S7:** ASVS L2 mapping (Section 1O).
 
-**Session 1H:** consolidated findings + red-team pass (Phases 1K, 1P). The
-consolidator starts fresh and is not biased by whichever scanner or
+**Session S8:** consolidated findings + red-team pass (Sections 1K, 1P).
+The consolidator starts fresh and is not biased by whichever scanner or
 subagent ran last; the red-team subagent then argues with the
 consolidator's output.
 
 It is acceptable to merge adjacent sessions when context stays under ~60%,
-but do NOT merge Session 1H (consolidation + red-team) with any earlier
-session -- anchoring the consolidator on one of the upstream phases is the
-exact bias this workflow is trying to avoid.
+but do NOT merge Session S8 (consolidation + red-team) with any earlier
+session -- anchoring the consolidator on one of the upstream sections is
+the exact bias this workflow is trying to avoid.
 
 ### 1A. Parallel OWASP-domain exploration (3 Explore subagents)
 
@@ -185,23 +392,23 @@ actions that may or may not be allowed by the current permission policy.
 Rather than fighting the prompt loop or running the audit outside plan
 mode, use the **pre-approved scan outputs** pattern:
 
-1. Before starting the Phase 1B session, the developer runs every scanner
-   command in this section in a regular shell (outside Claude Code) and
-   commits the raw outputs to the audit branch under
+1. Before starting the Section 1B session, the developer runs every
+   scanner command in this section in a regular shell (outside Claude
+   Code) and commits the raw outputs to the audit branch under
    `docs/audits/security-2026-04-14/scans/`.
-2. Phase 1B Claude then runs in plan mode and only *reads* the pre-
+2. Section 1B Claude then runs in plan mode and only *reads* the pre-
    committed scan outputs. Claude does not execute the scanners itself;
    it reads, correlates, and normalizes.
 3. The scanner commands are recorded verbatim in this section so the
    developer runs exactly what the audit workflow specifies -- no
    improvisation.
 
-This makes Phase 1B fully reproducible: the scan outputs are files in the
-branch, anyone can re-read them, and a later session can diff old outputs
-against new ones without re-running the scanners. It also keeps plan mode
-genuinely read-only.
+This makes Section 1B fully reproducible: the scan outputs are files in
+the branch, anyone can re-read them, and a later session can diff old
+outputs against new ones without re-running the scanners. It also keeps
+plan mode genuinely read-only.
 
-The alternative (run Phase 1B outside plan mode with an explicit Bash
+The alternative (run Section 1B outside plan mode with an explicit Bash
 allowlist of `bandit|semgrep|pip-audit|trivy|gitleaks|lynis|detect-secrets|
 cyclonedx-py|docker` and a write allowlist of `docs/audits/**`) is also
 acceptable when the developer wants Claude to drive the scanners directly.
@@ -292,7 +499,7 @@ that tools miss:
    `/register`, password-reset (N/A; no email reset), `/mfa/verify`, and
    any other credential-consuming endpoint. The storage backend is
    **already known to default to `memory://`** (see Preliminary Finding
-   #4) -- the Phase 1C task is to read `gunicorn.conf.py` and determine
+   #4) -- the Section 1C task is to read `gunicorn.conf.py` and determine
    the worker count, and then quantify the effective rate-limit drift
    (e.g. "4 workers means the documented 5/15min login limit is really
    20/15min worst case").
@@ -545,9 +752,9 @@ focus -- it is also what stays useful long after this audit is done.
 
 The final deliverable of Phase 1 is one file:
 `docs/audits/security-2026-04-14/findings.md`. Done in a fresh Claude Code
-session (Session 1H, per the session split at the top of Phase 1) so the
+session (Session S8, per the session split at the top of Phase 1) so the
 consolidator is not anchored on whichever scanner or subagent ran last.
-The red-team pass in Section 1P runs inside the same Session 1H, after
+The red-team pass in Section 1P runs inside the same Session S8, after
 the consolidator finishes its initial draft.
 
 The session loads:
@@ -674,7 +881,7 @@ Scope and method:
    blast radius.
 
 Output: `reports/07-business-logic.md` with a one-paragraph summary per
-check and a list of findings keyed into the Phase 1K consolidator.
+check and a list of findings keyed into the Section 1K consolidator.
 
 ### 1M. Dynamic authorization testing -- live IDOR probe (non-plan-mode session)
 
@@ -823,7 +1030,7 @@ secure" rather than "did any scanner complain."
 
 ### 1P. Red-team pass over `findings.md` (fresh subagent)
 
-After Session 1H consolidates `findings.md`, spawn **one** fresh
+After Session S8 consolidates `findings.md`, spawn **one** fresh
 Explore subagent whose sole job is to argue with the findings. The
 consolidator in 1K has its own biases: it may under-rate a finding
 because the scanner said Low, or over-rate a finding because the
@@ -995,7 +1202,7 @@ these notes just prevent anchoring on guesses and prevent duplicate work.
    Verified against `app/models/user.py`: the `users.role_id` column is
    `nullable=False` with `server_default="1"`, so a real production user row
    cannot have `role_id IS NULL`. The `getattr` is defense-in-depth for test
-   fixtures only. Severity: Info. Phase 1A subagent A must still confirm
+   fixtures only. Severity: Info. Section 1A subagent A must still confirm
    no code path (raw INSERT, migration, seed script) inserts a user with
    `role_id=NULL` and no ORM path clears it.
 
@@ -1025,17 +1232,17 @@ these notes just prevent anchoring on guesses and prevent duplicate work.
    `limit * worker_count`); on container restart the counters reset.
    Severity Medium. Remediation: add a Redis (or at minimum a shared
    filesystem-backed) `storage_uri` for production, OR document and
-   enforce a single-worker Gunicorn configuration. Phase 1A subagent A
+   enforce a single-worker Gunicorn configuration. Section 1A subagent A
    must trace how `gunicorn.conf.py` configures workers and record the
    blast radius.
 
 5. **UNVERIFIED -- Dependency freshness.** `requirements.txt` looks current
    but has not been audited against CVE feeds in this session. `pip-audit`
-   and `trivy sbom` in Phase 1B/1E will provide authoritative answers.
+   and `trivy sbom` in Sections 1B/1E will provide authoritative answers.
    Flagged here as a likely source of findings, not a pre-confirmed one.
 
 6. **UNVERIFIED -- TOTP encryption key rotation story.** CLAUDE.md lists
-   `TOTP_ENCRYPTION_KEY` as a required env var. Phase 1C.1 must determine
+   `TOTP_ENCRYPTION_KEY` as a required env var. Section 1C.1 must determine
    whether the app supports rotating the Fernet key without losing access
    to existing enrolled TOTP secrets (versioned token format, re-wrap
    migration, or dual-key read path). If there is no rotation story, that
