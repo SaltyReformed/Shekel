@@ -382,6 +382,245 @@ class TestTemplateUpdate:
             # Should flash the conflict warning.
             assert b"overridden" in resp.data or b"updated" in resp.data
 
+    def test_rename_template_propagates_to_all_instances(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Renaming a template must sync every non-deleted instance's name.
+
+        Before the fix, update_template() only touched template.name and
+        relied on regenerate_for_template() to recreate rows with the
+        new label.  Regeneration skips historic rows, overrides, and
+        immutable rows, so those would keep the stale name and split
+        into a second row in the grid.  This test asserts every
+        non-deleted instance ends up with the new name -- across past
+        and future periods alike.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+            )
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.commit()
+
+            original_count = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count()
+            assert original_count > 0, (
+                "Seed periods should yield generated transactions"
+            )
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Apartment Rent",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            names = {
+                t.name for t in db.session.query(Transaction)
+                .filter(
+                    Transaction.template_id == template.id,
+                    Transaction.is_deleted.is_(False),
+                )
+                .all()
+            }
+            assert names == {"Apartment Rent"}, (
+                f"Expected every instance renamed; found {names}"
+            )
+
+    def test_rename_template_overridden_instance_follows_template(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """An is_override=True row must still pick up a template rename.
+
+        is_override only tracks amount/period customization in this
+        codebase, not name edits -- so a rename must propagate through
+        overridden rows to keep every view consistent.  Without this,
+        the row would keep the stale name and the grid would fall back
+        to displaying the old label for the overridden period.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+            )
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.flush()
+
+            overridden = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).first()
+            overridden.is_override = True
+            db.session.commit()
+            overridden_id = overridden.id
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Apartment Rent",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, overridden_id)
+            assert reloaded.name == "Apartment Rent"
+            assert reloaded.is_override is True
+
+    def test_rename_template_does_not_duplicate_grid_row(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """End-to-end: the old label must not appear in the grid response
+        after a rename, and the new label must render as a row header.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+            )
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.commit()
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Apartment Rent",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            grid = auth_client.get("/grid")
+            assert grid.status_code == 200
+            assert b"Apartment Rent" in grid.data
+            # Old label must not reappear as a row header.  The seed
+            # category is "Rent" so the word appears in the category
+            # group column, but the row <th> label used the template
+            # name -- verify it is absent from the rendered row.
+            assert b">Rent<" not in grid.data
+
+
+class TestGridRowKeyBuilder:
+    """Defense-in-depth tests for the grid's row-key deduplication.
+
+    These tests hit _build_row_keys directly to verify the grid still
+    collapses template-linked rows even if stale names slip through
+    (legacy data, direct DB edits, future bugs in the rename flow).
+    """
+
+    def test_row_key_collapses_template_instances_with_drifted_names(
+        self, app, seed_user, seed_periods,
+    ):
+        """Stale txn.name values must not split a template into two rows."""
+        from app.routes.grid import _build_row_keys
+        from app.models.category import Category
+
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+            )
+
+            from app.services import recurrence_engine, pay_period_service
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.flush()
+
+            # Simulate the pre-fix state: template renamed, half the
+            # generated instances still carry the old label.
+            template.name = "Apartment Rent"
+            instances = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).order_by(Transaction.id).all()
+            assert len(instances) >= 2, "Need at least 2 instances"
+            for idx, txn in enumerate(instances):
+                txn.name = "Apartment Rent" if idx % 2 else "Rent"
+            db.session.flush()
+
+            all_cats = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+            ).all()
+
+            row_keys = _build_row_keys(
+                instances, all_cats, is_income_section=False,
+            )
+
+            matches = [
+                rk for rk in row_keys if rk.template_id == template.id
+            ]
+            assert len(matches) == 1, (
+                f"Expected one row for template; got {len(matches)}: "
+                f"{[rk.txn_name for rk in matches]}"
+            )
+            assert matches[0].txn_name == "Apartment Rent"
+            assert matches[0].display_name == "Apartment Rent"
+
+    def test_row_key_keeps_standalone_txns_separate_by_name(
+        self, app, seed_user, seed_periods,
+    ):
+        """Non-template transactions still dedupe by (category, name)."""
+        from app.routes.grid import _build_row_keys
+        from app.models.category import Category
+        from app.models.ref import Status as StatusModel
+
+        with app.app_context():
+            rent_cat = seed_user["categories"]["Rent"]
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            projected = db.session.query(StatusModel).filter_by(
+                name="Projected",
+            ).one()
+            period = seed_periods[0]
+            account = seed_user["account"]
+            scenario = seed_user["scenario"]
+
+            # Two standalone expenses in the same category but different
+            # names -- these must remain distinct rows.
+            txn_a = Transaction(
+                account_id=account.id,
+                pay_period_id=period.id,
+                scenario_id=scenario.id,
+                status_id=projected.id,
+                name="One-off A",
+                category_id=rent_cat.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+            )
+            txn_b = Transaction(
+                account_id=account.id,
+                pay_period_id=period.id,
+                scenario_id=scenario.id,
+                status_id=projected.id,
+                name="One-off B",
+                category_id=rent_cat.id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("75.00"),
+            )
+            db.session.add_all([txn_a, txn_b])
+            db.session.flush()
+
+            all_cats = db.session.query(Category).filter_by(
+                user_id=seed_user["user"].id,
+            ).all()
+
+            row_keys = _build_row_keys(
+                [txn_a, txn_b], all_cats, is_income_section=False,
+            )
+
+            labels = sorted(rk.txn_name for rk in row_keys)
+            assert labels == ["One-off A", "One-off B"]
+
 
 # ── Archive Tests ────────────────────────────────────────────────────
 

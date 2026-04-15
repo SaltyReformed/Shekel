@@ -32,12 +32,14 @@ logger = logging.getLogger(__name__)
 
 grid_bp = Blueprint("grid", __name__)
 
-# Lightweight struct for a single row in the budget grid.  Each unique
-# (category, template, name) combination produces one RowKey.
+# Lightweight struct for a single row in the budget grid.  Template-linked
+# transactions collapse to one row per (category, template) regardless of
+# per-instance name drift; standalone transactions collapse to one row per
+# (category, name).
 RowKey = namedtuple("RowKey", [
     "category_id",    # int -- FK to budget.categories
     "template_id",    # int or None -- FK to budget.transaction_templates
-    "txn_name",       # str -- the transaction name (display label)
+    "txn_name",       # str -- row label (template name or standalone txn name)
     "group_name",     # str -- category group for section headers
     "item_name",      # str -- category item (used for sort tiebreaker)
     "display_name",   # str -- label shown in the row <th>
@@ -63,18 +65,30 @@ def _short_display_name(name):
     return name
 
 
-def _build_row_keys(txn_by_period, categories, is_income_section):
+def _build_row_keys(transactions, categories, is_income_section):
     """Build a deterministic, sorted list of RowKeys for the grid.
 
-    Scans every transaction across all visible periods and collects unique
-    (category_id, template_id, txn_name) tuples.  Each tuple becomes a
-    grid row.  The result is sorted by (group_name, item_name, txn_name)
-    so rows appear in stable alphabetical order within each category group.
+    Scans the supplied transactions and collects one row per logical
+    line item.  Template-linked transactions dedupe by
+    (category_id, template_id) and take their label from the current
+    template name -- this keeps historic instances whose stored `name`
+    predates a template rename from splitting into a second row.
+    Standalone transactions (no template_id) dedupe by
+    (category_id, name) and label themselves with the instance name.
+    Results are sorted by (group_name, item_name, txn_name) for stable
+    alphabetical ordering within each category group.
+
+    The caller controls scope: passing only visible-window transactions
+    produces the default compact view (rows only for items active in
+    the visible periods), while passing the full projection yields the
+    show-all view.  Either way, cell matching in the template is
+    unaffected -- it still walks ``txn_by_period`` per visible period.
 
     Args:
-        txn_by_period: dict mapping period_id -> list of Transaction objects.
-            This is the full transaction set (all periods), not just the
-            visible window.
+        transactions: iterable of Transaction objects to consider for
+            row-key generation.  Transactions must have their
+            `template` relationship loaded (the grid route does this
+            via ``selectinload``) to avoid per-row lazy fetches.
         categories: list of Category objects, already ordered by
             (group_name, item_name).  Used to map category_id -> Category
             for sort keys and for the empty-cell template.
@@ -91,42 +105,54 @@ def _build_row_keys(txn_by_period, categories, is_income_section):
     # Index categories by ID for O(1) lookup.
     cat_by_id = {c.id: c for c in categories}
 
-    # Collect unique row keys across all periods.
-    seen = set()       # (category_id, template_id, txn_name) tuples
+    # Collect unique row keys.  For template-linked rows the key
+    # carries template_id (name omitted); for standalone rows the key
+    # carries the instance name (template_id omitted).
+    seen = set()
     row_keys = []
 
-    for txns in txn_by_period.values():
-        for txn in txns:
-            # Skip deleted and cancelled transactions.
-            if txn.is_deleted or txn.status_id == cancelled_id:
-                continue
+    for txn in transactions:
+        # Skip deleted and cancelled transactions.
+        if txn.is_deleted or txn.status_id == cancelled_id:
+            continue
 
-            # Filter by income/expense.
-            if is_income_section and not txn.is_income:
-                continue
-            if not is_income_section and not txn.is_expense:
-                continue
+        # Filter by income/expense.
+        if is_income_section and not txn.is_income:
+            continue
+        if not is_income_section and not txn.is_expense:
+            continue
 
-            # Look up the category.  Transactions may have category_id=NULL
-            # (e.g. transfer shadow transactions when the user's default
-            # "Transfers: Incoming/Outgoing" categories are missing).
-            # These must still appear in the grid -- use a fallback group.
-            cat = cat_by_id.get(txn.category_id)
-            group_name = cat.group_name if cat else "Uncategorized"
-            item_name = cat.item_name if cat else ""
+        # Look up the category.  Transactions may have category_id=NULL
+        # (e.g. transfer shadow transactions when the user's default
+        # "Transfers: Incoming/Outgoing" categories are missing).
+        # These must still appear in the grid -- use a fallback group.
+        cat = cat_by_id.get(txn.category_id)
+        group_name = cat.group_name if cat else "Uncategorized"
+        item_name = cat.item_name if cat else ""
 
-            key = (txn.category_id, txn.template_id, txn.name)
-            if key not in seen:
-                seen.add(key)
-                row_keys.append(RowKey(
-                    category_id=txn.category_id,
-                    template_id=txn.template_id,
-                    txn_name=txn.name,
-                    group_name=group_name,
-                    item_name=item_name,
-                    display_name=_short_display_name(txn.name),
-                    category=cat,
-                ))
+        if txn.template_id is not None:
+            # Template-linked: collapse all instances into one row
+            # labelled with the template's current name.  Falls back
+            # to the instance name only if the relationship failed
+            # to load (template.ondelete=SET NULL makes a real
+            # orphan unreachable through template_id).
+            label = txn.template.name if txn.template else txn.name
+            key = (txn.category_id, txn.template_id, None)
+        else:
+            label = txn.name
+            key = (txn.category_id, None, txn.name)
+
+        if key not in seen:
+            seen.add(key)
+            row_keys.append(RowKey(
+                category_id=txn.category_id,
+                template_id=txn.template_id,
+                txn_name=label,
+                group_name=group_name,
+                item_name=item_name,
+                display_name=_short_display_name(label),
+                category=cat,
+            ))
 
     # Sort by (group_name, item_name, txn_name) for deterministic ordering.
     row_keys.sort(key=lambda rk: (rk.group_name, rk.item_name, rk.txn_name))
@@ -202,7 +228,10 @@ def index():
         txn_filters.append(Transaction.account_id == account.id)
     all_transactions = (
         db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
+        .options(
+            selectinload(Transaction.entries),
+            selectinload(Transaction.template),
+        )
         .filter(*txn_filters)
         .all()
     )
@@ -263,9 +292,32 @@ def index():
     # Active-only categories for the Add Transaction modal dropdown.
     active_categories = [c for c in all_categories if c.is_active]
 
-    # Build row keys: one row per unique (category, template, name) tuple.
-    income_row_keys = _build_row_keys(txn_by_period, all_categories, is_income_section=True)
-    expense_row_keys = _build_row_keys(txn_by_period, all_categories, is_income_section=False)
+    # Scope row generation to the visible window by default so the grid
+    # stays uncluttered when planning far in advance.  ``?show_all=1``
+    # opts back in to the full forward projection for full-picture
+    # review.  Balance math, cell matching, and subtotals all work off
+    # ``all_transactions``/``txn_by_period`` and are unaffected by this
+    # filter -- any txn hidden from row-key generation has
+    # pay_period_id outside the visible window, so it contributes $0
+    # to every visible-period subtotal and its cells were never going
+    # to render.  See docs/: grid row scoping invariants.
+    show_all = request.args.get("show_all", type=int) == 1
+    if show_all:
+        row_source_txns = all_transactions
+    else:
+        visible_period_ids = {p.id for p in periods}
+        row_source_txns = [
+            t for t in all_transactions
+            if t.pay_period_id in visible_period_ids
+        ]
+
+    # Build row keys: one row per unique logical line item.
+    income_row_keys = _build_row_keys(
+        row_source_txns, all_categories, is_income_section=True,
+    )
+    expense_row_keys = _build_row_keys(
+        row_source_txns, all_categories, is_income_section=False,
+    )
 
     # Load statuses for the edit form dropdowns.
     statuses = db.session.query(Status).all()
@@ -301,6 +353,7 @@ def index():
         transaction_types=transaction_types,
         num_periods=num_periods,
         start_offset=start_offset,
+        show_all=show_all,
         col_size=col_size,
         anchor_balance=anchor_balance,
         today=date.today(),

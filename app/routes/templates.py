@@ -334,9 +334,25 @@ def update_template(template_id):
         "account_id", "is_active", "sort_order",
         "track_individual_purchases", "companion_visible",
     }
+    old_name = template.name
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
+
+    # Propagate a rename to existing instances.  regenerate_for_template
+    # only deletes/recreates non-override rows on or after effective_from,
+    # so historic rows, overrides, and settled rows would otherwise keep
+    # the old label and desync every view that renders txn.name directly
+    # (variance report, CSV export, calendar, companion card, edit form
+    # header).  The partial unique index on transactions covers
+    # (template_id, pay_period_id, scenario_id) only, so a bulk name
+    # update cannot trip a constraint.  Template ownership was verified
+    # above, so template_id alone scopes the update to the current user.
+    if template.name != old_name:
+        db.session.query(Transaction).filter(
+            Transaction.template_id == template.id,
+            Transaction.is_deleted.is_(False),
+        ).update({"name": template.name}, synchronize_session="fetch")
 
     # Regenerate future transactions.
     scenario = (

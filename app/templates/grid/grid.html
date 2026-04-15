@@ -47,6 +47,25 @@
        class="btn btn-sm btn-outline-secondary" title="Later" aria-label="Show later periods">
       <i class="bi bi-chevron-right"></i>
     </a>
+
+    {# Row scope toggle -- compact (visible-window only) vs. full projection.
+       Default is compact so the grid stays focused on what's active in
+       the visible periods; show_all reveals every row from anchor forward. #}
+    {% if show_all %}
+    <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset) }}"
+       class="btn btn-sm btn-primary"
+       title="Hide rows with no activity in the visible window"
+       aria-label="Switch to compact view">
+      <i class="bi bi-funnel-fill"></i> Compact
+    </a>
+    {% else %}
+    <a href="{{ url_for('grid.index', periods=num_periods, offset=start_offset, show_all=1) }}"
+       class="btn btn-sm btn-outline-secondary"
+       title="Show every row from your full forward projection"
+       aria-label="Show all rows">
+      <i class="bi bi-list-ul"></i> All Rows
+    </a>
+    {% endif %}
   </div>
 
   {# --- Add buttons (all screen sizes) --- #}
