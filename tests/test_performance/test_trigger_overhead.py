@@ -231,9 +231,24 @@ class TestRecurrenceEngineOverhead:
                 db.session.add(txn)
             db.session.flush()
 
-        def _time_bulk(iterations=ITERATIONS):
+        # The direct-ORM insert workload is the smallest benchmark in
+        # this file (52 rows, ~30 ms total).  At that scale the 20%
+        # threshold is ~6 ms absolute -- inside the normal wall-clock
+        # jitter of PostgreSQL round-trips -- so the median of a few
+        # runs still lands over the limit by chance roughly 1 time in
+        # 5.  Use the minimum of a larger sample instead: the fastest
+        # iteration is the one least disturbed by OS preemption, GC,
+        # or pg background work, so it approximates the "pure code
+        # cost" and reveals a real regression (adding measurable work
+        # to the trigger) without tripping on noise.  A 20% regression
+        # remains detectable because a real slowdown shifts the entire
+        # distribution including its minimum.
+        bulk_iterations = 15
+        bulk_warmup = 3
+
+        def _time_bulk():
             # Warmup.
-            for _ in range(WARMUP):
+            for _ in range(bulk_warmup):
                 db.session.execute(
                     db.text("DELETE FROM budget.transactions WHERE name LIKE 'Bulk Txn%'")
                 )
@@ -242,7 +257,7 @@ class TestRecurrenceEngineOverhead:
                 db.session.commit()
 
             times = []
-            for _ in range(iterations):
+            for _ in range(bulk_iterations):
                 db.session.execute(
                     db.text("DELETE FROM budget.transactions WHERE name LIKE 'Bulk Txn%'")
                 )
@@ -252,8 +267,7 @@ class TestRecurrenceEngineOverhead:
                 _bulk_insert()
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 times.append(elapsed_ms)
-            times.sort()
-            return times[len(times) // 2]
+            return min(times)
 
         time_with = _time_bulk()
 

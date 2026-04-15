@@ -1471,12 +1471,26 @@ class TestCategoryArchiveDelete:
     ):
         """C-5A.5-35: Transactions with archived categories still render in the grid."""
         with app.app_context():
+            from app.services.pay_period_service import get_current_period
+
             category = db.session.get(Category, seed_user["categories"]["Rent"].id)
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
+            # The txn must live inside the grid's default visible window so
+            # the assertion targets the archived-category rendering path
+            # rather than the period-scoping filter added in 8b67128.  Use
+            # the period that contains today -- ``seed_periods`` is 10
+            # biweekly periods starting 2026-01-02, so today's period is
+            # always one of them.
+            current_period = get_current_period(seed_user["user"].id)
+            assert current_period is not None, (
+                "seed_periods must cover today so the txn lands in the "
+                "default visible grid window"
+            )
+
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=category.id,
