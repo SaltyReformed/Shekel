@@ -793,8 +793,16 @@ def interest_detail(account_id):
     # template_account_map approach silently excluded shadow transactions
     # (template_id=None), causing HYSA projections to miss all transfer
     # deposits.  Follows the pattern in grid.py lines 87-98.
+    #
+    # Entries are eagerly loaded so balance_calculator._entry_aware_amount
+    # can apply the three-bucket (cleared debit / uncleared debit / credit)
+    # partition formula for projected expenses with individual purchases.
+    # Without selectinload, the calculator silently falls back to
+    # effective_amount and HYSA projections diverge from the grid whenever
+    # a projected transaction has cleared debit entries.
     acct_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(
             Transaction.account_id == account.id,
             Transaction.pay_period_id.in_(period_ids),
