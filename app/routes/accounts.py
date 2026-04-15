@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
+from sqlalchemy.orm import selectinload
 
 from app.utils.auth_helpers import require_owner
 
@@ -932,8 +933,16 @@ def checking_detail(account_id):
     # Load transactions scoped to this account.  Includes shadow
     # transactions from transfers, following the pattern in grid.py
     # and hysa_detail.
+    #
+    # Entries are eagerly loaded so balance_calculator._entry_aware_amount
+    # can apply the three-bucket (cleared debit / uncleared debit / credit)
+    # partition formula for projected expenses with individual purchases.
+    # Without selectinload, the calculator silently falls back to
+    # effective_amount and the checking projection diverges from the grid
+    # whenever a projected transaction has cleared debit entries.
     acct_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(
             Transaction.account_id == account.id,
             Transaction.pay_period_id.in_(period_ids),
