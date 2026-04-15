@@ -240,6 +240,56 @@ function handleClickOutside(event) {
     }
 }
 
+/**
+ * Revert a quick-edit or quick-create form back to its display cell.
+ * Shared by the Escape keyboard handler and the focusout click-away handler
+ * so both exit paths render the exact same cell HTML.
+ *
+ * Does nothing if the form has already been removed from the DOM (e.g.,
+ * an HTMX swap beat us to it).
+ */
+function revertQuickEditForm(quickForm) {
+    if (!quickForm || !quickForm.isConnected) return;
+
+    // Transfer quick edit: restore the transfer cell display.
+    const xferBtn = quickForm.querySelector('.xfer-expand-btn');
+    if (xferBtn) {
+        const targetDiv = document.getElementById('xfer-cell-' + xferBtn.dataset.xferId);
+        if (targetDiv) {
+            htmx.ajax('GET', '/transfers/cell/' + xferBtn.dataset.xferId, {
+                target: targetDiv,
+                swap: 'innerHTML'
+            });
+        }
+        return;
+    }
+
+    // Transaction quick edit or quick create.
+    const expandBtn = quickForm.querySelector('.txn-expand-btn');
+    if (!expandBtn) return;
+
+    if (quickForm.dataset.mode === 'create') {
+        const td = quickForm.closest('td');
+        if (td) {
+            htmx.ajax('GET',
+                '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
+                '&period_id=' + expandBtn.dataset.periodId +
+                '&transaction_type_id=' + encodeURIComponent(expandBtn.dataset.txnTypeId) +
+                '&account_id=' + expandBtn.dataset.accountId,
+                { target: td, swap: 'innerHTML' }
+            );
+        }
+    } else {
+        const targetDiv = document.getElementById('txn-cell-' + expandBtn.dataset.txnId);
+        if (targetDiv) {
+            htmx.ajax('GET', '/transactions/' + expandBtn.dataset.txnId + '/cell', {
+                target: targetDiv,
+                swap: 'innerHTML'
+            });
+        }
+    }
+}
+
 // --- Keyboard handlers for quick edit/create and full edit ---
 document.addEventListener('keydown', function(e) {
     // F2 in quick edit/create → open full edit/create popover.
@@ -286,43 +336,7 @@ document.addEventListener('keydown', function(e) {
         const quickInput = document.activeElement;
         if (quickInput && quickInput.closest('.txn-quick-edit')) {
             e.preventDefault();
-            const quickForm = quickInput.closest('.txn-quick-edit');
-
-            // Transfer quick edit: restore the transfer cell display.
-            const xferBtn = quickForm.querySelector('.xfer-expand-btn');
-            if (xferBtn) {
-                const targetDiv = document.getElementById('xfer-cell-' + xferBtn.dataset.xferId);
-                if (targetDiv) {
-                    htmx.ajax('GET', '/transfers/cell/' + xferBtn.dataset.xferId, {
-                        target: targetDiv,
-                        swap: 'innerHTML'
-                    });
-                }
-                return;
-            }
-
-            // Transaction quick edit/create.
-            const expandBtn = quickForm.querySelector('.txn-expand-btn');
-            if (quickForm.dataset.mode === 'create') {
-                const td = quickForm.closest('td');
-                if (td) {
-                    htmx.ajax('GET',
-                        '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
-                        '&period_id=' + expandBtn.dataset.periodId +
-                        '&transaction_type_id=' + encodeURIComponent(expandBtn.dataset.txnTypeId) +
-                        '&account_id=' + expandBtn.dataset.accountId,
-                        { target: td, swap: 'innerHTML' }
-                    );
-                }
-            } else {
-                const targetDiv = document.getElementById('txn-cell-' + expandBtn.dataset.txnId);
-                if (targetDiv) {
-                    htmx.ajax('GET', '/transactions/' + expandBtn.dataset.txnId + '/cell', {
-                        target: targetDiv,
-                        swap: 'innerHTML'
-                    });
-                }
-            }
+            revertQuickEditForm(quickInput.closest('.txn-quick-edit'));
             return;
         }
     }
@@ -371,3 +385,66 @@ document.addEventListener('focus', function(e) {
         e.target.select();
     }
 }, true);
+
+// --- Click-away revert for quick edit/create ---
+//
+// When a quick-edit input loses focus without the user pressing Enter
+// (submit) or Escape (explicit cancel), treat that as "click-away" and
+// revert the cell back to its display view.  Without this handler the
+// quick-edit form stays stuck on screen until the user clicks back in
+// and presses Escape.
+//
+// Three guards prevent the revert from racing other paths:
+//   1. submitting flag -- set on htmx:beforeRequest for the form, prevents
+//      a duplicate GET/flicker when Enter triggers hx-patch.
+//   2. suppressRevert flag -- set by mousedown on the expand button, so
+//      clicking ⋯ opens the full-edit popover without first tearing down
+//      the quick-edit form that owns the dataset attrs the popover needs.
+//   3. activeElement check -- if focus moved somewhere else inside the
+//      same form, keep it open.
+
+// Mousedown fires before the input's focusout, so this flag is set in
+// time to be read by the deferred revert check below.  We use mousedown
+// (not click) precisely because of that ordering.
+document.addEventListener('mousedown', function(e) {
+    const btn = e.target.closest('.txn-expand-btn, .xfer-expand-btn');
+    if (!btn) return;
+    const quickForm = btn.closest('.txn-quick-edit');
+    if (quickForm) {
+        quickForm.dataset.suppressRevert = 'true';
+    }
+});
+
+document.addEventListener('focusout', function(e) {
+    if (!e.target.matches || !e.target.matches('.txn-quick-input')) return;
+    const quickForm = e.target.closest('.txn-quick-edit');
+    if (!quickForm) return;
+
+    // Defer so any pending focus change or mousedown-driven flag can
+    // settle before we decide whether to revert.
+    setTimeout(function() {
+        if (!quickForm.isConnected) return;
+        if (quickForm.dataset.submitting === 'true') return;
+        if (quickForm.dataset.suppressRevert === 'true') {
+            delete quickForm.dataset.suppressRevert;
+            return;
+        }
+        // Focus landed on another element inside the same form
+        // (defensive -- relatedTarget handling varies by browser).
+        if (quickForm.contains(document.activeElement)) return;
+        revertQuickEditForm(quickForm);
+    }, 0);
+});
+
+// Track in-flight HTMX submits on the quick-edit form so the focusout
+// handler above doesn't fire a second, racing GET.  The form element is
+// removed from the DOM when the PATCH response swaps the cell, which
+// also causes isConnected to go false -- either guard is sufficient.
+document.addEventListener('htmx:beforeRequest', function(e) {
+    const form = e.target && e.target.closest && e.target.closest('.txn-quick-edit');
+    if (form) form.dataset.submitting = 'true';
+});
+document.addEventListener('htmx:afterRequest', function(e) {
+    const form = e.target && e.target.closest && e.target.closest('.txn-quick-edit');
+    if (form) delete form.dataset.submitting;
+});
