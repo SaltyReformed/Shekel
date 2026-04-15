@@ -11,6 +11,13 @@
 var activePopover = null;
 var activePopoverAnchor = null;
 var activePopoverResizeObserver = null;
+// Quick-edit form that was underneath the cell when the popover opened.
+// mousedown on the expand button sets suppressRevert so the focusout
+// handler leaves the quick form in place while the popover loads; this
+// reference lets closeFullEdit finish that revert when the popover goes
+// away.  isConnected guard in revertQuickEditForm makes it a no-op when
+// a successful save has already swapped the cell.
+var activePopoverQuickForm = null;
 
 // Fallback dimensions used only before content has been injected and the
 // popover has zero offsetHeight/Width.  Real values come from
@@ -208,6 +215,9 @@ function openFullEdit(txnId, triggerEl) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
+    // Must be stashed after positionPopover, which calls closeFullEdit
+    // and would otherwise clear the reference we just set.
+    activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
     // Load the full edit form via fetch.
     fetch('/transactions/' + txnId + '/full-edit', {
@@ -230,6 +240,7 @@ function openTransferFullEdit(xferId, triggerEl) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
+    activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
     fetch('/transfers/' + xferId + '/full-edit', {
         headers: { 'HX-Request': 'true' }
@@ -251,6 +262,7 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
+    activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
     // Give the cell a stable id so the popover form can target it.
     if (!cell.id) {
@@ -333,6 +345,14 @@ function closeFullEdit() {
     }
     activePopover = null;
     activePopoverAnchor = null;
+
+    // Revert the quick-edit form that was sitting under the popover.
+    // No-op when a successful save already swapped the cell (the
+    // isConnected guard inside revertQuickEditForm catches that path).
+    if (activePopoverQuickForm) {
+        revertQuickEditForm(activePopoverQuickForm);
+        activePopoverQuickForm = null;
+    }
     document.removeEventListener('click', handleClickOutside);
 
     // Remove the scroll listener that was added in showPopover /
