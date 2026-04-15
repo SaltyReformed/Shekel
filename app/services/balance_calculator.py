@@ -24,6 +24,8 @@ import logging
 from collections import OrderedDict
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy import inspect as sa_inspect
+
 from app.services.interest_projection import calculate_interest
 
 logger = logging.getLogger(__name__)
@@ -339,6 +341,16 @@ def _entry_aware_amount(txn):
     do not selectinload entries.  Also safe for non-ORM objects
     (e.g. test fakes) where 'entries' is simply absent.
 
+    Hardening: when a mapped Transaction instance is passed without
+    its 'entries' relationship eager-loaded AND it is a projected
+    expense, this function emits a logger.warning with the txn id.
+    The fallback to effective_amount is preserved for backward
+    compatibility with callers that have not yet been updated, but
+    the warning makes the latent bug traceable in logs instead of
+    silently producing projections that diverge from the grid.
+    Non-ORM test fakes (where sa_inspect returns None) do not trigger
+    the warning -- their fallback is intentional.
+
     Args:
         txn: A Transaction object with entries optionally eager-loaded
              via selectinload.
@@ -351,6 +363,28 @@ def _entry_aware_amount(txn):
     # in __dict__ until accessed; selectinload populates them eagerly.
     # For non-ORM objects (e.g. test fakes), 'entries' is absent.
     if 'entries' not in txn.__dict__:
+        # Distinguish "ORM instance where the caller forgot selectinload"
+        # from "non-ORM test fake".  sa_inspect returns None for non-mapped
+        # objects; for mapped objects, state.unloaded contains the names of
+        # relationships that have not been loaded.  Only projected expenses
+        # care about entries -- income, settled, cancelled, and credit items
+        # are all handled correctly by effective_amount, so warning about
+        # them would be noise.
+        state = sa_inspect(txn, raiseerr=False)
+        if (state is not None
+                and 'entries' in state.unloaded
+                and getattr(txn, 'status_id', None)
+                    == ref_cache.status_id(StatusEnum.PROJECTED)
+                and getattr(txn, 'is_expense', False)):
+            logger.warning(
+                "_entry_aware_amount: projected expense txn_id=%s was "
+                "passed without selectinload(Transaction.entries). "
+                "Falling back to effective_amount, which may diverge "
+                "from the grid when the transaction has cleared debit "
+                "entries. Add .options(selectinload(Transaction.entries)) "
+                "to the caller's query.",
+                getattr(txn, 'id', '<unknown>'),
+            )
         return txn.effective_amount
 
     entries = txn.__dict__['entries']
