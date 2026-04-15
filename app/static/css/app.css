@@ -627,6 +627,13 @@ thead .sticky-col {
    ============================================= */
 .txn-full-edit-popover {
   width: 280px;
+  /* Cap height to the viewport so a very tall popover (e.g., a transaction
+     with many individual-purchase entries) cannot overflow off the top or
+     bottom of the window.  grid_edit.js's positioner also clamps, and this
+     keeps the content scrollable internally in the worst case. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--shekel-surface, var(--bs-body-bg));
   border: 1px solid var(--shekel-border-subtle, var(--bs-border-color));
   border-radius: 6px;
