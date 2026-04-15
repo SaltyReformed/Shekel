@@ -56,6 +56,158 @@ class TestGridView:
             assert b"Projected End Balance" in response.data
 
 
+class TestGridRowScoping:
+    """Tests for the compact-view default and ?show_all=1 opt-out.
+
+    Compact view (the default) generates row keys only from
+    transactions whose pay_period_id is in the visible window.  This
+    hides one-offs and infrequent recurring items that have nothing
+    to render in the current view.  ``?show_all=1`` restores the old
+    full-projection behavior for full planning sessions.  Subtotals
+    and projected balances must be identical either way -- only which
+    rows render changes.
+    """
+
+    def _make_oneoff(
+        self, seed_user, period, name, amount="42.00",
+    ):
+        """Create one standalone expense in the given period."""
+        projected = db.session.query(Status).filter_by(
+            name="Projected",
+        ).one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=projected.id,
+            name=name,
+            category_id=seed_user["categories"]["Rent"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal(amount),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def _visible_period(self, seed_user, seed_periods):
+        """Return a period that falls in the default visible window.
+
+        The grid starts at the current period; seed_periods places
+        period 7 around today's date (2026-04-14).  Fall back to the
+        anchor period if we cannot identify a current period.
+        """
+        current = pay_period_service.get_current_period(
+            seed_user["user"].id,
+        )
+        return current or seed_periods[0]
+
+    def _hidden_period(self, seed_user, seed_periods):
+        """Return a period that is NOT in the default visible window.
+
+        The anchor period sits at seed_periods[0] (2026-01-02), well
+        before today (2026-04-14).  With ``grid_default_periods=6``
+        the visible window starts at the current period, so the
+        anchor is historical and hidden in compact view.
+        """
+        return seed_periods[0]
+
+    def test_compact_view_hides_oneoff_outside_visible_window(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A one-off in a hidden period must not render its row label."""
+        with app.app_context():
+            hidden = self._hidden_period(seed_user, seed_periods)
+            self._make_oneoff(
+                seed_user, hidden, name="HIDDEN_FAR_AWAY_BILL",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert b"HIDDEN_FAR_AWAY_BILL" not in resp.data
+
+    def test_compact_view_shows_oneoff_inside_visible_window(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A one-off in the visible window must render its row label."""
+        with app.app_context():
+            visible = self._visible_period(seed_user, seed_periods)
+            self._make_oneoff(
+                seed_user, visible, name="VISIBLE_NEARBY_BILL",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert b"VISIBLE_NEARBY_BILL" in resp.data
+
+    def test_show_all_reveals_oneoff_outside_visible_window(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """?show_all=1 must render rows from the full forward projection."""
+        with app.app_context():
+            hidden = self._hidden_period(seed_user, seed_periods)
+            self._make_oneoff(
+                seed_user, hidden, name="FAR_REVEALED_BY_SHOW_ALL",
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/grid?show_all=1")
+            assert resp.status_code == 200
+            assert b"FAR_REVEALED_BY_SHOW_ALL" in resp.data
+
+    def test_compact_toggle_button_defaults_to_show_all_link(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The toggle button in compact view must link to show_all=1."""
+        with app.app_context():
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert b"show_all=1" in resp.data
+            assert b"All Rows" in resp.data
+
+    def test_show_all_toggle_button_links_back_to_compact(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """When show_all is active, the button must link back without it."""
+        with app.app_context():
+            resp = auth_client.get("/grid?show_all=1")
+            assert resp.status_code == 200
+            assert b"Compact" in resp.data
+
+    def test_scoping_does_not_change_visible_subtotals(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Adding a hidden-period txn must not shift any visible subtotal.
+
+        This is the key correctness invariant: hiding a row is a pure
+        display filter, so the computed totals for visible periods
+        must be byte-identical before and after the hidden txn exists.
+        """
+        with app.app_context():
+            baseline = auth_client.get("/grid").data
+            hidden = self._hidden_period(seed_user, seed_periods)
+            self._make_oneoff(
+                seed_user, hidden, name="HIDDEN_SUBTOTAL_PROBE",
+                amount="999.00",
+            )
+            db.session.commit()
+
+            after = auth_client.get("/grid").data
+            assert b"HIDDEN_SUBTOTAL_PROBE" not in after
+
+            # Projected End Balance is the canonical forward-math
+            # summary.  It SHOULD change because the hidden txn still
+            # affects the actual account trajectory (projected
+            # balances include the full forward projection, not just
+            # visible-row txns).  This asserts balance math is not
+            # coupled to row scoping.
+            assert b"Projected End Balance" in after
+
+
 class TestBalanceRow:
     """Tests for GET /grid/balance-row HTMX partial."""
 

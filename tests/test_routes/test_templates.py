@@ -547,18 +547,12 @@ class TestGridRowKeyBuilder:
                 txn.name = "Apartment Rent" if idx % 2 else "Rent"
             db.session.flush()
 
-            txn_by_period = {}
-            for txn in instances:
-                txn_by_period.setdefault(
-                    txn.pay_period_id, [],
-                ).append(txn)
-
             all_cats = db.session.query(Category).filter_by(
                 user_id=seed_user["user"].id,
             ).all()
 
             row_keys = _build_row_keys(
-                txn_by_period, all_cats, is_income_section=False,
+                instances, all_cats, is_income_section=False,
             )
 
             matches = [
@@ -621,9 +615,7 @@ class TestGridRowKeyBuilder:
             ).all()
 
             row_keys = _build_row_keys(
-                {period.id: [txn_a, txn_b]},
-                all_cats,
-                is_income_section=False,
+                [txn_a, txn_b], all_cats, is_income_section=False,
             )
 
             labels = sorted(rk.txn_name for rk in row_keys)
