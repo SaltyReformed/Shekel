@@ -92,15 +92,21 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
 
     count = 0
 
-    # Move regular transactions (unchanged logic).
-    for txn in regular_txns:
-        txn.pay_period_id = target_period_id
-
-        # If this transaction was auto-generated from a template, flag as override.
-        if txn.template_id is not None:
-            txn.is_override = True
-
-        count += 1
+    # Move regular transactions.  Set is_override BEFORE pay_period_id and
+    # wrap the loop in no_autoflush so both fields land in the same flush.
+    # The partial unique index on (template_id, pay_period_id, scenario_id)
+    # excludes is_override = TRUE rows, but only sees the post-flush state;
+    # without the guard, a mid-loop autoflush triggered by a subsequent
+    # query (e.g. transfer_service.update_transfer below performing a
+    # db.session.get) could persist the new pay_period_id while
+    # is_override is still FALSE for one row, colliding with the
+    # rule-generated sibling already in the target period.
+    with db.session.no_autoflush:
+        for txn in regular_txns:
+            if txn.template_id is not None:
+                txn.is_override = True
+            txn.pay_period_id = target_period_id
+            count += 1
 
     # Move transfers via the service.  De-duplicate by transfer_id because
     # the query is not account-scoped and may return both shadows from the

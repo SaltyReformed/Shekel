@@ -21,12 +21,21 @@ class Transfer(db.Model):
             name="ck_transfers_different_accounts",
         ),
         db.CheckConstraint("amount > 0", name="ck_transfers_positive_amount"),
+        # One non-deleted, non-override transfer per template per period
+        # per scenario.  Mirrors the relaxed transactions index: override
+        # siblings may coexist with their rule-generated parent so
+        # carry-forward can move unpaid recurring transfers into a target
+        # period that already holds the next rule-generated instance.
+        # transfer_recurrence.py already skips generation when an
+        # is_override = TRUE transfer exists in the period.
         db.Index(
             "idx_transfers_template_period_scenario",
             "transfer_template_id", "pay_period_id", "scenario_id",
             unique=True,
             postgresql_where=db.text(
-                "transfer_template_id IS NOT NULL AND is_deleted = FALSE"
+                "transfer_template_id IS NOT NULL "
+                "AND is_deleted = FALSE "
+                "AND is_override = FALSE"
             ),
         ),
         {"schema": "budget"},

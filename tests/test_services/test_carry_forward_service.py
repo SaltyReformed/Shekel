@@ -19,8 +19,16 @@ from app.models.account import Account
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
-from app.services import carry_forward_service, transfer_service
+from app.models.transfer_template import TransferTemplate
+from app.services import (
+    balance_calculator,
+    carry_forward_service,
+    recurrence_engine,
+    transfer_recurrence,
+    transfer_service,
+)
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -585,3 +593,447 @@ class TestCarryForwardShadowTransactions:
             for txn in [reg1, reg2, reg3]:
                 db.session.refresh(txn)
                 assert txn.pay_period_id == seed_periods[1].id
+
+
+# ── Override-sibling Carry Forward Tests ───────────────────────────
+
+
+def _create_template(seed_user, name="Recurring Bill",
+                     amount="100.00", category_key="Rent"):
+    """Create a TransactionTemplate without a recurrence rule.
+
+    Used by override-sibling tests that hand-place rule-generated rows
+    rather than driving them through the recurrence engine.  Returns
+    the persisted template.
+    """
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"][category_key].id,
+        transaction_type_id=expense_type.id,
+        name=name,
+        default_amount=Decimal(amount),
+    )
+    db.session.add(template)
+    db.session.flush()
+    return template
+
+
+class TestCarryForwardOverrideSibling:
+    """Regression for the production bug: carry-forward into a target
+    period that already holds a rule-generated row from the same
+    template.  The relaxed partial unique index permits a carried
+    is_override=True row to coexist with the rule-generated parent.
+    """
+
+    def test_carries_into_target_with_existing_rule_generated(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Override sibling coexists with rule-generated parent.
+
+        Reproduces the production traceback:
+            UniqueViolation: idx_transactions_template_period_scenario
+            Key (template_id, pay_period_id, scenario_id)=(N, target, S)
+            already exists.
+
+        Under the relaxed index the carried row is permitted because
+        is_override=True is excluded from the partial uniqueness
+        predicate.
+        """
+        with app.app_context():
+            template = _create_template(seed_user)
+
+            # Rule-generated row in the source period (period 0) -- this
+            # is what the user wants to carry forward.
+            source = _create_transaction(
+                seed_user, seed_periods, period_index=0,
+                template_id=template.id, name=template.name,
+                amount=str(template.default_amount),
+            )
+            # Rule-generated row already in the target period (period 1)
+            # -- placed by the recurrence engine before the user clicked
+            # "Carry Fwd."  is_override=False because it is the canonical
+            # next-period instance.
+            target_existing = _create_transaction(
+                seed_user, seed_periods, period_index=1,
+                template_id=template.id, name=template.name,
+                amount=str(template.default_amount),
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # One carried regular transaction.
+            assert count == 1
+
+            # Both rows now live in the target period.
+            db.session.refresh(source)
+            db.session.refresh(target_existing)
+            assert source.pay_period_id == seed_periods[1].id
+            assert target_existing.pay_period_id == seed_periods[1].id
+
+            # The carried row is the override sibling; the
+            # pre-existing rule-generated row keeps is_override=False.
+            assert source.is_override is True
+            assert target_existing.is_override is False
+
+            # Both rows retain the template link so the companion view
+            # and recurrence engine can still see them.
+            assert source.template_id == template.id
+            assert target_existing.template_id == template.id
+
+            # Sanity: target period now has exactly two non-deleted
+            # transactions for this template/scenario.
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            assert len(rows) == 2
+            override_flags = sorted(r.is_override for r in rows)
+            assert override_flags == [False, True]
+
+    def test_balance_calculator_sums_both_override_sibling_rows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Balance calculator reflects the doubled obligation.
+
+        After carry-forward, the target period's projected expense
+        subtotal should include both the rule-generated and the
+        override-sibling row.  Balance projections must drop by the
+        full sum, not just one row's amount.
+        """
+        with app.app_context():
+            template = _create_template(seed_user, amount="250.00")
+            _create_transaction(
+                seed_user, seed_periods, period_index=0,
+                template_id=template.id, amount="250.00",
+                name=template.name,
+            )
+            _create_transaction(
+                seed_user, seed_periods, period_index=1,
+                template_id=template.id, amount="250.00",
+                name=template.name,
+            )
+            db.session.flush()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Pull every non-deleted transaction in the target period
+            # and run them through the balance calculator the same way
+            # the grid route does.
+            target_txns = (
+                db.session.query(Transaction)
+                .filter_by(
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            account = seed_user["account"]
+            balances, _stale = balance_calculator.calculate_balances(
+                anchor_balance=account.current_anchor_balance,
+                anchor_period_id=account.current_anchor_period_id,
+                periods=seed_periods,
+                transactions=target_txns,
+            )
+
+            # Two $250 expenses pull the period balance down by $500
+            # vs. the anchor's starting position.
+            target_period_balance = balances[seed_periods[1].id]
+            anchor_balance = balances[seed_periods[0].id]
+            assert anchor_balance - target_period_balance == Decimal(
+                "500.00"
+            )
+
+    def test_recurrence_engine_does_not_double_generate(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A subsequent recurrence-engine pass must not add a third row.
+
+        The engine treats override siblings as a "this period is
+        already handled" signal (recurrence_engine.py line 114), so
+        re-running generation after carry-forward must leave the count
+        at two.
+        """
+        with app.app_context():
+            from app.enums import RecurrencePatternEnum
+            from app.models.recurrence_rule import RecurrenceRule
+            from app.models.ref import RecurrencePattern
+
+            pattern = (
+                db.session.query(RecurrencePattern)
+                .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
+                .one()
+            )
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense").one()
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=pattern.id,
+                interval_n=1,
+                offset_periods=0,
+            )
+            db.session.add(rule)
+            db.session.flush()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                name="Recurring with rule",
+                default_amount=Decimal("400.00"),
+                recurrence_rule_id=rule.id,
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.refresh(template)
+
+            # Initial generation populates rule-generated rows for
+            # periods 0 and 1.
+            recurrence_engine.generate_for_template(
+                template, seed_periods[:2], seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Carry forward the period 0 row into period 1.
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Pre-generation snapshot: target has rule-generated +
+            # override sibling (= 2 rows).
+            pre_count = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).count()
+            )
+            assert pre_count == 2
+
+            # Re-running the engine must NOT add a third row -- the
+            # override sibling signals the period is handled.
+            recurrence_engine.generate_for_template(
+                template, seed_periods[:2], seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            post_count = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).count()
+            )
+            assert post_count == 2
+
+
+# ── Override-sibling Carry Forward Tests for Transfers ─────────────
+
+
+def _create_transfer_template(seed_user, savings_account,
+                              name="Recurring Transfer",
+                              amount="200.00",
+                              category_key="Rent"):
+    """Create a TransferTemplate without a recurrence rule.
+
+    Mirrors _create_template but for transfers.  Used by transfer
+    override-sibling tests that need a transfer_template_id link.
+    """
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings_account.id,
+        category_id=seed_user["categories"][category_key].id,
+        name=name,
+        default_amount=Decimal(amount),
+    )
+    db.session.add(template)
+    db.session.flush()
+    return template
+
+
+class TestCarryForwardOverrideSiblingTransfers:
+    """Mirror TestCarryForwardOverrideSibling for transfers, exercising
+    the relaxed idx_transfers_template_period_scenario index.
+    """
+
+    def test_carries_transfer_into_target_with_existing_rule_generated(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Override-sibling transfer coexists with rule-generated parent."""
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            template = _create_transfer_template(seed_user, savings)
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+
+            # Rule-generated transfer in source period (period 0).
+            source_xfer = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=template.default_amount,
+                status_id=projected.id,
+                category_id=template.category_id,
+                name=template.name,
+                transfer_template_id=template.id,
+            )
+            # Rule-generated transfer already in target period (period 1)
+            # -- the recurrence engine has already produced this period's
+            # instance.
+            target_xfer = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=template.default_amount,
+                status_id=projected.id,
+                category_id=template.category_id,
+                name=template.name,
+                transfer_template_id=template.id,
+            )
+            db.session.flush()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert count == 1
+
+            db.session.refresh(source_xfer)
+            db.session.refresh(target_xfer)
+            assert source_xfer.pay_period_id == seed_periods[1].id
+            assert target_xfer.pay_period_id == seed_periods[1].id
+            assert source_xfer.is_override is True
+            assert target_xfer.is_override is False
+            assert source_xfer.transfer_template_id == template.id
+            assert target_xfer.transfer_template_id == template.id
+
+            # Both transfers' shadow transactions follow them into the
+            # target period -- four shadows total (two per transfer).
+            shadows = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.transfer_id.in_(
+                        [source_xfer.id, target_xfer.id]
+                    ),
+                    Transaction.is_deleted.is_(False),
+                ).all()
+            )
+            assert len(shadows) == 4
+            for shadow in shadows:
+                assert shadow.pay_period_id == seed_periods[1].id
+
+    def test_transfer_recurrence_does_not_double_generate(
+        self, app, db, seed_user, seed_periods
+    ):
+        """transfer_recurrence skips a period that already has an
+        override-sibling transfer.
+        """
+        with app.app_context():
+            from app.enums import RecurrencePatternEnum
+            from app.models.recurrence_rule import RecurrenceRule
+            from app.models.ref import RecurrencePattern
+
+            savings = _create_savings(seed_user)
+            pattern = (
+                db.session.query(RecurrencePattern)
+                .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
+                .one()
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=pattern.id,
+                interval_n=1,
+                offset_periods=0,
+            )
+            db.session.add(rule)
+            db.session.flush()
+
+            template = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                name="Recurring Transfer with rule",
+                default_amount=Decimal("300.00"),
+                recurrence_rule_id=rule.id,
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.refresh(template)
+
+            # Initial generation: rule-generated transfers in periods 0
+            # and 1.
+            transfer_recurrence.generate_for_template(
+                template, seed_periods[:2], seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # Carry forward period 0 into period 1.  Period 1 now has a
+            # rule-generated transfer + an override sibling.
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            pre_count = (
+                db.session.query(Transfer)
+                .filter_by(
+                    transfer_template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).count()
+            )
+            assert pre_count == 2
+
+            # Re-run transfer recurrence -- must not add a third row.
+            transfer_recurrence.generate_for_template(
+                template, seed_periods[:2], seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            post_count = (
+                db.session.query(Transfer)
+                .filter_by(
+                    transfer_template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).count()
+            )
+            assert post_count == 2

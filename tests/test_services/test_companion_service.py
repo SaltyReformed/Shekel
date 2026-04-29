@@ -266,6 +266,66 @@ class TestVisibilityFiltering:
         assert txns[0].name == "Apples Budget"
         assert txns[1].name == "Zucchini Fund"
 
+    def test_companion_sees_override_sibling_alongside_rule_generated(
+        self, app, db, seed_user, seed_periods, seed_companion,
+    ):
+        """Carry-forward override siblings stay visible to the companion.
+
+        When the owner carries an unpaid grocery row from a past period
+        into the current period that already has the rule-generated
+        next instance, both rows now sit in the same period -- one with
+        is_override=False (canonical), one with is_override=True
+        (carried).  Both still link to the same companion-visible
+        TransactionTemplate, so the companion view must return both.
+        Without this, the companion would see only the rule-generated
+        row and silently miss the carried envelope -- the exact failure
+        mode that ruled out the pure-detach fix.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        rule_generated = _make_txn(
+            seed_user, seed_periods[0], template, name="Groceries",
+        )
+
+        # Build the carried row with is_override=True from the start --
+        # the relaxed unique index excludes is_override=TRUE rows from
+        # its predicate, so two non-override rows for the same
+        # (template, period, scenario) would still collide.  This is
+        # exactly the constraint that lets carry-forward succeed.
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        category = list(seed_user["categories"].values())[0]
+        carried = Transaction(
+            name="Groceries",
+            estimated_amount=template.default_amount,
+            transaction_type_id=expense_type.id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            pay_period_id=seed_periods[0].id,
+            account_id=seed_user["account"].id,
+            category_id=category.id,
+            scenario_id=seed_user["scenario"].id,
+            template_id=template.id,
+            is_override=True,
+        )
+        db.session.add(carried)
+        db.session.commit()
+
+        companion = seed_companion["user"]
+        txns, _ = companion_service.get_visible_transactions(
+            companion.id, period_id=seed_periods[0].id,
+        )
+
+        # Both rows are returned -- the override sibling stays visible.
+        ids = sorted(t.id for t in txns)
+        assert ids == sorted([rule_generated.id, carried.id])
+
+        # And the override flag survives the round-trip so the UI can
+        # distinguish carried items from canonical ones if it chooses.
+        flags = sorted(t.is_override for t in txns)
+        assert flags == [False, True]
+
 
 # ── Period Isolation ─────────────────────────────────────────────────
 
