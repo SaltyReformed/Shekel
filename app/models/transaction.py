@@ -36,13 +36,23 @@ class Transaction(db.Model):
             "due_date",
             postgresql_where=db.text("due_date IS NOT NULL"),
         ),
-        # One non-deleted transaction per template per period per scenario.
+        # One non-deleted, non-override transaction per template per
+        # period per scenario.  Override siblings (is_override = TRUE)
+        # may coexist with their rule-generated parent -- carry-forward
+        # relies on this so a moved unpaid item lives alongside the
+        # recurrence-engine-generated instance for the target period.
+        # The recurrence engine in app/services/recurrence_engine.py
+        # already skips generation when an is_override = TRUE row
+        # exists in the period, so the rule-generated row remains
+        # unique even with the relaxed index.
         db.Index(
             "idx_transactions_template_period_scenario",
             "template_id", "pay_period_id", "scenario_id",
             unique=True,
             postgresql_where=db.text(
-                "template_id IS NOT NULL AND is_deleted = FALSE"
+                "template_id IS NOT NULL "
+                "AND is_deleted = FALSE "
+                "AND is_override = FALSE"
             ),
         ),
         db.CheckConstraint(
