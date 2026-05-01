@@ -160,6 +160,77 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     return created
 
 
+def can_generate_in_period(template, period, scenario_id):
+    """Return True iff ``generate_for_template`` would create a row in *period*.
+
+    Read-only mirror of ``generate_for_template``'s gating logic.
+    Useful to callers that need to predict the engine's behaviour
+    without mutating -- e.g. the carry-forward preview endpoint
+    (``carry_forward_service.preview_carry_forward``) shows the user
+    whether a missing target canonical would be auto-generated or
+    whether the carry-forward will refuse.
+
+    The decision uses exactly the same predicates as
+    ``generate_for_template``:
+
+      1. Cross-user defense: scenario must belong to the template's
+         user.
+      2. Template must have a recurrence rule.
+      3. Rule pattern must not be ``Once`` (manual placement only).
+      4. The period must match the rule's pattern via
+         ``_match_periods`` (effective_from / end_date / pattern
+         filters all apply).
+      5. The (template, period, scenario) tuple must have NO existing
+         rows -- not even soft-deleted ones.  The engine's per-row
+         skip logic treats any existing row as a "do not generate"
+         signal, so a soft-deleted carry-over also blocks generation.
+
+    Args:
+        template: The TransactionTemplate to check.  Must have its
+            ``recurrence_rule`` relationship loaded (the same
+            assumption ``generate_for_template`` makes).
+        period: The PayPeriod object the canonical would land in.
+        scenario_id: The scenario that would receive the canonical.
+
+    Returns:
+        bool -- True when the engine would create a row, False when
+        any of the gating conditions would skip it.
+    """
+    # Defense-in-depth (mirrors generate_for_template's first guard).
+    scenario = db.session.get(Scenario, scenario_id)
+    if scenario is None or scenario.user_id != template.user_id:
+        return False
+
+    rule = template.recurrence_rule
+    if rule is None:
+        return False
+
+    pattern_id = rule.pattern_id
+    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
+        return False
+
+    # Mirror generate_for_template's effective_from default.  Without
+    # an explicit value, fall back to the rule's start_period.start_date,
+    # then to the supplied period's start_date -- so a single-period
+    # check always has a concrete boundary to compare against.
+    if rule.start_period_id and rule.start_period:
+        effective_from = rule.start_period.start_date
+    else:
+        effective_from = period.start_date
+
+    matching = _match_periods(rule, pattern_id, [period], effective_from)
+    if not matching:
+        return False
+
+    # Engine refuses to overwrite ANY existing row -- skip if even one
+    # row (including soft-deleted) sits in (template, period, scenario).
+    existing = _get_existing_map(template.id, scenario_id, [period])
+    if existing.get(period.id):
+        return False
+
+    return True
+
+
 def regenerate_for_template(template, periods, scenario_id, effective_from=None):
     """Delete non-overridden auto-generated entries and regenerate.
 

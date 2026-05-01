@@ -3,7 +3,7 @@ Tests for OP-3: per-entry breakdown in year-end summary.
 
 Verifies that compute_year_end_summary attaches an `entry_breakdown`
 sub-dict to spending category items whose parent template has
-track_individual_purchases=True.  Each test asserts the breakdown
+is_envelope=True.  Each test asserts the breakdown
 fields with hand-computed expected values, not just presence.
 
 Covered scenarios:
@@ -57,7 +57,7 @@ def _make_template(user, account, category, name, default_amount,
         category: Category for grouping in spending hierarchy.
         name: Template display name.
         default_amount: Default transaction amount (Decimal).
-        tracked: track_individual_purchases flag value.
+        tracked: is_envelope flag value.
 
     Returns:
         Persisted TransactionTemplate object.
@@ -79,7 +79,7 @@ def _make_template(user, account, category, name, default_amount,
         transaction_type_id=expense_type_id,
         name=name,
         default_amount=default_amount,
-        track_individual_purchases=tracked,
+        is_envelope=tracked,
     )
     db.session.add(template)
     db.session.flush()

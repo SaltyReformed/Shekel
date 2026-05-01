@@ -537,7 +537,7 @@ class TestDeactivateCompanion:
             transaction_type_id=expense_type_id,
             account_id=seed_user["account"].id,
             category_id=category.id,
-            track_individual_purchases=True,
+            is_envelope=True,
             companion_visible=True,
         )
         db.session.add(template)

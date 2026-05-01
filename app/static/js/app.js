@@ -104,7 +104,42 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
         new bootstrap.Tooltip(tipEl);
       }
     });
+
+    // Auto-show modal partials swapped into the DOM.  Used by
+    // server-rendered confirmation/preview modals (e.g. the
+    // carry-forward preview at
+    // app/templates/grid/_carry_forward_preview_modal.html).  Marked
+    // by ``data-modal-auto-show`` on the .modal element.  After
+    // hide, leave the markup in place so a subsequent hx-get swap
+    // replaces it cleanly without orphaning Bootstrap state.
+    target.querySelectorAll('[data-modal-auto-show]').forEach(function(modalEl) {
+      bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    });
   }
+});
+
+// Carry-forward modal: surface confirm-time validation failures.
+// The Confirm button posts to /pay-periods/<id>/carry-forward; on a
+// race-condition validation failure the route returns 4xx with a
+// human-readable body.  HTMX defaults to NOT swapping on 4xx, so we
+// project the response text into the modal's alert box ourselves.
+// On success the route returns 200 + HX-Trigger=gridRefresh which
+// reloads the page (handled above), tearing down the modal in the
+// process.
+document.body.addEventListener("htmx:responseError", function(event) {
+  var elt = event.detail.elt;
+  if (!elt || !elt.matches || !elt.matches("[data-carry-forward-confirm]")) {
+    return;
+  }
+  var modal = elt.closest(".modal");
+  if (!modal) return;
+  var alertBox = modal.querySelector("[data-carry-forward-error]");
+  if (!alertBox) return;
+  alertBox.textContent =
+    (event.detail.xhr && event.detail.xhr.responseText)
+      ? event.detail.xhr.responseText
+      : "An error occurred while carrying forward.";
+  alertBox.classList.remove("d-none");
 });
 
 // Close Add Transaction modal and reload after successful creation.

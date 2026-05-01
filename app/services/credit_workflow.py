@@ -60,7 +60,7 @@ def mark_as_credit(transaction_id, user_id):
         raise ValidationError("Cannot mark transfer transactions as credit.")
 
     # Block legacy credit on entry-capable transactions.
-    if txn.template is not None and txn.template.track_individual_purchases:
+    if txn.template is not None and txn.template.is_envelope:
         raise ValidationError(
             "This transaction uses individual purchase tracking. "
             "Mark individual entries as credit instead of the whole transaction."

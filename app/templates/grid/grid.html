@@ -108,14 +108,19 @@
           <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d/%y') }}</div>
           {% endif %}
           {% if period.start_date < today and period.id != current_period.id %}
-          <form hx-post="{{ url_for('transactions.carry_forward', period_id=period.id) }}"
-                hx-swap="none" class="mt-1"
-                hx-disabled-elt="find button[type=submit]">
-            <button type="submit" class="btn btn-warning btn-sm"
-                    title="Carry forward unpaid items from this period">
-              <i class="bi bi-arrow-right-circle"></i> Carry Fwd
-            </button>
-          </form>
+          {# Carry-forward button -- opens the preview modal first.
+             The preview endpoint returns the modal partial; the modal
+             auto-shows on swap (data-modal-auto-show, app.js).  The
+             user reviews the planned actions and confirms via the
+             modal's own button, which posts to transactions.carry_forward. #}
+          <button type="button" class="btn btn-warning btn-sm mt-1"
+                  hx-get="{{ url_for('transactions.carry_forward_preview', period_id=period.id) }}"
+                  hx-target="#carry-forward-modal-mount"
+                  hx-swap="innerHTML"
+                  hx-disabled-elt="this"
+                  title="Preview unpaid items before carrying forward">
+            <i class="bi bi-arrow-right-circle"></i> Carry Fwd
+          </button>
           {% endif %}
         </th>
         {% endfor %}

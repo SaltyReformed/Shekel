@@ -52,7 +52,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -107,7 +107,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -172,7 +172,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -246,7 +246,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -310,7 +310,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -374,7 +374,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -449,7 +449,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -512,7 +512,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -577,7 +577,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -683,7 +683,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -759,7 +759,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("0.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -824,7 +824,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -897,7 +897,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -962,7 +962,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Huge Expense",
                 default_amount=large,
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -1077,7 +1077,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(groc_tmpl)
             db.session.flush()
@@ -1122,7 +1122,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Gas",
                 default_amount=Decimal("80.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(gas_tmpl)
             db.session.flush()
@@ -1196,7 +1196,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -1304,7 +1304,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -1415,7 +1415,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -1485,7 +1485,7 @@ class TestEntryAwareBalance:
                 transaction_type_id=expense_type.id,
                 name="Groceries",
                 default_amount=Decimal("500.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -1591,7 +1591,7 @@ class TestEntryClearedFlag:
             transaction_type_id=expense_type.id,
             name="Groceries",
             default_amount=Decimal(est),
-            track_individual_purchases=True,
+            is_envelope=True,
         )
         db.session.add(template)
         db.session.flush()

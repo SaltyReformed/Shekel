@@ -126,8 +126,8 @@ def _get_upcoming_bills(
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     # selectinload(entries) + joinedload(template) avoid N+1 lookups
-    # when the template checks track_individual_purchases and the
-    # helper below iterates entries for progress computation.
+    # when the template checks is_envelope and the helper below
+    # iterates entries for progress computation.
     txns = (
         db.session.query(Transaction)
         .options(
@@ -204,12 +204,12 @@ def _entry_progress_fields(txn: Transaction) -> dict:
 
     Returns a dict with keys is_tracked, entry_total, entry_count,
     entry_remaining, and entry_over_budget.  When the transaction is
-    not entry-capable (no template with track_individual_purchases)
-    or has no recorded entries, the progress fields are None/0/False
-    and the dashboard template falls back to the standard amount
-    display.  Otherwise returns the debit+credit sum, the remaining
-    budget, and a flag indicating whether the sum exceeds the
-    estimated amount.
+    not entry-capable (no template with is_envelope) or has no
+    recorded entries, the progress fields are None/0/False and the
+    dashboard template falls back to the standard amount display.
+    Otherwise returns the debit+credit sum, the remaining budget,
+    and a flag indicating whether the sum exceeds the estimated
+    amount.
 
     Expects txn.template and txn.entries to already be loaded on the
     transaction object (eager-loaded by the caller).
@@ -222,7 +222,7 @@ def _entry_progress_fields(txn: Transaction) -> dict:
     """
     is_tracked = (
         txn.template is not None
-        and txn.template.track_individual_purchases
+        and txn.template.is_envelope
     )
     if not is_tracked or not txn.entries:
         return {

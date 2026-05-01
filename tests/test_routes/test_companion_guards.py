@@ -313,7 +313,7 @@ def _create_companion_test_transaction(
         account_id=seed_user["account"].id,
         category_id=category.id,
         companion_visible=companion_visible,
-        track_individual_purchases=False,
+        is_envelope=False,
     )
     db.session.add(template)
     db.session.flush()
@@ -475,7 +475,7 @@ class TestMarkDoneCompanionAccess:
             account_id=account.id,
             category_id=category.id,
             companion_visible=True,
-            track_individual_purchases=False,
+            is_envelope=False,
         )
         db.session.add(template)
         db.session.flush()

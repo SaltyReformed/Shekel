@@ -807,7 +807,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
 
 @pytest.fixture()
 def seed_entry_template(app, db, seed_user, seed_periods):
-    """Create a template with track_individual_purchases=True and a transaction.
+    """Create a template with is_envelope=True and a transaction.
 
     The template is an expense-type template tied to the seed_user's checking
     account with a default amount of $500.  A single projected transaction is
@@ -844,7 +844,7 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         transaction_type_id=expense_type.id,
         name="Weekly Groceries",
         default_amount=Decimal("500.00"),
-        track_individual_purchases=True,
+        is_envelope=True,
     )
     db.session.add(template)
     db.session.flush()

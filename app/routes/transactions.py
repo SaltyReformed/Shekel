@@ -27,12 +27,14 @@ from app.schemas.validation import (
     TransactionCreateSchema,
     InlineTransactionCreateSchema,
 )
-from app.services import credit_workflow, carry_forward_service, pay_period_service
-from app.services import transfer_service
-from app.services.entry_service import (
-    build_entry_sums_dict,
-    compute_actual_from_entries,
+from app.services import (
+    credit_workflow,
+    carry_forward_service,
+    pay_period_service,
+    transaction_service,
+    transfer_service,
 )
+from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
 
@@ -251,7 +253,7 @@ def update_transaction(txn_id):
         credit_id = ref_cache.status_id(StatusEnum.CREDIT)
         if (data["status_id"] == credit_id
                 and txn.template is not None
-                and txn.template.track_individual_purchases):
+                and txn.template.is_envelope):
             return (
                 "Cannot set Credit status on transactions with individual "
                 "purchase tracking. Use entry-level credit instead."
@@ -338,19 +340,31 @@ def mark_done(txn_id):
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    txn.status_id = status_id
-    txn.paid_at = db.func.now()
-
-    # Auto-populate actual from entries for entry-capable transactions.
-    # Entry sum takes precedence over any manual actual_amount from the
-    # form (scope doc section 4.2).  If no entries exist, fall through
-    # to the manual flow so non-tracked and empty-tracked transactions
-    # behave identically to pre-entry behavior.
+    # Auto-populate actual from entries for envelope-tracked transactions
+    # with at least one entry.  Entry sum takes precedence over any manual
+    # actual_amount from the form (scope doc section 4.2).  When no entries
+    # exist (or the template is not envelope-tracked), fall through to the
+    # manual flow so non-tracked and empty-tracked transactions behave
+    # identically to pre-entry behavior -- the form's optional
+    # ``actual_amount`` is honoured and a missing value leaves
+    # ``txn.actual_amount`` untouched.
+    #
+    # The envelope-with-entries branch routes through
+    # ``transaction_service.settle_from_entries`` so the manual mark-done
+    # path and the carry-forward envelope branch (Phase 4) share a single
+    # source of truth for "settle a tracked row at sum(entries)."  The
+    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
+    # together; the route does not need to set them itself in this branch.
     if (txn.template is not None
-            and txn.template.track_individual_purchases
+            and txn.template.is_envelope
             and txn.entries):
-        txn.actual_amount = compute_actual_from_entries(txn.entries)
+        try:
+            transaction_service.settle_from_entries(txn)
+        except ValidationError as exc:
+            return str(exc), 400
     else:
+        txn.status_id = status_id
+        txn.paid_at = db.func.now()
         # Accept an optional manual actual amount from the form.
         actual = request.form.get("actual_amount")
         if actual:
@@ -712,29 +726,102 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
 
-@transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
-@login_required
-@require_owner
-def carry_forward(period_id):
-    """Carry forward all unpaid items from a period to the current period."""
-    # Verify the source period belongs to the current user.
+def _resolve_carry_forward_context(period_id):
+    """Resolve source period, current period, and baseline scenario.
+
+    Shared by both ``carry_forward`` (POST mutator) and
+    ``carry_forward_preview`` (GET preview) so they apply identical
+    ownership and configuration checks.
+
+    Each return is a ``(payload, status, headers)`` tuple where
+    *payload* is None when the lookups succeed.  Caller pattern:
+
+        ctx, err = _resolve_carry_forward_context(period_id)
+        if err is not None:
+            return err
+        source_period, current_period, scenario = ctx
+
+    Returns:
+        Tuple of ``((source_period, current_period, scenario), None)``
+        on success, or ``(None, error_response)`` on failure.  The
+        error response is a Flask-compatible ``(body, status_code)``
+        tuple that the caller returns directly to HTMX.
+    """
     source_period = db.session.get(PayPeriod, period_id)
     if source_period is None or source_period.user_id != current_user.id:
-        return "Not found", 404
+        return None, ("Not found", 404)
 
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period is None:
-        return "No current period found", 400
+        return None, ("No current period found", 400)
 
-    # Resolve the baseline scenario so carry-forward only moves
-    # transactions within that scenario.
     scenario = (
         db.session.query(Scenario)
         .filter_by(user_id=current_user.id, is_baseline=True)
         .first()
     )
     if not scenario:
-        return "No baseline scenario", 400
+        return None, ("No baseline scenario", 400)
+
+    return (source_period, current_period, scenario), None
+
+
+@transactions_bp.route(
+    "/pay-periods/<int:period_id>/carry-forward-preview", methods=["GET"],
+)
+@login_required
+@require_owner
+def carry_forward_preview(period_id: int):
+    """HTMX partial: return the carry-forward preview modal.
+
+    Mirrors the POST ``carry_forward`` route's ownership/configuration
+    checks, then asks the service for a read-only plan and renders the
+    Bootstrap 5 modal partial.  No database writes happen here -- the
+    user sees what WOULD happen and confirms via the modal's button,
+    which posts to the existing ``carry_forward`` endpoint.
+
+    Returns 404 for "period not found" and "period not yours" (security
+    response rule), 400 for missing pay-period configuration (no
+    current period, no baseline scenario), 200 with the rendered
+    modal HTML for the success case.
+
+    Args:
+        period_id: pay_period.id of the source period (the past
+            period the user clicked Carry Fwd on).
+
+    Returns:
+        Flask response tuple: rendered modal HTML or an error message
+        with the appropriate status code.
+    """
+    ctx, err = _resolve_carry_forward_context(period_id)
+    if err is not None:
+        return err
+    source_period, current_period, scenario = ctx
+
+    try:
+        preview = carry_forward_service.preview_carry_forward(
+            period_id, current_period.id, current_user.id, scenario.id,
+        )
+    except NotFoundError as exc:
+        return str(exc), 404
+
+    return render_template(
+        "grid/_carry_forward_preview_modal.html",
+        preview=preview,
+        source_period=source_period,
+        current_period=current_period,
+    )
+
+
+@transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
+@login_required
+@require_owner
+def carry_forward(period_id):
+    """Carry forward all unpaid items from a period to the current period."""
+    ctx, err = _resolve_carry_forward_context(period_id)
+    if err is not None:
+        return err
+    _source_period, current_period, scenario = ctx
 
     try:
         count = carry_forward_service.carry_forward_unpaid(
@@ -743,6 +830,14 @@ def carry_forward(period_id):
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
+    except ValidationError as exc:
+        # Envelope branch refused -- e.g. settled target canonical,
+        # template inactive in target period, or a corrupt multi-row
+        # target state.  Rollback so no source row is left settled
+        # and no target row is left bumped (batch atomicity per
+        # docs/carry-forward-aftermath-implementation-plan.md).
+        db.session.rollback()
+        return str(exc), 400
 
     logger.info("user_id=%d carried forward %d items from period %d", current_user.id, count, period_id)
     # Trigger a full grid refresh.

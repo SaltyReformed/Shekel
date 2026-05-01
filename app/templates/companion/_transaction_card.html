@@ -6,7 +6,7 @@
      entry_data   -- dict mapping txn.id to {total, remaining, count, pct}
 #}
 {% set ed = entry_data.get(txn.id) %}
-{% set is_tracked = txn.template and txn.template.track_individual_purchases %}
+{% set is_tracked = txn.template and txn.template.is_envelope %}
 <div class="card mb-2">
   <div class="card-body py-2 px-3">
     {# Header row: name + amount/progress #}

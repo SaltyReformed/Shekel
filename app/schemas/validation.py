@@ -76,7 +76,17 @@ class InlineTransactionCreateSchema(BaseSchema):
 
 
 class TemplateCreateSchema(BaseSchema):
-    """Validates POST data for creating a transaction template."""
+    """Validates POST data for creating a transaction template.
+
+    Includes a cross-field rule (``validate_envelope_only_on_expense``)
+    that rejects ``is_envelope=True`` when ``transaction_type_id``
+    refers to an income type.  Envelope rollover semantics (period-
+    bounded amounts, leftover folds into the next period via
+    ``Carry Fwd``) only apply to expense categories like groceries or
+    spending money.  Income flows are settled via the
+    ``Projected -> Received -> Settled`` workflow and the discrete
+    carry-forward path; they have no rollover.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -95,7 +105,7 @@ class TemplateCreateSchema(BaseSchema):
     account_id = fields.Integer(required=True)
 
     # Tracking & visibility flags.
-    track_individual_purchases = fields.Boolean(load_default=False)
+    is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
@@ -113,12 +123,58 @@ class TemplateCreateSchema(BaseSchema):
     start_period_id = fields.Integer()
     end_date = fields.Date(allow_none=True)
 
+    @validates_schema
+    def validate_envelope_only_on_expense(self, data, **kwargs):
+        """Reject ``is_envelope=True`` on income transaction templates.
+
+        Envelope semantics (the source of truth for the carry-forward
+        ``settle-and-roll`` branch -- see
+        ``docs/carry-forward-aftermath-design.md``) only make sense for
+        expense categories.  An income flow that arrives late is handled
+        by the existing status workflow, not by rolling unspent funds
+        into the next period.
+
+        The validator runs only when both ``is_envelope`` and
+        ``transaction_type_id`` are present in the deserialized payload.
+        ``TemplateUpdateSchema`` partial updates that omit
+        ``transaction_type_id`` skip the schema-level check; the route
+        layer falls back to the existing template's stored
+        ``transaction_type_id`` (see ``_is_tracking_on_non_expense`` in
+        ``app/routes/templates.py``) so the rule is enforced end-to-end.
+
+        The error is attached to the ``is_envelope`` field for
+        consistency with other cross-field validators in this module
+        (e.g. ``validate_goal_mode_fields``); the route layer surfaces
+        the message to the user via ``flash``.
+
+        Raises:
+            ValidationError: If ``is_envelope`` is True and
+                ``transaction_type_id`` resolves to the Income type.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+        if not data.get("is_envelope"):
+            return
+        txn_type_id = data.get("transaction_type_id")
+        if txn_type_id is None:
+            return
+        if ref_cache.transaction_type_is_income(txn_type_id):
+            raise ValidationError(
+                "Purchase tracking is only available for expense templates.",
+                field_name="is_envelope",
+            )
+
 
 class TemplateUpdateSchema(TemplateCreateSchema):
     """Validates PUT data for updating a template.
 
     All fields optional (partial update), plus an effective date for
-    recurrence regeneration.
+    recurrence regeneration.  Inherits the
+    ``validate_envelope_only_on_expense`` cross-field rule from
+    ``TemplateCreateSchema``; on partial updates that omit one of the
+    two relevant fields, the validator returns early and the route
+    layer applies the rule against the existing template's stored
+    values.
     """
 
     # Override -- all fields optional for update.

@@ -539,7 +539,7 @@ class TestTrueUpClearsEntries:
             transaction_type_id=expense_type.id,
             name="Groceries",
             default_amount=Decimal("500.00"),
-            track_individual_purchases=True,
+            is_envelope=True,
         )
         db.session.add(template)
         db.session.flush()

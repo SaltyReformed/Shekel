@@ -43,7 +43,7 @@ def _create_tracked_txn(seed_user, seed_periods, period_index=0,
         transaction_type_id=expense_type.id,
         name="Groceries",
         default_amount=estimated,
-        track_individual_purchases=True,
+        is_envelope=True,
     )
     db.session.add(template)
     db.session.flush()

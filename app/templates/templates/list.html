@@ -77,7 +77,7 @@
     <tr>
       <td>
         {{ t.name }}
-        {% if t.track_individual_purchases %}
+        {% if t.is_envelope %}
           <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
             <i class="bi bi-cart"></i>
           </span>
@@ -160,7 +160,7 @@
         <tr class="text-muted">
           <td>
             {{ t.name }}
-            {% if t.track_individual_purchases %}
+            {% if t.is_envelope %}
               <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
                 <i class="bi bi-cart"></i>
               </span>
