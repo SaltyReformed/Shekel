@@ -249,6 +249,33 @@ def txn_type_id(member):
     return _txn_type_map[member]
 
 
+def transaction_type_is_income(transaction_type_id):
+    """Return True if *transaction_type_id* refers to the Income type row.
+
+    Thin convenience over the cached map so cross-field validators and
+    other call sites can ask "is this an income type?" without importing
+    ``TxnTypeEnum`` themselves.  Used by the template Marshmallow schemas
+    to enforce that ``is_envelope`` (envelope rollover semantics) is
+    only set on expense templates.
+
+    Args:
+        transaction_type_id: Integer primary key of a
+            ``ref.transaction_types`` row.
+
+    Returns:
+        bool -- True iff *transaction_type_id* equals the cached Income
+        type ID; False for the Expense type or any unrecognised value.
+        Callers that need to validate the FK itself must do so
+        separately (this accessor never raises for unknown IDs).
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return transaction_type_id == _txn_type_map[TxnTypeEnum.INCOME]
+
+
 def acct_type_id(member):
     """Return the integer primary key for an AcctTypeEnum member.
 

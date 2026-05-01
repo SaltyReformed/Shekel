@@ -1,11 +1,13 @@
 """
 Shekel Budget App -- Template Tracking & Visibility Flag Tests
 
-Tests for the track_individual_purchases and companion_visible toggles
-on transaction templates. These flags control which transactions support
-sub-entries (purchase tracking) and which appear in the companion view.
+Tests for the is_envelope and companion_visible toggles on transaction
+templates. These flags control which transactions support sub-entries
+(purchase tracking) and which appear in the companion view.
 
-Introduced in Section 9, Commit 6.
+Introduced in Section 9, Commit 6.  Column renamed from
+track_individual_purchases to is_envelope in carry-forward aftermath
+Phase 1 (revision cea9b9e31e88).
 """
 
 from decimal import Decimal
@@ -27,7 +29,7 @@ def _make_template(seed_user, name="Test Template",
         seed_user: The seed_user fixture dict.
         name: Template name.
         txn_type: 'Income' or 'Expense' (ref table name).
-        track: Value for track_individual_purchases.
+        track: Value for is_envelope.
         companion: Value for companion_visible.
 
     Returns:
@@ -44,7 +46,7 @@ def _make_template(seed_user, name="Test Template",
         transaction_type_id=txn_type_obj.id,
         name=name,
         default_amount=Decimal("100.00"),
-        track_individual_purchases=track,
+        is_envelope=track,
         companion_visible=companion,
     )
     db.session.add(template)
@@ -84,11 +86,11 @@ class TestCreateTemplateFlags:
     """Tests for tracking and companion flags during template creation."""
 
     def test_create_template_with_tracking(self, app, auth_client, seed_user):
-        """POST /templates with track_individual_purchases='on' sets flag to True."""
+        """POST /templates with is_envelope='on' sets flag to True."""
         with app.app_context():
             form = _base_form_data(
                 seed_user, name="Groceries",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 "/templates", data=form, follow_redirects=True,
@@ -99,7 +101,7 @@ class TestCreateTemplateFlags:
             template = db.session.query(TransactionTemplate).filter_by(
                 name="Groceries",
             ).one()
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
 
     def test_create_template_tracking_default_false(self, app, auth_client, seed_user):
         """POST /templates without track field defaults to False."""
@@ -114,7 +116,7 @@ class TestCreateTemplateFlags:
             template = db.session.query(TransactionTemplate).filter_by(
                 name="Rent Payment",
             ).one()
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
 
     def test_create_template_with_companion_visible(self, app, auth_client, seed_user):
         """POST /templates with companion_visible='on' sets flag to True."""
@@ -138,7 +140,7 @@ class TestCreateTemplateFlags:
         with app.app_context():
             form = _base_form_data(
                 seed_user, name="Weekly Groceries",
-                track_individual_purchases="on",
+                is_envelope="on",
                 companion_visible="on",
             )
             resp = auth_client.post(
@@ -149,7 +151,7 @@ class TestCreateTemplateFlags:
             template = db.session.query(TransactionTemplate).filter_by(
                 name="Weekly Groceries",
             ).one()
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
             assert template.companion_visible is True
 
     def test_create_expense_tracking_allowed(self, app, auth_client, seed_user):
@@ -157,7 +159,7 @@ class TestCreateTemplateFlags:
         with app.app_context():
             form = _base_form_data(
                 seed_user, txn_type="Expense", name="Tracked Expense",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 "/templates", data=form, follow_redirects=True,
@@ -168,14 +170,14 @@ class TestCreateTemplateFlags:
             template = db.session.query(TransactionTemplate).filter_by(
                 name="Tracked Expense",
             ).one()
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
 
     def test_create_tracking_rejected_on_income(self, app, auth_client, seed_user):
         """POST /templates rejects tracking on an income template."""
         with app.app_context():
             form = _base_form_data(
                 seed_user, txn_type="Income", name="Bad Income Track",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 "/templates", data=form, follow_redirects=True,
@@ -203,7 +205,7 @@ class TestUpdateTemplateFlags:
 
             form = _base_form_data(
                 seed_user, name="Groceries",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 f"/templates/{template.id}", data=form,
@@ -213,7 +215,7 @@ class TestUpdateTemplateFlags:
             assert b"updated" in resp.data
 
             db.session.refresh(template)
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
 
     def test_update_toggle_companion_on(self, app, auth_client, seed_user):
         """POST /templates/<id> with companion='on' enables companion visibility."""
@@ -244,7 +246,7 @@ class TestUpdateTemplateFlags:
             template = _make_template(
                 seed_user, name="Both Flags", track=True, companion=True,
             )
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
             assert template.companion_visible is True
 
             # Submit form WITHOUT the checkbox fields -- simulates unchecking.
@@ -257,7 +259,7 @@ class TestUpdateTemplateFlags:
             assert b"updated" in resp.data
 
             db.session.refresh(template)
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
             assert template.companion_visible is False
 
     def test_update_tracking_stays_true_when_checked(self, app, auth_client, seed_user):
@@ -273,7 +275,7 @@ class TestUpdateTemplateFlags:
 
             form = _base_form_data(
                 seed_user, name="Stay Tracked",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 f"/templates/{template.id}", data=form,
@@ -282,14 +284,14 @@ class TestUpdateTemplateFlags:
             assert resp.status_code == 200
 
             db.session.refresh(template)
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
 
 
 # ── Expense-Only Validation Tests ────────────────────────────────────
 
 
 class TestTrackingExpenseOnlyValidation:
-    """Tests that track_individual_purchases is rejected on income templates."""
+    """Tests that is_envelope is rejected on income templates."""
 
     def test_update_income_enable_tracking_rejected(self, app, auth_client, seed_user):
         """Enabling tracking on an existing income template is rejected.
@@ -303,7 +305,7 @@ class TestTrackingExpenseOnlyValidation:
 
             form = _base_form_data(
                 seed_user, txn_type="Income", name="Income Template",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 f"/templates/{template.id}", data=form,
@@ -313,7 +315,7 @@ class TestTrackingExpenseOnlyValidation:
             assert b"Purchase tracking is only available for expense templates" in resp.data
 
             db.session.refresh(template)
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
 
     def test_update_expense_tracking_change_type_income_rejected(
         self, app, auth_client, seed_user,
@@ -331,7 +333,7 @@ class TestTrackingExpenseOnlyValidation:
 
             form = _base_form_data(
                 seed_user, txn_type="Income", name="Was Expense",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 f"/templates/{template.id}", data=form,
@@ -342,7 +344,7 @@ class TestTrackingExpenseOnlyValidation:
 
             # Original values should be unchanged.
             db.session.refresh(template)
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
@@ -361,7 +363,7 @@ class TestTrackingExpenseOnlyValidation:
                 seed_user, name="Type Change", track=True,
             )
 
-            # Don't include track_individual_purchases -- simulates unchecking.
+            # Don't include is_envelope -- simulates unchecking.
             form = _base_form_data(
                 seed_user, txn_type="Income", name="Type Change",
             )
@@ -374,7 +376,7 @@ class TestTrackingExpenseOnlyValidation:
             assert b"Purchase tracking is only available" not in resp.data
 
             db.session.refresh(template)
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
             income_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
@@ -403,14 +405,14 @@ class TestTrackingExpenseOnlyValidation:
                 name="Visible Income",
             ).one()
             assert template.companion_visible is True
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
 
     def test_tracking_and_companion_independent(self, app, auth_client, seed_user):
         """track=True with companion=False succeeds -- flags are independent."""
         with app.app_context():
             form = _base_form_data(
                 seed_user, txn_type="Expense", name="Track Only",
-                track_individual_purchases="on",
+                is_envelope="on",
             )
             resp = auth_client.post(
                 "/templates", data=form, follow_redirects=True,
@@ -421,7 +423,7 @@ class TestTrackingExpenseOnlyValidation:
             template = db.session.query(TransactionTemplate).filter_by(
                 name="Track Only",
             ).one()
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
             assert template.companion_visible is False
 
 
@@ -442,11 +444,11 @@ class TestEditFormFlagDisplay:
 
             html = resp.data.decode()
             # The checkbox input should have the "checked" attribute.
-            assert 'id="track_individual_purchases"' in html
-            assert 'name="track_individual_purchases"' in html
+            assert 'id="is_envelope"' in html
+            assert 'name="is_envelope"' in html
             # Find the checkbox and verify it has checked.
-            # The template renders: checked if template.track_individual_purchases
-            assert "checked" in html.split('id="track_individual_purchases"')[1].split(">")[0]
+            # The template renders: checked if template.is_envelope
+            assert "checked" in html.split('id="is_envelope"')[1].split(">")[0]
 
     def test_edit_form_tracking_checkbox_unchecked(self, app, auth_client, seed_user):
         """Edit form shows tracking checkbox as unchecked when flag is False."""
@@ -459,7 +461,7 @@ class TestEditFormFlagDisplay:
 
             html = resp.data.decode()
             # The checkbox input should NOT have "checked".
-            track_section = html.split('id="track_individual_purchases"')[1].split(">")[0]
+            track_section = html.split('id="is_envelope"')[1].split(">")[0]
             assert "checked" not in track_section
 
     def test_edit_form_companion_checkbox_checked(self, app, auth_client, seed_user):
@@ -495,7 +497,7 @@ class TestEditFormFlagDisplay:
             assert resp.status_code == 200
 
             html = resp.data.decode()
-            assert 'name="track_individual_purchases"' in html
+            assert 'name="is_envelope"' in html
             assert 'name="companion_visible"' in html
             assert "Tracking &" in html
 
@@ -602,17 +604,27 @@ class TestFlagSchemaValidation:
     """Tests for Marshmallow schema handling of boolean flag fields."""
 
     def test_schema_accepts_on_value(self):
-        """Boolean field accepts 'on' (HTML checkbox value) as True."""
+        """Boolean field accepts 'on' (HTML checkbox value) as True.
+
+        Uses the cached Expense type ID so the cross-field
+        ``validate_envelope_only_on_expense`` rule passes -- this test
+        verifies the Boolean coercion in isolation, not the cross-field
+        rule (covered separately below).
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
         schema = TemplateCreateSchema()
         data = schema.load({
             "name": "Test",
             "default_amount": "50.00",
             "category_id": "1",
-            "transaction_type_id": "1",
+            "transaction_type_id": str(expense_id),
             "account_id": "1",
-            "track_individual_purchases": "on",
+            "is_envelope": "on",
         })
-        assert data["track_individual_purchases"] is True
+        assert data["is_envelope"] is True
 
     def test_schema_missing_field_defaults_false(self):
         """Boolean field defaults to False when absent from form data."""
@@ -624,7 +636,7 @@ class TestFlagSchemaValidation:
             "transaction_type_id": "1",
             "account_id": "1",
         })
-        assert data["track_individual_purchases"] is False
+        assert data["is_envelope"] is False
         assert data["companion_visible"] is False
 
     def test_schema_rejects_invalid_boolean_string(self):
@@ -636,18 +648,18 @@ class TestFlagSchemaValidation:
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
-            "track_individual_purchases": "invalid",
+            "is_envelope": "invalid",
         })
-        assert "track_individual_purchases" in errors
+        assert "is_envelope" in errors
 
     def test_update_schema_inherits_flag_fields(self):
         """TemplateUpdateSchema inherits boolean fields from TemplateCreateSchema."""
         schema = TemplateUpdateSchema()
         data = schema.load({
-            "track_individual_purchases": "on",
+            "is_envelope": "on",
             "companion_visible": "on",
         })
-        assert data["track_individual_purchases"] is True
+        assert data["is_envelope"] is True
         assert data["companion_visible"] is True
 
     def test_update_schema_missing_flags_default_false(self):
@@ -656,5 +668,158 @@ class TestFlagSchemaValidation:
         data = schema.load({
             "name": "Updated Name",
         })
-        assert data["track_individual_purchases"] is False
+        assert data["is_envelope"] is False
         assert data["companion_visible"] is False
+
+
+# ── Cross-Field Schema Validator Tests (Phase 2) ─────────────────────
+
+
+class TestEnvelopeOnlyOnExpenseSchema:
+    """Direct schema-level tests for ``validate_envelope_only_on_expense``.
+
+    Phase 2 of the carry-forward aftermath plan moved the
+    envelope-on-income rejection into the Marshmallow schema as the
+    input boundary.  These tests exercise the validator directly so
+    regressions surface at the schema layer rather than only via
+    full route round-trips (which are exercised separately in
+    ``TestTrackingExpenseOnlyValidation``).
+
+    The validator's contract: when ``is_envelope`` is True AND
+    ``transaction_type_id`` resolves to the Income type, raise
+    ``ValidationError`` keyed under ``is_envelope``.  In every other
+    case (envelope on expense, no envelope, partial-update payloads
+    that omit one field) the validator must permit the payload.
+    """
+
+    def test_create_schema_rejects_envelope_on_income(self):
+        """Create payload with is_envelope=True and Income type fails."""
+        from marshmallow import ValidationError as _ValidationError  # pylint: disable=import-outside-toplevel
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        import pytest  # pylint: disable=import-outside-toplevel
+
+        income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        schema = TemplateCreateSchema()
+        with pytest.raises(_ValidationError) as exc_info:
+            schema.load({
+                "name": "Bad",
+                "default_amount": "100.00",
+                "category_id": "1",
+                "transaction_type_id": str(income_id),
+                "account_id": "1",
+                "is_envelope": "on",
+            })
+
+        # The ValidationError attaches the message to is_envelope so the
+        # form can highlight the offending checkbox.
+        assert "is_envelope" in exc_info.value.messages
+        msgs = exc_info.value.messages["is_envelope"]
+        assert any(
+            "expense templates" in m for m in msgs
+        ), f"Expected 'expense templates' in error; got {msgs!r}"
+
+    def test_create_schema_allows_envelope_on_expense(self):
+        """Create payload with is_envelope=True and Expense type passes."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        schema = TemplateCreateSchema()
+        data = schema.load({
+            "name": "Groceries",
+            "default_amount": "200.00",
+            "category_id": "1",
+            "transaction_type_id": str(expense_id),
+            "account_id": "1",
+            "is_envelope": "on",
+        })
+        assert data["is_envelope"] is True
+        assert data["transaction_type_id"] == expense_id
+
+    def test_create_schema_allows_envelope_false_on_income(self):
+        """is_envelope=False is valid on income templates."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        schema = TemplateCreateSchema()
+        # Omit is_envelope -- defaults to False via load_default.
+        data = schema.load({
+            "name": "Salary",
+            "default_amount": "3000.00",
+            "category_id": "1",
+            "transaction_type_id": str(income_id),
+            "account_id": "1",
+        })
+        assert data["is_envelope"] is False
+
+    def test_update_schema_rejects_flipping_envelope_true_on_income(self):
+        """Update payload changing is_envelope to True on income type fails."""
+        from marshmallow import ValidationError as _ValidationError  # pylint: disable=import-outside-toplevel
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        import pytest  # pylint: disable=import-outside-toplevel
+
+        income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        schema = TemplateUpdateSchema()
+        with pytest.raises(_ValidationError) as exc_info:
+            schema.load({
+                "transaction_type_id": str(income_id),
+                "is_envelope": "on",
+            })
+        assert "is_envelope" in exc_info.value.messages
+
+    def test_update_schema_partial_payload_skips_check_when_type_absent(self):
+        """Partial update that omits transaction_type_id is permitted at the schema layer.
+
+        The validator returns early so the route layer can fall back
+        to the existing template's stored ``transaction_type_id`` via
+        the ``_is_tracking_on_non_expense`` helper.  This split keeps
+        the Marshmallow contract simple (decide from payload alone)
+        while preserving end-to-end enforcement.
+        """
+        schema = TemplateUpdateSchema()
+        data = schema.load({"is_envelope": "on"})
+        assert data["is_envelope"] is True
+        # No ValidationError raised -- the route layer is responsible
+        # for the existing-template fallback.
+
+    def test_update_schema_partial_payload_skips_check_when_envelope_absent(self):
+        """Partial update that omits is_envelope is permitted (defaults to False)."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        schema = TemplateUpdateSchema()
+        data = schema.load({"transaction_type_id": str(income_id)})
+        # is_envelope deserializes to False via inherited load_default
+        # so the validator's early-return path triggers.
+        assert data["is_envelope"] is False
+        assert data["transaction_type_id"] == income_id
+
+    def test_validate_returns_errors_dict_for_envelope_on_income(self):
+        """schema.validate() returns the same error dict shape as load() raises.
+
+        Routes call ``schema.validate(form)`` first (returns dict) and
+        only call ``schema.load(form)`` after the dict is empty.  The
+        cross-field error must surface in the validate() dict so the
+        route's ``_flash_message_for_errors`` helper finds it.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        schema = TemplateCreateSchema()
+        errors = schema.validate({
+            "name": "Bad",
+            "default_amount": "100.00",
+            "category_id": "1",
+            "transaction_type_id": str(income_id),
+            "account_id": "1",
+            "is_envelope": "on",
+        })
+        assert "is_envelope" in errors
+        msgs = errors["is_envelope"]
+        assert isinstance(msgs, list) and msgs, msgs
+        assert any("expense templates" in m for m in msgs), msgs

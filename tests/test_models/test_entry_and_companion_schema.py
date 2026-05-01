@@ -3,7 +3,7 @@ Shekel Budget App -- Commit 1 Schema Tests
 
 Tests for the data model additions in Section 9 Commit 1:
   - TransactionEntry model (table, constraints, relationships, cascades)
-  - TransactionTemplate flag columns (track_individual_purchases, companion_visible)
+  - TransactionTemplate flag columns (is_envelope, companion_visible)
   - User role columns (role_id, linked_owner_id)
   - UserRole ref table and ref_cache integration
 """
@@ -157,7 +157,7 @@ class TestTemplateFlagsDefault:
     """Verify default values for the new template boolean columns."""
 
     def test_template_flags_default_false(self, app, db, seed_user):
-        """New templates default to track_individual_purchases=False and companion_visible=False.
+        """New templates default to is_envelope=False and companion_visible=False.
 
         Both columns have server_default='false' and Python default=False,
         so templates created without explicit values must have both False.
@@ -177,7 +177,7 @@ class TestTemplateFlagsDefault:
 
             # Re-read from database to verify server_default took effect.
             db.session.expire(template)
-            assert template.track_individual_purchases is False
+            assert template.is_envelope is False
             assert template.companion_visible is False
 
     def test_template_flags_explicit_true(self, app, db, seed_user):
@@ -194,14 +194,14 @@ class TestTemplateFlagsDefault:
                 transaction_type_id=expense_type.id,
                 name="Tracking Template",
                 default_amount=Decimal("200.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
                 companion_visible=True,
             )
             db.session.add(template)
             db.session.commit()
 
             db.session.expire(template)
-            assert template.track_individual_purchases is True
+            assert template.is_envelope is True
             assert template.companion_visible is True
 
 

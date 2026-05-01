@@ -3,8 +3,8 @@ Shekel Budget App -- Transaction Entry Model (budget schema)
 
 An individual purchase recorded against a parent transaction.
 Entry-capable transactions (those whose template has
-track_individual_purchases=True) accumulate entries that determine
-the remaining budget and the checking balance impact.
+is_envelope=True) accumulate entries that determine the remaining
+budget and the checking balance impact.
 """
 
 from app.extensions import db

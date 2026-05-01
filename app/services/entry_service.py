@@ -139,7 +139,7 @@ def create_entry(
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     # Entry-capable: template must exist and have tracking enabled.
-    if txn.template is None or not txn.template.track_individual_purchases:
+    if txn.template is None or not txn.template.is_envelope:
         raise ValidationError(
             "This transaction does not support individual purchase tracking. "
             "Enable 'Track individual purchases' on the template first."

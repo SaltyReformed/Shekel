@@ -49,7 +49,7 @@ def _create_tracked_txn_in_period(
 ):
     """Create a tracked expense transaction in the given period.
 
-    Builds a template with track_individual_purchases=True, then a
+    Builds a template with is_envelope=True, then a
     projected expense transaction bound to that template in the
     supplied period.  The transaction's due_date is the period start
     date so it sorts predictably in the bills list.
@@ -67,7 +67,7 @@ def _create_tracked_txn_in_period(
         transaction_type_id=expense_type.id,
         name=name,
         default_amount=estimated,
-        track_individual_purchases=True,
+        is_envelope=True,
     )
     db.session.add(template)
     db.session.flush()
@@ -94,7 +94,7 @@ def _create_plain_txn_in_period(
 ):
     """Create a non-tracked ad-hoc expense transaction in the given period.
 
-    No template, so track_individual_purchases is implicitly absent.
+    No template, so is_envelope is implicitly absent.
     Used to verify that non-tracked bills render with the standard
     amount display (no progress indicator).
     """

@@ -41,7 +41,7 @@ def _make_template(seed_user, *, companion_visible, track=False, name="Item"):
     Args:
         seed_user: The seed_user fixture dict.
         companion_visible: Whether the template is companion-visible.
-        track: Whether to enable track_individual_purchases.
+        track: Whether to enable is_envelope.
         name: Template name.
 
     Returns:
@@ -61,7 +61,7 @@ def _make_template(seed_user, *, companion_visible, track=False, name="Item"):
         account_id=seed_user["account"].id,
         category_id=category.id,
         companion_visible=companion_visible,
-        track_individual_purchases=track,
+        is_envelope=track,
     )
     db.session.add(template)
     db.session.flush()
@@ -161,7 +161,7 @@ class TestVisibilityFiltering:
     ):
         """Both tracked and non-tracked visible templates are returned.
 
-        Verifies that track_individual_purchases does not affect
+        Verifies that is_envelope does not affect
         companion visibility filtering.
         """
         t_tracked = _make_template(

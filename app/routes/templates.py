@@ -38,11 +38,49 @@ _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
 
 
+_GENERIC_VALIDATION_FLASH = "Please correct the highlighted errors and try again."
+
+# Marshmallow error keys whose messages should be flashed verbatim instead
+# of falling through to the generic prompt.  Listed keys correspond to
+# cross-field validators whose messages are user-facing and actionable;
+# field-level errors on the same keys (e.g. "Not a valid boolean.") are
+# rare in practice -- HTML forms only submit the canonical "on" string --
+# and remain acceptable feedback when they do appear.
+_ACTIONABLE_FLASH_FIELDS = ("is_envelope",)
+
+
+def _flash_message_for_errors(errors):
+    """Pick a user-facing flash message from a Marshmallow errors dict.
+
+    Cross-field validators (e.g. ``validate_envelope_only_on_expense``
+    in ``app/schemas/validation.py``) attach actionable messages to
+    specific fields so the form can highlight them.  When such a
+    message is present, surface it verbatim so the user sees the actual
+    rule that fired.  Other field-level errors fall back to a generic
+    prompt because the individual form widgets convey the issue inline.
+
+    Args:
+        errors: The dict returned by ``schema.validate(request.form)``.
+
+    Returns:
+        str: The message to flash.  Always non-empty.
+    """
+    for field in _ACTIONABLE_FLASH_FIELDS:
+        msgs = errors.get(field)
+        if isinstance(msgs, list) and msgs:
+            return str(msgs[0])
+    return _GENERIC_VALIDATION_FLASH
+
+
 def _is_tracking_on_non_expense(data, template=None):
     """Check whether tracking is being set on a non-expense template.
 
-    Resolves the effective flag and type from submitted data, falling
-    back to the existing template values for partial updates.
+    Defense-in-depth fallback for the cross-field schema validator
+    ``validate_envelope_only_on_expense``.  The schema validator catches
+    the bug whenever both ``is_envelope`` and ``transaction_type_id``
+    appear in the deserialized payload (the normal HTML form path); this
+    helper closes the gap on partial updates that omit one field by
+    falling back to the existing template's stored value.
 
     Args:
         data: Deserialized form data from Marshmallow schema.
@@ -52,8 +90,8 @@ def _is_tracking_on_non_expense(data, template=None):
         True if the combination is invalid (tracking on non-expense), False otherwise.
     """
     track = data.get(
-        "track_individual_purchases",
-        getattr(template, "track_individual_purchases", False),
+        "is_envelope",
+        getattr(template, "is_envelope", False),
     )
     if not track:
         return False
@@ -128,7 +166,7 @@ def create_template():
     """Create a new transaction template with optional recurrence rule."""
     errors = _create_schema.validate(request.form)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
+        flash(_flash_message_for_errors(errors), "danger")
         return redirect(url_for("templates.new_template"))
 
     data = _create_schema.load(request.form)
@@ -268,7 +306,7 @@ def update_template(template_id):
 
     errors = _update_schema.validate(request.form)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
+        flash(_flash_message_for_errors(errors), "danger")
         return redirect(url_for("templates.edit_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
@@ -332,7 +370,7 @@ def update_template(template_id):
     _TEMPLATE_UPDATE_FIELDS = {
         "name", "default_amount", "category_id", "transaction_type_id",
         "account_id", "is_active", "sort_order",
-        "track_individual_purchases", "companion_visible",
+        "is_envelope", "companion_visible",
     }
     old_name = template.name
     for field, value in data.items():

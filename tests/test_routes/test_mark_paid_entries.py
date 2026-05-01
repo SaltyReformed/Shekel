@@ -52,7 +52,7 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
 def _create_tracked_txn(seed_user, seed_periods):
     """Create a tracked expense transaction with template.
 
-    Creates a minimal template with track_individual_purchases=True
+    Creates a minimal template with is_envelope=True
     and a projected expense transaction linked to it.
     """
     every_period = (
@@ -79,7 +79,7 @@ def _create_tracked_txn(seed_user, seed_periods):
         transaction_type_id=expense_type.id,
         name="Tracked Groceries",
         default_amount=Decimal("500.00"),
-        track_individual_purchases=True,
+        is_envelope=True,
     )
     db.session.add(template)
     db.session.flush()

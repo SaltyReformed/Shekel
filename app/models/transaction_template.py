@@ -44,7 +44,7 @@ class TransactionTemplate(db.Model):
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
-    track_individual_purchases = db.Column(
+    is_envelope = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
     companion_visible = db.Column(

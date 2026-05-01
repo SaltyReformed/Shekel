@@ -92,7 +92,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         transaction_type_id=expense_type.id,
         name="Weekly Groceries",
         default_amount=Decimal("500.00"),
-        track_individual_purchases=True,
+        is_envelope=True,
         companion_visible=True,
     )
     db.session.add(template)
@@ -1019,7 +1019,7 @@ class TestEntryTransactionMismatch:
                 transaction_type_id=expense_type.id,
                 name="Secret Groceries",
                 default_amount=Decimal("300.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
                 companion_visible=False,
             )
             db.session.add(template_hidden)

@@ -129,7 +129,7 @@ class TestCreateEntry:
                 transaction_type_id=expense_type.id,
                 name="Rent",
                 default_amount=Decimal("1500.00"),
-                track_individual_purchases=False,
+                is_envelope=False,
             )
             db.session.add(template)
             db.session.flush()
@@ -268,7 +268,7 @@ class TestCreateEntry:
                 transaction_type_id=income_type.id,
                 name="Salary",
                 default_amount=Decimal("3000.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()
@@ -512,7 +512,7 @@ class TestCompanionAccess:
                 transaction_type_id=expense_type.id,
                 name="Other Groceries",
                 default_amount=Decimal("400.00"),
-                track_individual_purchases=True,
+                is_envelope=True,
             )
             db.session.add(template)
             db.session.flush()

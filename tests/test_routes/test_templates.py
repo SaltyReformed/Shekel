@@ -1454,3 +1454,147 @@ class TestDueDayOfMonth:
 
             db.session.refresh(template)
             assert template.recurrence_rule.due_day_of_month is None
+
+
+# ── Envelope/Income Cross-Field Validation Tests (Phase 2) ──────────
+
+
+class TestEnvelopeIncomeRejection:
+    """Phase 2 of the carry-forward aftermath plan: reject is_envelope=True
+    on income templates at the Marshmallow input boundary.
+
+    Mirrors the spec in
+    ``docs/carry-forward-aftermath-implementation-plan.md`` Phase 2.
+    Schema-layer coverage and exhaustive partial-update edge cases
+    live in ``tests/test_routes/test_template_flags.py``
+    (``TestEnvelopeOnlyOnExpenseSchema`` and
+    ``TestTrackingExpenseOnlyValidation``).  These three tests serve
+    as the canonical end-to-end checkpoints for Phase 2.
+    """
+
+    def test_post_income_template_with_envelope_rejected(
+        self, app, auth_client, seed_user,
+    ):
+        """POST /templates with income type + is_envelope=on rejects.
+
+        After Phase 2, the cross-field schema validator catches this
+        combination at the input boundary; the route surfaces the
+        validator's specific message instead of the generic prompt.
+        Verifies the rejection by asserting the actionable flash and
+        confirming no template row was persisted.
+        """
+        with app.app_context():
+            income_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Income").one()
+            )
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "Phase2 Bad Income Envelope",
+                "default_amount": "100.00",
+                "category_id": category.id,
+                "transaction_type_id": income_type.id,
+                "account_id": seed_user["account"].id,
+                "is_envelope": "on",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert (
+                b"Purchase tracking is only available for expense templates"
+                in resp.data
+            )
+
+            count = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id,
+                name="Phase2 Bad Income Envelope",
+            ).count()
+            assert count == 0
+
+    def test_post_expense_template_with_envelope_succeeds(
+        self, app, auth_client, seed_user,
+    ):
+        """POST /templates with expense type + is_envelope=on succeeds.
+
+        Positive control for the cross-field rule: the same checkbox
+        on the supported transaction type creates the template and
+        sets ``is_envelope = True``.
+        """
+        with app.app_context():
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense").one()
+            )
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "Phase2 Good Expense Envelope",
+                "default_amount": "150.00",
+                "category_id": category.id,
+                "transaction_type_id": expense_type.id,
+                "account_id": seed_user["account"].id,
+                "is_envelope": "on",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+            assert (
+                b"Purchase tracking is only available"
+                not in resp.data
+            )
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                user_id=seed_user["user"].id,
+                name="Phase2 Good Expense Envelope",
+            ).one()
+            assert template.is_envelope is True
+            assert template.transaction_type_id == expense_type.id
+
+    def test_patch_envelope_to_true_on_income_template_rejected(
+        self, app, auth_client, seed_user,
+    ):
+        """POST /templates/<id> flipping is_envelope=on for an income template rejects.
+
+        Reproduces the plan's PATCH scenario: an existing income
+        template (envelope=False) gets a form submission that ticks
+        the envelope checkbox without changing the type.  The schema
+        validator catches the resulting state and the template is
+        unchanged.
+        """
+        with app.app_context():
+            income_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Income").one()
+            )
+            category = seed_user["categories"]["Rent"]
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=category.id,
+                transaction_type_id=income_type.id,
+                name="Phase2 Income Template",
+                default_amount=Decimal("250.00"),
+                is_envelope=False,
+            )
+            db.session.add(template)
+            db.session.commit()
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Phase2 Income Template",
+                "default_amount": "250.00",
+                "category_id": category.id,
+                "transaction_type_id": income_type.id,
+                "account_id": seed_user["account"].id,
+                "is_envelope": "on",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert (
+                b"Purchase tracking is only available for expense templates"
+                in resp.data
+            )
+
+            db.session.refresh(template)
+            assert template.is_envelope is False
+            assert template.transaction_type_id == income_type.id

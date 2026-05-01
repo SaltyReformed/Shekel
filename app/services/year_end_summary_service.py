@@ -421,9 +421,9 @@ def _compute_spending_by_category(
     Queries settled expense transactions in the year's pay periods,
     attributes each to the year using COALESCE(due_date,
     pay_period.start_date), and groups by category group_name then
-    item_name.  Items whose parent template has
-    track_individual_purchases=True receive an entry_breakdown sub-dict
-    with per-purchase aggregates queried from TransactionEntry (OP-3).
+    item_name.  Items whose parent template has is_envelope=True
+    receive an entry_breakdown sub-dict with per-purchase aggregates
+    queried from TransactionEntry (OP-3).
 
     Args:
         user_id: User ID for ownership filtering.
@@ -483,9 +483,9 @@ def _compute_entry_breakdowns(
     to its template, account, pay period, and category.  Filters with
     the same predicates as _query_settled_expenses (settled expenses
     in the user's year period_ids on the baseline scenario) plus
-    track_individual_purchases=True on the parent template.  Aggregates
-    per parent transaction so the same _attribution_year filter used
-    by _compute_spending_by_category can be applied in Python -- this
+    is_envelope=True on the parent template.  Aggregates per parent
+    transaction so the same _attribution_year filter used by
+    _compute_spending_by_category can be applied in Python -- this
     handles transactions whose due_date crosses a calendar year
     boundary identically to the existing category aggregation.
 
@@ -544,7 +544,7 @@ def _compute_entry_breakdowns(
             Transaction.is_deleted.is_(False),
             Transaction.transaction_type_id == expense_type_id,
             Transaction.status_id.in_(settled_status_ids),
-            TransactionTemplate.track_individual_purchases.is_(True),
+            TransactionTemplate.is_envelope.is_(True),
         )
         .group_by(
             Category.group_name,

@@ -251,7 +251,7 @@ def update_transaction(txn_id):
         credit_id = ref_cache.status_id(StatusEnum.CREDIT)
         if (data["status_id"] == credit_id
                 and txn.template is not None
-                and txn.template.track_individual_purchases):
+                and txn.template.is_envelope):
             return (
                 "Cannot set Credit status on transactions with individual "
                 "purchase tracking. Use entry-level credit instead."
@@ -347,7 +347,7 @@ def mark_done(txn_id):
     # to the manual flow so non-tracked and empty-tracked transactions
     # behave identically to pre-entry behavior.
     if (txn.template is not None
-            and txn.template.track_individual_purchases
+            and txn.template.is_envelope
             and txn.entries):
         txn.actual_amount = compute_actual_from_entries(txn.entries)
     else:

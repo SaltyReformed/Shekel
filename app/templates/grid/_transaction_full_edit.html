@@ -92,7 +92,7 @@
     {% endif %}
 
     {% if not txn.transfer_id and txn.is_expense and txn.status_id == STATUS_PROJECTED
-       and not (txn.template and txn.template.track_individual_purchases) %}
+       and not (txn.template and txn.template.is_envelope) %}
     <button type="button" class="btn btn-xs btn-warning flex-grow-1"
             hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -132,7 +132,7 @@
   </div>
 
   {# Entry tracking section -- lazy-loaded for tracked transactions #}
-  {% if txn.template and txn.template.track_individual_purchases %}
+  {% if txn.template and txn.template.is_envelope %}
   <hr class="my-2">
   <div class="small fw-semibold mb-1">Purchases</div>
   <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"

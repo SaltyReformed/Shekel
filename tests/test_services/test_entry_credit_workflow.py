@@ -878,7 +878,7 @@ class TestLegacyCreditGuard:
         """4.10: Legacy mark_as_credit still works on non-tracked transactions.
 
         Regression: the guard must not affect transactions whose template
-        does not have track_individual_purchases enabled.
+        does not have is_envelope enabled.
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
