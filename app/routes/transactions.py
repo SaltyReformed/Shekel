@@ -27,12 +27,14 @@ from app.schemas.validation import (
     TransactionCreateSchema,
     InlineTransactionCreateSchema,
 )
-from app.services import credit_workflow, carry_forward_service, pay_period_service
-from app.services import transfer_service
-from app.services.entry_service import (
-    build_entry_sums_dict,
-    compute_actual_from_entries,
+from app.services import (
+    credit_workflow,
+    carry_forward_service,
+    pay_period_service,
+    transaction_service,
+    transfer_service,
 )
+from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
 
@@ -338,19 +340,31 @@ def mark_done(txn_id):
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    txn.status_id = status_id
-    txn.paid_at = db.func.now()
-
-    # Auto-populate actual from entries for entry-capable transactions.
-    # Entry sum takes precedence over any manual actual_amount from the
-    # form (scope doc section 4.2).  If no entries exist, fall through
-    # to the manual flow so non-tracked and empty-tracked transactions
-    # behave identically to pre-entry behavior.
+    # Auto-populate actual from entries for envelope-tracked transactions
+    # with at least one entry.  Entry sum takes precedence over any manual
+    # actual_amount from the form (scope doc section 4.2).  When no entries
+    # exist (or the template is not envelope-tracked), fall through to the
+    # manual flow so non-tracked and empty-tracked transactions behave
+    # identically to pre-entry behavior -- the form's optional
+    # ``actual_amount`` is honoured and a missing value leaves
+    # ``txn.actual_amount`` untouched.
+    #
+    # The envelope-with-entries branch routes through
+    # ``transaction_service.settle_from_entries`` so the manual mark-done
+    # path and the carry-forward envelope branch (Phase 4) share a single
+    # source of truth for "settle a tracked row at sum(entries)."  The
+    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
+    # together; the route does not need to set them itself in this branch.
     if (txn.template is not None
             and txn.template.is_envelope
             and txn.entries):
-        txn.actual_amount = compute_actual_from_entries(txn.entries)
+        try:
+            transaction_service.settle_from_entries(txn)
+        except ValidationError as exc:
+            return str(exc), 400
     else:
+        txn.status_id = status_id
+        txn.paid_at = db.func.now()
         # Accept an optional manual actual amount from the form.
         actual = request.form.get("actual_amount")
         if actual:
