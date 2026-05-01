@@ -252,6 +252,12 @@
   {% if current_user.is_authenticated %}
   {% include "_keyboard_help.html" %}
   {% include "_confirm_modal.html" %}
+  {# HTMX swap target for any modal partial rendered server-side.
+     Modal partials marked with data-modal-auto-show auto-open after
+     swap (handled in app.js).  Currently used by the carry-forward
+     preview modal; reusable for future "preview then confirm"
+     modals. #}
+  <div id="carry-forward-modal-mount"></div>
   {% endif %}
 
   <!-- Bootstrap 5 JS Bundle (includes Popper) -->
