@@ -91,20 +91,29 @@ def settle_from_entries(
         None.  Mutations are applied in place; the caller is
         responsible for committing the surrounding transaction.
     """
+    # Preconditions are checked cheap-first so an early bailout never
+    # triggers an autoflush of pending mutations on the txn.  Column
+    # checks come before relationship accesses (which lazy-load and
+    # therefore autoflush) to keep the failure path side-effect-free.
     if txn.is_deleted:
         raise ValidationError(
             f"Transaction {txn.id} is soft-deleted; "
             "settle_from_entries cannot resurrect deleted rows.",
         )
-    if txn.template is None or not txn.template.is_envelope:
-        raise ValidationError(
-            f"Transaction {txn.id} is not envelope-tracked; "
-            "settle_from_entries requires template.is_envelope is True.",
-        )
     if txn.transfer_id is not None:
         raise ValidationError(
             f"Transaction {txn.id} is a transfer shadow; "
             "transfers settle via transfer_service.update_transfer.",
+        )
+    if txn.template_id is None:
+        raise ValidationError(
+            f"Transaction {txn.id} has no template; "
+            "settle_from_entries requires an envelope-tracked template.",
+        )
+    if txn.template is None or not txn.template.is_envelope:
+        raise ValidationError(
+            f"Transaction {txn.id} is not envelope-tracked; "
+            "settle_from_entries requires template.is_envelope is True.",
         )
     # Guard against settling an already-finalised row.  ``status`` may
     # be unloaded if the caller passed a detached or freshly-constructed
