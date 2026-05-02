@@ -118,7 +118,7 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
 class TestRetirementDashboard:
     """Tests for the retirement dashboard page."""
 
-    def test_dashboard_empty(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_empty(self, auth_client, seed_user, db, seed_periods_today):
         """GET returns 200 even with no pensions or accounts."""
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
@@ -127,7 +127,7 @@ class TestRetirementDashboard:
         # No pension data seeded, so pension details should not appear.
         assert b"Pension Benefit Details" not in resp.data
 
-    def test_dashboard_with_pension(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_with_pension(self, auth_client, seed_user, db, seed_periods_today):
         """GET returns 200 with pension data displayed."""
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
@@ -137,7 +137,7 @@ class TestRetirementDashboard:
         assert b"Pension Benefit Details" in resp.data
 
     def test_dashboard_no_stale_settings_migration_message(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Dashboard must not contain the old 'settings have moved' notice."""
         resp = auth_client.get("/retirement")
@@ -154,14 +154,14 @@ class TestRetirementDashboard:
 class TestPensionCRUD:
     """Tests for pension profile CRUD operations."""
 
-    def test_pension_list(self, auth_client, seed_user, db, seed_periods):
+    def test_pension_list(self, auth_client, seed_user, db, seed_periods_today):
         """GET pension list returns 200 with pension form."""
         resp = auth_client.get("/retirement/pension")
         assert resp.status_code == 200
         assert b"Pension Profiles" in resp.data
         assert b'name="benefit_multiplier"' in resp.data
 
-    def test_create_pension(self, auth_client, seed_user, db, seed_periods):
+    def test_create_pension(self, auth_client, seed_user, db, seed_periods_today):
         """POST creates a new pension profile."""
         profile = _create_salary_profile(seed_user, db.session)
         resp = auth_client.post("/retirement/pension", data={
@@ -180,7 +180,7 @@ class TestPensionCRUD:
         assert pension.name == "LGERS"
         assert pension.benefit_multiplier == Decimal("0.01850")
 
-    def test_edit_pension_form(self, auth_client, seed_user, db, seed_periods):
+    def test_edit_pension_form(self, auth_client, seed_user, db, seed_periods_today):
         """GET edit form returns 200 with pre-populated pension data."""
         pension = _create_pension(seed_user, db.session)
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
@@ -190,7 +190,7 @@ class TestPensionCRUD:
         assert b'name="benefit_multiplier"' in resp.data
         assert b'name="hire_date"' in resp.data
 
-    def test_update_pension(self, auth_client, seed_user, db, seed_periods):
+    def test_update_pension(self, auth_client, seed_user, db, seed_periods_today):
         """POST update modifies pension fields."""
         profile = _create_salary_profile(seed_user, db.session)
         pension = _create_pension(seed_user, db.session, salary_profile=profile)
@@ -207,7 +207,7 @@ class TestPensionCRUD:
         assert pension.name == "Updated Pension"
         assert pension.benefit_multiplier == Decimal("0.02000")
 
-    def test_delete_pension(self, auth_client, seed_user, db, seed_periods):
+    def test_delete_pension(self, auth_client, seed_user, db, seed_periods_today):
         """POST delete deactivates pension."""
         pension = _create_pension(seed_user, db.session)
         resp = auth_client.post(f"/retirement/pension/{pension.id}/delete")
@@ -216,7 +216,7 @@ class TestPensionCRUD:
         assert pension.is_active is False
 
     def test_edit_pension_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """GET another user's pension edit form is rejected
         and does not leak victim data."""
@@ -241,7 +241,7 @@ class TestPensionCRUD:
         )
 
     def test_delete_pension_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """POST delete on another user's pension is rejected
         and leaves all fields unchanged."""
@@ -283,7 +283,7 @@ class TestPensionCRUD:
 class TestRetirementSettings:
     """Tests for retirement settings update."""
 
-    def test_update_settings(self, auth_client, seed_user, db, seed_periods):
+    def test_update_settings(self, auth_client, seed_user, db, seed_periods_today):
         """POST updates retirement settings."""
         resp = auth_client.post("/retirement/settings", data={
             "safe_withdrawal_rate": "4",
@@ -299,7 +299,7 @@ class TestRetirementSettings:
         assert settings.estimated_retirement_tax_rate == Decimal("0.2000")
 
     def test_update_settings_partial(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with only SWR persists the value and leaves
         other retirement fields unchanged."""
@@ -335,7 +335,7 @@ class TestRetirementProjections:
     """Tests that retirement dashboard projects with full contribution inputs."""
 
     def test_dashboard_projects_with_contributions(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Dashboard projection includes employee contributions and employer match."""
         profile = _create_salary_profile(seed_user, db.session)
@@ -382,7 +382,7 @@ class TestRetirementProjections:
         )
 
     def test_dashboard_projects_without_retirement_date(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Without planned retirement date, dashboard still renders correctly.
 
@@ -403,7 +403,7 @@ class TestRetirementProjections:
         assert b"Retirement Planning" in resp.data
 
     def test_dashboard_pension_tax_shown(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """After-tax pension line shown when tax rate is set."""
         profile = _create_salary_profile(seed_user, db.session)
@@ -422,7 +422,7 @@ class TestRetirementProjections:
         assert "After-Tax Monthly Pension" in html
 
     def test_dashboard_projects_multiple_accounts(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Multiple retirement accounts all project correctly."""
         _create_retirement_account(seed_user, db.session, "401(k)")
@@ -440,7 +440,7 @@ class TestRetirementProjections:
         assert b"Test Roth IRA" in resp.data
 
     def test_dashboard_uses_projected_salary_for_gap(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Gap analysis uses projected pre-retirement income, not current."""
         from app.models.salary_raise import SalaryRaise
@@ -476,13 +476,13 @@ class TestRetirementProjections:
 class TestGapAnalysisFragment:
     """Tests for the retirement gap analysis HTMX fragment (U3)."""
 
-    def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods):
+    def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods_today):
         """GET /retirement/gap without HX-Request redirects to retirement dashboard."""
         resp = auth_client.get("/retirement/gap")
         assert resp.status_code == 302
         assert "/retirement" in resp.headers.get("Location", "")
 
-    def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods):
+    def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods_today):
         """GET /retirement/gap with HX-Request returns gap analysis fragment."""
         resp = auth_client.get(
             "/retirement/gap",
@@ -492,7 +492,7 @@ class TestGapAnalysisFragment:
         # Gap analysis always renders the table with income gap row.
         assert b"Monthly Income Gap" in resp.data
 
-    def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods):
+    def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods_today):
         """SWR slider parameter is accepted and used."""
         profile = _create_salary_profile(seed_user, db.session)
         settings = db.session.query(UserSettings).filter_by(
@@ -510,7 +510,7 @@ class TestGapAnalysisFragment:
         # The fragment should show the 3.0% rate in the "Required Savings" line.
         assert b"3.0% rule" in resp.data
 
-    def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods):
+    def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods_today):
         """Return rate slider parameter is accepted."""
         profile = _create_salary_profile(seed_user, db.session)
         settings = db.session.query(UserSettings).filter_by(
@@ -534,7 +534,7 @@ class TestRetirementNegativePaths:
     """Negative-path and boundary tests for retirement routes."""
 
     def test_create_pension_missing_name(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Pension POST without name is rejected by schema (required field)."""
         resp = auth_client.post("/retirement/pension", data={
@@ -551,7 +551,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_missing_hire_date(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Pension POST without hire_date is rejected (required field)."""
         resp = auth_client.post("/retirement/pension", data={
@@ -568,7 +568,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_negative_multiplier(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Pension POST with negative benefit_multiplier is rejected by Range(min=0, min_inclusive=False)."""
         resp = auth_client.post("/retirement/pension", data={
@@ -586,7 +586,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_retirement_before_hire_rejected(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Planned retirement date before hire date is rejected."""
         resp = auth_client.post("/retirement/pension", data={
@@ -605,7 +605,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_retirement_in_past_rejected(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Planned retirement date in the past is rejected."""
         resp = auth_client.post("/retirement/pension", data={
@@ -624,7 +624,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_earliest_before_hire_rejected(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Earliest retirement date before hire date is rejected."""
         resp = auth_client.post("/retirement/pension", data={
@@ -643,7 +643,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_planned_before_earliest_rejected(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Planned retirement date before earliest retirement date is rejected."""
         resp = auth_client.post("/retirement/pension", data={
@@ -663,7 +663,7 @@ class TestRetirementNegativePaths:
         assert count == 0
 
     def test_create_pension_valid_dates_accepted(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Valid date ordering is accepted and pension is created."""
         resp = auth_client.post("/retirement/pension", data={
@@ -685,7 +685,7 @@ class TestRetirementNegativePaths:
         assert pension.planned_retirement_date == date(2050, 1, 1)
 
     def test_update_pension_retirement_before_hire_rejected(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Updating planned_retirement_date to before existing hire_date is rejected."""
         pension = _create_pension(seed_user, db.session)
@@ -707,7 +707,7 @@ class TestRetirementNegativePaths:
         assert after.planned_retirement_date == date(2048, 7, 1)
 
     def test_edit_nonexistent_pension(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET edit for nonexistent pension redirects with flash."""
         resp = auth_client.get("/retirement/pension/999999/edit")
@@ -717,7 +717,7 @@ class TestRetirementNegativePaths:
         assert b"Pension profile not found." in resp2.data
 
     def test_update_nonexistent_pension(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST update for nonexistent pension redirects with flash."""
         resp = auth_client.post("/retirement/pension/999999", data={
@@ -731,7 +731,7 @@ class TestRetirementNegativePaths:
         assert b"Pension profile not found." in resp2.data
 
     def test_delete_nonexistent_pension(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST delete for nonexistent pension redirects with flash."""
         resp = auth_client.post("/retirement/pension/999999/delete")
@@ -741,7 +741,7 @@ class TestRetirementNegativePaths:
         assert b"Pension profile not found." in resp2.data
 
     def test_edit_pension_idor_no_data_leaked(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """IDOR GET to edit pension does not leak victim's pension data."""
         pension = PensionProfile(
@@ -760,7 +760,7 @@ class TestRetirementNegativePaths:
         assert b"0.02500" not in resp.data
 
     def test_update_settings_invalid_swr(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Non-numeric SWR is handled gracefully; original value preserved."""
         settings = db.session.query(UserSettings).filter_by(
@@ -782,7 +782,7 @@ class TestRetirementNegativePaths:
         assert after.safe_withdrawal_rate == orig_swr
 
     def test_update_settings_negative_swr(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Negative SWR as percentage: -5 converts to -0.05, rejected by Range(min=0)."""
         settings = db.session.query(UserSettings).filter_by(
@@ -802,7 +802,7 @@ class TestRetirementNegativePaths:
         assert after.safe_withdrawal_rate == orig_swr
 
     def test_update_settings_zero_swr(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """SWR of 0% converts to 0.00, which is valid per Range(min=0)."""
         # 0 / 100 = 0.00, which passes Range(min=0, max=1).
@@ -820,7 +820,7 @@ class TestRetirementNegativePaths:
         assert settings.safe_withdrawal_rate == Decimal("0.0000")
 
     def test_update_settings_invalid_tax_rate(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Non-numeric tax rate is handled; original value preserved."""
         settings = db.session.query(UserSettings).filter_by(
@@ -840,7 +840,7 @@ class TestRetirementNegativePaths:
         assert after.estimated_retirement_tax_rate == orig_tax
 
     def test_update_settings_tax_rate_over_100(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Tax rate 150% converts to 1.50, rejected by Range(max=1)."""
         settings = db.session.query(UserSettings).filter_by(
@@ -860,7 +860,7 @@ class TestRetirementNegativePaths:
         assert after.estimated_retirement_tax_rate == orig_tax
 
     def test_update_settings_invalid_date(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Non-date retirement date is rejected; original date preserved."""
         settings = db.session.query(UserSettings).filter_by(
@@ -908,7 +908,7 @@ class TestRetirementValidationUX:
     """Tests for render-on-error validation UX with field highlights and data preservation."""
 
     def test_pension_validation_error_preserves_all_fields(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """All submitted field values are preserved in the re-rendered form on error."""
         profile = _create_salary_profile(seed_user, db.session)
@@ -933,7 +933,7 @@ class TestRetirementValidationUX:
         assert 'value="2017-01-01"' in html
 
     def test_pension_validation_error_highlights_invalid_field(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Invalid field gets is-invalid class and invalid-feedback message."""
         pension = _create_pension(seed_user, db.session)
@@ -951,7 +951,7 @@ class TestRetirementValidationUX:
         assert "Must be after hire date" in html
 
     def test_pension_validation_error_does_not_highlight_valid_fields(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Only the invalid field gets is-invalid; valid fields do not."""
         pension = _create_pension(seed_user, db.session)
@@ -969,7 +969,7 @@ class TestRetirementValidationUX:
         assert html.count("is-invalid") == 1
 
     def test_pension_validation_multiple_errors(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Multiple date fields with errors are all highlighted."""
         pension = _create_pension(seed_user, db.session)
@@ -989,7 +989,7 @@ class TestRetirementValidationUX:
         assert html.count("invalid-feedback") >= 2
 
     def test_pension_valid_submission_still_works(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Valid pension update still redirects and persists changes (regression)."""
         profile = _create_salary_profile(seed_user, db.session)
@@ -1008,7 +1008,7 @@ class TestRetirementValidationUX:
         assert pension.benefit_multiplier == Decimal("0.02000")
 
     def test_pension_validation_returns_422_not_redirect(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Validation failure returns 422 HTML, not a 302 redirect."""
         pension = _create_pension(seed_user, db.session)
@@ -1023,7 +1023,7 @@ class TestRetirementValidationUX:
         assert "Location" not in resp.headers
 
     def test_pension_form_data_not_present_on_get(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET renders the form from the pension model with no error indicators."""
         pension = _create_pension(seed_user, db.session)
@@ -1035,7 +1035,7 @@ class TestRetirementValidationUX:
         assert "State Pension" in html
 
     def test_settings_validation_error_preserves_form_data(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Settings validation error re-renders with submitted values preserved."""
         resp = auth_client.post("/retirement/settings", data={
@@ -1050,7 +1050,7 @@ class TestRetirementValidationUX:
         assert "is-invalid" in html
 
     def test_settings_validation_error_highlights_field(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Settings error highlights the invalid field with error message."""
         resp = auth_client.post("/retirement/settings", data={
@@ -1062,7 +1062,7 @@ class TestRetirementValidationUX:
         assert "invalid-feedback" in html
 
     def test_settings_valid_submission_still_works(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Valid settings POST still redirects and persists (regression)."""
         resp = auth_client.post("/retirement/settings", data={
@@ -1079,7 +1079,7 @@ class TestRetirementValidationUX:
         assert settings.planned_retirement_date == date(2055, 1, 1)
 
     def test_pension_error_then_success(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """A failed submission does not poison subsequent successful submissions."""
         pension = _create_pension(seed_user, db.session)
@@ -1107,7 +1107,7 @@ class TestRetirementValidationUX:
         assert pension.planned_retirement_date == date(2050, 1, 1)
 
     def test_pension_select_fields_preserve_selection(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Select dropdown preserves the selected salary profile on error re-render."""
         import re
@@ -1131,7 +1131,7 @@ class TestRetirementValidationUX:
         )
 
     def test_pension_empty_date_handled(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Empty planned_retirement_date does not crash -- treated as omitted."""
         pension = _create_pension(seed_user, db.session)
@@ -1149,7 +1149,7 @@ class TestRetirementValidationUX:
 class TestReturnRateClarity:
     """Tests for return rate slider tooltip and per-account rate display."""
 
-    def test_return_slider_tooltip_present(self, auth_client, seed_user, db, seed_periods):
+    def test_return_slider_tooltip_present(self, auth_client, seed_user, db, seed_periods_today):
         """Dashboard shows info-circle tooltip on the Assumed Annual Return label."""
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
@@ -1161,7 +1161,7 @@ class TestReturnRateClarity:
         assert "overriding each account&#" in html or "overriding each account" in html
 
     def test_per_account_rate_displayed_on_dashboard(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Each retirement account row shows its configured annual return rate."""
         account, params = _create_retirement_account(seed_user, db.session)
@@ -1179,7 +1179,7 @@ class TestReturnRateClarity:
         assert "Annual Return" in html
 
     def test_per_account_rate_accuracy_multiple_accounts(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Multiple accounts with different rates each show their own rate."""
         acct1, params1 = _create_retirement_account(
@@ -1216,7 +1216,7 @@ class TestReturnRateClarity:
         assert ">9.5%<" in html
 
     def test_htmx_gap_response_includes_account_rows_oob(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """HTMX gap analysis response includes OOB swap for account table rows."""
         _create_retirement_account(seed_user, db.session)
@@ -1237,7 +1237,7 @@ class TestReturnRateClarity:
         assert 'hx-swap-oob="innerHTML"' in html
 
     def test_htmx_gap_oob_uses_slider_rate(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """When slider overrides return rate, OOB account rows show the override rate."""
         _create_retirement_account(seed_user, db.session)
@@ -1258,7 +1258,7 @@ class TestReturnRateClarity:
         assert ">7.0%<" not in html
 
     def test_initial_dashboard_no_oob_in_gap_section(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Full page load does not render OOB swap inside the gap analysis card."""
         _create_retirement_account(seed_user, db.session)
@@ -1276,7 +1276,7 @@ class TestReturnRateClarity:
         # But the wrapper div with the id should exist (for the actual table).
         assert 'id="retirement-accounts-content"' in html
 
-    def test_slider_default_value_present(self, auth_client, seed_user, db, seed_periods):
+    def test_slider_default_value_present(self, auth_client, seed_user, db, seed_periods_today):
         """Slider element is present with its default value attribute."""
         _create_retirement_account(seed_user, db.session)
         resp = auth_client.get("/retirement")
@@ -1286,7 +1286,7 @@ class TestReturnRateClarity:
         assert 'id="swr_slider"' in html
 
     def test_htmx_gap_still_returns_gap_analysis(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """HTMX gap endpoint with return_rate still returns the gap analysis table (regression)."""
         profile = _create_salary_profile(seed_user, db.session)
@@ -1318,7 +1318,7 @@ class TestIsPretaxDispatch:
     the hardcoded TRADITIONAL_TYPE_ENUMS frozenset."""
 
     def test_gap_analysis_user_created_pretax_type(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """A user-created Retirement type with is_pretax=True is flagged
         as traditional (pre-tax) in the gap analysis projections."""
@@ -1349,7 +1349,7 @@ class TestIsPretaxDispatch:
                 name="My 403(b)",
                 account_type_id=custom_type.id,
                 current_anchor_balance=Decimal("50000"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1362,7 +1362,7 @@ class TestIsPretaxDispatch:
             assert proj["is_traditional"] is True
 
     def test_gap_analysis_posttax_type(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """A Retirement type with is_pretax=False is NOT flagged as traditional."""
         from app import ref_cache
@@ -1392,7 +1392,7 @@ class TestIsPretaxDispatch:
                 name="My Roth Solo 401(k)",
                 account_type_id=custom_type.id,
                 current_anchor_balance=Decimal("25000"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()

@@ -12,6 +12,8 @@ Tests for the savings dashboard and goal CRUD endpoints:
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum,
@@ -28,6 +30,29 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Savings tests use seed_periods[7] (loan-related), an
+    origination_date=date(2026, 1, 1) that aligns specific seed_periods
+    indices to specific amortization months, and inline ``date.today()``
+    calls (e.g. ``start = date.today() - timedelta(days=14)``).
+    Patching the test module's ``date`` keeps the inline computations
+    consistent with ``pay_period_service``'s view of "today".
+    """
+    freeze_today(
+        monkeypatch,
+        date(2026, 3, 20),
+        modules=(
+            "app.services.pay_period_service",
+            "tests.test_routes.test_savings",
+        ),
+    )
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import savings_goal_service

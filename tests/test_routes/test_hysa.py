@@ -52,10 +52,10 @@ def _create_other_hysa(second_user, db_session):
 class TestHysaDetailView:
     """GET /accounts/<id>/interest."""
 
-    def test_hysa_detail_view(self, auth_client, seed_user, db, seed_periods):
+    def test_hysa_detail_view(self, auth_client, seed_user, db, seed_periods_today):
         """Returns 200 with interest data."""
         account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods[0].id
+        account.current_anchor_period_id = seed_periods_today[0].id
         db.session.commit()
 
         resp = auth_client.get(f"/accounts/{account.id}/interest")
@@ -102,7 +102,7 @@ class TestHysaDetailView:
 class TestInterestParamsUpdate:
     """POST /accounts/<id>/interest/params."""
 
-    def test_hysa_params_update(self, auth_client, seed_user, db, seed_periods):
+    def test_hysa_params_update(self, auth_client, seed_user, db, seed_periods_today):
         """Valid params → updates APY and compounding."""
         account, _ = _create_hysa_account(seed_user, db.session)
 
@@ -264,7 +264,7 @@ class TestHysaNegativePaths:
 class TestCreateHysaAccount:
     """Creating a HYSA account auto-creates InterestParams."""
 
-    def test_create_hysa_account_auto_params(self, auth_client, seed_user, db, seed_periods):
+    def test_create_hysa_account_auto_params(self, auth_client, seed_user, db, seed_periods_today):
         """POST to create account with HYSA type → auto-creates InterestParams."""
         hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
@@ -292,7 +292,7 @@ class TestHysaDetailShadowTransactions:
     """
 
     def test_hysa_detail_includes_transfer_deposit(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Verify that the HYSA detail page includes shadow income
         transactions from transfers in the balance projection.  Without
@@ -305,7 +305,7 @@ class TestHysaDetailShadowTransactions:
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
         account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods[0].id
+        account.current_anchor_period_id = seed_periods_today[0].id
         db.session.commit()
 
         # Add transfer categories required by the service.
@@ -326,7 +326,7 @@ class TestHysaDetailShadowTransactions:
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=account.id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             amount=Decimal("500.00"),
             status_id=projected.id,
@@ -345,14 +345,14 @@ class TestHysaDetailShadowTransactions:
         assert "10,6" in html
 
     def test_hysa_detail_no_transfers_regression(
-        self, auth_client, seed_user, db, seed_periods
+        self, auth_client, seed_user, db, seed_periods_today
     ):
         """Verify that the HYSA detail page still works correctly when
         there are no transfers.  The account_id query must return an
         empty set without errors, and the balance equals anchor + interest.
         """
         account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods[0].id
+        account.current_anchor_period_id = seed_periods_today[0].id
         db.session.commit()
 
         resp = auth_client.get(f"/accounts/{account.id}/interest")

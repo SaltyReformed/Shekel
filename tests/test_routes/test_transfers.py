@@ -60,14 +60,14 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     return template
 
 
-def _create_transfer(seed_user, seed_periods, savings_acct, template=None):
+def _create_transfer(seed_user, seed_periods_today, savings_acct, template=None):
     """Helper: create a transfer with shadow transactions via the service."""
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        pay_period_id=seed_periods[0].id,
+        pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("200.00"),
         status_id=projected.id,
@@ -170,7 +170,7 @@ def _create_other_user_with_template():
 class TestTemplateList:
     """Tests for GET /transfers and GET /transfers/new."""
 
-    def test_list_templates(self, app, auth_client, seed_user, seed_periods):
+    def test_list_templates(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers renders the transfer templates list."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -217,7 +217,7 @@ class TestTemplatePrefill:
 class TestTemplateCreate:
     """Tests for POST /transfers."""
 
-    def test_create_template(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers creates a template with recurrence and generates transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -271,7 +271,7 @@ class TestTemplateCreate:
             assert response.status_code == 200
             assert b"Please correct the highlighted errors" in response.data
 
-    def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers twice with the same name returns a flash warning
         on the second attempt instead of a 500 error, and creates exactly
         one template in the database."""
@@ -367,7 +367,7 @@ class TestTemplateCreate:
 class TestTemplateUpdate:
     """Tests for GET/POST /transfers/<id>/edit and /archive and /unarchive."""
 
-    def test_edit_template_form(self, app, auth_client, seed_user, seed_periods):
+    def test_edit_template_form(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/<id>/edit renders the edit form."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -378,7 +378,7 @@ class TestTemplateUpdate:
             assert response.status_code == 200
             assert b"Monthly Savings" in response.data
 
-    def test_update_template(self, app, auth_client, seed_user, seed_periods):
+    def test_update_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/<id> updates the template."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -401,12 +401,12 @@ class TestTemplateUpdate:
             db.session.refresh(template)
             assert template.default_amount == Decimal("300.00")
 
-    def test_archive_template(self, app, auth_client, seed_user, seed_periods):
+    def test_archive_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/<id>/archive archives the template and soft-deletes transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             response = auth_client.post(
                 f"/transfers/{template.id}/archive",
@@ -422,12 +422,12 @@ class TestTemplateUpdate:
             db.session.refresh(xfer)
             assert xfer.is_deleted is True
 
-    def test_unarchive_template(self, app, auth_client, seed_user, seed_periods):
+    def test_unarchive_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/<id>/unarchive restores the template and its transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             # Deactivate first.
             template.is_active = False
@@ -486,11 +486,11 @@ class TestTemplateUpdate:
 class TestGridCells:
     """Tests for grid cell HTMX partial endpoints."""
 
-    def test_get_cell(self, app, auth_client, seed_user, seed_periods):
+    def test_get_cell(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/cell/<id> returns the cell partial."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.get(f"/transfers/cell/{xfer.id}")
 
@@ -498,11 +498,11 @@ class TestGridCells:
             assert b"Monthly Savings" in response.data
             assert b"200" in response.data
 
-    def test_get_quick_edit(self, app, auth_client, seed_user, seed_periods):
+    def test_get_quick_edit(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/quick-edit/<id> returns the quick-edit form."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.get(f"/transfers/quick-edit/{xfer.id}")
 
@@ -510,11 +510,11 @@ class TestGridCells:
             assert b'name="amount"' in response.data
             assert b"200" in response.data
 
-    def test_get_full_edit(self, app, auth_client, seed_user, seed_periods):
+    def test_get_full_edit(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/<id>/full-edit returns the full-edit form."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.get(f"/transfers/{xfer.id}/full-edit")
 
@@ -544,11 +544,11 @@ class TestGridCells:
 class TestTransferInstance:
     """Tests for transfer update, mark-done, cancel, and delete."""
 
-    def test_update_transfer_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_update_transfer_amount(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transfers/instance/<id> updates the transfer amount."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -561,11 +561,11 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("250.00")
 
-    def test_mark_done(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/instance/<id>/mark-done sets status to done."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
 
@@ -575,11 +575,11 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.status.name == "Paid"
 
-    def test_cancel_transfer(self, app, auth_client, seed_user, seed_periods):
+    def test_cancel_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/instance/<id>/cancel sets status to cancelled."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             response = auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
@@ -588,12 +588,12 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.status.name == "Cancelled"
 
-    def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods):
+    def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             # Ad-hoc transfer (no template).
-            xfer = _create_transfer(seed_user, seed_periods, savings, template=None)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template=None)
             xfer_id = xfer.id
 
             response = auth_client.delete(f"/transfers/instance/{xfer_id}")
@@ -605,13 +605,13 @@ class TestTransferInstance:
             assert db.session.get(Transfer, xfer_id) is None
 
     def test_delete_template_transfer_soft_deletes(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """DELETE /transfers/instance/<id> soft-deletes a template transfer."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             response = auth_client.delete(f"/transfers/instance/{xfer.id}")
 
@@ -621,13 +621,13 @@ class TestTransferInstance:
             assert xfer.is_deleted is True
 
     def test_template_transfer_override_on_amount_change(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Updating amount on a template transfer sets is_override=True."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             assert xfer.is_override is False
 
             auth_client.patch(
@@ -639,12 +639,12 @@ class TestTransferInstance:
             assert xfer.is_override is True
 
     def test_cancelled_transfer_effective_amount_zero(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """A cancelled transfer has effective_amount of Decimal('0')."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
@@ -686,13 +686,13 @@ class TestTransferInstance:
 class TestAdHoc:
     """Tests for POST /transfers/ad-hoc."""
 
-    def test_create_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods):
+    def test_create_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/ad-hoc creates a transfer and returns 201."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
 
             response = auth_client.post("/transfers/ad-hoc", data={
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "amount": "50.00",
@@ -716,7 +716,7 @@ class TestAdHoc:
             assert "errors" in body
 
     def test_create_ad_hoc_other_users_period(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/ad-hoc with another user's period returns 404.
 
@@ -761,7 +761,7 @@ class TestAdHoc:
             )
 
     def test_create_ad_hoc_double_submit(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/ad-hoc twice succeeds both times (no unique constraint on ad-hoc).
 
@@ -771,7 +771,7 @@ class TestAdHoc:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             data = {
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "amount": "50.00",
@@ -789,7 +789,7 @@ class TestAdHoc:
             # Verify exactly 2 transfers were created.
             db.session.expire_all()
             count = db.session.query(Transfer).filter_by(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 name="Double Transfer",
             ).count()
             assert count == 2, (
@@ -866,12 +866,12 @@ class TestTransferNegativePaths:
             assert resp.status_code == 404
 
     def test_mark_done_already_done_transfer(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/instance/<id>/mark-done on an already-done transfer is idempotent."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             # Set to done first.
             done_status = db.session.query(Status).filter_by(name="Paid").one()
@@ -890,12 +890,12 @@ class TestTransferNegativePaths:
             assert xfer.status.name == "Paid"
 
     def test_cancel_already_cancelled_transfer(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/instance/<id>/cancel on an already-cancelled transfer is idempotent."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             # Cancel first.
             cancelled_status = db.session.query(Status).filter_by(name="Cancelled").one()
@@ -995,14 +995,14 @@ class TestTransferNegativePaths:
             assert count == 0
 
     def test_create_ad_hoc_with_zero_amount(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/ad-hoc with amount=0.00 fails validation (must be > 0)."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
 
             resp = auth_client.post("/transfers/ad-hoc", data={
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "amount": "0.00",
@@ -1022,14 +1022,14 @@ class TestTransferNegativePaths:
             assert count == 0
 
     def test_create_ad_hoc_with_negative_amount(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/ad-hoc with negative amount fails schema validation."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
 
             resp = auth_client.post("/transfers/ad-hoc", data={
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "amount": "-100.00",
@@ -1071,7 +1071,7 @@ class TestShadowContextResponse:
     """
 
     def test_update_from_shadow_renders_transaction_cell(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH with source_txn_id renders _transaction_cell.html content.
 
@@ -1082,7 +1082,7 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
             shadow = _get_expense_shadow(xfer)
 
             resp = auth_client.patch(
@@ -1110,7 +1110,7 @@ class TestShadowContextResponse:
             assert shadow.estimated_amount == Decimal("300.00")
 
     def test_mark_done_from_shadow_renders_transaction_cell_with_grid_refresh(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST mark-done with source_txn_id renders _transaction_cell.html
         and triggers gridRefresh (not balanceChanged).
@@ -1121,7 +1121,7 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
             shadow = _get_expense_shadow(xfer)
 
             resp = auth_client.post(
@@ -1149,14 +1149,14 @@ class TestShadowContextResponse:
             assert all(s.status.name == "Paid" for s in shadows)
 
     def test_cancel_from_shadow_renders_transaction_cell_with_grid_refresh(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST cancel with source_txn_id renders _transaction_cell.html
         and triggers gridRefresh.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
             shadow = _get_expense_shadow(xfer)
 
             resp = auth_client.post(
@@ -1174,7 +1174,7 @@ class TestShadowContextResponse:
             assert xfer.status.name == "Cancelled"
 
     def test_update_without_source_txn_id_renders_transfer_cell(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH without source_txn_id renders _transfer_cell.html (regression).
 
@@ -1184,7 +1184,7 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -1203,7 +1203,7 @@ class TestShadowContextResponse:
             assert xfer.amount == Decimal("350.00")
 
     def test_invalid_source_txn_id_falls_back_gracefully(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH with nonexistent source_txn_id falls back to transfer cell.
 
@@ -1213,7 +1213,7 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer(seed_user, seed_periods, savings)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -1231,7 +1231,7 @@ class TestShadowContextResponse:
             assert xfer.amount == Decimal("400.00")
 
     def test_mismatched_source_txn_id_falls_back_gracefully(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH with source_txn_id from a different transfer falls back.
 
@@ -1241,8 +1241,8 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer_a = _create_transfer(seed_user, seed_periods, savings)
-            xfer_b = _create_transfer(seed_user, seed_periods, savings)
+            xfer_a = _create_transfer(seed_user, seed_periods_today, savings)
+            xfer_b = _create_transfer(seed_user, seed_periods_today, savings)
 
             # Get a shadow from transfer B.
             shadow_b = _get_expense_shadow(xfer_b)
@@ -1275,7 +1275,7 @@ class TestUnarchiveUsesService:
     """
 
     def test_unarchive_restores_via_service_with_invariant_correction(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Verify that the unarchive route uses the transfer service to
         restore soft-deleted transfers, including the service's invariant
@@ -1285,7 +1285,7 @@ class TestUnarchiveUsesService:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             xfer_id = xfer.id
 
             # Soft-delete the transfer and shadows via the service.
@@ -1347,7 +1347,7 @@ class TestOneTimeTransfer:
     """
 
     def test_once_pattern_creates_shadows(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """POST /transfers with the ONCE recurrence pattern creates a
         template AND a single Transfer with exactly two shadow transactions.
@@ -1364,7 +1364,7 @@ class TestOneTimeTransfer:
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "recurrence_pattern": str(once.id),
-                "start_period_id": str(seed_periods[1].id),
+                "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
@@ -1390,7 +1390,7 @@ class TestOneTimeTransfer:
                 .one()
             )
             assert xfer.amount == Decimal("500.00")
-            assert xfer.pay_period_id == seed_periods[1].id
+            assert xfer.pay_period_id == seed_periods_today[1].id
 
             # Exactly two shadow transactions exist.
             shadows = (
@@ -1404,7 +1404,7 @@ class TestOneTimeTransfer:
             assert types == {"Expense", "Income"}
 
     def test_once_pattern_shadow_accounts(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """ONCE transfer shadows are linked to the correct accounts:
         expense shadow on from_account, income shadow on to_account.
@@ -1422,7 +1422,7 @@ class TestOneTimeTransfer:
                 "from_account_id": str(checking_id),
                 "to_account_id": str(savings.id),
                 "recurrence_pattern": str(once.id),
-                "start_period_id": str(seed_periods[0].id),
+                "start_period_id": str(seed_periods_today[0].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
@@ -1455,7 +1455,7 @@ class TestOneTimeTransfer:
             assert income_shadow.account_id == savings.id
 
     def test_once_pattern_balance_impact(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """ONCE transfer shadow transactions affect balance calculations.
 
@@ -1466,7 +1466,7 @@ class TestOneTimeTransfer:
 
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            savings.current_anchor_period_id = seed_periods[0].id
+            savings.current_anchor_period_id = seed_periods_today[0].id
             savings.current_anchor_balance = Decimal("0.00")
             db.session.commit()
 
@@ -1480,7 +1480,7 @@ class TestOneTimeTransfer:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "recurrence_pattern": str(once.id),
-                "start_period_id": str(seed_periods[1].id),
+                "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
@@ -1496,12 +1496,12 @@ class TestOneTimeTransfer:
             )
             checking_balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:3],
+                anchor_period_id=seed_periods_today[0].id,
+                periods=seed_periods_today[:3],
                 transactions=checking_shadows,
             )
             # Checking decreased by 250 in period 2.
-            assert checking_balances[seed_periods[1].id] == Decimal("750.00")
+            assert checking_balances[seed_periods_today[1].id] == Decimal("750.00")
 
             # Get shadow transactions for savings account.
             savings_shadows = (
@@ -1515,15 +1515,15 @@ class TestOneTimeTransfer:
             )
             savings_balances, _ = balance_calculator.calculate_balances(
                 anchor_balance=Decimal("0.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:3],
+                anchor_period_id=seed_periods_today[0].id,
+                periods=seed_periods_today[:3],
                 transactions=savings_shadows,
             )
             # Savings increased by 250 in period 2.
-            assert savings_balances[seed_periods[1].id] == Decimal("250.00")
+            assert savings_balances[seed_periods_today[1].id] == Decimal("250.00")
 
     def test_one_time_transfer_idor_period(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
         """POST /transfers with another user's period is rejected."""
@@ -1568,13 +1568,13 @@ class TestTransferTemplateHardDelete:
     """
 
     def test_hard_delete_transfer_template_no_history(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """C-5A.5-17: Template with only Projected transfers is permanently deleted."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             template_id = template.id
             xfer_id = xfer.id
@@ -1622,7 +1622,7 @@ class TestTransferTemplateHardDelete:
             assert db.session.get(TransferTemplate, template_id) is None
 
     def test_hard_delete_transfer_template_with_history(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """C-5A.5-18: Template with Paid transfer is blocked and archived instead."""
         with app.app_context():
@@ -1631,7 +1631,7 @@ class TestTransferTemplateHardDelete:
 
             # Create two transfers: one Projected, one Paid.
             xfer_projected = _create_transfer(
-                seed_user, seed_periods, savings, template,
+                seed_user, seed_periods_today, savings, template,
             )
 
             paid_status = db.session.query(Status).filter_by(name="Paid").one()
@@ -1639,7 +1639,7 @@ class TestTransferTemplateHardDelete:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings.id,
-                pay_period_id=seed_periods[1].id,
+                pay_period_id=seed_periods_today[1].id,
                 scenario_id=seed_user["scenario"].id,
                 amount=Decimal("200.00"),
                 status_id=paid_status.id,
@@ -1676,7 +1676,7 @@ class TestTransferTemplateHardDelete:
             assert xfer_projected.is_deleted is True
 
     def test_hard_delete_transfer_template_with_history_already_archived(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Already-archived template with Paid history stays archived without re-archiving."""
         with app.app_context():
@@ -1688,7 +1688,7 @@ class TestTransferTemplateHardDelete:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 amount=Decimal("200.00"),
                 status_id=paid_status.id,
@@ -1712,7 +1712,7 @@ class TestTransferTemplateHardDelete:
             assert template.is_active is False
 
     def test_hard_delete_preserves_shadow_invariant(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """C-5A.5-19: No orphaned shadows remain after hard-deleting a template's transfers."""
         with app.app_context():
@@ -1726,7 +1726,7 @@ class TestTransferTemplateHardDelete:
                     user_id=seed_user["user"].id,
                     from_account_id=seed_user["account"].id,
                     to_account_id=savings.id,
-                    pay_period_id=seed_periods[i].id,
+                    pay_period_id=seed_periods_today[i].id,
                     scenario_id=seed_user["scenario"].id,
                     amount=Decimal("200.00"),
                     status_id=db.session.query(Status).filter_by(
@@ -1832,13 +1832,13 @@ class TestTransferTemplateHardDelete:
             assert "Archived Transfer" in html
 
     def test_archive_label_in_flash_transfers(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Archive flash message says 'archived' not 'deactivated'."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            _create_transfer(seed_user, seed_periods, savings, template)
+            _create_transfer(seed_user, seed_periods_today, savings, template)
 
             resp = auth_client.post(
                 f"/transfers/{template.id}/archive",
@@ -1849,13 +1849,13 @@ class TestTransferTemplateHardDelete:
             assert b"deactivated" not in resp.data
 
     def test_hard_delete_transfer_template_soft_deleted_transfers_cleaned(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Soft-deleted transfers and their shadows are permanently removed on hard-delete."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings, with_rule=False)
-            xfer = _create_transfer(seed_user, seed_periods, savings, template)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             xfer_id = xfer.id
 
             # Soft-delete the transfer via the service.

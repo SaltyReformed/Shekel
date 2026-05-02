@@ -20,6 +20,29 @@ from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
 from app.services.transfer_service import create_transfer
 
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Loan tests use specific origination_date values, inline
+    ``date.today()`` calls (e.g. ``first_of_this_month =
+    date.today().replace(day=1)``), and assertions like
+    ``rule.end_date > date.today()``.  Patching the test module's
+    ``date`` keeps every layer (test, fixture, service) on the same
+    frozen "today".
+    """
+    freeze_today(
+        monkeypatch,
+        date(2026, 3, 20),
+        modules=(
+            "app.services.pay_period_service",
+            "tests.test_routes.test_loan",
+        ),
+    )
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

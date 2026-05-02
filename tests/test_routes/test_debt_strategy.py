@@ -87,7 +87,7 @@ def _create_student_loan(user, db_session, name="Test Student Loan"):
 class TestDebtStrategyDashboard:
     """Tests for the GET /debt-strategy page."""
 
-    def test_strategy_page_renders(self, auth_client, seed_user, db, seed_periods):
+    def test_strategy_page_renders(self, auth_client, seed_user, db, seed_periods_today):
         """GET with 2+ debt accounts returns 200, contains account names
         and the strategy form.
         """
@@ -104,7 +104,7 @@ class TestDebtStrategyDashboard:
         assert 'name="extra_monthly"' in html
         assert 'name="strategy"' in html
 
-    def test_strategy_page_empty_state(self, auth_client, seed_user, db, seed_periods):
+    def test_strategy_page_empty_state(self, auth_client, seed_user, db, seed_periods_today):
         """GET with no debt accounts shows empty-state message and no form."""
         resp = auth_client.get("/debt-strategy")
         assert resp.status_code == 200
@@ -113,7 +113,7 @@ class TestDebtStrategyDashboard:
         assert "No Active Debt Accounts" in html
         assert 'name="extra_monthly"' not in html
 
-    def test_strategy_page_single_debt(self, auth_client, seed_user, db, seed_periods):
+    def test_strategy_page_single_debt(self, auth_client, seed_user, db, seed_periods_today):
         """GET with 1 debt account shows the form and a note about
         strategy comparison being most useful with multiple debts.
         """
@@ -132,7 +132,7 @@ class TestDebtStrategyDashboard:
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
-    def test_accounts_without_params_skipped(self, auth_client, seed_user, db, seed_periods):
+    def test_accounts_without_params_skipped(self, auth_client, seed_user, db, seed_periods_today):
         """A debt account with has_amortization but no LoanParams does
         not crash the page.  The account is silently skipped.
         """
@@ -153,7 +153,7 @@ class TestDebtStrategyDashboard:
         # No params means it's filtered out; empty state shown.
         assert "No Active Debt Accounts" in html
 
-    def test_non_debt_accounts_excluded(self, auth_client, seed_user, db, seed_periods):
+    def test_non_debt_accounts_excluded(self, auth_client, seed_user, db, seed_periods_today):
         """A savings account (has_amortization=False) is not included."""
         # seed_user already has a Checking account (not amortizing).
         # Verify it does not appear and we get the empty state.
@@ -162,7 +162,7 @@ class TestDebtStrategyDashboard:
         html = resp.data.decode()
         assert "No Active Debt Accounts" in html
 
-    def test_inactive_accounts_excluded(self, auth_client, seed_user, db, seed_periods):
+    def test_inactive_accounts_excluded(self, auth_client, seed_user, db, seed_periods_today):
         """An inactive debt account is excluded from the strategy page."""
         user = seed_user["user"]
         acct = _create_auto_loan(user, db.session)
@@ -181,7 +181,7 @@ class TestDebtStrategyDashboard:
 class TestDebtStrategyCalculate:
     """Tests for the POST /debt-strategy/calculate endpoint."""
 
-    def test_calculate_avalanche(self, auth_client, seed_user, db, seed_periods):
+    def test_calculate_avalanche(self, auth_client, seed_user, db, seed_periods_today):
         """POST with avalanche strategy returns comparison table with
         expected columns and avalanche interest <= snowball interest.
         """
@@ -202,7 +202,7 @@ class TestDebtStrategyCalculate:
         assert "Snowball" in html
         assert "Interest Saved" in html
 
-    def test_calculate_snowball(self, auth_client, seed_user, db, seed_periods):
+    def test_calculate_snowball(self, auth_client, seed_user, db, seed_periods_today):
         """POST with snowball strategy returns results with per-account
         timeline showing smallest balance debt first.
         """
@@ -220,7 +220,7 @@ class TestDebtStrategyCalculate:
         # The per-account timeline shows the selected strategy.
         assert "Payoff Timeline" in html
 
-    def test_calculate_custom(self, auth_client, seed_user, db, seed_periods):
+    def test_calculate_custom(self, auth_client, seed_user, db, seed_periods_today):
         """POST with custom strategy and valid order returns 4-column
         comparison table.
         """
@@ -237,7 +237,7 @@ class TestDebtStrategyCalculate:
         html = resp.data.decode()
         assert "Custom" in html
 
-    def test_calculate_zero_extra(self, auth_client, seed_user, db, seed_periods):
+    def test_calculate_zero_extra(self, auth_client, seed_user, db, seed_periods_today):
         """POST with extra=0 returns results.  All strategies show
         equivalent baseline metrics.
         """
@@ -262,7 +262,7 @@ class TestDebtStrategyCalculate:
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
-    def test_calculate_no_debts(self, auth_client, seed_user, db, seed_periods):
+    def test_calculate_no_debts(self, auth_client, seed_user, db, seed_periods_today):
         """POST with no debt accounts returns an error message, not 500."""
         resp = auth_client.post("/debt-strategy/calculate", data={
             "extra_monthly": "200",
@@ -279,7 +279,7 @@ class TestDebtStrategyCalculate:
 class TestDebtStrategyValidation:
     """Tests for input validation on the calculate endpoint."""
 
-    def test_invalid_extra_negative(self, auth_client, seed_user, db, seed_periods):
+    def test_invalid_extra_negative(self, auth_client, seed_user, db, seed_periods_today):
         """Negative extra_monthly returns a user-friendly error, not 500."""
         _create_auto_loan(seed_user["user"], db.session)
 
@@ -291,7 +291,7 @@ class TestDebtStrategyValidation:
         html = resp.data.decode()
         assert "negative" in html.lower()
 
-    def test_invalid_extra_nonnumeric(self, auth_client, seed_user, db, seed_periods):
+    def test_invalid_extra_nonnumeric(self, auth_client, seed_user, db, seed_periods_today):
         """Non-numeric extra_monthly returns a user-friendly error."""
         _create_auto_loan(seed_user["user"], db.session)
 
@@ -303,7 +303,7 @@ class TestDebtStrategyValidation:
         html = resp.data.decode()
         assert "Invalid" in html
 
-    def test_invalid_strategy(self, auth_client, seed_user, db, seed_periods):
+    def test_invalid_strategy(self, auth_client, seed_user, db, seed_periods_today):
         """Unknown strategy name returns a user-friendly error."""
         _create_auto_loan(seed_user["user"], db.session)
 
@@ -315,7 +315,7 @@ class TestDebtStrategyValidation:
         html = resp.data.decode()
         assert "Invalid strategy" in html
 
-    def test_custom_missing_order(self, auth_client, seed_user, db, seed_periods):
+    def test_custom_missing_order(self, auth_client, seed_user, db, seed_periods_today):
         """Custom strategy without custom_order returns an error."""
         _create_auto_loan(seed_user["user"], db.session)
 
@@ -327,7 +327,7 @@ class TestDebtStrategyValidation:
         html = resp.data.decode()
         assert "priority order" in html.lower()
 
-    def test_custom_invalid_order_format(self, auth_client, seed_user, db, seed_periods):
+    def test_custom_invalid_order_format(self, auth_client, seed_user, db, seed_periods_today):
         """Custom order with non-integer values returns an error."""
         _create_auto_loan(seed_user["user"], db.session)
 
@@ -348,7 +348,7 @@ class TestDebtStrategyIDOR:
     """Tests for ownership checks on the calculate endpoint."""
 
     def test_custom_order_other_users_account(
-        self, auth_client, seed_user, second_user, db, seed_periods,
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
     ):
         """Custom order containing another user's account ID returns 404.
 
@@ -366,7 +366,7 @@ class TestDebtStrategyIDOR:
         assert resp.status_code == 404
 
     def test_custom_order_nonexistent_account(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Custom order with a nonexistent account ID returns 404."""
         my_acct = _create_auto_loan(seed_user["user"], db.session)
@@ -385,7 +385,7 @@ class TestDebtStrategyIDOR:
 class TestDebtStrategyMetrics:
     """Tests for the correctness of comparison metrics."""
 
-    def test_comparison_table_structure(self, auth_client, seed_user, db, seed_periods):
+    def test_comparison_table_structure(self, auth_client, seed_user, db, seed_periods_today):
         """POST returns a comparison table with all expected rows."""
         user = seed_user["user"]
         _create_auto_loan(user, db.session)
@@ -406,7 +406,7 @@ class TestDebtStrategyMetrics:
         assert "Interest Saved" in html
         assert "Months Saved" in html
 
-    def test_per_account_timeline_present(self, auth_client, seed_user, db, seed_periods):
+    def test_per_account_timeline_present(self, auth_client, seed_user, db, seed_periods_today):
         """POST includes a per-account payoff timeline table."""
         user = seed_user["user"]
         auto = _create_auto_loan(user, db.session)
@@ -423,7 +423,7 @@ class TestDebtStrategyMetrics:
         assert auto.name in html
         assert student.name in html
 
-    def test_arm_warning_shown(self, auth_client, seed_user, db, seed_periods):
+    def test_arm_warning_shown(self, auth_client, seed_user, db, seed_periods_today):
         """When an ARM loan is present, the R-5 warning is displayed."""
         user = seed_user["user"]
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
@@ -463,7 +463,7 @@ class TestDebtStrategyMetrics:
 class TestDebtStrategyNavigation:
     """Tests for the navigation link on the accounts dashboard."""
 
-    def test_nav_link_on_accounts_dashboard(self, auth_client, seed_user, db, seed_periods):
+    def test_nav_link_on_accounts_dashboard(self, auth_client, seed_user, db, seed_periods_today):
         """The accounts dashboard with debt accounts contains a link
         to the debt strategy page.
         """
@@ -505,7 +505,7 @@ def _extract_chart_data(response_html):
 class TestDebtStrategyChart:
     """Tests for the balance-over-time chart data in POST responses."""
 
-    def test_chart_data_included_in_response(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_data_included_in_response(self, auth_client, seed_user, db, seed_periods_today):
         """POST with valid input includes a strategy-chart canvas with
         well-formed JSON chart data.
         """
@@ -530,7 +530,7 @@ class TestDebtStrategyChart:
         assert isinstance(chart["datasets"], list)
         assert len(chart["datasets"]) == 2  # auto + mortgage
 
-    def test_chart_not_included_when_no_debts(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_not_included_when_no_debts(self, auth_client, seed_user, db, seed_periods_today):
         """POST with no debt accounts does not include the chart canvas."""
         resp = auth_client.post("/debt-strategy/calculate", data={
             "extra_monthly": "200",
@@ -540,7 +540,7 @@ class TestDebtStrategyChart:
         html = resp.data.decode()
         assert "strategy-chart" not in html
 
-    def test_chart_data_values_are_floats(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_data_values_are_floats(self, auth_client, seed_user, db, seed_periods_today):
         """Every value in each dataset's data array is a float or int,
         not a string representation of a Decimal.
         """
@@ -561,7 +561,7 @@ class TestDebtStrategyChart:
                     f"Expected int/float, got {type(val).__name__}: {val!r}"
                 )
 
-    def test_chart_labels_are_formatted_dates(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_labels_are_formatted_dates(self, auth_client, seed_user, db, seed_periods_today):
         """Chart labels are formatted as 'Mon YYYY' strings."""
         user = seed_user["user"]
         _create_auto_loan(user, db.session)
@@ -580,7 +580,7 @@ class TestDebtStrategyChart:
                 f"Label {label!r} does not match 'Mon YYYY' format"
             )
 
-    def test_chart_dataset_count_matches_accounts(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_dataset_count_matches_accounts(self, auth_client, seed_user, db, seed_periods_today):
         """Number of chart datasets equals the number of debt accounts."""
         user = seed_user["user"]
         _create_auto_loan(user, db.session)
@@ -596,7 +596,7 @@ class TestDebtStrategyChart:
         assert len(chart["datasets"]) == 3
 
     def test_chart_dataset_labels_match_account_names(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Each dataset label matches one of the debt account names."""
         user = seed_user["user"]
@@ -614,7 +614,7 @@ class TestDebtStrategyChart:
         assert auto.name in ds_labels
         assert mortgage.name in ds_labels
 
-    def test_chart_timeline_starts_at_principal(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_timeline_starts_at_principal(self, auth_client, seed_user, db, seed_periods_today):
         """The first data point of each dataset is the starting principal.
 
         The auto loan has $25,000 current_principal.  The chart's first
@@ -638,7 +638,7 @@ class TestDebtStrategyChart:
         assert first_balance > 20000
         assert first_balance <= 30000
 
-    def test_chart_timeline_ends_at_zero(self, auth_client, seed_user, db, seed_periods):
+    def test_chart_timeline_ends_at_zero(self, auth_client, seed_user, db, seed_periods_today):
         """Each dataset's balance reaches zero by the end of the timeline."""
         user = seed_user["user"]
         _create_auto_loan(user, db.session)
