@@ -37,7 +37,19 @@ def freeze_today(monkeypatch, target_date, modules=None):
     if modules is None:
         modules = ("app.services.pay_period_service",)
 
-    class _FrozenDate(_real_date):
+    # Custom metaclass so ``isinstance(real_date_obj, _FrozenDate)``
+    # returns True.  Without this, production code that does
+    # ``isinstance(start_date, date)`` -- where ``date`` has been
+    # replaced by ``_FrozenDate`` -- rejects real ``datetime.date``
+    # instances and raises spurious ValidationError.
+    class _DateMeta(type(_real_date)):
+        """Metaclass that treats real dates as _FrozenDate instances."""
+
+        def __instancecheck__(cls, instance):
+            """Real ``datetime.date`` objects pass ``isinstance`` checks."""
+            return isinstance(instance, _real_date)
+
+    class _FrozenDate(_real_date, metaclass=_DateMeta):
         """Date subclass with a fixed ``today()`` for test isolation."""
 
         @classmethod
