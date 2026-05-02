@@ -23,6 +23,21 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app import ref_cache
 from app.enums import StatusEnum
+
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Mark-paid entry tests use hardcoded entry_date values like
+    date(2026, 1, 5) and date(2026, 1, 10) that must fall inside the
+    calendar-anchored seed_periods range.  Freezing today inside the
+    seeded range keeps get_current_period() deterministic without
+    disturbing those calendar values.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
 from app.services import entry_service
 
 
