@@ -20,7 +20,7 @@ class TestOnboardingBanner:
         assert b"Welcome to Shekel!" in resp.data
 
     def test_banner_hidden_when_all_setup_complete(
-        self, auth_client, seed_user, seed_periods,
+        self, auth_client, seed_user, seed_periods_today,
     ):
         """Banner disappears once pay periods, salary, and templates exist."""
         user = seed_user["user"]
@@ -60,13 +60,13 @@ class TestOnboardingBanner:
         assert b"Welcome to Shekel!" not in resp.data
 
     def test_banner_shows_checkmarks_for_completed_steps(
-        self, auth_client, seed_user, seed_periods,
+        self, auth_client, seed_user, seed_periods_today,
     ):
         """Completed steps show a check icon; incomplete steps show links."""
         resp = auth_client.get("/")
         html = resp.data.decode()
 
-        # Pay periods exist (from seed_periods), so should be checked off
+        # Pay periods exist (from seed_periods_today), so should be checked off
         assert "bi-check-circle-fill" in html
         assert "line-through" in html
 
@@ -95,7 +95,7 @@ class TestOnboardingBanner:
         assert "bi-lock" in html
 
     def test_banner_unlocks_salary_when_periods_exist(
-        self, auth_client, seed_user, seed_periods
+        self, auth_client, seed_user, seed_periods_today
     ):
         """Salary step becomes an active link after pay periods are generated."""
         resp = auth_client.get("/")

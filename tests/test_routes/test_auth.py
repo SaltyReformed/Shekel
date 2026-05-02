@@ -1328,7 +1328,7 @@ class TestRegistration:
             assert "login" not in location
 
     def test_register_success_new_user_sees_empty_grid(
-        self, app, client, seed_user, seed_periods
+        self, app, client, seed_user, seed_periods_today
     ):
         """A newly registered user sees an empty grid with no seed user data.
 

@@ -97,7 +97,7 @@ class TestOwnerAccessRegression:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
 
-    def test_owner_can_access_grid(self, auth_client, seed_periods):
+    def test_owner_can_access_grid(self, auth_client, seed_periods_today):
         """Owner can access /grid with pay periods."""
         resp = auth_client.get("/grid")
         assert resp.status_code == 200
@@ -122,7 +122,7 @@ class TestOwnerAccessRegression:
         resp = auth_client.get("/transfers")
         assert resp.status_code == 200
 
-    def test_owner_can_access_dashboard(self, auth_client, seed_periods):
+    def test_owner_can_access_dashboard(self, auth_client, seed_periods_today):
         """Owner can access /dashboard with periods."""
         resp = auth_client.get("/dashboard")
         assert resp.status_code == 200
@@ -285,14 +285,14 @@ class TestDecoratorOrder:
 
 
 def _create_companion_test_transaction(
-    db, seed_user, seed_periods, companion_visible, template_name="Test Item",
+    db, seed_user, seed_periods_today, companion_visible, template_name="Test Item",
 ):
     """Create a template + transaction for companion mark_done testing.
 
     Args:
         db: The database session fixture.
         seed_user: The seed_user fixture dict.
-        seed_periods: The seed_periods fixture (list of PayPeriod).
+        seed_periods_today: The seed_periods_today fixture (list of PayPeriod).
         companion_visible: Whether the template is companion-visible.
         template_name: Name for the template and transaction.
 
@@ -323,7 +323,7 @@ def _create_companion_test_transaction(
         estimated_amount=Decimal("500.00"),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        pay_period_id=seed_periods[0].id,
+        pay_period_id=seed_periods_today[0].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
         scenario_id=seed_user["scenario"].id,
@@ -361,7 +361,7 @@ class TestMarkDoneCompanionAccess:
     """Test companion access to the mark_done route."""
 
     def test_companion_marks_visible_transaction_done(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion can mark a companion-visible transaction as Paid.
 
@@ -370,7 +370,7 @@ class TestMarkDoneCompanionAccess:
         Arithmetic: status changes from Projected to Paid.
         """
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
             template_name="Groceries",
         )
@@ -384,7 +384,7 @@ class TestMarkDoneCompanionAccess:
         assert txn.status_id == done_id
 
     def test_companion_blocked_from_non_visible_transaction(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 for mark_done on non-visible transactions.
 
@@ -392,7 +392,7 @@ class TestMarkDoneCompanionAccess:
         companion access when template.companion_visible is False.
         """
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=False,
             template_name="Mortgage",
         )
@@ -402,7 +402,7 @@ class TestMarkDoneCompanionAccess:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_other_owner_transaction(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 for transactions belonging to a different owner.
 
@@ -500,7 +500,7 @@ class TestMarkDoneCompanionAccess:
         assert resp.status_code == 404
 
     def test_owner_mark_done_regression(
-        self, auth_client, db, seed_user, seed_periods,
+        self, auth_client, db, seed_user, seed_periods_today,
     ):
         """Owner can still mark their own transactions as Paid.
 
@@ -508,7 +508,7 @@ class TestMarkDoneCompanionAccess:
         does not break the existing owner mark_done flow.
         """
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
             template_name="Owner Groceries",
         )
@@ -521,7 +521,7 @@ class TestMarkDoneCompanionAccess:
         assert txn.status_id == done_id
 
     def test_companion_blocked_from_templateless_transaction(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 for ad-hoc transactions (no template).
 
@@ -541,7 +541,7 @@ class TestMarkDoneCompanionAccess:
             estimated_amount=Decimal("100.00"),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
             category_id=category.id,
             scenario_id=seed_user["scenario"].id,
@@ -564,11 +564,11 @@ class TestCompanionBlockedTransactionRoutes:
     """
 
     def test_companion_blocked_from_update_transaction(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on PATCH /transactions/<id>."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -579,11 +579,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_cancel(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on POST /transactions/<id>/cancel."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -591,11 +591,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_mark_credit(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on POST /transactions/<id>/mark-credit."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -603,11 +603,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_delete(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on DELETE /transactions/<id>."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -615,11 +615,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_get_cell(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on GET /transactions/<id>/cell."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -627,11 +627,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_quick_edit(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on GET /transactions/<id>/quick-edit."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -639,11 +639,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_full_edit(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on GET /transactions/<id>/full-edit."""
         txn = _create_companion_test_transaction(
-            db, seed_user, seed_periods,
+            db, seed_user, seed_periods_today,
             companion_visible=True,
         )
         comp = _login_companion(app)
@@ -667,11 +667,11 @@ class TestCompanionBlockedTransactionRoutes:
         assert resp.status_code == 404
 
     def test_companion_blocked_from_carry_forward(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 on POST /pay-periods/<id>/carry-forward."""
         comp = _login_companion(app)
-        resp = comp.post(f"/pay-periods/{seed_periods[0].id}/carry-forward")
+        resp = comp.post(f"/pay-periods/{seed_periods_today[0].id}/carry-forward")
         assert resp.status_code == 404
 
 

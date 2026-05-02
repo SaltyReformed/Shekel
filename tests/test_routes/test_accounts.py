@@ -337,7 +337,7 @@ class TestAccountArchive:
 class TestInlineAnchor:
     """Tests for HTMX inline anchor balance endpoints on accounts list."""
 
-    def test_inline_anchor_update(self, app, auth_client, seed_user, seed_periods):
+    def test_inline_anchor_update(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /accounts/<id>/inline-anchor updates the balance."""
         with app.app_context():
             account_id = seed_user["account"].id
@@ -423,7 +423,7 @@ class TestInlineAnchor:
 class TestTrueUp:
     """Tests for the grid anchor balance true-up endpoints."""
 
-    def test_true_up_updates_balance(self, app, auth_client, seed_user, seed_periods):
+    def test_true_up_updates_balance(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /accounts/<id>/true-up updates the balance and creates history."""
         with app.app_context():
             account_id = seed_user["account"].id
@@ -460,7 +460,7 @@ class TestTrueUp:
             assert response.status_code == 400
             assert b"No current pay period found" in response.data
 
-    def test_true_up_invalid_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_true_up_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /accounts/<id>/true-up with invalid amount returns 400 with errors JSON."""
         with app.app_context():
             account_id = seed_user["account"].id
@@ -475,7 +475,7 @@ class TestTrueUp:
             assert "errors" in body, "400 response must contain validation errors"
 
     def test_true_up_other_users_account(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH /accounts/<id>/true-up for another user's account returns 404.
 
@@ -512,12 +512,12 @@ class TestTrueUpClearsEntries:
     true-ups are left alone.
     """
 
-    def _make_grocery_txn_with_entries(self, seed_user, seed_periods, entries):
+    def _make_grocery_txn_with_entries(self, seed_user, seed_periods_today, entries):
         """Create a tracked grocery transaction with the given entries.
 
         Args:
             seed_user: seed_user fixture dict.
-            seed_periods: list of PayPeriods.
+            seed_periods_today: list of PayPeriods.
             entries: list of (amount, entry_date, is_credit, is_cleared)
                 tuples.
 
@@ -546,7 +546,7 @@ class TestTrueUpClearsEntries:
 
         txn = Transaction(
             template_id=template.id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
             status_id=projected.id,
@@ -572,7 +572,7 @@ class TestTrueUpClearsEntries:
         return txn
 
     def test_past_dated_projected_entries_get_cleared(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """True-up flips past-dated uncleared debits on projected parents."""
         from app.models.transaction_entry import TransactionEntry
@@ -580,7 +580,7 @@ class TestTrueUpClearsEntries:
         with app.app_context():
             past = date.today() - __import__("datetime").timedelta(days=1)
             txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods, [
+                seed_user, seed_periods_today, [
                     ("106.86", past, False, False),
                     ("249.71", past, False, False),
                     ("105.77", past, False, False),
@@ -603,7 +603,7 @@ class TestTrueUpClearsEntries:
             assert all(e.is_cleared for e in entries)
 
     def test_future_dated_entries_not_cleared(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Entries with entry_date > today must NOT be flipped by true-up."""
         from app.models.transaction_entry import TransactionEntry
@@ -611,7 +611,7 @@ class TestTrueUpClearsEntries:
         with app.app_context():
             future = date.today() + __import__("datetime").timedelta(days=7)
             txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods, [
+                seed_user, seed_periods_today, [
                     ("50.00", future, False, False),
                 ],
             )
@@ -631,7 +631,7 @@ class TestTrueUpClearsEntries:
             assert entry.is_cleared is False
 
     def test_entries_on_non_projected_parent_not_cleared(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Entries on settled (Paid) parents are not touched by true-up.
 
@@ -644,7 +644,7 @@ class TestTrueUpClearsEntries:
         with app.app_context():
             past = date.today() - __import__("datetime").timedelta(days=1)
             txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods, [
+                seed_user, seed_periods_today, [
                     ("100.00", past, False, False),
                 ],
             )
@@ -668,7 +668,7 @@ class TestTrueUpClearsEntries:
             assert entry.is_cleared is False
 
     def test_non_checking_true_up_does_not_clear(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A true-up on a non-checking account does not affect entries.
 
@@ -680,7 +680,7 @@ class TestTrueUpClearsEntries:
         with app.app_context():
             past = date.today() - __import__("datetime").timedelta(days=1)
             txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods, [
+                seed_user, seed_periods_today, [
                     ("100.00", past, False, False),
                 ],
             )
@@ -694,7 +694,7 @@ class TestTrueUpClearsEntries:
                 account_type_id=savings_type.id,
                 name="Savings",
                 current_anchor_balance=Decimal("1000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(savings)
             db.session.commit()
@@ -715,7 +715,7 @@ class TestTrueUpClearsEntries:
             assert entry.is_cleared is False
 
     def test_already_cleared_entries_unchanged(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Entries that are already cleared remain cleared -- true-up is idempotent."""
         from app.models.transaction_entry import TransactionEntry
@@ -723,7 +723,7 @@ class TestTrueUpClearsEntries:
         with app.app_context():
             past = date.today() - __import__("datetime").timedelta(days=1)
             txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods, [
+                seed_user, seed_periods_today, [
                     ("100.00", past, False, True),
                 ],
             )
@@ -1669,7 +1669,7 @@ class TestInterestDispatch:
             assert params is not None
 
     def test_interest_detail_accepts_any_interest_type(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """Interest detail page renders for any has_interest=True type."""
         with app.app_context():
@@ -1679,7 +1679,7 @@ class TestInterestDispatch:
                 name="HSA Detail Test",
                 account_type_id=hsa_type.id,
                 current_anchor_balance=500,
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1701,7 +1701,7 @@ class TestInterestDispatch:
             assert b"does not support interest parameters" in resp.data
 
     def test_has_interest_true_but_no_params_row(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """Interest detail auto-creates params if row missing."""
         with app.app_context():
@@ -1711,7 +1711,7 @@ class TestInterestDispatch:
                 name="HSA No Params",
                 account_type_id=hsa_type.id,
                 current_anchor_balance=100,
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -1851,7 +1851,7 @@ class TestWizardBanner:
     """
 
     def test_wizard_banner_shown_on_hysa_with_setup_param(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """HYSA detail page shows wizard banner when ?setup=1 is present."""
         with app.app_context():
@@ -1863,7 +1863,7 @@ class TestWizardBanner:
                 account_type_id=hysa_type.id,
                 name="Banner HYSA",
                 current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1876,7 +1876,7 @@ class TestWizardBanner:
             assert b"alert-dismissible" in resp.data
 
     def test_wizard_banner_hidden_on_hysa_without_setup_param(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """HYSA detail page does NOT show wizard banner without ?setup=1."""
         with app.app_context():
@@ -1888,7 +1888,7 @@ class TestWizardBanner:
                 account_type_id=hysa_type.id,
                 name="No Banner HYSA",
                 current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1900,7 +1900,7 @@ class TestWizardBanner:
             assert b"Configure the settings below" not in resp.data
 
     def test_wizard_banner_shown_on_investment_with_setup_param(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Investment dashboard shows wizard banner when ?setup=1 is present."""
         with app.app_context():
@@ -1912,7 +1912,7 @@ class TestWizardBanner:
                 account_type_id=k401_type.id,
                 name="Banner 401k",
                 current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1927,7 +1927,7 @@ class TestWizardBanner:
             assert b"alert-dismissible" in resp.data
 
     def test_wizard_banner_hidden_on_investment_without_setup_param(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Investment dashboard does NOT show wizard banner without ?setup=1."""
         with app.app_context():
@@ -1939,7 +1939,7 @@ class TestWizardBanner:
                 account_type_id=k401_type.id,
                 name="No Banner 401k",
                 current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()

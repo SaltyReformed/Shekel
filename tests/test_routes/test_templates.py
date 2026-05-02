@@ -162,7 +162,7 @@ class TestTemplateList:
 class TestTemplateCreate:
     """Tests for GET /templates/new and POST /templates."""
 
-    def test_new_template_form(self, app, auth_client, seed_user, seed_periods):
+    def test_new_template_form(self, app, auth_client, seed_user, seed_periods_today):
         """GET /templates/new renders the creation form."""
         with app.app_context():
             resp = auth_client.get("/templates/new")
@@ -172,7 +172,7 @@ class TestTemplateCreate:
             assert b'name="default_amount"' in resp.data
             assert b'name="recurrence_pattern"' in resp.data
 
-    def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template without recurrence."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -195,7 +195,7 @@ class TestTemplateCreate:
             assert template.default_amount == Decimal("79.99")
             assert template.recurrence_rule_id is None
 
-    def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template with recurrence and generates transactions."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -222,7 +222,7 @@ class TestTemplateCreate:
             assert template.recurrence_rule is not None
 
             # every_period pattern generates 1 transaction per period;
-            # seed_periods creates 10 biweekly periods
+            # seed_periods_today creates 10 biweekly periods
             txns = db.session.query(Transaction).filter_by(
                 template_id=template.id
             ).all()
@@ -292,7 +292,7 @@ class TestTemplateUpdate:
             assert resp.status_code == 200
             assert b"Rent" in resp.data
 
-    def test_update_template_success(self, app, auth_client, seed_user, seed_periods):
+    def test_update_template_success(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id> updates template fields."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -350,7 +350,7 @@ class TestTemplateUpdate:
             assert resp.status_code == 200
             assert b"Recurring transaction not found" in resp.data
 
-    def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods):
+    def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id> flashes warning when recurrence conflict occurs."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -383,7 +383,7 @@ class TestTemplateUpdate:
             assert b"overridden" in resp.data or b"updated" in resp.data
 
     def test_rename_template_propagates_to_all_instances(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Renaming a template must sync every non-deleted instance's name.
 
@@ -434,7 +434,7 @@ class TestTemplateUpdate:
             )
 
     def test_rename_template_overridden_instance_follows_template(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """An is_override=True row must still pick up a template rename.
 
@@ -475,7 +475,7 @@ class TestTemplateUpdate:
             assert reloaded.is_override is True
 
     def test_rename_template_does_not_duplicate_grid_row(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """End-to-end: the old label must not appear in the grid response
         after a rename, and the new label must render as a row header.
@@ -517,7 +517,7 @@ class TestGridRowKeyBuilder:
     """
 
     def test_row_key_collapses_template_instances_with_drifted_names(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Stale txn.name values must not split a template into two rows."""
         from app.routes.grid import _build_row_keys
@@ -566,7 +566,7 @@ class TestGridRowKeyBuilder:
             assert matches[0].display_name == "Apartment Rent"
 
     def test_row_key_keeps_standalone_txns_separate_by_name(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Non-template transactions still dedupe by (category, name)."""
         from app.routes.grid import _build_row_keys
@@ -581,7 +581,7 @@ class TestGridRowKeyBuilder:
             projected = db.session.query(StatusModel).filter_by(
                 name="Projected",
             ).one()
-            period = seed_periods[0]
+            period = seed_periods_today[0]
             account = seed_user["account"]
             scenario = seed_user["scenario"]
 
@@ -628,7 +628,7 @@ class TestGridRowKeyBuilder:
 class TestTemplateArchive:
     """Tests for POST /templates/<id>/archive."""
 
-    def test_archive_and_soft_deletes(self, app, auth_client, seed_user, seed_periods):
+    def test_archive_and_soft_deletes(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id>/archive archives template and soft-deletes projected txns."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -695,7 +695,7 @@ class TestTemplateArchive:
 class TestTemplateUnarchive:
     """Tests for POST /templates/<id>/unarchive."""
 
-    def test_unarchive_restores_transactions(self, app, auth_client, seed_user, seed_periods):
+    def test_unarchive_restores_transactions(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id>/unarchive restores soft-deleted txns."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -725,7 +725,7 @@ class TestTemplateUnarchive:
             assert template.is_active is True
 
             # Transactions should be restored: every_period generates 1 per period,
-            # seed_periods creates 10 biweekly periods
+            # seed_periods_today creates 10 biweekly periods
             active_txns = db.session.query(Transaction).filter_by(
                 template_id=template.id, is_deleted=False,
             ).count()
@@ -750,7 +750,7 @@ class TestTemplateUnarchive:
 class TestPreviewRecurrence:
     """Tests for GET /templates/preview-recurrence."""
 
-    def test_preview_monthly(self, app, auth_client, seed_user, seed_periods):
+    def test_preview_monthly(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for monthly pattern returns occurrence list."""
         with app.app_context():
             monthly = db.session.query(RecurrencePattern).filter_by(
@@ -763,7 +763,7 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"occurrences" in resp.data or b"No matching" in resp.data
 
-    def test_preview_once_pattern(self, app, auth_client, seed_user, seed_periods):
+    def test_preview_once_pattern(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for 'once' pattern returns no-preview message."""
         with app.app_context():
             once = db.session.query(RecurrencePattern).filter_by(
@@ -775,7 +775,7 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
-    def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods):
+    def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for unknown pattern ID returns unknown message."""
         with app.app_context():
             resp = auth_client.get(
@@ -784,14 +784,14 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"Unknown pattern" in resp.data
 
-    def test_preview_no_pattern(self, app, auth_client, seed_user, seed_periods):
+    def test_preview_no_pattern(self, app, auth_client, seed_user, seed_periods_today):
         """Preview with no pattern parameter returns no-preview message."""
         with app.app_context():
             resp = auth_client.get("/templates/preview-recurrence")
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
-    def test_preview_every_period(self, app, auth_client, seed_user, seed_periods):
+    def test_preview_every_period(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for every_period pattern returns occurrence list."""
         with app.app_context():
             every_period = db.session.query(RecurrencePattern).filter_by(
@@ -804,7 +804,7 @@ class TestPreviewRecurrence:
             assert b"occurrences" in resp.data
 
     def test_preview_rejects_other_users_start_period(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
         """Passing another user's start_period_id falls through to own data.
@@ -841,7 +841,7 @@ class TestPreviewRecurrence:
             assert resp.data == baseline_resp.data
 
     def test_preview_with_own_start_period(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Passing own start_period_id works normally (positive regression)."""
         with app.app_context():
@@ -852,14 +852,14 @@ class TestPreviewRecurrence:
                 "/templates/preview-recurrence",
                 query_string={
                     "recurrence_pattern": every_period.id,
-                    "start_period_id": seed_periods[0].id,
+                    "start_period_id": seed_periods_today[0].id,
                 },
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
     def test_preview_nonexistent_start_period_falls_back(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Nonexistent start_period_id falls back to own periods (no 500).
 
@@ -898,7 +898,7 @@ class TestPreviewRecurrence:
 class TestTemplateNegativePaths:
     """Tests for template edge cases, validation gaps, and idempotent operations."""
 
-    def test_archive_already_archived_template(self, app, auth_client, seed_user, seed_periods):
+    def test_archive_already_archived_template(self, app, auth_client, seed_user, seed_periods_today):
         """Archiving an already-archived template is idempotent."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -919,7 +919,7 @@ class TestTemplateNegativePaths:
             # NOTE: archive_template is idempotent -- no guard against
             # archiving an already-inactive template.
 
-    def test_unarchive_already_active_template(self, app, auth_client, seed_user, seed_periods):
+    def test_unarchive_already_active_template(self, app, auth_client, seed_user, seed_periods_today):
         """Unarchiving an already-active template is idempotent."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -1107,7 +1107,7 @@ class TestTemplateNegativePaths:
 class TestTemplateHardDelete:
     """Tests for POST /templates/<id>/hard-delete (permanent deletion)."""
 
-    def test_hard_delete_template_no_history(self, app, auth_client, seed_user, seed_periods):
+    def test_hard_delete_template_no_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-11: Template with only Projected txns is permanently deleted."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -1155,7 +1155,7 @@ class TestTemplateHardDelete:
             assert b"permanently deleted" in resp.data
             assert db.session.get(TransactionTemplate, template_id) is None
 
-    def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods):
+    def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-12: Template with Paid txn is blocked and archived instead."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -1202,7 +1202,7 @@ class TestTemplateHardDelete:
             assert projected_remaining == 0
 
     def test_hard_delete_template_with_history_already_archived(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """C-5A.5-12b: Already-archived template with Paid history stays archived without re-archiving."""
         with app.app_context():
@@ -1237,7 +1237,7 @@ class TestTemplateHardDelete:
             db.session.refresh(template)
             assert template.is_active is False
 
-    def test_hard_delete_template_already_archived(self, app, auth_client, seed_user, seed_periods):
+    def test_hard_delete_template_already_archived(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-13: Pre-archived template with no history is permanently deleted."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -1306,7 +1306,7 @@ class TestTemplateHardDelete:
             assert "Archived (1)" in html
             assert "Archived One" in html
 
-    def test_archive_label_in_flash(self, app, auth_client, seed_user, seed_periods):
+    def test_archive_label_in_flash(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-16: Archive flash message says 'archived' not 'deactivated'."""
         with app.app_context():
             template = _create_template(seed_user, pattern_name="Every Period")
@@ -1333,7 +1333,7 @@ class TestTemplateHardDelete:
 class TestDueDayOfMonth:
     """Tests for due_day_of_month on template create/update."""
 
-    def test_create_template_with_due_day(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template_with_due_day(self, app, auth_client, seed_user, seed_periods_today):
         """POST template with Monthly pattern and due_day_of_month=1."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1357,7 +1357,7 @@ class TestDueDayOfMonth:
             ).one()
             assert template.recurrence_rule.due_day_of_month == 1
 
-    def test_create_template_without_due_day(self, app, auth_client, seed_user, seed_periods):
+    def test_create_template_without_due_day(self, app, auth_client, seed_user, seed_periods_today):
         """POST template with Monthly pattern, no due_day -> None."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1379,7 +1379,7 @@ class TestDueDayOfMonth:
             ).one()
             assert template.recurrence_rule.due_day_of_month is None
 
-    def test_update_template_add_due_day(self, app, auth_client, seed_user, seed_periods):
+    def test_update_template_add_due_day(self, app, auth_client, seed_user, seed_periods_today):
         """Update existing template to add due_day_of_month=15."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1417,7 +1417,7 @@ class TestDueDayOfMonth:
             db.session.refresh(template)
             assert template.recurrence_rule.due_day_of_month == 15
 
-    def test_update_template_remove_due_day(self, app, auth_client, seed_user, seed_periods):
+    def test_update_template_remove_due_day(self, app, auth_client, seed_user, seed_periods_today):
         """Update template to remove due_day_of_month (set to None)."""
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()

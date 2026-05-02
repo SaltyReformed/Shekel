@@ -133,7 +133,7 @@ class TestObligationsSummary:
     """Tests for the GET /obligations page."""
 
     def test_page_renders_with_mixed_templates(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with expense, income, and transfer templates returns 200
         and contains all three section headers and template names.
@@ -171,7 +171,7 @@ class TestObligationsSummary:
         assert "Paycheck" in html
         assert "Savings Transfer" in html
 
-    def test_empty_state(self, auth_client, seed_user, db, seed_periods):
+    def test_empty_state(self, auth_client, seed_user, db, seed_periods_today):
         """GET with no templates shows the empty-state message."""
         resp = auth_client.get("/obligations")
         assert resp.status_code == 200
@@ -196,7 +196,7 @@ class TestMonthlyEquivalents:
     """Tests for correct monthly equivalent calculations."""
 
     def test_biweekly_monthly_equivalent(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """A biweekly $100 expense has monthly equivalent of $216.67.
 
@@ -223,7 +223,7 @@ class TestMonthlyEquivalents:
         assert f"${expected:,.2f}" in html
 
     def test_monthly_equivalent_identity(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """A monthly $500 expense has monthly equivalent of $500.00."""
         user = seed_user["user"]
@@ -242,7 +242,7 @@ class TestMonthlyEquivalents:
         assert "$500.00" in html
 
     def test_annual_monthly_equivalent(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """An annual $1,200 expense has monthly equivalent of $100.00."""
         user = seed_user["user"]
@@ -264,7 +264,7 @@ class TestMonthlyEquivalents:
         assert "$100.00" in html
 
     def test_summary_totals_correct(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Summary totals correctly sum expenses, transfers, and income.
 
@@ -310,7 +310,7 @@ class TestMonthlyEquivalents:
         assert "$716.67" in html    # total outflows
 
     def test_net_positive_green(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Positive net cash flow is shown with text-success class."""
         user = seed_user["user"]
@@ -334,7 +334,7 @@ class TestMonthlyEquivalents:
         assert "text-success" in html
 
     def test_net_negative_red(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Negative net cash flow is shown with text-danger class."""
         user = seed_user["user"]
@@ -362,7 +362,7 @@ class TestObligationsFiltering:
     """Tests for correct inclusion/exclusion of templates."""
 
     def test_inactive_templates_excluded(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """An is_active=False template does not appear."""
         user = seed_user["user"]
@@ -382,7 +382,7 @@ class TestObligationsFiltering:
         assert "Inactive Bill" not in html
 
     def test_non_recurring_templates_excluded(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """A template with no recurrence rule does not appear."""
         user = seed_user["user"]
@@ -407,7 +407,7 @@ class TestObligationsFiltering:
         assert "One-Time Purchase" not in html
 
     def test_expense_group_correct(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """An expense template appears in the expense section."""
         user = seed_user["user"]
@@ -427,7 +427,7 @@ class TestObligationsFiltering:
         assert "Recurring Expenses" in html
 
     def test_income_group_correct(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """An income template appears in the income section."""
         user = seed_user["user"]
@@ -447,7 +447,7 @@ class TestObligationsFiltering:
         assert "Recurring Income" in html
 
     def test_transfer_group_correct(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """A transfer template appears in the transfer section with
         both from and to account names.
@@ -470,7 +470,7 @@ class TestObligationsFiltering:
         assert savings.name in html
 
     def test_frequency_label_displayed(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """The frequency label is shown for each obligation."""
         user = seed_user["user"]
@@ -496,7 +496,7 @@ class TestObligationsIDOR:
     """Tests for ownership isolation."""
 
     def test_only_current_user_templates(
-        self, auth_client, seed_user, second_user, db, seed_periods,
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
     ):
         """Only the authenticated user's templates appear.
 
@@ -537,7 +537,7 @@ class TestObligationsSubtotals:
     """Tests for section-level subtotals."""
 
     def test_expense_section_subtotal(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Two expenses with different frequencies have correct section subtotal.
 
