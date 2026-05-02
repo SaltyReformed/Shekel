@@ -14,6 +14,22 @@ from decimal import Decimal, InvalidOperation
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Adversarial tests use seed_periods (calendar-anchored Jan-May 2026)
+    and exercise route handlers that call ``get_current_period``.
+    Freezing today inside the seed range keeps those routes returning
+    populated grid HTML regardless of wall-clock date, so input-
+    validation assertions ("/grid?periods=10000 still renders") stay
+    meaningful.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
