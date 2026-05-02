@@ -26,6 +26,32 @@ trap entrypoint_failed ERR
 
 echo "=== Shekel Entrypoint ==="
 
+# ── 0. Validate SECRET_KEY shape ─────────────────────────────────
+# Flask's ProdConfig.__init__ also validates SECRET_KEY, but it only
+# fires once Python imports the config -- after entrypoint has already
+# run migrations.  We catch misconfiguration here so the database is
+# never touched under a placeholder key.  The placeholder list below
+# must stay in sync with _KNOWN_DEFAULT_SECRETS in app/config.py.
+# 32 is the minimum length matching _MIN_SECRET_KEY_LENGTH.
+if [ -z "${SECRET_KEY}" ]; then
+    echo "ERROR: SECRET_KEY is not set in the environment." >&2
+    echo "       Generate with: python -c \"import secrets; print(secrets.token_hex(32))\"" >&2
+    echo "       and add SECRET_KEY=<value> to .env before starting the app." >&2
+    exit 1
+fi
+if [ "${#SECRET_KEY}" -lt 32 ]; then
+    echo "ERROR: SECRET_KEY is shorter than 32 characters (got ${#SECRET_KEY})." >&2
+    echo "       Generate a stronger key with: python -c \"import secrets; print(secrets.token_hex(32))\"" >&2
+    exit 1
+fi
+case "${SECRET_KEY}" in
+    dev-only-*|change-me-to-a-random-secret-key|dev-secret-key-not-for-production)
+        echo "ERROR: SECRET_KEY matches a known placeholder." >&2
+        echo "       Replace it with a secure random value before starting the app." >&2
+        exit 1
+        ;;
+esac
+
 # ── 1. Wait for PostgreSQL ──────────────────────────────────────
 echo "Waiting for PostgreSQL..."
 MAX_RETRIES=60

@@ -266,7 +266,11 @@ class TestErrorPages:
     def test_production_debug_false(self, monkeypatch):
         """ProdConfig has DEBUG=False."""
         # Class attributes are set at import time; patch them directly.
-        monkeypatch.setattr(BaseConfig, "SECRET_KEY", "secure-production-key-1234")
+        # 64-char hex key passes the new minimum-length and
+        # placeholder-rejection checks added by F-016/F-110.
+        monkeypatch.setattr(
+            BaseConfig, "SECRET_KEY", "0123456789abcdef" * 4
+        )
         monkeypatch.setattr(
             ProdConfig, "SQLALCHEMY_DATABASE_URI", "postgresql://localhost/shekel"
         )

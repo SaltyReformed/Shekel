@@ -15,11 +15,33 @@ from sqlalchemy.pool import NullPool
 load_dotenv()
 
 
+# Known placeholder SECRET_KEY values that have appeared in this
+# repository's history, .env.example, or docker-compose files.  Any
+# value in this set must be rejected at production startup because it
+# is publicly known and cannot provide cryptographic confidentiality
+# for session cookies or itsdangerous-signed tokens.  See audit
+# findings F-001, F-016, F-110, F-111.
+_KNOWN_DEFAULT_SECRETS = frozenset({
+    "dev-only-change-me-in-production",
+    "change-me-to-a-random-secret-key",
+    "dev-secret-key-not-for-production",
+})
+
+# Minimum acceptable SECRET_KEY length for production.  32 characters
+# matches the output of ``secrets.token_hex(16)`` (16 bytes / 128 bits
+# of entropy) which is the floor recommended by ASVS L2 V6.4.2.  The
+# generation command in .env.example produces a 64-char hex string
+# (32 bytes / 256 bits) which is well above this floor.
+_MIN_SECRET_KEY_LENGTH = 32
+
+
 class BaseConfig:
     """Shared configuration defaults across all environments."""
 
-    # Flask core
-    SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me-in-production")
+    # Flask core.  No fallback default: production must fail closed
+    # when SECRET_KEY is missing.  Dev and test paths set this via
+    # the developer's .env file or, in the test suite, conftest.py.
+    SECRET_KEY = os.getenv("SECRET_KEY")
 
     # MFA -- Fernet key for encrypting TOTP secrets at rest.
     TOTP_ENCRYPTION_KEY = os.getenv("TOTP_ENCRYPTION_KEY")
@@ -128,10 +150,33 @@ class ProdConfig(BaseConfig):
     SESSION_COOKIE_SAMESITE = "Lax"
 
     def __init__(self):
-        """Validate production-critical settings on instantiation."""
-        if not self.SECRET_KEY or self.SECRET_KEY.startswith("dev-only"):
+        """Validate production-critical settings on instantiation.
+
+        Raises:
+            ValueError: If ``SECRET_KEY`` is missing, matches a known
+                placeholder, or is shorter than the minimum acceptable
+                length, or if ``DATABASE_URL`` is missing.  Each branch
+                emits a distinct, actionable error message so the
+                operator knows exactly which secret is misconfigured.
+        """
+        if not self.SECRET_KEY:
             raise ValueError(
-                "SECRET_KEY must be set to a secure random value in production."
+                "SECRET_KEY is required in production. "
+                "Generate with: "
+                "python -c 'import secrets; print(secrets.token_hex(32))'"
+            )
+        if (
+            self.SECRET_KEY in _KNOWN_DEFAULT_SECRETS
+            or self.SECRET_KEY.startswith("dev-only")
+        ):
+            raise ValueError(
+                "SECRET_KEY matches a known placeholder; "
+                "rotate to a secure random value before deploy."
+            )
+        if len(self.SECRET_KEY) < _MIN_SECRET_KEY_LENGTH:
+            raise ValueError(
+                "SECRET_KEY must be at least "
+                f"{_MIN_SECRET_KEY_LENGTH} characters."
             )
         if not self.SQLALCHEMY_DATABASE_URI:
             raise ValueError("DATABASE_URL must be set in production.")

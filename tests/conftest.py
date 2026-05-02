@@ -10,9 +10,29 @@ tables between tests.  This is reliable and avoids the complexity
 of nested-transaction rollback with SQLAlchemy 2.0.
 """
 
-import pytest
+# pylint: disable=wrong-import-position,wrong-import-order
+# Imports below are intentionally ordered so SECRET_KEY is set in the
+# environment BEFORE any ``app`` module is imported.
+
+import os
 from datetime import date
 from decimal import Decimal
+
+# IMPORTANT: SECRET_KEY must be set in the environment BEFORE the
+# ``app`` package is imported, because ``app/config.py`` reads it at
+# class-definition time via ``os.getenv("SECRET_KEY")``.  Production
+# config has no fallback default (audit finding F-016), so without
+# this setdefault Flask sessions in the test suite would fail to
+# sign or verify.  ``setdefault`` so that a developer running pytest
+# with their own real key in the environment is not overridden.
+# The value is intentionally distinct from any placeholder rejected
+# by ProdConfig and is at least 32 characters.
+os.environ.setdefault(
+    "SECRET_KEY",
+    "test-suite-fixed-key-not-used-in-production-do-not-deploy",
+)
+
+import pytest
 
 from app import create_app
 from app.extensions import db as _db

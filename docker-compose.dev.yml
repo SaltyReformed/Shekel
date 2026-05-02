@@ -88,7 +88,11 @@ services:
       FLASK_APP: run.py
       FLASK_ENV: development
       FLASK_DEBUG: "1"
-      SECRET_KEY: dev-secret-key-not-for-production
+      # SECRET_KEY must be set in .env (or shell env) -- no placeholder
+      # default.  Generate with:
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      # The :? syntax fails compose with a clear error if unset.
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (see .env.example)}
       DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/shekel
       DB_HOST: db
       DB_USER: shekel_user

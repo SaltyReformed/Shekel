@@ -26,9 +26,97 @@ directory as the `docker-compose.yml` file (typically `/opt/shekel/.env`).
 ### Rotating SECRET_KEY
 
 1. Generate a new key: `python -c "import secrets; print(secrets.token_hex(32))"`
-2. Update `SECRET_KEY` in `.env`
-3. Restart the app container: `docker compose restart app`
-4. Impact: all active sessions are invalidated; users must re-authenticate
+   The output is a 64-character hex string (256 bits of entropy).  The
+   production config rejects any value shorter than 32 characters or
+   matching a known placeholder.
+2. Update `SECRET_KEY` in `.env`.
+3. Restart the app container: `docker compose restart app`.
+4. Run the global session-invalidation script (see next section) so
+   that any cookies signed under the old key are rejected even if an
+   attacker captured them before the key was rotated.
+5. Impact: all active sessions are invalidated; users must
+   re-authenticate.
+
+### Post-rotation session invalidation
+
+Rotating `SECRET_KEY` makes every previously-issued session cookie
+unverifiable on the new key.  However, any cookie an attacker captured
+before the rotation can still be reused by anyone who learns the
+*old* key (for example, anyone with read access to git history that
+contains a previously-leaked key).  The defense-in-depth control is
+to bump `users.session_invalidated_at` for every row, which causes
+the `load_user` callback in `app/__init__.py` to reject any session
+older than the bump time -- regardless of which key it was signed
+with.
+
+Run after every `SECRET_KEY` rotation, and after any git history
+rewrite that excises a historically-leaked key:
+
+```bash
+docker exec shekel-prod-app python scripts/rotate_sessions.py --confirm
+```
+
+The script bumps `session_invalidated_at` to `now()` for every row
+in `auth.users`.  It is idempotent (repeated runs simply move the
+timestamp forward) and emits a structured log event
+`sessions_invalidated_global` at WARNING level so the audit log
+captures the operation.
+
+The `--confirm` flag is mandatory; running without it prints a usage
+hint and exits with code 1.
+
+#### Rewriting git history to remove a leaked SECRET_KEY
+
+If a `SECRET_KEY` value was committed to git history (for example,
+audit finding F-001), rotating the live key is necessary but not
+sufficient: anyone with access to the repository's object store can
+still extract the historical key from the dangling blob.  The full
+remediation is:
+
+1. **Inventory clones.**  Track every clone of the repository
+   (developer machines, CI caches, audit-branch snapshots, NAS
+   backups).  Each will need to be re-cloned after the rewrite.
+
+2. **Rotate the live key first.**  Follow the `Rotating SECRET_KEY`
+   procedure above.  This minimises the window during which an
+   attacker can use a historical key against current sessions.
+
+3. **Rewrite history.**  Use either tool below.  Both must run
+   against a fresh, clean local clone -- not your working copy:
+
+   - `git filter-repo`:
+     ```bash
+     git clone --mirror <remote-url> shekel.git
+     cd shekel.git
+     # Replace the literal leaked value with a placeholder marker:
+     printf 'OLD_LEAKED_KEY_HERE==>REDACTED\n' > replacements.txt
+     git filter-repo --replace-text replacements.txt
+     ```
+   - BFG Repo-Cleaner:
+     ```bash
+     git clone --mirror <remote-url> shekel.git
+     cd shekel.git
+     bfg --replace-text replacements.txt
+     git reflog expire --expire=now --all
+     git gc --prune=now --aggressive
+     ```
+
+4. **Force-push the rewritten history** to the affected branches.
+   Coordinate with any other contributors first.  The Shekel
+   repository is single-owner, so coordination is trivial.
+
+5. **Run the session-invalidation script** described above so that
+   any cookies signed under the historical key are invalidated even
+   if an attacker preserved them.
+
+6. **Re-clone everywhere.**  Every existing clone (developer machine,
+   CI runner cache, audit-branch snapshot) still has the leaked key
+   in its object store.  Delete each clone and re-clone from the
+   rewritten remote.  Document this in the audit trail.
+
+7. **Install a pre-commit hook** (gitleaks or detect-secrets) so the
+   pattern cannot recur.  This is tracked separately in the audit
+   remediation plan.
 
 ### Rotating TOTP_ENCRYPTION_KEY
 
