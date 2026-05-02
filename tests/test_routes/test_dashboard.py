@@ -92,35 +92,35 @@ class TestDashboardAuth:
 class TestDashboardRendering:
     """Tests for dashboard page rendering."""
 
-    def test_root_serves_dashboard(self, app, auth_client, seed_user, seed_periods):
+    def test_root_serves_dashboard(self, app, auth_client, seed_user, seed_periods_today):
         """GET / returns 200 with dashboard content."""
         with app.app_context():
             resp = auth_client.get("/")
             assert resp.status_code == 200
             assert b"Upcoming Bills" in resp.data
 
-    def test_dashboard_url_still_works(self, app, auth_client, seed_user, seed_periods):
+    def test_dashboard_url_still_works(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard returns 200 with same dashboard content."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b"Upcoming Bills" in resp.data
 
-    def test_root_does_not_contain_grid(self, app, auth_client, seed_user, seed_periods):
+    def test_root_does_not_contain_grid(self, app, auth_client, seed_user, seed_periods_today):
         """GET / does NOT contain grid-specific content."""
         with app.app_context():
             resp = auth_client.get("/")
             assert resp.status_code == 200
             assert b"grid-table" not in resp.data
 
-    def test_dashboard_renders(self, app, auth_client, seed_user, seed_periods):
+    def test_dashboard_renders(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard returns 200 with section headings."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b"Upcoming Bills" in resp.data
 
-    def test_dashboard_all_sections_present(self, app, auth_client, seed_full_user_data):
+    def test_dashboard_all_sections_present(self, app, auth_client, seed_full_user_data_today):
         """Dashboard with rich data contains all 7 sections."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
@@ -133,7 +133,7 @@ class TestDashboardRendering:
             assert b"Savings Goals" in html
             assert b"Spending Comparison" in html
 
-    def test_dashboard_has_grid_link(self, app, auth_client, seed_user, seed_periods):
+    def test_dashboard_has_grid_link(self, app, auth_client, seed_user, seed_periods_today):
         """Dashboard has an 'Open Grid' link."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
@@ -147,12 +147,10 @@ class TestDashboardRendering:
 class TestBillsDisplay:
     """Tests for bills section rendering."""
 
-    def test_dashboard_shows_bills(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_shows_bills(self, app, auth_client, seed_user, seed_periods_today, db):
         """Projected expense in current period appears in bills."""
         with app.app_context():
             cur = pay_period_service.get_current_period(seed_user["user"].id)
-            if cur is None:
-                cur = seed_periods[0]
             _add_txn(
                 db.session, seed_user, cur,
                 "Rent Payment", "1200.00",
@@ -164,21 +162,19 @@ class TestBillsDisplay:
             assert resp.status_code == 200
             assert b"Rent Payment" in resp.data
 
-    def test_dashboard_hides_paid_bills(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_hides_paid_bills(self, app, auth_client, seed_user, seed_periods_today, db):
         """Settled expense NOT in upcoming bills list.
 
         The bill must be placed in the CURRENT period (the period the
         dashboard window includes); otherwise the bill is filtered out
         by the period window rather than the status filter, and the
         test would silently pass without actually exercising the
-        Paid-status exclusion.  Falling back to seed_periods[0] when
-        today is outside the seeded range mirrors the production
-        graceful-degradation path.
+        Paid-status exclusion.  seed_periods_today guarantees that
+        ``get_current_period`` returns a real period, so no fallback
+        is needed.
         """
         with app.app_context():
             cur = pay_period_service.get_current_period(seed_user["user"].id)
-            if cur is None:
-                cur = seed_periods[0]
             _add_txn(
                 db.session, seed_user, cur,
                 "Already Paid", "500.00",
@@ -197,12 +193,10 @@ class TestBillsDisplay:
             # mark-paid buttons removed.
             assert "Already Paid" not in html or "mark-paid-btn" not in html
 
-    def test_dashboard_bills_sorted(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_bills_sorted(self, app, auth_client, seed_user, seed_periods_today, db):
         """Bills sorted by due_date ascending."""
         with app.app_context():
             cur = pay_period_service.get_current_period(seed_user["user"].id)
-            if cur is None:
-                cur = seed_periods[0]
             _add_txn(db.session, seed_user, cur,
                      "Late Bill", "100.00",
                      due_date=cur.start_date + timedelta(days=10))
@@ -224,11 +218,11 @@ class TestBillsDisplay:
 class TestMarkPaid:
     """Tests for the mark-paid endpoint."""
 
-    def test_mark_paid(self, app, auth_client, seed_user, seed_periods, db):
+    def test_mark_paid(self, app, auth_client, seed_user, seed_periods_today, db):
         """POST mark-paid changes transaction status to settled."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Test Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -244,11 +238,11 @@ class TestMarkPaid:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert txn.status_id == done_id
 
-    def test_mark_paid_with_actual(self, app, auth_client, seed_user, seed_periods, db):
+    def test_mark_paid_with_actual(self, app, auth_client, seed_user, seed_periods_today, db):
         """POST with actual_amount saves the actual amount."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -264,11 +258,11 @@ class TestMarkPaid:
             db.session.refresh(txn)
             assert txn.actual_amount == Decimal("450.00")
 
-    def test_mark_paid_returns_paid_row(self, app, auth_client, seed_user, seed_periods, db):
+    def test_mark_paid_returns_paid_row(self, app, auth_client, seed_user, seed_periods_today, db):
         """POST returns HTML with paid visual state."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -281,11 +275,11 @@ class TestMarkPaid:
             assert resp.status_code == 200
             assert b"bill-row--paid" in resp.data
 
-    def test_mark_paid_htmx_trigger(self, app, auth_client, seed_user, seed_periods, db):
+    def test_mark_paid_htmx_trigger(self, app, auth_client, seed_user, seed_periods_today, db):
         """POST sets HX-Trigger: dashboardRefresh header."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -297,11 +291,11 @@ class TestMarkPaid:
             )
             assert "dashboardRefresh" in resp.headers.get("HX-Trigger", "")
 
-    def test_mark_paid_sets_paid_at(self, app, auth_client, seed_user, seed_periods, db):
+    def test_mark_paid_sets_paid_at(self, app, auth_client, seed_user, seed_periods_today, db):
         """After mark-paid, txn.paid_at is not None."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -339,11 +333,11 @@ class TestMarkPaid:
             )
             assert resp.status_code == 404
 
-    def test_mark_paid_requires_auth(self, app, client, seed_user, seed_periods, db):
+    def test_mark_paid_requires_auth(self, app, client, seed_user, seed_periods_today, db):
         """Unauthenticated POST -> 302 to login."""
         with app.app_context():
             txn = _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, seed_periods_today[0],
                 "Bill", "500.00",
                 due_date=date(2026, 1, 5),
             )
@@ -360,7 +354,7 @@ class TestMarkPaid:
 class TestSectionRefresh:
     """Tests for HTMX section partials."""
 
-    def test_bills_section_htmx(self, app, auth_client, seed_user, seed_periods):
+    def test_bills_section_htmx(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard/bills with HX-Request -> 200."""
         with app.app_context():
             resp = auth_client.get(
@@ -369,7 +363,7 @@ class TestSectionRefresh:
             )
             assert resp.status_code == 200
 
-    def test_balance_section_htmx(self, app, auth_client, seed_user, seed_periods):
+    def test_balance_section_htmx(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard/balance with HX-Request -> 200."""
         with app.app_context():
             resp = auth_client.get(
@@ -378,14 +372,14 @@ class TestSectionRefresh:
             )
             assert resp.status_code == 200
 
-    def test_bills_section_no_htmx_redirects(self, app, auth_client, seed_user, seed_periods):
+    def test_bills_section_no_htmx_redirects(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard/bills without HX-Request -> 302 to /dashboard."""
         with app.app_context():
             resp = auth_client.get("/dashboard/bills")
             assert resp.status_code == 302
             assert "/dashboard" in resp.headers["Location"]
 
-    def test_balance_section_no_htmx_redirects(self, app, auth_client, seed_user, seed_periods):
+    def test_balance_section_no_htmx_redirects(self, app, auth_client, seed_user, seed_periods_today):
         """GET /dashboard/balance without HX-Request -> 302."""
         with app.app_context():
             resp = auth_client.get("/dashboard/balance")
@@ -405,12 +399,12 @@ class TestSectionRefresh:
 class TestAlerts:
     """Tests for dashboard alerts."""
 
-    def test_dashboard_stale_anchor_alert(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_stale_anchor_alert(self, app, auth_client, seed_user, seed_periods_today, db):
         """Stale anchor (>14 days) shows alert on dashboard."""
         with app.app_context():
             _add_anchor_history(
                 db.session, seed_user["account"],
-                seed_periods[0], "1000.00", days_ago=20,
+                seed_periods_today[0], "1000.00", days_ago=20,
             )
             db.session.commit()
 
@@ -418,12 +412,12 @@ class TestAlerts:
             assert resp.status_code == 200
             assert b"updated" in resp.data or b"days" in resp.data
 
-    def test_dashboard_no_alerts(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_no_alerts(self, app, auth_client, seed_user, seed_periods_today, db):
         """Fresh anchor -> no alert indicators."""
         with app.app_context():
             _add_anchor_history(
                 db.session, seed_user["account"],
-                seed_periods[0], "5000.00", days_ago=1,
+                seed_periods_today[0], "5000.00", days_ago=1,
             )
             db.session.commit()
 
@@ -439,19 +433,19 @@ class TestAlerts:
 class TestOtherSections:
     """Tests for savings goals, payday, and spending comparison sections."""
 
-    def test_dashboard_savings_goals(self, app, auth_client, seed_full_user_data, db):
+    def test_dashboard_savings_goals(self, app, auth_client, seed_full_user_data_today, db):
         """Active savings goal visible on dashboard."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b"Emergency Fund" in resp.data
 
-    def test_dashboard_spending_comparison(self, app, auth_client, seed_user, seed_periods, db):
+    def test_dashboard_spending_comparison(self, app, auth_client, seed_user, seed_periods_today, db):
         """Spending comparison amounts visible when periods have data."""
         with app.app_context():
             cur = pay_period_service.get_current_period(seed_user["user"].id)
             if cur is None:
-                cur = seed_periods[0]
+                cur = seed_periods_today[0]
             # Find prior period.
             all_p = pay_period_service.get_all_periods(seed_user["user"].id)
             prior = None
@@ -477,7 +471,7 @@ class TestOtherSections:
             assert resp.status_code == 200
             assert b"800.00" in resp.data
 
-    def test_dashboard_payday_info(self, app, auth_client, seed_user, seed_periods):
+    def test_dashboard_payday_info(self, app, auth_client, seed_user, seed_periods_today):
         """Payday section shows days until next pay when periods exist."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
@@ -492,21 +486,21 @@ class TestOtherSections:
 class TestNavBar:
     """Tests for nav bar after route swap."""
 
-    def test_nav_has_dashboard_link(self, app, auth_client, seed_user, seed_periods):
+    def test_nav_has_dashboard_link(self, app, auth_client, seed_user, seed_periods_today):
         """Nav bar on grid page contains 'Dashboard' link."""
         with app.app_context():
             resp = auth_client.get("/grid")
             assert resp.status_code == 200
             assert b"Dashboard" in resp.data
 
-    def test_nav_budget_points_to_grid(self, app, auth_client, seed_user, seed_periods):
+    def test_nav_budget_points_to_grid(self, app, auth_client, seed_user, seed_periods_today):
         """Budget nav link href contains '/grid'."""
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b'href="/grid"' in resp.data
 
-    def test_nav_dashboard_active_on_root(self, app, auth_client, seed_user, seed_periods):
+    def test_nav_dashboard_active_on_root(self, app, auth_client, seed_user, seed_periods_today):
         """Dashboard nav item is active when on /."""
         with app.app_context():
             resp = auth_client.get("/")
@@ -517,14 +511,14 @@ class TestNavBar:
             assert 'class="nav-link active" href="/"' in html or \
                    'class="nav-link active" href="/dashboard"' in html
 
-    def test_nav_budget_active_on_grid(self, app, auth_client, seed_user, seed_periods):
+    def test_nav_budget_active_on_grid(self, app, auth_client, seed_user, seed_periods_today):
         """Budget nav item is active when on /grid."""
         with app.app_context():
             resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert 'class="nav-link active" href="/grid"' in html
 
-    def test_no_redirect_loop(self, app, auth_client, seed_user, seed_periods):
+    def test_no_redirect_loop(self, app, auth_client, seed_user, seed_periods_today):
         """GET / and GET /dashboard both return 200, no redirect loops."""
         with app.app_context():
             resp1 = auth_client.get("/")

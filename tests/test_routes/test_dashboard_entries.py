@@ -31,16 +31,15 @@ from app.services import dashboard_service, pay_period_service
 # -- Helpers ---------------------------------------------------------
 
 
-def _current_period_for(user_id, seed_periods):
-    """Return the current period for the user, falling back to seed_periods[0].
+def _current_period_for(user_id, seed_periods_today):
+    """Return the current period for the user.
 
-    Mirrors the pattern used in test_dashboard.py so tests work even
-    when today's date does not fall inside a seed_periods entry.
+    seed_periods_today guarantees that today falls in period 4, so
+    ``get_current_period`` always returns a real period.  No fallback
+    needed.
     """
-    period = pay_period_service.get_current_period(user_id)
-    if period is None:
-        period = seed_periods[0]
-    return period
+    # pylint: disable=unused-argument
+    return pay_period_service.get_current_period(user_id)
 
 
 def _create_tracked_txn_in_period(
@@ -143,14 +142,14 @@ class TestDashboardEntryProgressDisplay:
     """Route tests for the progress display on the dashboard bills section."""
 
     def test_tracked_with_entries_shows_progress(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tracked + projected + entries: bill row shows '$X / $Y' format.
 
         Arithmetic: 150 + 80 debit + 100 credit = 330 total on 500 budget.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -165,11 +164,11 @@ class TestDashboardEntryProgressDisplay:
             assert "$330.00 / $500.00" in html
 
     def test_tracked_with_no_entries_shows_standard(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tracked txn with no entries: standard amount (no progress)."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             _create_tracked_txn_in_period(
                 seed_user, period, name="Groceries",
                 estimated=Decimal("500.00"),
@@ -185,11 +184,11 @@ class TestDashboardEntryProgressDisplay:
             assert " / $500.00" not in html
 
     def test_non_tracked_shows_standard_regression(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Non-tracked txn: standard amount unchanged (regression)."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             _create_plain_txn_in_period(
                 seed_user, period, name="Rent",
                 estimated=Decimal("1200.00"),
@@ -204,14 +203,14 @@ class TestDashboardEntryProgressDisplay:
             assert " / $1,200.00" not in html
 
     def test_tracked_over_budget_uses_text_danger(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tracked txn over budget: progress span has text-danger styling.
 
         Arithmetic: 300 + 250 = 550 spent on 500 budget, 50 over.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -227,11 +226,11 @@ class TestDashboardEntryProgressDisplay:
             assert "text-danger fw-semibold" in html
 
     def test_tracked_under_budget_no_text_danger(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tracked txn under budget: progress span does NOT use text-danger."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -246,11 +245,11 @@ class TestDashboardEntryProgressDisplay:
             assert "text-danger fw-semibold" not in html
 
     def test_tracked_credit_only_entries_show_progress(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tracked txn with only credit entries: progress uses credit sum."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -263,14 +262,14 @@ class TestDashboardEntryProgressDisplay:
             assert "$75.00 / $500.00" in html
 
     def test_progress_title_tooltip_contains_remaining_and_count(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Progress span has a title tooltip with remaining and entry count.
 
         Arithmetic: 200 spent on 500 budget, 300 remaining, 2 entries.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -293,14 +292,14 @@ class TestDashboardServiceEntryFields:
     """Tests the entry progress fields on the bill dict from the service."""
 
     def test_bill_dict_entry_fields_for_tracked_with_entries(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Bill dict has correct entry fields for tracked txn with entries.
 
         Arithmetic: 150 + 80 debit + 100 credit = 330 total, remaining 170.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -324,11 +323,11 @@ class TestDashboardServiceEntryFields:
             assert bill["entry_over_budget"] is False
 
     def test_bill_dict_entry_fields_tracked_no_entries(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Tracked txn without entries has is_tracked=True but null progress."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -347,11 +346,11 @@ class TestDashboardServiceEntryFields:
             assert bill["entry_over_budget"] is False
 
     def test_bill_dict_entry_fields_non_tracked(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Non-tracked txn has is_tracked=False and null progress fields."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn = _create_plain_txn_in_period(
                 seed_user, period, name="Rent",
                 estimated=Decimal("1200.00"),
@@ -371,14 +370,14 @@ class TestDashboardServiceEntryFields:
             assert bill["entry_over_budget"] is False
 
     def test_bill_dict_over_budget_flag_and_negative_remaining(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Tracked over-budget: entry_over_budget=True, remaining is negative.
 
         Arithmetic: single entry of 550 on 500 budget -> remaining -50.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -396,14 +395,14 @@ class TestDashboardServiceEntryFields:
             assert bill["entry_over_budget"] is True
 
     def test_bill_dict_exact_at_budget_not_over(
-        self, app, seed_user, seed_periods,
+        self, app, seed_user, seed_periods_today,
     ):
         """Tracked txn with entries summing exactly to budget: not over.
 
         Arithmetic: 200 + 300 = 500 on 500 budget -> remaining 0, not over.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -429,11 +428,11 @@ class TestDashboardRegressionWithEntries:
     """Regression tests for dashboard behavior with entry-capable transactions."""
 
     def test_dashboard_loads_no_tracked_transactions(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Dashboard loads when only non-tracked transactions exist."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             _create_plain_txn_in_period(seed_user, period, name="Rent")
             db.session.commit()
 
@@ -443,11 +442,11 @@ class TestDashboardRegressionWithEntries:
             assert b"Upcoming Bills" in resp.data
 
     def test_dashboard_loads_tracked_with_no_entries(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Dashboard loads when a tracked txn exists but has no entries."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -461,11 +460,11 @@ class TestDashboardRegressionWithEntries:
             assert " / $500.00" not in html
 
     def test_dashboard_mixed_tracked_and_plain_bills(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Dashboard renders tracked and plain bills side-by-side correctly."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             tracked, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -487,11 +486,11 @@ class TestDashboardRegressionWithEntries:
             assert " / $1,200.00" not in html
 
     def test_dashboard_htmx_bills_refresh_shows_progress(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """HTMX bills-section partial renders progress for tracked txns."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -507,7 +506,7 @@ class TestDashboardRegressionWithEntries:
             assert "$125.50 / $500.00" in html
 
     def test_dashboard_balance_info_present_with_tracked_entries(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Balance and runway section still renders when tracked entries exist.
 
@@ -517,7 +516,7 @@ class TestDashboardRegressionWithEntries:
         test_balance_calculator_entries.py.
         """
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
@@ -539,11 +538,11 @@ class TestMarkPaidWithTrackedBill:
     """Tests that mark_paid handles tracked transactions correctly."""
 
     def test_mark_paid_tracked_returns_paid_row_without_progress(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Mark-paid on a tracked bill returns a paid row with no progress."""
         with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods)
+            period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
                 seed_user, period, estimated=Decimal("500.00"),
             )
