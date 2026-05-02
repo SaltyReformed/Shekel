@@ -15,7 +15,7 @@ of nested-transaction rollback with SQLAlchemy 2.0.
 # environment BEFORE any ``app`` module is imported.
 
 import os
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 # IMPORTANT: SECRET_KEY must be set in the environment BEFORE the
@@ -351,6 +351,55 @@ def seed_periods(app, db, seed_user):
     return periods
 
 
+def _today_relative_start_date():
+    """Return start_date that places today in period 4 of a 10-period biweekly run.
+
+    Period 4 is the middle of a 10-period window, leaving 4 historical
+    periods and 5 future periods.  The start is aligned to the most
+    recent Monday so period boundaries fall on weekdays consistently.
+    Used by ``seed_periods_today``-style fixtures so that
+    ``pay_period_service.get_current_period`` always returns a real
+    period regardless of the wall-clock date.
+    """
+    today = date.today()
+    return today - timedelta(days=today.weekday() + 4 * 14)
+
+
+@pytest.fixture()
+def seed_periods_today(app, db, seed_user):
+    """Generate 10 biweekly pay periods so today falls in period 4.
+
+    Use this fixture when the test exercises a code path that calls
+    ``pay_period_service.get_current_period()`` (directly or via a
+    route handler).  Use the regular ``seed_periods`` fixture when the
+    test asserts on specific calendar dates (due_date filters,
+    year-end summaries for tax_year=2026, loan origination alignment).
+
+    A test must use one or the other, never both -- they would write
+    overlapping pay_periods rows for the same user.
+
+    Returns:
+        List of PayPeriod objects, ordered by period_index.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_user["user"].id,
+        start_date=_today_relative_start_date(),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.flush()
+
+    # Set the anchor period to the first period so account-level
+    # projections start from a valid period reference.
+    account = seed_user["account"]
+    account.current_anchor_period_id = periods[0].id
+    db.session.commit()
+
+    return periods
+
+
 @pytest.fixture()
 def auth_client(app, db, client, seed_user):
     """Provide an authenticated test client.
@@ -573,13 +622,17 @@ def second_auth_client(app, db, seed_second_user):
     return second_client
 
 
-@pytest.fixture()
-def seed_full_user_data(app, db, seed_user, seed_periods):
-    """Create a rich dataset for User A (the primary test user).
+def _build_full_user_data(db, seed_user, periods):
+    """Build the rich-dataset payload shared by seed_full_user_data variants.
 
-    Includes transaction template, transaction, savings goal, savings
-    account, transfer template, and salary profile. All objects have
-    distinguishable names and amounts for use in isolation testing.
+    Extracted so both ``seed_full_user_data`` (calendar-anchored) and
+    ``seed_full_user_data_today`` (today-relative) can share a single
+    body and only differ in which ``periods`` fixture they consume.
+
+    Args:
+        db:        SQLAlchemy db extension (the test ``db`` fixture).
+        seed_user: dict from the ``seed_user`` fixture.
+        periods:   List of PayPeriod objects from a periods fixture.
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,
@@ -589,7 +642,6 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
     user = seed_user["user"]
     account = seed_user["account"]
     scenario = seed_user["scenario"]
-    periods = seed_periods
 
     # Look up reference data.
     every_period = (
@@ -696,6 +748,43 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
         "transfer_template": transfer_tpl,
         "salary_profile": salary_profile,
     }
+
+
+@pytest.fixture()
+def seed_full_user_data(app, db, seed_user, seed_periods):
+    """Create a rich dataset for User A (the primary test user).
+
+    Includes transaction template, transaction, savings goal, savings
+    account, transfer template, and salary profile. All objects have
+    distinguishable names and amounts for use in isolation testing.
+
+    Uses the calendar-anchored ``seed_periods`` fixture, so transactions
+    fall in calendar 2026.  Use ``seed_full_user_data_today`` instead
+    when the test exercises a route that calls ``get_current_period``.
+
+    Returns:
+        dict merging seed_user keys plus: periods, template, transaction,
+        savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    return _build_full_user_data(db, seed_user, seed_periods)
+
+
+@pytest.fixture()
+def seed_full_user_data_today(app, db, seed_user, seed_periods_today):
+    """Today-relative variant of seed_full_user_data.
+
+    Identical payload to ``seed_full_user_data`` except the periods
+    are anchored so today falls in period 4.  Use when the test
+    exercises a route that internally calls
+    ``pay_period_service.get_current_period`` (e.g. /dashboard).
+
+    Returns:
+        dict merging seed_user keys plus: periods, template, transaction,
+        savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    return _build_full_user_data(db, seed_user, seed_periods_today)
 
 
 @pytest.fixture()
