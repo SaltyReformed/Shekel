@@ -20,11 +20,13 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_service
 
+from tests._test_helpers import freeze_today
+
 
 class TestGridView:
     """Tests for the main grid page at /."""
 
-    def test_grid_loads_with_periods(self, app, auth_client, seed_user, seed_periods):
+    def test_grid_loads_with_periods(self, app, auth_client, seed_user, seed_periods_today):
         """GET / renders the budget grid with pay period columns."""
         with app.app_context():
             response = auth_client.get("/grid")
@@ -40,15 +42,24 @@ class TestGridView:
             assert response.status_code == 200
             assert b"No Pay Periods" in response.data
 
-    def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods):
+    def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods_today):
         """GET / shows the resolved account name in the header."""
         with app.app_context():
             response = auth_client.get("/grid")
             assert response.status_code == 200
             assert b"Checking Balance" in response.data
 
-    def test_grid_period_controls(self, app, auth_client, seed_user, seed_periods):
-        """Grid respects the periods query parameter."""
+    def test_grid_period_controls(
+        self, app, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """Grid respects the periods query parameter.
+
+        Asserts the literal "01/02" rendered in the header, which is
+        the start of seed_periods[0] (2026-01-02).  Uses the calendar-
+        anchored seed_periods + freeze_today to keep the assertion
+        stable regardless of wall-clock date.
+        """
+        freeze_today(monkeypatch, date(2026, 1, 5))
         with app.app_context():
             response = auth_client.get("/grid?periods=3")
             assert response.status_code == 200
@@ -92,34 +103,35 @@ class TestGridRowScoping:
         db.session.flush()
         return txn
 
-    def _visible_period(self, seed_user, seed_periods):
+    def _visible_period(self, seed_user, seed_periods_today):
         """Return a period that falls in the default visible window.
 
-        The grid starts at the current period; seed_periods places
-        period 7 around today's date (2026-04-14).  Fall back to the
-        anchor period if we cannot identify a current period.
+        The grid starts at the current period; seed_periods_today places
+        period 4 around today's date so get_current_period always
+        returns a valid period.  No fallback is needed.
         """
-        current = pay_period_service.get_current_period(
+        # pylint: disable=unused-argument
+        return pay_period_service.get_current_period(
             seed_user["user"].id,
         )
-        return current or seed_periods[0]
 
-    def _hidden_period(self, seed_user, seed_periods):
+    def _hidden_period(self, seed_user, seed_periods_today):
         """Return a period that is NOT in the default visible window.
 
-        The anchor period sits at seed_periods[0] (2026-01-02), well
-        before today (2026-04-14).  With ``grid_default_periods=6``
-        the visible window starts at the current period, so the
-        anchor is historical and hidden in compact view.
+        The anchor period sits at ``seed_periods_today[0]``, ~8 weeks
+        before today.  With ``grid_default_periods=6`` the visible
+        window starts at the current period, so the anchor is
+        historical and hidden in compact view.
         """
-        return seed_periods[0]
+        # pylint: disable=unused-argument
+        return seed_periods_today[0]
 
     def test_compact_view_hides_oneoff_outside_visible_window(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A one-off in a hidden period must not render its row label."""
         with app.app_context():
-            hidden = self._hidden_period(seed_user, seed_periods)
+            hidden = self._hidden_period(seed_user, seed_periods_today)
             self._make_oneoff(
                 seed_user, hidden, name="HIDDEN_FAR_AWAY_BILL",
             )
@@ -130,11 +142,11 @@ class TestGridRowScoping:
             assert b"HIDDEN_FAR_AWAY_BILL" not in resp.data
 
     def test_compact_view_shows_oneoff_inside_visible_window(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A one-off in the visible window must render its row label."""
         with app.app_context():
-            visible = self._visible_period(seed_user, seed_periods)
+            visible = self._visible_period(seed_user, seed_periods_today)
             self._make_oneoff(
                 seed_user, visible, name="VISIBLE_NEARBY_BILL",
             )
@@ -145,11 +157,11 @@ class TestGridRowScoping:
             assert b"VISIBLE_NEARBY_BILL" in resp.data
 
     def test_show_all_reveals_oneoff_outside_visible_window(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """?show_all=1 must render rows from the full forward projection."""
         with app.app_context():
-            hidden = self._hidden_period(seed_user, seed_periods)
+            hidden = self._hidden_period(seed_user, seed_periods_today)
             self._make_oneoff(
                 seed_user, hidden, name="FAR_REVEALED_BY_SHOW_ALL",
             )
@@ -160,7 +172,7 @@ class TestGridRowScoping:
             assert b"FAR_REVEALED_BY_SHOW_ALL" in resp.data
 
     def test_compact_toggle_button_defaults_to_show_all_link(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The toggle button in compact view must link to show_all=1."""
         with app.app_context():
@@ -170,7 +182,7 @@ class TestGridRowScoping:
             assert b"All Rows" in resp.data
 
     def test_show_all_toggle_button_links_back_to_compact(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """When show_all is active, the button must link back without it."""
         with app.app_context():
@@ -179,7 +191,7 @@ class TestGridRowScoping:
             assert b"Compact" in resp.data
 
     def test_scoping_does_not_change_visible_subtotals(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Adding a hidden-period txn must not shift any visible subtotal.
 
@@ -189,7 +201,7 @@ class TestGridRowScoping:
         """
         with app.app_context():
             baseline = auth_client.get("/grid").data
-            hidden = self._hidden_period(seed_user, seed_periods)
+            hidden = self._hidden_period(seed_user, seed_periods_today)
             self._make_oneoff(
                 seed_user, hidden, name="HIDDEN_SUBTOTAL_PROBE",
                 amount="999.00",
@@ -211,7 +223,7 @@ class TestGridRowScoping:
 class TestBalanceRow:
     """Tests for GET /grid/balance-row HTMX partial."""
 
-    def test_balance_row_returns_partial(self, app, auth_client, seed_user, seed_periods):
+    def test_balance_row_returns_partial(self, app, auth_client, seed_user, seed_periods_today):
         """GET /grid/balance-row returns recalculated balance HTML partial."""
         with app.app_context():
             resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
@@ -228,7 +240,7 @@ class TestBalanceRow:
             assert resp.status_code == 204
             assert resp.data == b""
 
-    def test_balance_row_custom_offset(self, app, auth_client, seed_user, seed_periods):
+    def test_balance_row_custom_offset(self, app, auth_client, seed_user, seed_periods_today):
         """GET /grid/balance-row with offset shifts the visible window."""
         with app.app_context():
             resp = auth_client.get("/grid/balance-row?periods=3&offset=2")
@@ -236,8 +248,16 @@ class TestBalanceRow:
             assert b"Projected End Balance" in resp.data
             assert b"Total Expenses" not in resp.data
 
-    def test_grid_periods_large_value(self, app, auth_client, seed_user, seed_periods):
-        """GET / with periods larger than available still renders."""
+    def test_grid_periods_large_value(
+        self, app, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """GET / with periods larger than available still renders.
+
+        Asserts the literal "01/02" header (start of seed_periods[0]),
+        so uses the calendar-anchored seed_periods fixture and freezes
+        today inside the period range.
+        """
+        freeze_today(monkeypatch, date(2026, 1, 5))
         with app.app_context():
             # Request 100 periods when only 10 exist -- should render what's available.
             resp = auth_client.get("/grid?periods=100")
@@ -249,13 +269,13 @@ class TestBalanceRow:
 class TestTransactionCRUD:
     """Tests for transaction create, update, delete, and status changes."""
 
-    def _create_test_txn(self, seed_user, seed_periods):
+    def _create_test_txn(self, seed_user, seed_periods_today):
         """Helper: create and return a projected expense."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
             status_id=projected.id,
@@ -268,7 +288,7 @@ class TestTransactionCRUD:
         db.session.commit()
         return txn
 
-    def test_create_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions creates a new ad-hoc transaction."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -276,7 +296,7 @@ class TestTransactionCRUD:
             response = auth_client.post("/transactions", data={
                 "name": "New Expense",
                 "estimated_amount": "99.99",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
@@ -290,14 +310,14 @@ class TestTransactionCRUD:
                 scenario_id=seed_user["scenario"].id,
             ).one()
             assert txn.estimated_amount == Decimal("99.99")
-            assert txn.pay_period_id == seed_periods[0].id
+            assert txn.pay_period_id == seed_periods_today[0].id
             assert txn.category_id == seed_user["categories"]["Groceries"].id
             assert txn.status.name == "Projected"
 
-    def test_update_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_update_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transactions/<id> updates fields."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
@@ -306,10 +326,10 @@ class TestTransactionCRUD:
             assert response.status_code == 200
             assert b"200" in response.data
 
-    def test_mark_expense_done(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_expense_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets status to done for expenses."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             response = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
@@ -321,14 +341,14 @@ class TestTransactionCRUD:
             assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("120.00")
 
-    def test_mark_income_received(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_income_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets status to received for income."""
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=projected.id,
@@ -349,10 +369,10 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.status.name == "Received"
 
-    def test_soft_delete_template_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_soft_delete_template_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/<id> soft-deletes template-linked items."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             # Simulate template linkage.
             from app.models.transaction_template import TransactionTemplate
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -375,10 +395,10 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.is_deleted is True
 
-    def test_hard_delete_adhoc_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_hard_delete_adhoc_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/<id> hard-deletes ad-hoc (no template) items."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
 
             response = auth_client.delete(f"/transactions/{txn_id}")
@@ -387,10 +407,10 @@ class TestTransactionCRUD:
             # Ad-hoc transaction should be fully deleted.
             assert db.session.get(Transaction, txn_id) is None
 
-    def test_mark_done_without_actual_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_done_without_actual_amount(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done without actual_amount sets status only."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert response.status_code == 200
@@ -399,10 +419,10 @@ class TestTransactionCRUD:
             assert txn.status.name == "Paid"
             assert txn.actual_amount is None
 
-    def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/cancel sets status to cancelled."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             response = auth_client.post(f"/transactions/{txn.id}/cancel")
             assert response.status_code == 200
@@ -411,10 +431,10 @@ class TestTransactionCRUD:
             assert txn.status.name == "Cancelled"
             assert txn.effective_amount == Decimal("0")
 
-    def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-credit creates payback in next period."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-credit")
             assert response.status_code == 200
@@ -425,19 +445,19 @@ class TestTransactionCRUD:
             # A payback transaction should exist in the next period.
             payback = db.session.query(Transaction).filter(
                 Transaction.name.like("%Payback%"),
-                Transaction.pay_period_id == seed_periods[1].id,
+                Transaction.pay_period_id == seed_periods_today[1].id,
             ).first()
             assert payback is not None, "Payback transaction was not created"
             assert payback.name == "CC Payback: Test Expense"
             assert payback.estimated_amount == Decimal("123.45")
             assert payback.status.name == "Projected"
-            assert payback.pay_period_id == seed_periods[1].id
+            assert payback.pay_period_id == seed_periods_today[1].id
             assert payback.credit_payback_for_id == txn.id
 
-    def test_unmark_credit_reverts_and_deletes_payback(self, app, auth_client, seed_user, seed_periods):
+    def test_unmark_credit_reverts_and_deletes_payback(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/<id>/unmark-credit reverts to projected and deletes payback."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First mark as credit.
             auth_client.post(f"/transactions/{txn.id}/mark-credit")
@@ -454,11 +474,11 @@ class TestTransactionCRUD:
             # Payback should be deleted.
             payback = db.session.query(Transaction).filter(
                 Transaction.name.like("%Payback%"),
-                Transaction.pay_period_id == seed_periods[1].id,
+                Transaction.pay_period_id == seed_periods_today[1].id,
             ).first()
             assert payback is None
 
-    def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions with all fields creates a complete transaction."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -467,7 +487,7 @@ class TestTransactionCRUD:
             response = auth_client.post("/transactions", data={
                 "name": "Full Form Expense",
                 "estimated_amount": "250.00",
-                "pay_period_id": seed_periods[2].id,
+                "pay_period_id": seed_periods_today[2].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Car Payment"].id,
                 "transaction_type_id": expense_type.id,
@@ -480,10 +500,10 @@ class TestTransactionCRUD:
                 name="Full Form Expense"
             ).one()
             assert txn.estimated_amount == Decimal("250.00")
-            assert txn.pay_period_id == seed_periods[2].id
+            assert txn.pay_period_id == seed_periods_today[2].id
             assert txn.category_id == seed_user["categories"]["Car Payment"].id
 
-    def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods):
+    def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/new/quick with no baseline scenario returns 400.
 
         The route returns the plain text error 'No baseline scenario' when
@@ -502,7 +522,7 @@ class TestTransactionCRUD:
             response = auth_client.get(
                 f"/transactions/new/quick"
                 f"?category_id={seed_user['categories']['Rent'].id}"
-                f"&period_id={seed_periods[0].id}"
+                f"&period_id={seed_periods_today[0].id}"
                 f"&transaction_type_id={expense_type.id}"
                 f"&account_id={seed_user['account'].id}"
             )
@@ -513,13 +533,13 @@ class TestTransactionCRUD:
 class TestTransactionNegativePaths:
     """Tests for transaction route error handling, validation, and edge cases."""
 
-    def _create_test_txn(self, seed_user, seed_periods):
+    def _create_test_txn(self, seed_user, seed_periods_today):
         """Helper: create and return a projected expense."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
             status_id=projected.id,
@@ -534,7 +554,7 @@ class TestTransactionNegativePaths:
 
     # ── Nonexistent ID tests ──────────────────────────────────────
 
-    def test_update_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_update_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transactions/999999 returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.patch(
@@ -543,54 +563,54 @@ class TestTransactionNegativePaths:
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_mark_done_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_done_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/999999/mark-done returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.post("/transactions/999999/mark-done")
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_cancel_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_cancel_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/999999/cancel returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.post("/transactions/999999/cancel")
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_delete_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_delete_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/999999 returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.delete("/transactions/999999")
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_mark_credit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_credit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/999999/mark-credit returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.post("/transactions/999999/mark-credit")
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_unmark_credit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_unmark_credit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/999999/unmark-credit returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.delete("/transactions/999999/unmark-credit")
             assert resp.status_code == 404
             assert b"Not found" in resp.data
 
-    def test_get_cell_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_get_cell_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/999999/cell returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.get("/transactions/999999/cell")
             assert resp.status_code == 404
 
-    def test_get_quick_edit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_get_quick_edit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/999999/quick-edit returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.get("/transactions/999999/quick-edit")
             assert resp.status_code == 404
 
-    def test_get_full_edit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_get_full_edit_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/999999/full-edit returns 404 for nonexistent transaction."""
         with app.app_context():
             resp = auth_client.get("/transactions/999999/full-edit")
@@ -598,7 +618,7 @@ class TestTransactionNegativePaths:
 
     # ── Schema validation failure tests ───────────────────────────
 
-    def test_create_transaction_missing_name(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction_missing_name(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions without required 'name' field returns 400 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -607,7 +627,7 @@ class TestTransactionNegativePaths:
 
             resp = auth_client.post("/transactions", data={
                 "estimated_amount": "100.00",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
@@ -622,7 +642,7 @@ class TestTransactionNegativePaths:
             ).count()
             assert count == 0
 
-    def test_create_transaction_negative_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction_negative_amount(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions with negative estimated_amount returns 400."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -632,7 +652,7 @@ class TestTransactionNegativePaths:
             resp = auth_client.post("/transactions", data={
                 "name": "Bad Amount",
                 "estimated_amount": "-100.00",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
@@ -647,7 +667,7 @@ class TestTransactionNegativePaths:
             ).count()
             assert count == 0
 
-    def test_create_transaction_zero_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction_zero_amount(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions with estimated_amount=0.00 succeeds (Range min=0 is inclusive)."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -657,7 +677,7 @@ class TestTransactionNegativePaths:
             resp = auth_client.post("/transactions", data={
                 "name": "Zero Amount",
                 "estimated_amount": "0.00",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
@@ -670,7 +690,7 @@ class TestTransactionNegativePaths:
             assert txn.estimated_amount == Decimal("0.00")
 
     def test_create_transaction_missing_pay_period_id(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions without required pay_period_id returns 400 with field error."""
         with app.app_context():
@@ -690,7 +710,7 @@ class TestTransactionNegativePaths:
             assert "pay_period_id" in resp_json["errors"]
 
     def test_create_transaction_with_other_users_pay_period(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions with another user's pay_period_id returns 404."""
         with app.app_context():
@@ -734,10 +754,10 @@ class TestTransactionNegativePaths:
             count = db.session.query(Transaction).filter_by(name="Sneaky").count()
             assert count == 0
 
-    def test_update_transaction_invalid_amount(self, app, auth_client, seed_user, seed_periods):
+    def test_update_transaction_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transactions/<id> with non-numeric amount returns 400."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
 
             resp = auth_client.patch(
@@ -753,10 +773,10 @@ class TestTransactionNegativePaths:
 
     # ── State transition edge cases ───────────────────────────────
 
-    def test_mark_done_already_done_expense(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_done_already_done_expense(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done is idempotent for already-done transactions."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First mark-done.
             resp1 = auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -772,11 +792,11 @@ class TestTransactionNegativePaths:
             assert txn.status.name == "Paid"
 
     def test_cancel_already_cancelled_transaction(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/<id>/cancel is idempotent for already-cancelled transactions."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First cancel.
             resp1 = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -789,10 +809,10 @@ class TestTransactionNegativePaths:
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
 
-    def test_mark_done_cancelled_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_mark_done_cancelled_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done on a cancelled transaction succeeds."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # Cancel first.
             auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -809,10 +829,10 @@ class TestTransactionNegativePaths:
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
 
-    def test_cancel_done_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_cancel_done_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/cancel on a done transaction succeeds."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # Mark done first.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -828,11 +848,11 @@ class TestTransactionNegativePaths:
             assert txn.status.name == "Cancelled"
 
     def test_mark_done_with_invalid_actual_amount(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 400."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
 
             resp = auth_client.post(
@@ -850,7 +870,7 @@ class TestTransactionNegativePaths:
             assert txn_after.actual_amount is None
 
     def test_mark_done_with_negative_actual_amount(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/<id>/mark-done rejects negative actual_amount.
 
@@ -858,7 +878,7 @@ class TestTransactionNegativePaths:
         prevents negative values at the database level (L-01).
         """
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             original_status_id = txn.status_id
 
             resp = auth_client.post(
@@ -874,7 +894,7 @@ class TestTransactionNegativePaths:
 
     # ── XSS protection test ──────────────────────────────────────
 
-    def test_create_transaction_xss_in_name(self, app, auth_client, seed_user, seed_periods):
+    def test_create_transaction_xss_in_name(self, app, auth_client, seed_user, seed_periods_today):
         """Transaction name with script tag is stored but auto-escaped in rendered output."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -884,7 +904,7 @@ class TestTransactionNegativePaths:
             resp = auth_client.post("/transactions", data={
                 "name": "<script>alert(1)</script>",
                 "estimated_amount": "50.00",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
@@ -998,7 +1018,7 @@ class TestCreateBaseline:
 class TestAccountIdColumn:
     """Tests for the account_id column added to the Transaction model."""
 
-    def test_transaction_model_has_account_id(self, app, db, seed_user, seed_periods):
+    def test_transaction_model_has_account_id(self, app, db, seed_user, seed_periods_today):
         """Create a Transaction with account_id. Verify it saves and the relationship resolves."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1006,7 +1026,7 @@ class TestAccountIdColumn:
 
         txn = Transaction(
             account_id=account.id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Account Test",
@@ -1023,7 +1043,7 @@ class TestAccountIdColumn:
         assert txn.account.name == "Checking"
 
     def test_transaction_without_account_id_raises_integrity_error(
-        self, app, db, seed_user, seed_periods
+        self, app, db, seed_user, seed_periods_today
     ):
         """Attempting to create a Transaction without account_id raises IntegrityError."""
         from sqlalchemy.exc import IntegrityError
@@ -1032,7 +1052,7 @@ class TestAccountIdColumn:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="No Account",
@@ -1062,7 +1082,7 @@ class TestAccountIdColumn:
         for txn in created:
             assert txn.account_id == template.account_id
 
-    def test_credit_payback_inherits_account_id(self, app, db, seed_user, seed_periods):
+    def test_credit_payback_inherits_account_id(self, app, db, seed_user, seed_periods_today):
         """The payback transaction created by mark_as_credit inherits account_id."""
         from app.services import credit_workflow
 
@@ -1072,7 +1092,7 @@ class TestAccountIdColumn:
 
         txn = Transaction(
             account_id=account.id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Test Expense for Credit",
@@ -1088,7 +1108,7 @@ class TestAccountIdColumn:
 
         assert payback.account_id == account.id
 
-    def test_inline_create_sets_account_id(self, app, auth_client, seed_user, seed_periods):
+    def test_inline_create_sets_account_id(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/inline with account_id saves it on the transaction."""
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
@@ -1099,7 +1119,7 @@ class TestAccountIdColumn:
         resp = auth_client.post("/transactions/inline", data={
             "account_id": account.id,
             "category_id": category.id,
-            "pay_period_id": seed_periods[0].id,
+            "pay_period_id": seed_periods_today[0].id,
             "scenario_id": scenario.id,
             "transaction_type_id": expense_type.id,
             "estimated_amount": "99.99",
@@ -1111,7 +1131,7 @@ class TestAccountIdColumn:
         assert txn.account_id == account.id
 
     def test_inline_create_rejects_missing_account_id(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/inline without account_id returns validation error."""
         category = seed_user["categories"]["Groceries"]
@@ -1120,7 +1140,7 @@ class TestAccountIdColumn:
 
         resp = auth_client.post("/transactions/inline", data={
             "category_id": category.id,
-            "pay_period_id": seed_periods[0].id,
+            "pay_period_id": seed_periods_today[0].id,
             "scenario_id": scenario.id,
             "transaction_type_id": expense_type.id,
             "estimated_amount": "50.00",
@@ -1128,7 +1148,7 @@ class TestAccountIdColumn:
         assert resp.status_code == 400
 
     def test_inline_create_rejects_other_users_account_id(
-        self, app, auth_client, seed_user, seed_periods, second_user
+        self, app, auth_client, seed_user, seed_periods_today, second_user
     ):
         """POST /transactions/inline with another user's account_id returns 404."""
         other_account = second_user["account"]
@@ -1139,7 +1159,7 @@ class TestAccountIdColumn:
         resp = auth_client.post("/transactions/inline", data={
             "account_id": other_account.id,
             "category_id": category.id,
-            "pay_period_id": seed_periods[0].id,
+            "pay_period_id": seed_periods_today[0].id,
             "scenario_id": scenario.id,
             "transaction_type_id": expense_type.id,
             "estimated_amount": "50.00",
@@ -1191,16 +1211,16 @@ class TestAccountScopedGrid:
     # --- Core filtering tests ---
 
     def test_grid_shows_only_checking_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Default grid (checking) shows only checking transactions, not savings."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        self._create_txn(checking, seed_periods[0], scenario, "Rent", 1200,
+        self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
                          category=seed_user["categories"]["Rent"])
-        self._create_txn(savings, seed_periods[0], scenario, "Savings Interest", 50,
+        self._create_txn(savings, seed_periods_today[0], scenario, "Savings Interest", 50,
                          txn_type_name="Income", category=seed_user["categories"]["Salary"])
         db.session.commit()
 
@@ -1212,7 +1232,7 @@ class TestAccountScopedGrid:
         assert "Savings Interest" not in html
 
     def test_grid_account_override_shows_savings_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Passing ?account_id=savings shows only savings transactions.
 
@@ -1223,7 +1243,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -1242,10 +1262,10 @@ class TestAccountScopedGrid:
         assert "1,234" not in html
 
     def test_grid_shows_correct_account_name_in_header(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """The grid header shows the viewed account's name."""
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         db.session.commit()
 
         resp = auth_client.get(f"/grid?account_id={savings.id}")
@@ -1255,7 +1275,7 @@ class TestAccountScopedGrid:
     # --- Balance correctness tests ---
 
     def test_balance_uses_correct_anchor_for_each_account(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Each account's grid uses its own anchor balance, not another's.
 
@@ -1263,7 +1283,7 @@ class TestAccountScopedGrid:
         Savings anchor: $5000.
         With no transactions, the projected balance equals the anchor.
         """
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         db.session.commit()
 
         # Checking grid: balance should reflect $1000 anchor.
@@ -1277,7 +1297,7 @@ class TestAccountScopedGrid:
         assert "$5,000" in html
 
     def test_balance_excludes_other_accounts_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """A $500 expense on checking should NOT reduce the savings balance.
 
@@ -1286,9 +1306,9 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        self._create_txn(checking, seed_periods[0], scenario, "Rent", 500,
+        self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 500,
                          category=seed_user["categories"]["Rent"])
         db.session.commit()
 
@@ -1300,14 +1320,14 @@ class TestAccountScopedGrid:
     # --- Balance row HTMX refresh tests ---
 
     def test_balance_row_refresh_scoped_to_account(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """GET /grid/balance-row with account_id returns that account's balances."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        self._create_txn(checking, seed_periods[0], scenario, "Expense on Checking", 300,
+        self._create_txn(checking, seed_periods_today[0], scenario, "Expense on Checking", 300,
                          category=seed_user["categories"]["Rent"])
         db.session.commit()
 
@@ -1318,10 +1338,10 @@ class TestAccountScopedGrid:
         assert "$5,000" in html
 
     def test_balance_row_refresh_includes_account_id_in_htmx_url(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """The returned tfoot contains account_id in its hx-get URL for future refreshes."""
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         db.session.commit()
 
         resp = auth_client.get(f"/grid/balance-row?periods=6&offset=0&account_id={savings.id}")
@@ -1331,7 +1351,7 @@ class TestAccountScopedGrid:
     # --- Footer totals tests ---
 
     def test_footer_totals_reflect_viewed_account_only(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Subtotal rows count only the viewed account's transactions.
 
@@ -1341,7 +1361,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -1370,13 +1390,13 @@ class TestAccountScopedGrid:
     # --- Empty / edge case tests ---
 
     def test_grid_for_account_with_no_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """An account with no transactions renders the grid without errors.
 
         Section banners should appear. No transaction cells. Balance equals anchor.
         """
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         db.session.commit()
 
         resp = auth_client.get(f"/grid?account_id={savings.id}")
@@ -1387,7 +1407,7 @@ class TestAccountScopedGrid:
         assert "$5,000" in html  # Anchor balance, no transactions.
 
     def test_grid_hides_category_rows_without_account_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Categories with transactions only on checking should not render on savings grid.
 
@@ -1396,9 +1416,9 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        self._create_txn(checking, seed_periods[0], scenario, "Rent", 1200,
+        self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
                          category=seed_user["categories"]["Rent"])
         db.session.commit()
 
@@ -1416,7 +1436,7 @@ class TestAccountScopedGrid:
         assert 'class="sticky-col row-label"' not in html or "Rent" not in html.split("EXPENSES")[0].split("INCOME")[-1]
 
     def test_grid_account_with_no_anchor_balance(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """An account with NULL anchor balance defaults to $0 for projections."""
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
@@ -1425,7 +1445,7 @@ class TestAccountScopedGrid:
             account_type_id=savings_type.id,
             name="New Savings",
             current_anchor_balance=None,
-            current_anchor_period_id=seed_periods[0].id,
+            current_anchor_period_id=seed_periods_today[0].id,
         )
         db.session.add(savings)
         db.session.commit()
@@ -1436,7 +1456,7 @@ class TestAccountScopedGrid:
         assert "New Savings Balance" in html
 
     def test_grid_account_with_no_anchor_period(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """An account with NULL anchor period uses current period as fallback."""
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
@@ -1456,7 +1476,7 @@ class TestAccountScopedGrid:
     # --- Cancelled and deleted transaction edge cases ---
 
     def test_cancelled_transactions_excluded_from_account_grid(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Cancelled transactions on the viewed account do not render as cells.
 
@@ -1483,13 +1503,13 @@ class TestAccountScopedGrid:
         assert f"txn-cell-{cancelled.id}" not in html
 
     def test_soft_deleted_transactions_excluded_from_account_grid(
-        self, app, db, auth_client, seed_user, seed_periods
+        self, app, db, auth_client, seed_user, seed_periods_today
     ):
         """Soft-deleted transactions (is_deleted=True) do not appear."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
 
-        txn = self._create_txn(checking, seed_periods[0], scenario, "Deleted Expense", 999,
+        txn = self._create_txn(checking, seed_periods_today[0], scenario, "Deleted Expense", 999,
                                category=seed_user["categories"]["Rent"])
         txn.is_deleted = True
         db.session.commit()
@@ -1501,7 +1521,7 @@ class TestAccountScopedGrid:
     # --- Carry forward interaction test ---
 
     def test_carry_forward_moves_all_accounts_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Carry forward moves projected transactions from ALL accounts, not just the viewed one.
 
@@ -1510,15 +1530,15 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Create projected transactions on both accounts in period 0.
         checking_txn = self._create_txn(
-            checking, seed_periods[0], scenario, "Checking Expense", 100,
+            checking, seed_periods_today[0], scenario, "Checking Expense", 100,
             category=seed_user["categories"]["Rent"],
         )
         savings_txn = self._create_txn(
-            savings, seed_periods[0], scenario, "Savings Expense", 50,
+            savings, seed_periods_today[0], scenario, "Savings Expense", 50,
             category=seed_user["categories"]["Groceries"],
         )
         db.session.commit()
@@ -1527,7 +1547,7 @@ class TestAccountScopedGrid:
         savings_txn_id = savings_txn.id
 
         # Carry forward from period 0.
-        resp = auth_client.post(f"/pay-periods/{seed_periods[0].id}/carry-forward")
+        resp = auth_client.post(f"/pay-periods/{seed_periods_today[0].id}/carry-forward")
         assert resp.status_code == 200
 
         # Both transactions should have moved to the current period.
@@ -1542,10 +1562,10 @@ class TestAccountScopedGrid:
     # --- Inline create scoped to correct account ---
 
     def test_inline_create_on_savings_grid_saves_to_savings(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Creating a transaction inline on the savings grid assigns it to the savings account."""
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         category = seed_user["categories"]["Salary"]
         scenario = seed_user["scenario"]
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
@@ -1554,7 +1574,7 @@ class TestAccountScopedGrid:
         resp = auth_client.post("/transactions/inline", data={
             "account_id": savings.id,
             "category_id": category.id,
-            "pay_period_id": seed_periods[0].id,
+            "pay_period_id": seed_periods_today[0].id,
             "scenario_id": scenario.id,
             "transaction_type_id": income_type.id,
             "estimated_amount": "250.00",
@@ -1571,7 +1591,7 @@ class TestAccountScopedGrid:
     # --- Multi-period balance roll-forward correctness ---
 
     def test_balance_rolls_forward_correctly_per_account(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """Balance roll-forward across periods uses only the viewed account's transactions.
 
@@ -1584,14 +1604,14 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        savings = self._create_savings_account(seed_user["user"], seed_periods)
+        savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         current = pay_period_service.get_current_period(seed_user["user"].id)
         # Find the next period after current.
         current_idx = next(
-            i for i, p in enumerate(seed_periods) if p.id == current.id
+            i for i, p in enumerate(seed_periods_today) if p.id == current.id
         )
-        next_period = seed_periods[current_idx + 1]
+        next_period = seed_periods_today[current_idx + 1]
 
         self._create_txn(checking, current, scenario, "Expense A", 200,
                          category=seed_user["categories"]["Rent"])
@@ -1622,7 +1642,7 @@ class TestAccountScopedGrid:
 class TestTransfersSectionRemoved:
     """Verify the TRANSFERS grid section is gone and shadows render inline."""
 
-    def test_grid_no_transfers_section(self, app, auth_client, seed_user, seed_periods):
+    def test_grid_no_transfers_section(self, app, auth_client, seed_user, seed_periods_today):
         """Grid does not contain a TRANSFERS section banner."""
         with app.app_context():
             resp = auth_client.get("/grid")
@@ -1631,7 +1651,7 @@ class TestTransfersSectionRemoved:
             assert "section-banner-transfer" not in html
             assert "xfer-cell-" not in html
 
-    def test_grid_renders_without_transfers(self, app, auth_client, seed_user, seed_periods):
+    def test_grid_renders_without_transfers(self, app, auth_client, seed_user, seed_periods_today):
         """Grid renders normally with no transfers or shadows."""
         with app.app_context():
             resp = auth_client.get("/grid")
@@ -1648,7 +1668,7 @@ class TestTransfersSectionRemoved:
 class TestInlineSubtotalRows:
     """Tests for the Total Income and Total Expenses subtotal rows in tbody."""
 
-    def test_subtotal_rows_present(self, app, auth_client, seed_user, seed_periods):
+    def test_subtotal_rows_present(self, app, auth_client, seed_user, seed_periods_today):
         """Grid contains subtotal-row-income and subtotal-row-expense rows."""
         with app.app_context():
             # Create transactions so the sections render.
@@ -1659,7 +1679,7 @@ class TestInlineSubtotalRows:
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
-                current = seed_periods[0]
+                current = seed_periods_today[0]
 
             txn_inc = Transaction(
                 pay_period_id=current.id,
@@ -1690,7 +1710,7 @@ class TestInlineSubtotalRows:
             assert "subtotal-row-income" in html
             assert "subtotal-row-expense" in html
 
-    def test_subtotal_values_correct(self, app, auth_client, seed_user, seed_periods):
+    def test_subtotal_values_correct(self, app, auth_client, seed_user, seed_periods_today):
         """Subtotal rows show correct per-period totals."""
         with app.app_context():
             from app.models.ref import TransactionType
@@ -1700,7 +1720,7 @@ class TestInlineSubtotalRows:
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
-                current = seed_periods[0]
+                current = seed_periods_today[0]
 
             for name, cat, typ, amt in [
                 ("Pay", "Salary", income_type.id, "2000.00"),
@@ -1729,7 +1749,7 @@ class TestInlineSubtotalRows:
             # Total Expenses = 1200 + 400 = 1600.
             assert "$1,600" in html
 
-    def test_subtotal_excludes_cancelled(self, app, auth_client, seed_user, seed_periods):
+    def test_subtotal_excludes_cancelled(self, app, auth_client, seed_user, seed_periods_today):
         """Cancelled transactions are excluded from subtotals."""
         with app.app_context():
             from app.models.ref import TransactionType
@@ -1739,7 +1759,7 @@ class TestInlineSubtotalRows:
             from app.services import pay_period_service
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
-                current = seed_periods[0]
+                current = seed_periods_today[0]
 
             txn_ok = Transaction(
                 pay_period_id=current.id,
@@ -1770,7 +1790,7 @@ class TestInlineSubtotalRows:
             # Only $1,000 counted (cancelled $500 excluded).
             assert "$1,000" in html
 
-    def test_balance_row_refresh_unaffected(self, app, auth_client, seed_user, seed_periods):
+    def test_balance_row_refresh_unaffected(self, app, auth_client, seed_user, seed_periods_today):
         """The balance-row HTMX endpoint returns tfoot only, no subtotal rows."""
         with app.app_context():
             resp = auth_client.get(
@@ -1788,7 +1808,7 @@ class TestInlineSubtotalRows:
 class TestNetCashFlowRow:
     """Tests for the Net Cash Flow row in tbody."""
 
-    def _seed_txns(self, seed_user, seed_periods, income_amt, expense_amt):
+    def _seed_txns(self, seed_user, seed_periods_today, income_amt, expense_amt):
         """Helper: create income + expense in the current/first visible period."""
         from app.models.ref import TransactionType
         from app.services import pay_period_service
@@ -1797,7 +1817,7 @@ class TestNetCashFlowRow:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         current = pay_period_service.get_current_period(seed_user["user"].id)
         if not current:
-            current = seed_periods[0]
+            current = seed_periods_today[0]
 
         txns = []
         if income_amt:
@@ -1825,37 +1845,37 @@ class TestNetCashFlowRow:
         db.session.add_all(txns)
         db.session.commit()
 
-    def test_net_cash_flow_row_present(self, app, db, auth_client, seed_user, seed_periods):
+    def test_net_cash_flow_row_present(self, app, db, auth_client, seed_user, seed_periods_today):
         """Grid contains a net-cash-flow-row with correct label."""
         with app.app_context():
-            self._seed_txns(seed_user, seed_periods, "2000", "1400")
+            self._seed_txns(seed_user, seed_periods_today, "2000", "1400")
             resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             assert "Net Cash Flow" in html
             assert "$600" in html
 
-    def test_net_cash_flow_negative(self, app, db, auth_client, seed_user, seed_periods):
+    def test_net_cash_flow_negative(self, app, db, auth_client, seed_user, seed_periods_today):
         """Negative net cash flow shows warning indicator."""
         with app.app_context():
-            self._seed_txns(seed_user, seed_periods, "1000", "1500")
+            self._seed_txns(seed_user, seed_periods_today, "1000", "1500")
             resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "balance-negative" in html
             # Warning icon for negative net.
             assert "bi-exclamation-triangle-fill" in html
 
-    def test_net_cash_flow_zero(self, app, db, auth_client, seed_user, seed_periods):
+    def test_net_cash_flow_zero(self, app, db, auth_client, seed_user, seed_periods_today):
         """Breakeven period shows empty net cash flow cell."""
         with app.app_context():
-            self._seed_txns(seed_user, seed_periods, "1000", "1000")
+            self._seed_txns(seed_user, seed_periods_today, "1000", "1000")
             resp = auth_client.get("/grid")
             html = resp.data.decode()
             assert "net-cash-flow-row" in html
             # Net is zero -- cell should be empty (matching footer behavior).
 
     def test_balance_row_refresh_excludes_net_cash_flow(
-        self, app, db, auth_client, seed_user, seed_periods
+        self, app, db, auth_client, seed_user, seed_periods_today
     ):
         """Balance-row HTMX endpoint does not include net-cash-flow-row."""
         with app.app_context():
@@ -1872,7 +1892,7 @@ class TestNetCashFlowRow:
 class TestFooterCondensation:
     """Tests verifying the footer contains only Projected End Balance."""
 
-    def test_footer_single_row(self, app, db, auth_client, seed_user, seed_periods):
+    def test_footer_single_row(self, app, db, auth_client, seed_user, seed_periods_today):
         """Balance-row response has exactly 1 row: Projected End Balance."""
         with app.app_context():
             resp = auth_client.get(
@@ -1885,7 +1905,7 @@ class TestFooterCondensation:
             assert "Net (Income" not in html
             assert html.count("<tr") == 1
 
-    def test_footer_htmx_attributes_preserved(self, app, db, auth_client, seed_user, seed_periods):
+    def test_footer_htmx_attributes_preserved(self, app, db, auth_client, seed_user, seed_periods_today):
         """The tfoot has all HTMX attributes for the self-referencing refresh."""
         with app.app_context():
             resp = auth_client.get(
@@ -1897,7 +1917,7 @@ class TestFooterCondensation:
             assert 'hx-trigger="balanceChanged from:body"' in html
             assert 'hx-swap="outerHTML"' in html
 
-    def test_footer_htmx_refresh_cycle(self, app, db, auth_client, seed_user, seed_periods):
+    def test_footer_htmx_refresh_cycle(self, app, db, auth_client, seed_user, seed_periods_today):
         """Initial page and balance-row both produce tfoot with HTMX attributes."""
         with app.app_context():
             page_resp = auth_client.get("/grid")
@@ -1911,7 +1931,7 @@ class TestFooterCondensation:
             assert 'id="grid-summary"' in balance_html
             assert "hx-trigger" in balance_html
 
-    def test_subtotals_still_present_in_tbody(self, app, db, auth_client, seed_user, seed_periods):
+    def test_subtotals_still_present_in_tbody(self, app, db, auth_client, seed_user, seed_periods_today):
         """Tbody subtotal and net cash flow rows survive footer condensation."""
         with app.app_context():
             from app.models.ref import TransactionType
@@ -1920,7 +1940,7 @@ class TestFooterCondensation:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = pay_period_service.get_current_period(seed_user["user"].id)
             if not current:
-                current = seed_periods[0]
+                current = seed_periods_today[0]
 
             txn = Transaction(
                 pay_period_id=current.id,
@@ -2253,7 +2273,7 @@ class TestTransactionNameRows:
         return pay_period_service.get_current_period(seed_user["user"].id)
 
     def test_grid_separate_rows_for_same_category_transactions(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Two templates in the same category produce two distinct grid rows,
         each with the transaction name in the row header.
@@ -2335,7 +2355,7 @@ class TestTransactionNameRows:
             assert "Geico" in th_labels
 
     def test_grid_one_time_transaction_gets_own_row(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A one-time transaction (no template) produces its own row with
         the transaction name in the row header.
@@ -2370,7 +2390,7 @@ class TestTransactionNameRows:
             assert "Car Repair" in th_labels
 
     def test_grid_shadow_transactions_get_own_rows(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Shadow transactions from transfers produce their own grid rows
         with the transaction name visible in the row header.
@@ -2445,7 +2465,7 @@ class TestTransactionNameRows:
             assert "Savings" in th_labels
 
     def test_grid_empty_cell_has_correct_category_id(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Empty cells pass the correct category_id for quick create,
         matching the row key's category.
@@ -2479,7 +2499,7 @@ class TestTransactionNameRows:
             assert f"category_id={cat_id}" in html
 
     def test_grid_group_headers_appear(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Group header rows appear before each category group's transactions
         with the group-header-row CSS class.
@@ -2524,7 +2544,7 @@ class TestTransactionNameRows:
             assert "Auto" in html
 
     def test_grid_inline_edit_works_after_restructure(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Inline quick-edit still works: GET returns form, PATCH updates
         the cell, and HX-Trigger fires balanceChanged.
@@ -2562,7 +2582,7 @@ class TestTransactionNameRows:
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
 
     def test_grid_empty_cell_quick_create_works(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """GI-9 regression: clicking an empty cell loads the quick-create form."""
         with app.app_context():
@@ -2606,7 +2626,7 @@ class TestTransactionNameRows:
             assert b"estimated_amount" in resp.data
 
     def test_grid_keyboard_nav_classes_correct(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Transaction rows do not have excluded CSS classes; group headers,
         subtotals, and banners do.
@@ -2644,7 +2664,7 @@ class TestTransactionNameRows:
             assert "section-banner-expense" in html
 
     def test_grid_empty_state_no_transactions(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Grid renders cleanly with no transactions -- section banners,
         subtotal rows with zeros, and no crash.
@@ -2663,7 +2683,7 @@ class TestTransactionNameRows:
             assert "Projected End Balance" in html
 
     def test_grid_subtotals_unchanged_after_restructure(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Subtotals iterate over all transactions per period, not row keys.
         Total Income shows $2,000, Total Expenses shows $1,500, Net shows $500.
@@ -2717,7 +2737,7 @@ class TestTransactionNameRows:
             assert "$500" in html     # Net Cash Flow
 
     def test_grid_payday_workflow_complete(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Full payday workflow still works after the row restructure:
         true-up, mark received, carry forward, mark paid, mark credit.
@@ -2731,7 +2751,7 @@ class TestTransactionNameRows:
 
             current = self._get_current_period(seed_user)
             past = next(
-                p for p in seed_periods
+                p for p in seed_periods_today
                 if p.period_index == current.period_index - 1
             )
 
@@ -2812,7 +2832,7 @@ class TestTransactionNameRows:
             assert b"$4,550" in resp.data
 
     def test_grid_row_ordering_is_deterministic(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Row ordering is deterministic -- two requests produce identical
         row label sequences.
@@ -2888,7 +2908,7 @@ class TestTransactionNameRows:
             assert len(labels1) >= 4  # At least 4 transaction rows.
 
     def test_grid_credit_payback_gets_own_row(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """CC Payback transactions generated by the credit workflow appear
         in their own row with 'CC Payback: ...' in the row header.
@@ -2933,7 +2953,7 @@ class TestTransactionNameRows:
             )
 
     def test_grid_cancelled_transaction_handling(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Cancelled transactions are excluded from the grid -- they do not
         generate row keys and do not appear as cells.
@@ -2994,7 +3014,7 @@ class TestTooltipContent:
         )
 
     def test_tooltip_contains_full_amount_with_cents(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip shows the full dollar amount with two decimal places,
         including comma-separated thousands (e.g. $1,234.56).
@@ -3029,7 +3049,7 @@ class TestTooltipContent:
             ), "Tooltip should show cents, not rounded amount"
 
     def test_tooltip_shows_actual_vs_estimated_when_different(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """When actual_amount differs from estimated_amount, the tooltip shows
         both: '$487.32 (est: $500.00)'.
@@ -3061,7 +3081,7 @@ class TestTooltipContent:
             assert matching, f"Expected '$487.32 (est: $500.00)', got: {titles}"
 
     def test_tooltip_hides_estimate_when_amounts_equal(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """When actual_amount equals estimated_amount, the tooltip shows only
         the amount without the '(est: ...)' comparison.
@@ -3096,7 +3116,7 @@ class TestTooltipContent:
             )
 
     def test_tooltip_includes_paid_status(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip includes '-- Paid' for transactions with Paid status."""
         with app.app_context():
@@ -3126,7 +3146,7 @@ class TestTooltipContent:
             assert matching, f"Expected tooltip with '-- Paid', got: {titles}"
 
     def test_tooltip_includes_projected_status(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip includes '-- Projected' for projected transactions."""
         with app.app_context():
@@ -3155,7 +3175,7 @@ class TestTooltipContent:
             assert matching, f"Expected tooltip with '-- Projected', got: {titles}"
 
     def test_tooltip_includes_notes(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip includes notes when present on the transaction."""
         with app.app_context():
@@ -3185,7 +3205,7 @@ class TestTooltipContent:
             assert matching, f"Expected notes in tooltip, got: {titles}"
 
     def test_tooltip_no_trailing_separator_when_no_notes(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """When notes are empty/None, the tooltip does not have a trailing
         '-- ' separator with nothing after it.
@@ -3223,7 +3243,7 @@ class TestTooltipContent:
                 )
 
     def test_tooltip_handles_zero_amount(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip renders $0.00 correctly for a zero-amount transaction."""
         with app.app_context():
@@ -3252,7 +3272,7 @@ class TestTooltipContent:
             assert matching, f"Expected tooltip with $0.00, got: {titles}"
 
     def test_tooltip_handles_large_amount(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Tooltip formats large amounts with comma-separated thousands."""
         with app.app_context():
@@ -3281,7 +3301,7 @@ class TestTooltipContent:
             assert matching, f"Expected tooltip with $12,345.67, got: {titles}"
 
     def test_tooltip_credit_transaction_shows_charged_amount(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Credit transactions show the estimated (charged) amount in the
         tooltip, not $0.00 from effective_amount.  Also includes '-- Credit'.
@@ -3318,7 +3338,7 @@ class TestTooltipContent:
             )
 
     def test_tooltip_survives_htmx_cell_update(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """After a PATCH update via quick edit, the re-rendered cell includes
         a title attribute with the updated amount (server-side rendering).
@@ -3355,7 +3375,7 @@ class TestTooltipContent:
             )
 
     def test_tooltip_no_redundant_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The tooltip does NOT contain the transaction name (it moved to
         the row header in Commit #15).
@@ -3393,7 +3413,7 @@ class TestTooltipContent:
 class TestSubtotalDecimalPrecision:
     """Verify server-side Decimal subtotals agree with balance row at the penny level (H-05)."""
 
-    def test_subtotals_match_balance_row(self, app, auth_client, seed_user, seed_periods):
+    def test_subtotals_match_balance_row(self, app, auth_client, seed_user, seed_periods_today):
         """Pre-computed Decimal subtotals match the balance calculator's values exactly.
 
         Creates 20+ transactions with sub-dollar amounts that would
@@ -3407,7 +3427,7 @@ class TestSubtotalDecimalPrecision:
             from app.services import pay_period_service
             period = pay_period_service.get_current_period(seed_user["user"].id)
             if not period:
-                period = seed_periods[0]
+                period = seed_periods_today[0]
 
             # Create 20 expense transactions with amounts that cause float drift.
             expected_expense = Decimal("0")
@@ -3470,7 +3490,7 @@ class TestGridSubtotalsRegressionBaseline:
     """
 
     def test_subtotals_reflect_actual_for_projected(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Projected income with estimated=500, actual=400: subtotal
         reflects actual_amount (400).
@@ -3497,7 +3517,7 @@ class TestGridSubtotalsRegressionBaseline:
                 seed_user["user"].id,
             )
             if not current:
-                current = seed_periods[0]
+                current = seed_periods_today[0]
 
             txn = Transaction(
                 pay_period_id=current.id,
@@ -3531,7 +3551,7 @@ class TestGridSubtotalsRegressionBaseline:
 class TestPaidAtLifecycle:
     """Tests for paid_at timestamp management during status changes."""
 
-    def _create_test_txn(self, seed_user, seed_periods):
+    def _create_test_txn(self, seed_user, seed_periods_today):
         """Create a projected expense transaction for testing."""
         from app import ref_cache
         from app.enums import StatusEnum, TxnTypeEnum
@@ -3541,20 +3561,20 @@ class TestPaidAtLifecycle:
 
         txn = Transaction(
             account_id=seed_user["account"].id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected_id,
             name="Test Expense",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type_id,
             estimated_amount=Decimal("100.00"),
-            due_date=seed_periods[0].start_date,
+            due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
         db.session.commit()
         return txn
 
-    def _create_income_txn(self, seed_user, seed_periods):
+    def _create_income_txn(self, seed_user, seed_periods_today):
         """Create a projected income transaction for testing."""
         from app import ref_cache
         from app.enums import StatusEnum, TxnTypeEnum
@@ -3564,23 +3584,23 @@ class TestPaidAtLifecycle:
 
         txn = Transaction(
             account_id=seed_user["account"].id,
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected_id,
             name="Test Income",
             category_id=seed_user["categories"]["Salary"].id,
             transaction_type_id=income_type_id,
             estimated_amount=Decimal("2000.00"),
-            due_date=seed_periods[0].start_date,
+            due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
         db.session.commit()
         return txn
 
-    def test_paid_at_set_on_mark_done(self, app, auth_client, seed_user, seed_periods):
+    def test_paid_at_set_on_mark_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets paid_at timestamp for expenses."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             assert txn.paid_at is None
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -3589,10 +3609,10 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.paid_at is not None
 
-    def test_paid_at_set_on_mark_received(self, app, auth_client, seed_user, seed_periods):
+    def test_paid_at_set_on_mark_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets paid_at timestamp for income."""
         with app.app_context():
-            txn = self._create_income_txn(seed_user, seed_periods)
+            txn = self._create_income_txn(seed_user, seed_periods_today)
             assert txn.paid_at is None
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -3601,13 +3621,13 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.paid_at is not None
 
-    def test_paid_at_nulled_on_status_revert(self, app, auth_client, seed_user, seed_periods):
+    def test_paid_at_nulled_on_status_revert(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transactions/<id> with status_id reverted to projected nulls paid_at."""
         with app.app_context():
             from app import ref_cache
             from app.enums import StatusEnum
 
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # Mark done to set paid_at.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -3625,13 +3645,13 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.paid_at is None
 
-    def test_paid_at_re_mark_sets_new_timestamp(self, app, auth_client, seed_user, seed_periods):
+    def test_paid_at_re_mark_sets_new_timestamp(self, app, auth_client, seed_user, seed_periods_today):
         """Mark done, revert to projected, mark done again -- paid_at is set both times."""
         with app.app_context():
             from app import ref_cache
             from app.enums import StatusEnum
 
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First mark done.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -3656,11 +3676,11 @@ class TestPaidAtLifecycle:
             assert second_paid_at >= first_paid_at
 
     def test_paid_at_not_set_on_non_settling_status_change(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/<id>/cancel does not set paid_at."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
             assert txn.paid_at is None
 
             response = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -3670,11 +3690,11 @@ class TestPaidAtLifecycle:
             assert txn.paid_at is None
 
     def test_paid_at_preserved_on_non_status_update(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """PATCH /transactions/<id> updating amount only preserves paid_at."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # Mark done to set paid_at.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -3693,11 +3713,11 @@ class TestPaidAtLifecycle:
             assert txn.paid_at is not None
 
     def test_mark_done_idempotent_updates_paid_at(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transactions/<id>/mark-done twice both succeed; paid_at is set each time."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods)
+            txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First mark done.
             resp1 = auth_client.post(f"/transactions/{txn.id}/mark-done")
