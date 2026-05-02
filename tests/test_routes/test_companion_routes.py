@@ -128,7 +128,7 @@ class TestRouteAccess:
     """Verify access control on companion routes."""
 
     def test_companion_gets_200_with_visible_transactions(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion GET /companion/period/<id> returns 200 with visible names.
 
@@ -139,12 +139,12 @@ class TestRouteAccess:
         """
         t_vis = _make_template(seed_user, companion_visible=True, name="Groceries")
         t_hid = _make_template(seed_user, companion_visible=False, name="Mortgage")
-        _make_txn(seed_user, seed_periods[0], t_vis, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], t_hid, name="Mortgage")
+        _make_txn(seed_user, seed_periods_today[0], t_vis, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], t_hid, name="Mortgage")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Groceries" in html
@@ -171,7 +171,7 @@ class TestRouteAccess:
 
         When pay_period_service.get_current_period returns None,
         the route should gracefully render the empty state.
-        Note: seed_periods is not included, so the owner has no periods.
+        Note: seed_periods_today is not included, so the owner has no periods.
         """
         comp = _login_companion(app)
         resp = comp.get("/companion/")
@@ -187,24 +187,24 @@ class TestPeriodNavigation:
     """Verify period navigation routes and arrow rendering."""
 
     def test_companion_period_view_valid(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.3: GET /companion/period/<valid_id> returns 200.
 
         Shows the correct period's transactions.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[1], template, name="Groceries P1")
+        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries P1")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[1].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[1].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Groceries P1" in html
 
     def test_companion_period_view_other_owner(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion accessing another owner's period gets 404."""
         second_user = User(
@@ -231,7 +231,7 @@ class TestPeriodNavigation:
         assert resp.status_code == 404
 
     def test_companion_period_view_nonexistent(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion accessing a non-existent period gets 404."""
         comp = _login_companion(app)
@@ -239,56 +239,56 @@ class TestPeriodNavigation:
         assert resp.status_code == 404
 
     def test_prev_next_links_present(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Response HTML contains previous/next period links when applicable.
 
         Viewing period[1] (middle period) should show both arrows.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[1], template, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[1].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[1].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Previous link points to period[0].
-        assert f"/companion/period/{seed_periods[0].id}" in html
+        assert f"/companion/period/{seed_periods_today[0].id}" in html
         # Next link points to period[2].
-        assert f"/companion/period/{seed_periods[2].id}" in html
+        assert f"/companion/period/{seed_periods_today[2].id}" in html
 
     def test_no_prev_link_on_first_period(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """First period has no previous link (no chevron-left href).
 
         Viewing period[0] should not contain a link to a previous period.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         # There should be a next link but no previous link.
-        assert f"/companion/period/{seed_periods[1].id}" in html
+        assert f"/companion/period/{seed_periods_today[1].id}" in html
         # The chevron-left should not be an anchor.
         assert "bi-chevron-left" not in html or (
             "bi-chevron-left" in html
-            and f"/companion/period/{seed_periods[0].id}" not in html
+            and f"/companion/period/{seed_periods_today[0].id}" not in html
         )
 
     def test_no_next_link_on_last_period(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Last period has no next link.
 
         Viewing the last period should not contain a link to a next period.
         """
-        last_period = seed_periods[-1]
+        last_period = seed_periods_today[-1]
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
         _make_txn(seed_user, last_period, template, name="Groceries")
         db.session.commit()
@@ -298,14 +298,14 @@ class TestPeriodNavigation:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Previous link should exist (second-to-last period).
-        prev_period = seed_periods[-2]
+        prev_period = seed_periods_today[-2]
         assert f"/companion/period/{prev_period.id}" in html
 
     def test_owner_redirected_from_period_view(
-        self, auth_client, seed_periods,
+        self, auth_client, seed_periods_today,
     ):
         """Owner GET /companion/period/<id> redirects to /grid."""
-        resp = auth_client.get(f"/companion/period/{seed_periods[0].id}")
+        resp = auth_client.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 302
         assert "/grid" in resp.headers["Location"]
 
@@ -317,7 +317,7 @@ class TestEntryIntegration:
     """Verify companion can use entry CRUD routes on visible transactions."""
 
     def test_companion_can_add_entry(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.5: Companion adds entry to visible tracked transaction.
 
@@ -326,7 +326,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
@@ -346,7 +346,7 @@ class TestEntryIntegration:
         assert entry.description == "Kroger"
 
     def test_companion_entry_user_id_is_companion(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.6: Entry.user_id is the companion's ID, not the owner's.
 
@@ -356,7 +356,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -374,13 +374,13 @@ class TestEntryIntegration:
         assert entry.user_id == companion.id
 
     def test_companion_cannot_access_non_visible_entries(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.7: Companion gets 404 on entry route for non-visible transaction."""
         template = _make_template(
             seed_user, companion_visible=False, track=True, name="Hidden",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Hidden")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Hidden")
         db.session.commit()
 
         comp = _login_companion(app)
@@ -392,7 +392,7 @@ class TestEntryIntegration:
         assert resp.status_code == 404
 
     def test_companion_cannot_guess_txn_id(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.8: Random/non-existent txn_id returns 404."""
         comp = _login_companion(app)
@@ -404,13 +404,13 @@ class TestEntryIntegration:
         assert resp.status_code == 404
 
     def test_companion_can_delete_entry(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion can delete an entry on a visible tracked transaction."""
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         entry = TransactionEntry(
             transaction_id=txn.id,
             user_id=seed_companion["user"].id,
@@ -431,13 +431,13 @@ class TestEntryIntegration:
         assert deleted is None
 
     def test_companion_can_edit_entry(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion can edit an entry on a visible tracked transaction."""
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         entry = TransactionEntry(
             transaction_id=txn.id,
             user_id=seed_companion["user"].id,
@@ -467,7 +467,7 @@ class TestMarkDoneIntegration:
     """Verify companion mark-done through the transactions route."""
 
     def test_companion_marks_visible_projected_as_paid(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.9: Companion marks visible PROJECTED transaction as Paid.
 
@@ -476,7 +476,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
@@ -488,13 +488,13 @@ class TestMarkDoneIntegration:
         assert txn.status_id == done_id
 
     def test_companion_mark_done_non_visible_rejected(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.10: Companion gets 404 for mark-done on non-visible transaction."""
         template = _make_template(
             seed_user, companion_visible=False, name="Mortgage",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Mortgage")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Mortgage")
         db.session.commit()
 
         comp = _login_companion(app)
@@ -502,7 +502,7 @@ class TestMarkDoneIntegration:
         assert resp.status_code == 404
 
     def test_companion_view_shows_paid_indicator_after_mark_done(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """After marking as Paid, companion view shows the Paid indicator.
 
@@ -512,7 +512,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
@@ -520,13 +520,13 @@ class TestMarkDoneIntegration:
         assert resp.status_code == 200
 
         # Now load the companion view for this period.
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Paid" in html
 
     def test_companion_mark_done_auto_populates_actual_from_entries(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Mark-done on tracked transaction with entries auto-computes actual.
 
@@ -537,7 +537,7 @@ class TestMarkDoneIntegration:
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
@@ -567,7 +567,7 @@ class TestEntryDataInHTML:
     """Verify companion view renders correct entry progress information."""
 
     def test_tracked_txn_with_entries_shows_progress(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Visible tracked transaction with entries shows "$X / $Y" progress.
 
@@ -578,7 +578,7 @@ class TestEntryDataInHTML:
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
@@ -589,14 +589,14 @@ class TestEntryDataInHTML:
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "$200 / $500" in html
         assert "$300 left" in html
 
     def test_tracked_txn_without_entries_shows_estimated(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Visible tracked transaction without entries shows estimated amount only.
 
@@ -606,13 +606,13 @@ class TestEntryDataInHTML:
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
         _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "$500" in html
@@ -620,27 +620,27 @@ class TestEntryDataInHTML:
         assert "/ $500" not in html
 
     def test_non_tracked_txn_shows_estimated_amount(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Visible non-tracked transaction shows estimated amount."""
         template = _make_template(
             seed_user, companion_visible=True, track=False, name="Birthday Gift",
         )
         _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Birthday Gift", amount=Decimal("100.00"),
         )
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Birthday Gift" in html
         assert "$100" in html
 
     def test_over_budget_shows_over_indicator(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Over-budget transaction shows "over" indicator with danger styling.
 
@@ -651,7 +651,7 @@ class TestEntryDataInHTML:
             seed_user, companion_visible=True, track=True, name="Gas",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
@@ -662,7 +662,7 @@ class TestEntryDataInHTML:
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "$120 / $100" in html
@@ -677,17 +677,17 @@ class TestEmptyStates:
     """Verify empty state rendering."""
 
     def test_period_with_no_visible_transactions(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Period with no visible transactions shows empty state message."""
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "No transactions for this period" in html
 
     def test_period_with_only_non_visible_shows_empty(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Period with only non-visible transactions shows empty state.
 
@@ -697,11 +697,11 @@ class TestEmptyStates:
         template = _make_template(
             seed_user, companion_visible=False, name="Mortgage",
         )
-        _make_txn(seed_user, seed_periods[0], template, name="Mortgage")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Mortgage")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "No transactions for this period" in html
@@ -715,23 +715,23 @@ class TestMarkPaidButtonVisibility:
     """Verify the Mark as Paid button appears only for PROJECTED transactions."""
 
     def test_projected_transaction_shows_mark_paid_button(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """PROJECTED transaction shows the 'Mark as Paid' button."""
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Mark as Paid" in html
 
     def test_paid_transaction_shows_paid_indicator(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Paid (Done) transaction shows 'Paid' indicator, not button.
 
@@ -741,12 +741,12 @@ class TestMarkPaidButtonVisibility:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         txn.status_id = ref_cache.status_id(StatusEnum.DONE)
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Should show the paid indicator, not the button.
@@ -762,7 +762,7 @@ class TestEntryListLazyLoading:
     """Verify tracked transactions include HTMX entry list loading."""
 
     def test_tracked_txn_has_entry_list_loader(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Tracked transaction card includes hx-get for entry list.
 
@@ -773,11 +773,11 @@ class TestEntryListLazyLoading:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         # The entry list loader points to the entries route.
@@ -785,7 +785,7 @@ class TestEntryListLazyLoading:
         assert 'hx-trigger="load"' in html
 
     def test_non_tracked_txn_has_no_entry_loader(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Non-tracked transaction card does NOT include entry list loader.
 
@@ -794,11 +794,11 @@ class TestEntryListLazyLoading:
         template = _make_template(
             seed_user, companion_visible=True, track=False, name="Birthday",
         )
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Birthday")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Birthday")
         db.session.commit()
 
         comp = _login_companion(app)
-        resp = comp.get(f"/companion/period/{seed_periods[0].id}")
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert f"/transactions/{txn.id}/entries" not in html
