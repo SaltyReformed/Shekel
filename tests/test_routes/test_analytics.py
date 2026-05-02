@@ -29,18 +29,12 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
     This module relies on calendar-anchored seed_periods (Jan-May 2026)
     and asserts on tax_year=2026, calendar 2026 due_dates, and other
-    calendar-anchored values.  Patching the test module's ``date`` too
-    keeps inline ``date.today()`` calls consistent with
-    pay_period_service's view of today.
+    calendar-anchored values.  Auto-discovery patches every loaded
+    module's ``date``/``datetime`` symbols so production services
+    (e.g. spending_trend_service) consuming ``date.today()`` agree
+    with the test's view of "today" regardless of wall-clock date.
     """
-    freeze_today(
-        monkeypatch,
-        date(2026, 3, 20),
-        modules=(
-            "app.services.pay_period_service",
-            "tests.test_routes.test_analytics",
-        ),
-    )
+    freeze_today(monkeypatch, date(2026, 3, 20))
 
 
 def _create_paid_expense_for_route_test(db, seed_user, seed_periods,

@@ -30,18 +30,11 @@ def _freeze_today_inside_seed_range(monkeypatch):
     Loan tests use specific origination_date values, inline
     ``date.today()`` calls (e.g. ``first_of_this_month =
     date.today().replace(day=1)``), and assertions like
-    ``rule.end_date > date.today()``.  Patching the test module's
-    ``date`` keeps every layer (test, fixture, service) on the same
-    frozen "today".
+    ``rule.end_date > date.today()``.  Auto-discovery patches every
+    loaded module so test, fixture, and production services all see
+    the same frozen "today" regardless of wall-clock date.
     """
-    freeze_today(
-        monkeypatch,
-        date(2026, 3, 20),
-        modules=(
-            "app.services.pay_period_service",
-            "tests.test_routes.test_loan",
-        ),
-    )
+    freeze_today(monkeypatch, date(2026, 3, 20))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

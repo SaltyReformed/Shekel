@@ -42,17 +42,11 @@ def _freeze_today_inside_seed_range(monkeypatch):
     origination_date=date(2026, 1, 1) that aligns specific seed_periods
     indices to specific amortization months, and inline ``date.today()``
     calls (e.g. ``start = date.today() - timedelta(days=14)``).
-    Patching the test module's ``date`` keeps the inline computations
-    consistent with ``pay_period_service``'s view of "today".
+    Auto-discovery patches every loaded module so test, fixture, and
+    production services all see the same frozen "today" regardless of
+    wall-clock date.
     """
-    freeze_today(
-        monkeypatch,
-        date(2026, 3, 20),
-        modules=(
-            "app.services.pay_period_service",
-            "tests.test_routes.test_savings",
-        ),
-    )
+    freeze_today(monkeypatch, date(2026, 3, 20))
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import savings_goal_service
