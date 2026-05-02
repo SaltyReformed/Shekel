@@ -8,6 +8,7 @@ spending comparison, and full integration.
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
@@ -290,36 +291,51 @@ class TestAlerts:
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
             assert len(stale) == 0
 
-    def test_alert_negative_balance(self, app, seed_user, seed_periods, db):
-        """Negative balance alert for first future period with balance < 0."""
+    @patch("app.services.dashboard_service.date")
+    def test_alert_negative_balance(self, mock_date, app, seed_user, seed_periods, db):
+        """Negative balance alert for first future period with balance < 0.
+
+        ``date.today()`` is mocked so the test deterministically picks a
+        seed_periods entry that is in the future.  Without the mock, the
+        original implementation looped over ``seed_periods`` looking for
+        ``p.start_date > date.today()`` and silently skipped the entire
+        assertion block when no period matched (e.g. once today advances
+        past the last seed_period on May 8, 2026).
+        """
+        # Mock today to March 13, 2026 (start of seed_periods[5]) so
+        # seed_periods[6] through [9] are all unambiguously in the
+        # future, both for this test's setup and the production
+        # ``_compute_alerts`` call site that also reads ``date.today()``.
+        mock_date.today.return_value = date(2026, 3, 13)
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
         with app.app_context():
-            # Simulate balance results with a future negative period.
-            balance_results = {}
-            for p in seed_periods:
-                balance_results[p.id] = Decimal("100.00")
-            # Make a future period negative.
-            future_period = None
-            for p in seed_periods:
-                if p.start_date > date.today():
-                    future_period = p
-                    break
-            if future_period:
-                balance_results[future_period.id] = Decimal("-500.00")
+            # Seed positive balances for every period, then knock the
+            # first post-today period (index 6) negative.  The
+            # production code returns the FIRST future period whose
+            # balance < 0; by construction that is index 6.
+            balance_results = {p.id: Decimal("100.00") for p in seed_periods}
+            future_period = seed_periods[6]
+            balance_results[future_period.id] = Decimal("-500.00")
 
-                # Need a recent anchor to avoid stale alert noise.
-                _add_anchor_history(
-                    db.session, seed_user["account"],
-                    seed_periods[0], "1000.00", days_ago=1,
-                )
-                db.session.commit()
+            # Need a recent anchor so the stale-anchor alert does not
+            # also fire (the test isolates the negative-balance alert).
+            _add_anchor_history(
+                db.session, seed_user["account"],
+                seed_periods[0], "1000.00", days_ago=1,
+            )
+            db.session.commit()
 
-                alerts = dashboard_service._compute_alerts(
-                    seed_user["account"], seed_user["settings"],
-                    balance_results, seed_periods[0], seed_periods,
-                )
-                neg = [a for a in alerts if a["type"] == "negative_balance"]
-                assert len(neg) == 1
-                assert neg[0]["severity"] == "danger"
+            alerts = dashboard_service._compute_alerts(
+                seed_user["account"], seed_user["settings"],
+                balance_results, seed_periods[0], seed_periods,
+            )
+            neg = [a for a in alerts if a["type"] == "negative_balance"]
+            assert len(neg) == 1, (
+                f"Expected exactly one negative_balance alert; got {len(neg)}: "
+                f"{[a['message'] for a in alerts]}"
+            )
+            assert neg[0]["severity"] == "danger"
 
     def test_alert_no_anchor_history(self, app, seed_user, seed_periods):
         """No anchor history -> stale anchor alert."""
@@ -331,33 +347,46 @@ class TestAlerts:
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
             assert len(stale) == 1
 
-    def test_alerts_sorted_by_severity(self, app, seed_user, seed_periods, db):
-        """Danger alerts come before warning alerts."""
+    @patch("app.services.dashboard_service.date")
+    def test_alerts_sorted_by_severity(
+        self, mock_date, app, seed_user, seed_periods, db,
+    ):
+        """Danger alerts come before warning alerts.
+
+        Mocked today and explicit period selection guarantee both a
+        danger (negative balance) and warning (stale anchor) alert
+        are produced.  The previous implementation wrapped both
+        assertions in ``if alerts >= 2`` plus ``if danger_idx is not
+        None and warning_idx is not None`` so the test would silently
+        no-op once today drifted past the last seed_period.
+        """
+        mock_date.today.return_value = date(2026, 3, 13)
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
         with app.app_context():
-            # Create both stale anchor (warning) and negative balance (danger).
-            balance_results = {}
-            future = None
-            for p in seed_periods:
-                balance_results[p.id] = Decimal("100.00")
-                if p.start_date > date.today() and future is None:
-                    future = p
-            if future:
-                balance_results[future.id] = Decimal("-100.00")
-            # No anchor history -> stale anchor warning.
+            # Positive balances everywhere except the first future
+            # period (index 6), which is negative -> danger alert.
+            balance_results = {p.id: Decimal("100.00") for p in seed_periods}
+            balance_results[seed_periods[6].id] = Decimal("-100.00")
+
+            # No anchor history is seeded -> stale anchor warning.
             alerts = dashboard_service._compute_alerts(
                 seed_user["account"], seed_user["settings"],
                 balance_results, seed_periods[0], seed_periods,
             )
-            if len(alerts) >= 2:
-                severities = [a["severity"] for a in alerts]
-                danger_idx = next(
-                    (i for i, s in enumerate(severities) if s == "danger"), None,
-                )
-                warning_idx = next(
-                    (i for i, s in enumerate(severities) if s == "warning"), None,
-                )
-                if danger_idx is not None and warning_idx is not None:
-                    assert danger_idx < warning_idx
+            severities = [a["severity"] for a in alerts]
+            assert "danger" in severities, (
+                f"Expected at least one danger alert; got: {severities}"
+            )
+            assert "warning" in severities, (
+                f"Expected at least one warning alert; got: {severities}"
+            )
+            danger_idx = severities.index("danger")
+            warning_idx = severities.index("warning")
+            assert danger_idx < warning_idx, (
+                f"Severity sort broken: danger at {danger_idx} "
+                f"is not before warning at {warning_idx}"
+            )
 
     def test_no_alerts_clean_state(self, app, seed_user, seed_periods, db):
         """No alerts when everything is current and positive."""

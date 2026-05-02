@@ -2944,57 +2944,108 @@ class TestARMContractualPaymentBug:
             Term:                360 months
             Origination:         Dec 1, 2018
             Payment day:         1st
-            Remaining:           272 months (as of April 2026)
 
-        Correct P&I: M($178,103.41, 6.875%, 272) = $1,293.96
-        Bug produced: M($202,000, 6.875%, 360) = $1,327.00 (+$33.04)
+        The bug produced M($202,000, 6.875%, 360) = $1,327.00 by always
+        using original_principal and the full term.  The correct ARM
+        formula is M(current_principal, rate, remaining_months); the
+        exact dollar value depends on remaining_months which advances
+        each calendar month.  We verify two stable invariants:
 
-        The monthly payment must be $1,293.96 to the penny.
-        Tests both paths:
-          1. calculate_summary with rate_changes (engine-level guard)
-          2. get_loan_projection with is_arm=True, no rate_changes
-             (the actual user scenario -- new ARM, no history)
+          1. The monthly_payment equals the re-amortization formula
+             applied to the CURRENT remaining months (not 272 forever).
+          2. The monthly_payment is NOT the contractual value
+             ($1,327.00) -- this is the witness for the original bug.
+
+        Tests both engine paths:
+          A. calculate_summary with rate_changes (engine-level guard)
+             -- remaining_months passed explicitly, so this is stable.
+          B. get_loan_projection with is_arm=True, no rate_changes
+             -- the actual user scenario; remaining_months computed
+             from origination_date and date.today().
         """
-        # Path 1: Engine-level guard via rate_changes.
+        origination = date(2018, 12, 1)
+        current_principal = Decimal("178103.41")
+        original_principal = Decimal("202000.00")
+        rate = Decimal("0.06875")
+        term = 360
+
+        # The contractual (buggy) payment is the regression witness.
+        # If a future change reverts the fix and re-introduces the
+        # contractual path, monthly_payment would equal this value
+        # and assertion (2) would catch the regression.
+        contractual_payment = calculate_monthly_payment(
+            original_principal, rate, term,
+        )
+        assert contractual_payment == Decimal("1327.00"), (
+            "Setup sanity check: contractual formula on the exact "
+            "user scenario must equal $1,327.00 (the bug witness)."
+        )
+
+        # Path A: Engine-level guard via rate_changes.  remaining_months
+        # is passed explicitly so the expected value is fully determined
+        # by the inputs (no date.today() involvement).
         rate_changes = [
             RateChangeRecord(
                 effective_date=date(2025, 12, 1),
-                interest_rate=Decimal("0.06875"),
+                interest_rate=rate,
             ),
         ]
         summary = calculate_summary(
-            current_principal=Decimal("178103.41"),
-            annual_rate=Decimal("0.06875"),
+            current_principal=current_principal,
+            annual_rate=rate,
             remaining_months=272,
-            origination_date=date(2018, 12, 1),
+            origination_date=origination,
             payment_day=1,
-            term_months=360,
-            original_principal=Decimal("202000.00"),
+            term_months=term,
+            original_principal=original_principal,
             rate_changes=rate_changes,
         )
-        assert summary.monthly_payment == Decimal("1293.96"), (
-            f"Expected $1,293.96, got {summary.monthly_payment}"
+        path_a_expected = calculate_monthly_payment(
+            current_principal, rate, 272,
+        )
+        # Hand-computed sanity: M($178,103.41, 6.875%, 272) = $1,293.96.
+        assert path_a_expected == Decimal("1293.96")
+        assert summary.monthly_payment == path_a_expected, (
+            f"Path A: monthly_payment must equal "
+            f"M(${current_principal}, {rate}, 272) = {path_a_expected}, "
+            f"got {summary.monthly_payment}"
+        )
+        assert summary.monthly_payment != contractual_payment, (
+            "Path A regression: monthly_payment reverted to contractual "
+            f"value ${contractual_payment} (the original bug)."
         )
 
-        # Path 2: get_loan_projection with is_arm=True, no rate_changes.
-        # This is the exact scenario the user hit: new ARM loan, no
-        # rate history, displayed payment was $1,327.00 instead of $1,293.96.
+        # Path B: get_loan_projection with is_arm=True, no rate_changes.
+        # The exact user scenario.  remaining_months is derived from
+        # date.today() inside calculate_remaining_months, so the
+        # expected value must be computed the same way to stay valid
+        # as time advances.  The bug-regression check (NOT equal to
+        # contractual value) is unchanged.
+        remaining_today = calculate_remaining_months(origination, term)
+        path_b_expected = calculate_monthly_payment(
+            current_principal, rate, remaining_today,
+        )
         params = type("P", (), {
-            "origination_date": date(2018, 12, 1),
-            "term_months": 360,
-            "original_principal": Decimal("202000.00"),
-            "current_principal": Decimal("178103.41"),
-            "interest_rate": Decimal("0.06875"),
+            "origination_date": origination,
+            "term_months": term,
+            "original_principal": original_principal,
+            "current_principal": current_principal,
+            "interest_rate": rate,
             "payment_day": 1,
             "is_arm": True,
         })()
         proj = get_loan_projection(
             params,
-            schedule_start=date(2018, 12, 1),
+            schedule_start=origination,
         )
-        assert proj.summary.monthly_payment == Decimal("1293.96"), (
-            f"Projection expected $1,293.96, got "
-            f"{proj.summary.monthly_payment}"
+        assert proj.summary.monthly_payment == path_b_expected, (
+            f"Path B: projected monthly_payment must equal "
+            f"M(${current_principal}, {rate}, {remaining_today}) = "
+            f"{path_b_expected}, got {proj.summary.monthly_payment}"
+        )
+        assert proj.summary.monthly_payment != contractual_payment, (
+            "Path B regression: projected monthly_payment reverted to "
+            f"contractual value ${contractual_payment} (the original bug)."
         )
 
     # ── Edge cases ───────────────────────────────────────────────

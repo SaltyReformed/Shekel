@@ -165,14 +165,26 @@ class TestBillsDisplay:
             assert b"Rent Payment" in resp.data
 
     def test_dashboard_hides_paid_bills(self, app, auth_client, seed_user, seed_periods, db):
-        """Settled expense NOT in upcoming bills list."""
+        """Settled expense NOT in upcoming bills list.
+
+        The bill must be placed in the CURRENT period (the period the
+        dashboard window includes); otherwise the bill is filtered out
+        by the period window rather than the status filter, and the
+        test would silently pass without actually exercising the
+        Paid-status exclusion.  Falling back to seed_periods[0] when
+        today is outside the seeded range mirrors the production
+        graceful-degradation path.
+        """
         with app.app_context():
+            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            if cur is None:
+                cur = seed_periods[0]
             _add_txn(
-                db.session, seed_user, seed_periods[0],
+                db.session, seed_user, cur,
                 "Already Paid", "500.00",
                 status_enum=StatusEnum.DONE,
                 actual_amount="500.00",
-                due_date=date(2026, 1, 5),
+                due_date=cur.start_date,
             )
             db.session.commit()
 
