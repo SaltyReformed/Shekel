@@ -16,28 +16,23 @@ to another user.
 # data creation.
 # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
 
-from datetime import date as _real_date
+from datetime import date
+
+from tests._test_helpers import freeze_today
 
 
 def _freeze_today_to_period_5(monkeypatch):
-    """Patch date.today() in pay_period_service to return a date in period 5.
+    """Freeze date.today() to 2026-03-20, which falls in seed_periods[5].
 
     The seed_periods fixture generates 10 biweekly periods starting
-    2026-01-02. Period 5 runs 2026-03-13 to 2026-03-26. Freezing today
-    to 2026-03-20 keeps the grid offset calculations stable regardless
+    2026-01-02; period 5 runs 2026-03-13 to 2026-03-26.  Freezing today
+    inside that range keeps grid offset calculations stable regardless
     of the actual wall-clock date.
+
+    Thin wrapper around the shared ``freeze_today`` helper so existing
+    call sites in this file stay terse.
     """
-    target = _real_date(2026, 3, 20)
-
-    class _FrozenDate(_real_date):
-        """Date subclass with a fixed today() for test isolation."""
-
-        @classmethod
-        def today(cls):
-            """Return the frozen date."""
-            return target
-
-    monkeypatch.setattr("app.services.pay_period_service.date", _FrozenDate)
+    freeze_today(monkeypatch, date(2026, 3, 20))
 
 
 class TestGridIsolation:
