@@ -428,6 +428,92 @@ cp /opt/shekel/.env /mnt/nas/backups/shekel/env_backup
 
 Alternatively, store the three secrets in a password manager (e.g., Bitwarden, 1Password) as a separate recovery path.
 
+### 4.9 HSTS Preload Decision
+
+The Flask after-request hook in `app/__init__.py:_register_security_headers`
+emits `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every
+response.  The `preload` directive is intentionally OFF.
+
+**Why this matters.** `preload` is an instruction to browsers to honor HSTS for
+the domain even on the very first visit -- before any HTTP response could carry
+the header.  It works by submitting the domain to a list maintained by the
+Chromium project (consumed by Chrome, Firefox, Safari, Edge).  Once a domain is
+on the list, **delisting takes 6-12 weeks AND requires removing the `preload`
+directive from the HSTS header for the duration**.  During that window, every
+subdomain MUST be HTTPS-only.
+
+**To enable preload (ONLY when you are certain you are committing for years).**
+
+1. Confirm every subdomain you operate is HTTPS-only.  Test with
+   `curl -I http://<subdomain>.<your-domain>/` and verify a 301 to https://.
+2. Edit `app/__init__.py` and add `; preload` to the
+   `Strict-Transport-Security` value.
+3. Deploy.  Run for at least one week to confirm no users hit
+   `https://<subdomain>` and get a TLS error.
+4. Submit the apex domain at <https://hstspreload.org/>.  Wait for the email
+   confirmation (typically 4-12 weeks for inclusion in browser releases).
+
+**To disable preload after submission.**
+
+Removing `preload` from the header is a precondition for delisting; it does not
+cause delisting on its own.  Submit a removal request at
+<https://hstspreload.org/removal/>.  Allow 6-12 weeks before any subdomain can
+go back to HTTP.
+
+### 4.10 CDN Vendor Refresh Procedure
+
+The application serves Bootstrap, Bootstrap Icons, htmx, Chart.js, Inter, and
+JetBrains Mono from `app/static/vendor/` rather than a CDN (audit F-037).  The
+CSP forbids external script/style/font origins so a refresh requires both
+fetching the new file and updating the manifest.
+
+**Manifest.** `app/static/vendor/VERSIONS.txt` records each upstream URL and
+its SHA-384 hash.  The hash is the source of truth for which exact bytes are
+served.
+
+**Refresh procedure.**
+
+1. **Bootstrap, Bootstrap Icons, htmx, Chart.js**
+
+   ```bash
+   cd app/static/vendor
+   # Replace the file with the desired version.
+   curl -fL <upstream URL> -o <vendor-path>
+   # Compute the new SHA-384.
+   openssl dgst -sha384 -binary <vendor-path> | openssl base64 -A
+   ```
+
+   Update the matching line in `VERSIONS.txt` with the new URL and hash.
+
+2. **Inter / JetBrains Mono fonts.**  Run the helper script:
+
+   ```bash
+   python scripts/vendor_google_fonts.py
+   ```
+
+   The script fetches the upstream Google Fonts CSS, downloads the latin and
+   latin-ext woff2 files, rewrites URLs to local paths, and emits a fresh
+   `app/static/vendor/fonts/fonts.css`.  After running, recompute the SHA-384
+   hashes for `fonts.css` and each `*.woff2` and update `VERSIONS.txt`.
+
+3. **Verify.**  Start the app and exercise every dashboard
+   (analytics, debt strategy, investment, loan, retirement) plus the budget
+   grid.  The browser DevTools Network tab should show every asset loading
+   from `/static/vendor/...` with no CSP violations in the Console.
+
+4. **Test.**  Run the security-headers and cache-control test suites:
+
+   ```bash
+   pytest tests/test_integration/test_security_headers.py \
+          tests/test_adversarial/test_cache_control.py -v
+   ```
+
+   The `test_static_asset_path_resolves` test ensures every vendored asset
+   referenced by templates exists at its expected path.
+
+5. **Commit.**  One commit per refresh; commit message names the package and
+   version (e.g. `chore(vendor): bump Chart.js 4.4.7 -> 4.5.0`).
+
 ---
 
 ## 5. Monitoring & Observability

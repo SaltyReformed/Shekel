@@ -4,7 +4,7 @@
 {% if params is defined and params %}
 <div class="d-flex justify-content-between mb-2" id="interest-rate-display" hx-swap-oob="true">
   <span class="text-muted">Interest Rate</span>
-  <span class="fw-bold" style="color: var(--shekel-accent);">
+  <span class="fw-bold text-accent">
     {{ "%.3f"|format(params.interest_rate|float * 100) }}%
     {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
   </span>

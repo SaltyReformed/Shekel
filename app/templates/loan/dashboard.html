@@ -100,13 +100,13 @@
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Current Principal</span>
-              <span class="fs-5 fw-bold font-mono" style="color: var(--shekel-accent);">
+              <span class="fs-5 fw-bold font-mono text-accent">
                 ${{ "{:,.2f}".format(params.current_principal|float) }}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
               <span class="text-muted">Interest Rate</span>
-              <span class="fw-bold" style="color: var(--shekel-accent);">
+              <span class="fw-bold text-accent">
                 {{ "%.3f"|format(params.interest_rate|float * 100) }}%
                 {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
               </span>
@@ -128,10 +128,9 @@
               <span class="text-muted" title="Principal &amp; Interest">Monthly P&I</span>
               <span class="fw-bold font-mono">${{ "{:,.2f}".format(summary.monthly_payment|float) }}</span>
             </div>
-            <div class="d-flex justify-content-between mb-2" id="total-payment-display"
-                 {% if not total_payment %}style="display:none"{% endif %}>
+            <div class="d-flex justify-content-between mb-2{% if not total_payment %} d-none{% endif %}" id="total-payment-display">
               <span class="text-muted">Total Monthly (with escrow)</span>
-              <span class="fw-bold font-mono" style="color: var(--shekel-accent);">
+              <span class="fw-bold font-mono text-accent">
                 {% if total_payment %}${{ "{:,.2f}".format(total_payment|float) }}{% endif %}
               </span>
             </div>
@@ -210,11 +209,11 @@
       </div>
       <div class="card-body">
         <canvas id="payoff-chart"
+                class="canvas-max-h-400"
                 data-labels='{{ chart_labels|tojson }}'
                 data-original='{{ chart_original|tojson }}'
                 data-committed='{{ chart_committed|tojson }}'
-                data-floor='{{ chart_floor|tojson }}'
-                style="max-height: 400px;"></canvas>
+                data-floor='{{ chart_floor|tojson }}'></canvas>
       </div>
     </div>
   </div>
@@ -341,7 +340,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payoff_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>

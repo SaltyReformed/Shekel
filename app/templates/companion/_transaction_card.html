@@ -27,10 +27,10 @@
 
     {# Progress bar for tracked transactions with entries #}
     {% if ed %}
-    <div class="progress mt-1" style="height: 4px;">
+    <div class="progress mt-1 progress-h-4">
       <div class="progress-bar{% if ed.remaining < 0 %} bg-danger{% endif %}"
            role="progressbar"
-           style="width: {{ [ed.pct, 100]|min }}%"
+           data-progress-pct="{{ [ed.pct, 100]|min }}"
            aria-valuenow="{{ ed.pct|int }}"
            aria-valuemin="0"
            aria-valuemax="100"></div>

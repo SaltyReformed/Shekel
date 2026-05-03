@@ -149,6 +149,26 @@ class ProdConfig(BaseConfig):
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
 
+    # __Host- prefix domain-pins the session cookie to this exact origin.
+    # The prefix is enforced by the browser only when Secure=True is set
+    # (already True above), Path="/" (Flask default), and the cookie has
+    # NO Domain attribute (Flask never emits one when SESSION_COOKIE_DOMAIN
+    # is unset, which is the default and the case here).  See audit
+    # finding F-096.  Modern browsers (Chrome 49+, Firefox 49+, Safari
+    # 11+) honor the prefix; older browsers ignore it gracefully and
+    # treat it as an opaque cookie name.
+    SESSION_COOKIE_NAME = "__Host-session"
+
+    # Remember-me cookie hardening.  Flask-Login's Secure/HttpOnly/SameSite
+    # defaults are False/False/None, so a 30-day authentication credential
+    # would otherwise leak in cleartext on any HTTP fall-through and ride
+    # cross-site requests in a login-CSRF chain.  Mirror the session
+    # cookie's flags exactly so the longer-lived credential is at least
+    # as protected.  See audit finding F-017.
+    REMEMBER_COOKIE_SECURE = True
+    REMEMBER_COOKIE_HTTPONLY = True
+    REMEMBER_COOKIE_SAMESITE = "Lax"
+
     def __init__(self):
         """Validate production-critical settings on instantiation.
 

@@ -1258,3 +1258,134 @@ td.htmx-loading::after {
   color: var(--shekel-danger);
   font-size: 0.8125rem;
 }
+
+/* =============================================
+   N. C-02 INLINE-STYLE MIGRATION
+
+   These utility classes replace the 92 inline ``style="..."``
+   attributes removed to enable a CSP ``style-src 'self'`` policy
+   without ``'unsafe-inline'``.  See audit finding F-036.  Dynamic
+   per-element widths (progress bars whose percentage is computed
+   server-side) live behind ``data-progress-pct`` attributes and are
+   set in JS at runtime via DOM property setters; see
+   ``app/static/js/progress_bar.js``.
+   ============================================= */
+
+/* Default body font-family.  Replaces an inline body
+   ``style="font-family: ..."`` in base.html. */
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Logo images preserve aspect ratio when only ``height`` is set.
+   Bootstrap's reboot does not constrain plain ``<img>`` width, but
+   making the intent explicit prevents future Bootstrap updates from
+   regressing the logo size. */
+.logo-img {
+  width: auto;
+}
+
+/* Cursor pointer for elements that act like buttons but are not. */
+.cursor-pointer {
+  cursor: pointer;
+}
+
+/* Shekel accent foreground colour. */
+.text-accent {
+  color: var(--shekel-accent);
+}
+
+/* Shekel muted foreground.  Distinct from Bootstrap's ``.text-muted``
+   which uses a different palette in dark mode. */
+.text-muted-shekel {
+  color: var(--shekel-text-muted);
+}
+
+/* Sub-Bootstrap-small font sizes used in cell badges and
+   table-row metadata. */
+.fs-mini    { font-size: 0.65rem; }
+.fs-xs      { font-size: 0.75rem; }
+.fs-display { font-size: 2rem; }
+
+/* Progress-bar heights (override Bootstrap's default 1rem). */
+.progress-h-4  { height: 4px; }
+.progress-h-8  { height: 8px; }
+.progress-h-10 { height: 10px; }
+.progress-h-22 { height: 22px; }
+
+/* Canvas max-heights for Chart.js elements -- the chart maintains
+   aspect ratio within these bounds. */
+.canvas-max-h-300 { max-height: 300px; }
+.canvas-max-h-350 { max-height: 350px; }
+.canvas-max-h-400 { max-height: 400px; }
+
+/* Pixel-fixed max-widths for text-truncate columns and small
+   modal-style containers. */
+.mw-px-80   { max-width: 80px; }
+.mw-px-100  { max-width: 100px; }
+.mw-px-130  { max-width: 130px; }
+.mw-px-160  { max-width: 160px; }
+.mw-px-200  { max-width: 200px; }
+.mw-px-500  { max-width: 500px; }
+.mw-px-600  { max-width: 600px; }
+.mw-px-700  { max-width: 700px; }
+
+/* Pixel-fixed widths for compact form controls. */
+.w-px-32  { width: 32px; }
+.w-px-50  { width: 50px; }
+.w-px-90  { width: 90px; }
+.w-px-120 { width: 120px; }
+
+/* Percentage-fixed column widths. */
+.w-pct-40 { width: 40%; }
+
+/* Pixel-fixed min-widths. */
+.min-w-px-60 { min-width: 60px; }
+
+/* Quick-edit input row: take all available flex space without forcing
+   a content-derived minimum width that would push neighbours
+   off-row. */
+.flex-1-min-0 {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Retirement dashboard inputs -- 7 rem at default size, shrinkable
+   down to 5 rem on narrow viewports. */
+.input-rem-7 {
+  width: 7rem;
+  min-width: 5rem;
+  flex-shrink: 1;
+}
+
+/* Chart container: relative positioning so absolutely-positioned
+   Chart.js canvases anchor correctly, plus a 400-px floor so the
+   loading-skeleton has a stable height. */
+.chart-min-h {
+  position: relative;
+  min-height: 400px;
+}
+
+/* Mobile-grid section banners. */
+.mobile-section-income {
+  background-color: var(--shekel-section-income-bg);
+  color: var(--shekel-section-income-text);
+}
+
+.mobile-section-expense {
+  background-color: var(--shekel-section-expense-bg);
+  color: var(--shekel-section-expense-text);
+}
+
+/* Mobile-grid group header banner. */
+.mobile-group-header {
+  background-color: var(--shekel-group-header-bg);
+  font-size: 11px;
+  letter-spacing: 0.8px;
+}
+
+/* Raised-surface background (mobile balance row). */
+.bg-surface-raised {
+  background-color: var(--shekel-surface-raised);
+}
+

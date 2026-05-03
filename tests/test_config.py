@@ -243,6 +243,36 @@ class TestProdConfig:
         assert opts["pool_pre_ping"] is True
         assert opts["connect_args"]["connect_timeout"] == 5
 
+    def test_prodconfig_cookie_hardening(self):
+        """Every cookie flag required by audit C-02 is set on ProdConfig.
+
+        Closes audit findings F-017 (REMEMBER_COOKIE_*) and F-096
+        (SESSION_COOKIE_NAME).  The session cookie hardening
+        (SESSION_COOKIE_SECURE / HTTPONLY / SAMESITE) was already in
+        place pre-C-02 but is asserted here so a future refactor
+        cannot silently drop one of the six flags without breaking
+        this test.
+
+        These are class-level attributes, not instance attributes, so
+        the assertions read directly from ProdConfig (no instance
+        construction needed -- avoids the SECRET_KEY / DATABASE_URL
+        validation in __init__).
+        """
+        # Session cookie -- pre-existing hardening.
+        assert ProdConfig.SESSION_COOKIE_SECURE is True
+        assert ProdConfig.SESSION_COOKIE_HTTPONLY is True
+        assert ProdConfig.SESSION_COOKIE_SAMESITE == "Lax"
+        # Session cookie -- name with __Host- prefix for domain pinning.
+        # The browser only honors the prefix when Secure=True (above)
+        # and Path="/" (Flask default).  See F-096.
+        assert ProdConfig.SESSION_COOKIE_NAME == "__Host-session"
+        # Remember-me cookie -- mirror the session cookie's flags so
+        # the longer-lived auth credential is at least as protected.
+        # See F-017.
+        assert ProdConfig.REMEMBER_COOKIE_SECURE is True
+        assert ProdConfig.REMEMBER_COOKIE_HTTPONLY is True
+        assert ProdConfig.REMEMBER_COOKIE_SAMESITE == "Lax"
+
     def test_totp_key_optional_at_startup(self, monkeypatch):
         """ProdConfig does not crash when TOTP_ENCRYPTION_KEY is missing.
 

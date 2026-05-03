@@ -7,7 +7,7 @@
     <div class="card shadow-sm">
       <div class="card-body">
         <div class="text-center mb-4">
-          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" style="width: auto;">
+          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" class="logo-img">
         </div>
         <form method="POST" action="{{ url_for('auth.register') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

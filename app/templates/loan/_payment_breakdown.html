@@ -18,28 +18,28 @@
         Next payment
         {% endif %}
       </span>
-      <span class="fw-bold font-mono" style="color: var(--shekel-accent);">
+      <span class="fw-bold font-mono text-accent">
         ${{ "{:,.2f}".format(payment_breakdown.total|float) }}
       </span>
     </div>
-    <div class="progress mb-3" style="height: 22px;">
+    <div class="progress mb-3 progress-h-22">
       {% if payment_breakdown.principal_pct > 0 %}
       <div class="progress-bar bg-success" role="progressbar"
-           style="width: {{ payment_breakdown.principal_pct }}%"
+           data-progress-pct="{{ payment_breakdown.principal_pct }}"
            title="Principal: ${{ '{:,.2f}'.format(payment_breakdown.principal|float) }}">
         {% if payment_breakdown.principal_pct >= 8 %}{{ payment_breakdown.principal_pct }}%{% endif %}
       </div>
       {% endif %}
       {% if payment_breakdown.interest_pct > 0 %}
       <div class="progress-bar bg-warning text-dark" role="progressbar"
-           style="width: {{ payment_breakdown.interest_pct }}%"
+           data-progress-pct="{{ payment_breakdown.interest_pct }}"
            title="Interest: ${{ '{:,.2f}'.format(payment_breakdown.interest|float) }}">
         {% if payment_breakdown.interest_pct >= 8 %}{{ payment_breakdown.interest_pct }}%{% endif %}
       </div>
       {% endif %}
       {% if payment_breakdown.escrow_pct > 0 %}
       <div class="progress-bar bg-info" role="progressbar"
-           style="width: {{ payment_breakdown.escrow_pct }}%"
+           data-progress-pct="{{ payment_breakdown.escrow_pct }}"
            title="Escrow: ${{ '{:,.2f}'.format(payment_breakdown.escrow|float) }}">
         {% if payment_breakdown.escrow_pct >= 8 %}{{ payment_breakdown.escrow_pct }}%{% endif %}
       </div>

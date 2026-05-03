@@ -36,7 +36,7 @@
     <div class="row text-center">
       <div class="col-md-3">
         <div class="text-muted small">Current Balance</div>
-        <div class="fs-4 fw-bold font-mono" style="color: var(--shekel-accent);">
+        <div class="fs-4 fw-bold font-mono text-accent">
           ${{ "{:,.2f}".format(current_balance|float) }}
         </div>
       </div>
@@ -76,10 +76,10 @@
         ${{ "{:,.2f}".format(limit_info.ytd|float) }} / ${{ "{:,.2f}".format(limit_info.limit|float) }}
       </span>
     </div>
-    <div class="progress" style="height: 10px;">
-      <div class="progress-bar {% if limit_info.pct >= 90 %}bg-warning{% elif limit_info.pct >= 100 %}bg-danger{% else %}bg-primary{% endif %}"
+    <div class="progress progress-h-10">
+      <div class="progress-bar {% if limit_info.pct >= 100 %}bg-danger{% elif limit_info.pct >= 90 %}bg-warning{% else %}bg-primary{% endif %}"
            role="progressbar"
-           style="width: {{ limit_info.pct }}%"
+           data-progress-pct="{{ limit_info.pct }}"
            aria-valuenow="{{ limit_info.pct }}"
            aria-valuemin="0"
            aria-valuemax="100">
@@ -313,7 +313,7 @@
 
 {% block scripts %}
 {% if params %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/growth_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>

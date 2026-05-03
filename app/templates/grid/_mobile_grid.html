@@ -40,15 +40,14 @@
 
   {# --- Period Panels --- #}
   {% for period in periods %}
-  <div class="mobile-period-panel" data-period-index="{{ loop.index0 }}"
+  <div class="mobile-period-panel{% if not loop.first %} d-none{% endif %}"
+       data-period-index="{{ loop.index0 }}"
        data-period-label="{{ period.label }}"
-       data-period-range="{{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}"
-       {% if not loop.first %}style="display: none;"{% endif %}>
+       data-period-range="{{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}">
 
     {# --- Income Section (collapsible) --- #}
     <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center py-2"
-           style="background-color: var(--shekel-section-income-bg); color: var(--shekel-section-income-text);"
+      <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-income"
            data-bs-toggle="collapse" data-bs-target="#mobile-income-{{ period.id }}"
            aria-expanded="true" aria-controls="mobile-income-{{ period.id }}">
         <span class="fw-bold small text-uppercase">
@@ -84,8 +83,7 @@
             {% if matched %}
               {% if rk.group_name != ns_inc.current_group %}
                 {% set ns_inc.current_group = rk.group_name %}
-                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase"
-                    style="background-color: var(--shekel-group-header-bg); font-size: 11px; letter-spacing: 0.8px;">
+                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
                   {{ rk.group_name }}
                 </li>
               {% endif %}
@@ -136,8 +134,7 @@
 
     {# --- Expense Section (collapsible) --- #}
     <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center py-2"
-           style="background-color: var(--shekel-section-expense-bg); color: var(--shekel-section-expense-text);"
+      <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-expense"
            data-bs-toggle="collapse" data-bs-target="#mobile-expense-{{ period.id }}"
            aria-expanded="true" aria-controls="mobile-expense-{{ period.id }}">
         <span class="fw-bold small text-uppercase">
@@ -173,8 +170,7 @@
             {% if matched %}
               {% if rk.group_name != ns_exp.current_group %}
                 {% set ns_exp.current_group = rk.group_name %}
-                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase"
-                    style="background-color: var(--shekel-group-header-bg); font-size: 11px; letter-spacing: 0.8px;">
+                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
                   {{ rk.group_name }}
                 </li>
               {% endif %}
@@ -225,8 +221,7 @@
 
     {# --- Net Cash Flow Bar --- #}
     {% set net = subtotals[period.id].net %}
-    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded"
-         style="background-color: var(--shekel-surface-raised);">
+    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
       <span class="fw-bold small">Net Cash Flow</span>
       <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
         {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
@@ -243,8 +238,7 @@
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
           Projected Balance
         </span>
-        <span class="font-mono fw-bold fs-5 {{ 'text-danger' if bal < 0 else '' }}"
-              style="{{ 'color: var(--shekel-accent);' if bal >= 0 else '' }}">
+        <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
           ${{ "{:,.2f}".format(bal) }}
         </span>
       </div>

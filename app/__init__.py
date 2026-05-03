@@ -406,25 +406,105 @@ def _register_error_handlers(app):
         return render_template("errors/500.html"), 500
 
 
+# Content Security Policy directives.  Bound at module load (not on
+# every request) because the policy is static -- there is no per-request
+# nonce or hash.  Built as a tuple so the join order is stable and
+# reviewable in diffs.
+#
+# Each origin must be 'self'.  All third-party JS, CSS, and fonts are
+# vendored under app/static/vendor/ (see app/static/vendor/VERSIONS.txt)
+# so external origins can be dropped entirely.  See audit findings
+# F-036, F-037, F-097.
+_CSP_DIRECTIVES = (
+    "default-src 'self'",
+    # Scripts: self only.  No CDN origins, no 'unsafe-inline', no
+    # 'unsafe-eval'.  Inline event handlers (onclick=, onchange=) and
+    # inline <script> blocks are blocked by this policy; all behaviour
+    # is in external JS files under app/static/js/.
+    "script-src 'self'",
+    # Styles: self only.  No 'unsafe-inline' (closes the CSS attribute-
+    # selector keylogging path documented in F-036).  No CDN origins.
+    # Inline style="..." attributes are blocked.  Dynamic per-element
+    # styling (e.g. progress-bar widths) lives behind data-* attributes
+    # and a tiny JS module that sets el.style.* via DOM property setters
+    # (which are allowed by script-src 'self', not style-src).
+    "style-src 'self'",
+    # Fonts: self only.  Inter and JetBrains Mono are vendored; Bootstrap
+    # Icons font travels with its CSS.
+    "font-src 'self'",
+    # Images: self plus data: URIs (used for inline favicons and the
+    # MFA QR code rendered as a data: URL by mfa_service).
+    "img-src 'self' data:",
+    # XHR / fetch / WebSocket: self only.  HTMX uses fetch under the hood.
+    "connect-src 'self'",
+    # Modern clickjacking control.  Authoritative on browsers that
+    # implement CSP Level 2; X-Frame-Options: DENY (set below) is the
+    # legacy fallback.  See audit finding F-097.
+    "frame-ancestors 'none'",
+    # Locks the document base URL to this origin so injected <base href=>
+    # cannot redirect relative URLs through an attacker-controlled prefix.
+    "base-uri 'self'",
+    # Form posts must target this origin.  Defends against an injected
+    # <form action="https://evil/"> exfiltrating credentials.
+    "form-action 'self'",
+)
+_CSP_HEADER = "; ".join(_CSP_DIRECTIVES)
+
+
 def _register_security_headers(app):
-    """Add security headers to every response."""
+    """Add security headers to every response.
+
+    The headers and the CSP closed in this hook implement the audit
+    Phase-1 hardening bundle (Commit C-02).  See findings F-017, F-018,
+    F-019, F-036, F-037, F-096, F-097 for the per-control rationale.
+    """
+    # pylint: disable=import-outside-toplevel
+    from flask import request
 
     @app.after_request
     def set_security_headers(response):
+        # Defense-in-depth headers.  X-Content-Type-Options blocks MIME
+        # sniffing; X-Frame-Options is the legacy clickjacking control
+        # superseded by CSP frame-ancestors but still useful for older
+        # browsers.  Referrer-Policy avoids leaking full URLs to
+        # third-party origins on outbound clicks.  Permissions-Policy
+        # disables three sensors the app never uses.
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = (
             "camera=(), microphone=(), geolocation=()"
         )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
-            "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; "
-            "img-src 'self' data:; "
-            "connect-src 'self'"
+        response.headers["Content-Security-Policy"] = _CSP_HEADER
+
+        # HSTS: 1 year max-age, includeSubDomains.  All Shekel traffic
+        # already arrives via HTTPS (Cloudflare Tunnel + nginx), so the
+        # header simply locks browsers into that posture for a year.
+        # 'preload' is intentionally OFF.  Adding 'preload' is a one-way
+        # commitment to the public HSTS preload list (delisting takes
+        # months); see docs/runbook.md "HSTS preload" for the procedure
+        # to enable it later if desired.  Audit finding F-018.
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
         )
+
+        # Cache-Control: no-store on every dynamic response so a
+        # logged-out user cannot reconstruct authenticated pages from
+        # the browser back button.  Audit finding F-019.
+        #
+        # Static assets are intentionally excluded -- they carry no
+        # session data, are versioned by content (vendor/), and need
+        # to be cacheable so the user does not re-fetch Bootstrap on
+        # every navigation.  In production nginx serves /static/
+        # before Flask sees the request and sets its own
+        # ``Cache-Control: public, immutable``; in dev/test Flask's
+        # built-in static handler is used and we must opt out here.
+        if request.endpoint != "static":
+            response.headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate"
+            )
+            # HTTP/1.0 fallback for caches that ignore Cache-Control.
+            response.headers["Pragma"] = "no-cache"
         return response
 
 

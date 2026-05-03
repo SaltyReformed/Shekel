@@ -7,17 +7,12 @@
   <title>{% block title %}Shekel{% endblock %}</title>
   <meta name="csrf-token" content="{{ csrf_token() }}">
 
-  <!-- Bootstrap 5 CSS -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet"
-    integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
-
-  <!-- Bootstrap Icons -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-
-  <!-- Google Fonts: Inter + JetBrains Mono -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
+     The CSP forbids external origins (audit F-037), so every CSS/JS/font
+     reference must resolve via url_for('static', ...). #}
+  <link href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='vendor/bootstrap-icons/bootstrap-icons.min.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
@@ -35,7 +30,7 @@
   <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
 </head>
 
-<body style="font-family: 'Inter', system-ui, -apple-system, sans-serif;">
+<body>
   {# --- Skip Navigation --- #}
   <a href="#main-content" class="visually-hidden-focusable skip-link">Skip to main content</a>
 
@@ -44,7 +39,7 @@
   <nav class="navbar navbar-expand-md navbar-dark sticky-top">
     <div class="container-fluid">
       <a class="navbar-brand" href="{{ url_for('companion.index') if current_user.role_id == COMPANION_ROLE_ID else url_for('dashboard.page') }}">
-        <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="38" style="width: auto;">
+        <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="38" class="logo-img">
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain"
               aria-controls="navMain" aria-expanded="false" aria-label="Toggle navigation">
@@ -260,20 +255,18 @@
   <div id="carry-forward-modal-mount"></div>
   {% endif %}
 
-  <!-- Bootstrap 5 JS Bundle (includes Popper) -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
-    integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"
-    crossorigin="anonymous"></script>
-
-  <!-- HTMX for dynamic server-rendered interactions -->
-  <script src="https://unpkg.com/htmx.org@2.0.4"
-    integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
-    crossorigin="anonymous"></script>
+  {# Vendored Bootstrap bundle and htmx.  Pinned versions live in
+     app/static/vendor/VERSIONS.txt; SRI/integrity attributes are not
+     required for same-origin assets but the file hashes are recorded
+     in VERSIONS.txt so refresh PRs are reviewable. #}
+  <script src="{{ url_for('static', filename='vendor/bootstrap/bootstrap.bundle.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/htmx/htmx.min.js') }}"></script>
 
   <!-- App JS -->
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
   <script src="{{ url_for('static', filename='js/grid_edit.js') }}"></script>
   <script src="{{ url_for('static', filename='js/mobile_grid.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/progress_bar.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

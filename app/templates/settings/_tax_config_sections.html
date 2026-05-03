@@ -15,7 +15,7 @@
   </div>
   <div class="card-body">
     {% if state_configs %}
-    <table class="table table-sm table-bordered mb-3" style="max-width: 600px;">
+    <table class="table table-sm table-bordered mb-3 mw-px-600">
       <thead>
         <tr>
           <th>Year</th>
@@ -42,7 +42,7 @@
     <h6>{{ 'Update' if state_configs else 'Add' }} State Tax</h6>
     <form method="POST" action="{{ url_for('salary.update_tax_config') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end" style="max-width: 700px;">
+      <div class="row g-2 align-items-end mw-px-700">
         <div class="col">
           <label class="form-label">Year</label>
           <input type="number" name="tax_year" class="form-control form-control-sm"
@@ -50,8 +50,8 @@
         </div>
         <div class="col">
           <label class="form-label">State</label>
-          <input type="text" name="state_code" class="form-control form-control-sm"
-                 maxlength="2" required style="text-transform: uppercase"
+          <input type="text" name="state_code" class="form-control form-control-sm text-uppercase"
+                 maxlength="2" required
                  value="{{ state_configs[0].state_code if state_configs else '' }}"
                  placeholder="NC">
         </div>
@@ -84,7 +84,7 @@
   </div>
   <div class="card-body">
     {% if fica_configs %}
-    <table class="table table-sm table-bordered" style="max-width: 700px;">
+    <table class="table table-sm table-bordered mw-px-700">
       <thead>
         <tr>
           <th>Year</th>
@@ -113,7 +113,7 @@
     <h6>Update FICA</h6>
     <form method="POST" action="{{ url_for('salary.update_fica_config') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end" style="max-width: 700px;">
+      <div class="row g-2 align-items-end mw-px-700">
         <div class="col">
           <label class="form-label">Year</label>
           <input type="number" name="tax_year" class="form-control form-control-sm"
@@ -190,7 +190,7 @@
               <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount|float) }}
               <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount|float) }}
             </div>
-            <table class="table table-sm table-bordered mb-2" style="max-width: 500px;">
+            <table class="table table-sm table-bordered mb-2 mw-px-500">
               <thead>
                 <tr>
                   <th>Min Income</th>
