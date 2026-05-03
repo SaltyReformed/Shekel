@@ -341,3 +341,240 @@ class TestNegativeAndBoundaryPaths:
         assert "Shekel" in uri
         # Email appears (URL-encoded @ is %40).
         assert "user%40example.com" in uri or "user@example.com" in uri
+
+
+class TestMultiFernetKeyHandling:
+    """Tests for the MultiFernet primary/retired-key key list construction.
+
+    Covers audit finding F-030 (C-04): ``get_encryption_key()`` must
+    return a ``MultiFernet`` so an operator can rotate
+    ``TOTP_ENCRYPTION_KEY`` without losing access to ciphertexts that
+    were written under the previous primary.
+
+    The tests pin the public contract:
+
+      - the encryption call uses the primary key, never a retired one;
+      - the decryption path tries the primary first and then each
+        retired key in declaration order;
+      - the comma-separated retired-key list tolerates whitespace and
+        empty entries between commas;
+      - any malformed retired key fails fast at startup rather than
+        silently being skipped.
+    """
+
+    def test_get_encryption_key_returns_multifernet(self):
+        """get_encryption_key() returns a MultiFernet, not a bare Fernet.
+
+        The MultiFernet wrapper is what makes non-destructive key
+        rotation possible.  A regression to a bare Fernet would mean
+        that any ciphertext written under a retired key becomes
+        unreadable the moment the operator promotes a new primary --
+        the exact failure mode that finding F-030 was opened to fix.
+        """
+        from cryptography.fernet import MultiFernet  # pylint: disable=import-outside-toplevel
+
+        cipher = mfa_service.get_encryption_key()
+        assert isinstance(cipher, MultiFernet)
+
+    def test_get_encryption_key_raises_if_unset(self, monkeypatch):
+        """get_encryption_key() raises RuntimeError when the primary
+        key env var is unset.
+
+        The conftest autouse fixture sets ``TOTP_ENCRYPTION_KEY`` to a
+        random key for every test; this test deletes it explicitly so
+        we exercise the unset path.  The application must fail loudly
+        rather than silently producing a Fernet over the empty string.
+        """
+        monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="TOTP_ENCRYPTION_KEY"):
+            mfa_service.get_encryption_key()
+
+    def test_encrypt_and_decrypt_round_trip_under_primary(self):
+        """Round-trip with only a primary key matches the bare-Fernet
+        behavior of the old implementation.
+
+        Regression guard for the steady-state path: most production
+        deploys never set ``TOTP_ENCRYPTION_KEY_OLD``, so the
+        MultiFernet must behave indistinguishably from a single-key
+        Fernet for that population.
+        """
+        secret = mfa_service.generate_totp_secret()
+        encrypted = mfa_service.encrypt_secret(secret)
+        decrypted = mfa_service.decrypt_secret(encrypted)
+        assert decrypted == secret
+
+    def test_decrypt_accepts_ciphertext_from_old_key(self, monkeypatch):
+        """A ciphertext encrypted under a retired key still decrypts
+        once that key has been moved into ``TOTP_ENCRYPTION_KEY_OLD``.
+
+        This is the central guarantee of the C-04 rotation strategy:
+        existing MFA enrollments survive a key rotation without
+        re-enrollment.  Without this test, a refactor that drops the
+        retired-key handling could silently break login for every
+        previously-enrolled user.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        old_key = Fernet.generate_key()
+        new_key = Fernet.generate_key()
+
+        # Encrypt a known plaintext under the old key BEFORE rotation.
+        plaintext = "JBSWY3DPEHPK3PXP"  # Sample base32 TOTP secret.
+        old_cipher = Fernet(old_key)
+        ciphertext = old_cipher.encrypt(plaintext.encode("utf-8"))
+
+        # Now rotate: new is primary, old moves to retired.
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+
+        # mfa_service.decrypt_secret routes through the MultiFernet,
+        # which must consult the retired key after the primary fails.
+        assert mfa_service.decrypt_secret(ciphertext) == plaintext
+
+    def test_encrypt_uses_primary_not_old(self, monkeypatch):
+        """encrypt_secret produces ciphertext under the primary key,
+        not any retired key.
+
+        The MultiFernet always encrypts with the first key in its
+        ordered list.  This test pins that contract by asserting two
+        complementary facts about a freshly produced ciphertext:
+
+          1. ``Fernet(primary_key)`` alone can decrypt it.
+          2. ``Fernet(retired_key)`` alone CANNOT decrypt it.
+
+        If a future refactor accidentally swapped the order or used a
+        random list element for encryption, the second assertion would
+        catch it.  Without this test, encryption could regress to
+        producing ciphertexts that the rotation script would have to
+        re-wrap on every run.
+        """
+        from cryptography.fernet import Fernet, InvalidToken  # pylint: disable=import-outside-toplevel
+
+        primary_key = Fernet.generate_key()
+        retired_key = Fernet.generate_key()
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", primary_key.decode())
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", retired_key.decode())
+
+        plaintext = mfa_service.generate_totp_secret()
+        ciphertext = mfa_service.encrypt_secret(plaintext)
+
+        # Primary alone must decrypt it.
+        primary_only = Fernet(primary_key)
+        assert primary_only.decrypt(ciphertext).decode("utf-8") == plaintext
+
+        # Retired alone must NOT decrypt it -- proves primary was used.
+        retired_only = Fernet(retired_key)
+        with pytest.raises(InvalidToken):
+            retired_only.decrypt(ciphertext)
+
+    def test_old_key_list_comma_separated(self, monkeypatch):
+        """``TOTP_ENCRYPTION_KEY_OLD`` accepts comma-separated multiple
+        retired keys.
+
+        A long-running migration may roll the primary forward more
+        than once before the rotation script catches up; in that
+        window the operator stacks multiple retired keys.  The
+        Fernet list must contain primary plus every retired key.
+
+        Three retired keys is enough to catch off-by-one bugs in the
+        split logic without dragging the test into the territory of
+        proving all-positive-integers.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        primary = Fernet.generate_key()
+        retired1 = Fernet.generate_key()
+        retired2 = Fernet.generate_key()
+        retired3 = Fernet.generate_key()
+
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", primary.decode())
+        monkeypatch.setenv(
+            "TOTP_ENCRYPTION_KEY_OLD",
+            ",".join(k.decode() for k in (retired1, retired2, retired3)),
+        )
+
+        # pylint: disable=protected-access
+        fernets = mfa_service._build_fernet_list()
+        assert len(fernets) == 4, (
+            f"Expected primary + 3 retired = 4 Fernets, got {len(fernets)}"
+        )
+
+        # Functional check: each retired key must be reachable through
+        # decryption on the resulting MultiFernet, not just present in
+        # the count.  Encrypt under each retired key in turn and verify
+        # the assembled MultiFernet can read them all.
+        from cryptography.fernet import MultiFernet  # pylint: disable=import-outside-toplevel
+        multi = MultiFernet(fernets)
+        for key in (retired1, retired2, retired3):
+            ct = Fernet(key).encrypt(b"probe")
+            assert multi.decrypt(ct) == b"probe"
+
+    def test_old_key_ignores_blank_entries(self, monkeypatch):
+        """Blank entries in ``TOTP_ENCRYPTION_KEY_OLD`` are skipped.
+
+        Operators editing ``.env`` by hand can easily leave a stray
+        comma after pruning a key (``key1,`` -> empty trailing entry)
+        or insert a blank between commas (``key1, ,key2``).  Treating
+        these as ignored rather than as invalid keys avoids a class of
+        avoidable startup failures.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        primary = Fernet.generate_key()
+        retired1 = Fernet.generate_key()
+        retired2 = Fernet.generate_key()
+
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", primary.decode())
+        # Mix every blank-entry pattern: empty between commas, leading
+        # space, trailing comma+space.
+        monkeypatch.setenv(
+            "TOTP_ENCRYPTION_KEY_OLD",
+            f"{retired1.decode()}, ,{retired2.decode()}, ",
+        )
+
+        # pylint: disable=protected-access
+        fernets = mfa_service._build_fernet_list()
+        assert len(fernets) == 3, (
+            "Blank entries must be skipped; expected primary + 2 retired "
+            f"= 3 Fernets, got {len(fernets)}"
+        )
+
+    def test_old_key_empty_string_is_steady_state(self, monkeypatch):
+        """An empty ``TOTP_ENCRYPTION_KEY_OLD`` produces a single-key
+        Fernet list.
+
+        The steady-state production posture has the env var either
+        unset or set to the empty string.  Both must yield the
+        primary-only list -- an extra empty Fernet would be a runtime
+        error.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        primary = Fernet.generate_key()
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", primary.decode())
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", "")
+
+        # pylint: disable=protected-access
+        fernets = mfa_service._build_fernet_list()
+        assert len(fernets) == 1
+
+    def test_invalid_old_key_raises(self, monkeypatch):
+        """An invalid Fernet key in ``TOTP_ENCRYPTION_KEY_OLD`` raises
+        ``ValueError`` at startup.
+
+        Failing fast is the right behavior here: a silently-skipped
+        bad key would mean ciphertexts written under a missing key
+        become unreadable without any startup signal.
+
+        ``Fernet`` raises ``ValueError`` for wrong-length input and
+        ``binascii.Error`` (a ``ValueError`` subclass) for non-base64
+        input, so a single ``ValueError`` catch covers both forms.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        primary = Fernet.generate_key()
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", primary.decode())
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", "not-a-valid-fernet-key")
+
+        with pytest.raises(ValueError):
+            mfa_service._build_fernet_list()  # pylint: disable=protected-access

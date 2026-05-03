@@ -70,6 +70,10 @@ services:
       SEED_USER_DISPLAY_NAME: ${SEED_USER_DISPLAY_NAME:-Budget Admin}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Retired TOTP keys for non-destructive rotation.  Empty in
+      # steady state; populated transiently during key rotation.
+      # See docs/runbook_secrets.md "Rotating TOTP_ENCRYPTION_KEY".
+      TOTP_ENCRYPTION_KEY_OLD: ${TOTP_ENCRYPTION_KEY_OLD:-}
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-500}

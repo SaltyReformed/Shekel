@@ -46,6 +46,15 @@ class BaseConfig:
     # MFA -- Fernet key for encrypting TOTP secrets at rest.
     TOTP_ENCRYPTION_KEY = os.getenv("TOTP_ENCRYPTION_KEY")
 
+    # MFA -- optional comma-separated list of retired Fernet keys.
+    # Used by ``mfa_service.get_encryption_key`` to build a MultiFernet
+    # that decrypts ciphertexts written under a previous primary key.
+    # Set this transiently during a TOTP_ENCRYPTION_KEY rotation; the
+    # operator removes it again after running scripts/rotate_totp_key.py.
+    # Optional and may be absent or empty -- the empty case is the
+    # steady-state production posture.  See docs/runbook_secrets.md.
+    TOTP_ENCRYPTION_KEY_OLD = os.getenv("TOTP_ENCRYPTION_KEY_OLD")
+
     # SQLAlchemy
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

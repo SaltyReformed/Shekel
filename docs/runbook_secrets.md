@@ -8,7 +8,8 @@ All other environment variables have safe defaults or are non-sensitive.
 | Secret | Purpose | Generation Command | Rotation Impact |
 |--------|---------|-------------------|-----------------|
 | `SECRET_KEY` | Flask session cookie encryption | `python -c "import secrets; print(secrets.token_hex(32))"` | All active sessions are invalidated; users must log in again |
-| `TOTP_ENCRYPTION_KEY` | Fernet encryption of TOTP secrets stored in database | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | **DESTRUCTIVE if changed**: all MFA configurations become unreadable; users must re-enroll MFA |
+| `TOTP_ENCRYPTION_KEY` | Fernet encryption of TOTP secrets stored in database | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | Non-destructive when rotated via the documented procedure: place the previous value in `TOTP_ENCRYPTION_KEY_OLD`, then run `scripts/rotate_totp_key.py --confirm` to re-wrap every ciphertext under the new primary |
+| `TOTP_ENCRYPTION_KEY_OLD` | Optional comma-separated list of retired Fernet keys used during rotation | -- (existing primary value, moved here at rotation time) | Empty in steady state.  Populated transiently during a key rotation; pruned again after `scripts/rotate_totp_key.py` completes |
 | `POSTGRES_PASSWORD` | PostgreSQL database authentication | Any strong password generator | Requires updating both the db service and app service configs simultaneously; restart both containers |
 
 ## Where Secrets Are Stored
@@ -120,14 +121,109 @@ remediation is:
 
 ### Rotating TOTP_ENCRYPTION_KEY
 
-**WARNING: Changing this key makes all existing MFA enrollments unreadable.**
+This procedure is **non-destructive**: existing MFA enrollments
+remain valid throughout the rotation, and users do not need to
+re-enroll.  It relies on the application's `MultiFernet`
+configuration, which accepts the new primary key for encryption AND
+decrypts ciphertexts written under any retired key listed in
+`TOTP_ENCRYPTION_KEY_OLD`.
 
-1. Notify all MFA-enrolled users that they will need to re-enroll
-2. Disable MFA for all users: `docker exec shekel-app python scripts/reset_mfa.py --all`
-3. Generate a new key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
-4. Update `TOTP_ENCRYPTION_KEY` in `.env`
-5. Restart the app container: `docker compose restart app`
-6. Users re-enroll MFA via Settings > Security
+The full rotation has four steps and one optional cleanup deploy:
+
+1. **Generate the new primary key.**
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+   Save the output -- it is the only chance to capture it.
+
+2. **Promote the existing primary to retired, install the new
+   primary.**  In `/opt/shekel/.env`:
+   ```diff
+   -TOTP_ENCRYPTION_KEY=<previous-primary-value>
+   +TOTP_ENCRYPTION_KEY=<newly-generated-value>
+   +TOTP_ENCRYPTION_KEY_OLD=<previous-primary-value>
+   ```
+   If `TOTP_ENCRYPTION_KEY_OLD` already has a value (e.g. from an
+   earlier in-progress rotation), append the new retired value with
+   a comma -- the application reads it as a comma-separated list.
+
+3. **Restart the application container so the new key list takes
+   effect.**
+   ```bash
+   docker compose restart app
+   ```
+   At this point the application can:
+
+     - decrypt every existing ciphertext (via the retired key listed
+       in `TOTP_ENCRYPTION_KEY_OLD`), and
+     - encrypt every new ciphertext under the new primary.
+
+   Existing MFA users continue to log in successfully.  This is the
+   safe state to validate end-to-end before continuing.
+
+4. **Re-wrap every existing ciphertext under the new primary.**
+   ```bash
+   docker exec shekel-prod-app python scripts/rotate_totp_key.py --confirm
+   ```
+   The script prints a summary like
+   ```
+   Rotated 3; already current 0; skipped 0.
+   ```
+   - `Rotated` -- rows successfully migrated to the new primary.
+   - `already current` -- rows that were already under the new
+     primary (idempotent re-runs are safe).
+   - `skipped` -- rows that could not be decrypted under any
+     configured key.  **A non-zero `skipped` count means the script
+     exits with code 2.**  Do not proceed to step 5; instead inspect
+     the application log for the row id(s) and reconcile manually
+     (typically by resetting MFA for the affected user via
+     `scripts/reset_mfa.py`).
+
+5. **Prune `TOTP_ENCRYPTION_KEY_OLD` at the next deploy** (optional
+   but recommended).  Once `scripts/rotate_totp_key.py` reports zero
+   skipped rows, the retired key is no longer needed.  Remove the
+   entry from `.env` and restart:
+   ```diff
+   -TOTP_ENCRYPTION_KEY_OLD=<previous-primary-value>
+   +TOTP_ENCRYPTION_KEY_OLD=
+   ```
+   Run `docker compose restart app`.  The retired key is now
+   permanently retired -- if it was leaked, the leak no longer
+   confers access to the MFA secrets.
+
+   You may leave `TOTP_ENCRYPTION_KEY_OLD` populated longer than
+   necessary if you want a rollback window; the only cost is that
+   the retired key continues to be a valid decryption key during
+   that window.
+
+#### Rollback
+
+If something goes wrong before step 4 completes:
+
+  - Restore the previous primary value to `TOTP_ENCRYPTION_KEY` (and
+    clear `TOTP_ENCRYPTION_KEY_OLD` if you set it) and restart.  No
+    ciphertexts have been mutated yet, so the application returns to
+    its previous state.
+
+If something goes wrong DURING step 4 (e.g. the script crashes
+mid-run):
+
+  - The script commits once at the end, so a crash leaves the table
+    in its previous state.  Re-run the script after fixing the
+    underlying issue.  Any rows it had not yet processed are still
+    encrypted under the retired key; the next run picks up where it
+    left off, and rows it had already migrated are detected as
+    `already current` and skipped.
+
+If something goes wrong after step 4 completes:
+
+  - The retired key is still in `TOTP_ENCRYPTION_KEY_OLD`, so the
+    application can still decrypt under either key.  Decide whether
+    to roll back to the previous primary (move the retired key back
+    to `TOTP_ENCRYPTION_KEY` and re-run the script in reverse -- in
+    this case, the previously-current rows will be detected as
+    "needing rotation" and re-wrapped under the old key) or accept
+    the new primary as the steady state.
 
 ### Rotating POSTGRES_PASSWORD
 
