@@ -278,7 +278,7 @@ lives in the same database the attacker would be tampering with.
   S7 (`reports/18-asvs-l2.md` V2.6.2). S7 rerates the same issue as
   High for a money app because the offline-brute-force attack becomes
   trivial on a GPU if bcrypt hashes leak.
-- **Location:** `app/services/mfa_service.py:112-123`
+- **Location:** `app/services/mfa_service.py:112-137`
 - **Description:** `generate_backup_codes()` uses
   `secrets.token_hex(4)` which emits 4 random bytes = 32 bits of
   entropy per code. ASVS L2 V2.6.2 requires >= 112 bits. The code
@@ -306,7 +306,23 @@ lives in the same database the attacker would be tampering with.
   `secrets.token_urlsafe(16)` (128 bits, 22 URL-safe chars). Existing
   enrolled codes remain valid; next regeneration uses the new width.
   The UI template showing the codes may need to widen its column.
-- **Status:** Open
+- **Status:** Fixed in C-03 (2026-05-02). `generate_backup_codes()` now
+  uses `secrets.token_hex(14)` for 112-bit entropy (28 lowercase hex
+  characters), satisfying ASVS L2 V2.6.2. The display template
+  (`app/templates/auth/mfa_backup_codes.html`) widens the rendering
+  column and adds a length hint. The verify form
+  (`app/templates/auth/mfa_verify.html`) raises its `maxlength` to 28
+  so users with the new codes can submit them; the previous `maxlength="8"`
+  would otherwise have silently truncated input. Pre-upgrade 8-char codes
+  remain valid until the user regenerates because bcrypt is
+  length-agnostic; in-app regeneration prompt is delivered separately
+  in C-16. Regression tests:
+  `tests/test_services/test_mfa_service.py::TestBackupCodes` (length,
+  format, 1000-sample uniqueness, `secrets.token_hex(14)` pinning,
+  legacy 8-char acceptance) and
+  `tests/test_routes/test_auth.py::TestMfaSetup::test_regenerate_backup_codes_renders_28_char_codes`
+  /
+  `test_mfa_confirm_renders_28_char_codes`.
 
 ### F-005: TOTP codes can be replayed within the valid window
 

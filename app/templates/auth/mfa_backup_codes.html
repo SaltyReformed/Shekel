@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="row justify-content-center mt-4">
-  <div class="col-md-6">
+  <div class="col-md-8 col-lg-7">
     <div class="card shadow-sm border-warning">
       <div class="card-body">
         <h5 class="card-title text-warning mb-3">
@@ -14,9 +14,14 @@
           These backup codes can be used to access your account if you lose your
           authenticator device. Each code can only be used once.
         </p>
+        <p class="text-muted small mb-2">
+          Each backup code is 28 lowercase hexadecimal characters. Save them
+          in a password manager or print this page -- you will not be able to
+          see them again.
+        </p>
         <p><strong>You will not be able to see these codes again.</strong></p>
 
-        <div class="bg-dark p-3 rounded font-monospace">
+        <div class="bg-dark p-3 rounded font-monospace text-break">
           {% for code in backup_codes %}
           {{ code }}<br>
           {% endfor %}

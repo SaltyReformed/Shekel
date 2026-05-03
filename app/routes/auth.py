@@ -308,7 +308,10 @@ def mfa_verify():
         # Verify the 6-digit TOTP code from an authenticator app.
         valid = mfa_service.verify_totp_code(secret, totp_code)
     elif backup_code:
-        # Verify the 8-character backup code against stored hashes.
+        # Verify the backup code against stored hashes. Codes generated
+        # before the C-03 entropy upgrade are 8 hex chars; codes generated
+        # after are 28 hex chars. Both lengths verify identically because
+        # bcrypt is length-agnostic.
         idx = mfa_service.verify_backup_code(backup_code, mfa_config.backup_codes)
         if idx >= 0:
             # Remove the consumed backup code hash from the list.

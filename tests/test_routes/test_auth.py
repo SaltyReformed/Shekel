@@ -5,6 +5,7 @@ Tests login, logout, route protection, disabled accounts, rate limiting,
 password change, session management, and open redirect prevention.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from app import create_app
@@ -762,6 +763,83 @@ class TestMfaSetup:
             )
             assert response.status_code == 200
             assert b"Two-factor authentication is not enabled" in response.data
+
+    def test_regenerate_backup_codes_renders_28_char_codes(self, app, auth_client, seed_user):
+        """POST /mfa/regenerate-backup-codes renders 10 codes of 28 hex chars.
+
+        Asserts the post-C-03 contract end-to-end: the route generates
+        backup codes, hashes them, persists the hashes, and renders the
+        plaintext codes once. Each rendered code must be 28 lowercase
+        hex characters (112 bits of entropy). Without this end-to-end
+        assertion, a regression in either the generator or the template
+        could ship without breaking any unit test.
+        """
+        with app.app_context():
+            mfa_config = MfaConfig(
+                user_id=seed_user["user"].id,
+                is_enabled=True,
+                totp_secret_encrypted=mfa_service.encrypt_secret("TESTBASE32SECRET"),
+                backup_codes=mfa_service.hash_backup_codes(["legacy01"], rounds=4),
+            )
+            db.session.add(mfa_config)
+            db.session.commit()
+
+            response = auth_client.post("/mfa/regenerate-backup-codes")
+            assert response.status_code == 200
+            assert b"Save Your Backup Codes" in response.data
+
+            body = response.get_data(as_text=True)
+            # Match exactly 28 lowercase hex chars terminated by a non-hex
+            # boundary (the surrounding markup) so partial matches inside
+            # bcrypt hashes or similar can never fool the count.
+            rendered_codes = re.findall(r"(?<![0-9a-f])[0-9a-f]{28}(?![0-9a-f])", body)
+            assert len(rendered_codes) == 10, (
+                f"Expected 10 28-char codes in response; found "
+                f"{len(rendered_codes)}: {rendered_codes!r}"
+            )
+
+            stored_hashes = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+                .backup_codes
+            )
+            assert len(stored_hashes) == 10
+            # The stored bcrypt hashes match the freshly rendered plaintext
+            # codes -- the route persisted what it displayed and rotated
+            # away from the legacy code.
+            for plaintext in rendered_codes:
+                idx = mfa_service.verify_backup_code(plaintext, stored_hashes)
+                assert idx >= 0, (
+                    f"Rendered code {plaintext!r} has no matching stored hash"
+                )
+            # The pre-existing legacy code must no longer verify -- this
+            # endpoint regenerates, it does not append.
+            assert mfa_service.verify_backup_code("legacy01", stored_hashes) == -1
+
+    def test_mfa_confirm_renders_28_char_codes(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/confirm renders 10 freshly generated 28-char backup codes.
+
+        Mirrors test_regenerate_backup_codes_renders_28_char_codes for
+        the initial enrollment path. Both routes call
+        ``mfa_service.generate_backup_codes()`` and render
+        ``auth/mfa_backup_codes.html``; both must show the upgraded
+        format.
+        """
+        with app.app_context():
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            auth_client.get("/mfa/setup")
+
+            response = auth_client.post("/mfa/confirm", data={"totp_code": "123456"})
+            assert response.status_code == 200
+            assert b"Save Your Backup Codes" in response.data
+
+            body = response.get_data(as_text=True)
+            rendered_codes = re.findall(r"(?<![0-9a-f])[0-9a-f]{28}(?![0-9a-f])", body)
+            assert len(rendered_codes) == 10, (
+                f"Expected 10 28-char codes in response; found "
+                f"{len(rendered_codes)}: {rendered_codes!r}"
+            )
 
     def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
         """POST /mfa/confirm redirects with flash when TOTP key is missing.

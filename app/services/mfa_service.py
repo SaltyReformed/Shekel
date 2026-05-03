@@ -112,15 +112,29 @@ def verify_totp_code(secret, code):
 def generate_backup_codes(count=10):
     """Generate a list of single-use backup codes.
 
-    Each code is an 8-character lowercase hex string.
+    Each code is 14 random bytes rendered as 28 lowercase hex characters,
+    yielding 112 bits of entropy. Bytes are sourced from
+    ``secrets.token_hex`` which wraps the operating system's CSPRNG
+    (``os.urandom``).
+
+    The 112-bit width is the ASVS L2 V2.6.2 minimum for lookup secrets and
+    matches the threat model used for this app: the bcrypt hashes (cost 12)
+    leak via a backup or host compromise, and an attacker mounts an offline
+    GPU brute-force. At ~10^12 bcrypt cost-12 hashes/second, exhausting
+    2^112 candidates per code averages on the order of millions of years.
+    The previous 32-bit width was crackable in seconds on a consumer GPU.
 
     Args:
-        count: Number of backup codes to generate (default 10).
+        count: Number of backup codes to generate. Defaults to 10. Values
+            <= 0 produce an empty list because ``range(count)`` is empty.
 
     Returns:
-        list[str]: The plaintext backup code strings.
+        list[str]: ``count`` plaintext backup code strings, each exactly
+            28 characters of lowercase hexadecimal (``[0-9a-f]``). The
+            caller is responsible for hashing them with
+            :func:`hash_backup_codes` before persistence.
     """
-    return [secrets.token_hex(4) for _ in range(count)]
+    return [secrets.token_hex(14) for _ in range(count)]
 
 
 def hash_backup_codes(codes, rounds=None):

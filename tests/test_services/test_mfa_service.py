@@ -1,7 +1,9 @@
 """Tests for the MFA service module."""
 
 import re
+from unittest.mock import patch
 
+import bcrypt
 import pyotp
 import pytest
 
@@ -60,37 +62,153 @@ class TestVerifyTotpCode:
 
 
 class TestBackupCodes:
-    """Tests for backup code generation, hashing, and verification."""
+    """Tests for backup code generation, hashing, and verification.
 
-    def test_generate_backup_codes_count(self):
-        """generate_backup_codes() returns the requested number of codes."""
-        assert len(mfa_service.generate_backup_codes()) == 10
-        assert len(mfa_service.generate_backup_codes(5)) == 5
+    Backup codes were upgraded from 32-bit (8 hex chars) to 112-bit
+    (28 hex chars) entropy as part of remediation C-03 / finding F-004.
+    The 112-bit width matches ASVS L2 V2.6.2 and resists offline GPU
+    brute-force against bcrypt cost-12 hashes. Legacy codes enrolled
+    before the upgrade remain valid until the user regenerates them
+    because bcrypt is length-agnostic.
+    """
 
-    def test_generate_backup_codes_format(self):
-        """Each backup code is an 8-character hex string."""
+    def test_generate_backup_codes_default_count(self):
+        """generate_backup_codes() with no argument returns exactly 10 codes.
+
+        The default count is the documented contract used by the
+        ``/mfa/confirm`` and ``/mfa/regenerate-backup-codes`` routes.
+        """
+        codes = mfa_service.generate_backup_codes()
+        assert len(codes) == 10
+
+    def test_generate_backup_codes_explicit_count(self):
+        """generate_backup_codes(n) returns exactly n codes for positive n."""
+        for requested in (1, 5, 25):
+            codes = mfa_service.generate_backup_codes(requested)
+            assert len(codes) == requested, (
+                f"Expected {requested} codes, got {len(codes)}"
+            )
+
+    def test_generate_backup_codes_length_and_format(self):
+        """Each code is exactly 28 lowercase hex characters (112 bits).
+
+        Width and character set together encode the entropy claim. 28
+        hex chars * 4 bits/char = 112 bits, which is the ASVS L2 V2.6.2
+        minimum for lookup secrets. Uppercase letters or non-hex chars
+        would mean ``secrets.token_hex`` was replaced with a different
+        encoder.
+        """
         codes = mfa_service.generate_backup_codes()
         for code in codes:
-            assert len(code) == 8
-            assert re.fullmatch(r"[0-9a-f]{8}", code)
+            assert len(code) == 28, (
+                f"Backup code must be 28 chars (112 bits); got {len(code)}: {code!r}"
+            )
+            assert re.fullmatch(r"[0-9a-f]{28}", code), (
+                f"Backup code must be lowercase hex; got {code!r}"
+            )
+
+    def test_generate_backup_codes_entropy_unique_across_many_calls(self):
+        """1000 generated codes contain no duplicates.
+
+        With 112 bits of entropy the birthday-bound collision probability
+        for 1000 samples is on the order of 10^-28 -- effectively zero.
+        Any duplicate in a 1000-sample run indicates the entropy source
+        regressed (e.g. someone replaced ``secrets.token_hex`` with a
+        seeded PRNG) and would be a critical security defect for a
+        money app.
+        """
+        sample_size = 1000
+        codes = mfa_service.generate_backup_codes(sample_size)
+        assert len(codes) == sample_size
+        assert len(set(codes)) == sample_size, (
+            "Duplicate backup codes generated -- entropy source is not "
+            "behaving as a CSPRNG"
+        )
+
+    def test_generate_backup_codes_uses_secrets_token_hex_with_14_bytes(self):
+        """generate_backup_codes() sources entropy from secrets.token_hex(14).
+
+        Pins the implementation to the OS CSPRNG path with a 14-byte
+        (112-bit) request. Catches a regression where someone swaps in
+        ``random.choice``, ``hashlib.sha256(time.time())``, or any
+        non-CSPRNG source, or where the byte count is reduced. The byte
+        count is the entropy claim -- it is not an internal detail.
+        """
+        with patch.object(
+            mfa_service.secrets, "token_hex", wraps=mfa_service.secrets.token_hex
+        ) as spy:
+            mfa_service.generate_backup_codes(count=10)
+
+        assert spy.call_count == 10, (
+            f"Expected 10 calls to secrets.token_hex, got {spy.call_count}"
+        )
+        for call in spy.call_args_list:
+            args, kwargs = call
+            byte_count = args[0] if args else kwargs.get("nbytes")
+            assert byte_count == 14, (
+                f"Expected secrets.token_hex(14); got token_hex({byte_count})"
+            )
 
     def test_hash_and_verify_round_trip(self):
-        """A generated code matches its own hash via verify_backup_code()."""
+        """A freshly generated 28-char code matches its own bcrypt hash."""
         codes = mfa_service.generate_backup_codes()
-        hashed = mfa_service.hash_backup_codes(codes)
+        hashed = mfa_service.hash_backup_codes(codes, rounds=4)
         assert mfa_service.verify_backup_code(codes[0], hashed) == 0
 
     def test_verify_wrong_code_returns_negative(self):
-        """verify_backup_code() returns -1 for an unrecognized code."""
+        """verify_backup_code() returns -1 when no stored hash matches.
+
+        Uses a 28-char string that is guaranteed not to collide with any
+        randomly generated code (all 'z' is outside the [0-9a-f]
+        alphabet, so it cannot equal any real backup code).
+        """
         codes = mfa_service.generate_backup_codes()
-        hashed = mfa_service.hash_backup_codes(codes)
-        assert mfa_service.verify_backup_code("zzzzzzzz", hashed) == -1
+        hashed = mfa_service.hash_backup_codes(codes, rounds=4)
+        unrecognized = "z" * 28
+        assert mfa_service.verify_backup_code(unrecognized, hashed) == -1
 
     def test_verify_returns_correct_index(self):
         """verify_backup_code() returns the index of the matching hash."""
         codes = mfa_service.generate_backup_codes()
-        hashed = mfa_service.hash_backup_codes(codes)
+        hashed = mfa_service.hash_backup_codes(codes, rounds=4)
         assert mfa_service.verify_backup_code(codes[2], hashed) == 2
+
+    def test_verify_backup_code_accepts_legacy_8_char_codes(self):
+        """Legacy 8-char codes from pre-C-03 enrollments still verify.
+
+        Bcrypt hashes any byte string of any length up to 72 bytes, so a
+        stored hash of an 8-char legacy code matches a freshly typed
+        legacy code regardless of the new generator width. This is the
+        compatibility guarantee documented in C-03: enrolled users do
+        not get locked out -- they receive an in-app prompt to
+        regenerate (delivered separately in C-16). Without this test,
+        a future refactor that adds length validation to verify could
+        silently break login for every pre-upgrade user.
+        """
+        legacy_code = "1a2b3c4d"
+        assert len(legacy_code) == 8
+        legacy_hash = bcrypt.hashpw(
+            legacy_code.encode("utf-8"), bcrypt.gensalt(rounds=4)
+        ).decode("utf-8")
+
+        # Mixed list -- legacy hash at index 0, modern hashes after.
+        modern_codes = mfa_service.generate_backup_codes(3)
+        modern_hashes = mfa_service.hash_backup_codes(modern_codes, rounds=4)
+        stored = [legacy_hash] + modern_hashes
+
+        assert mfa_service.verify_backup_code(legacy_code, stored) == 0
+
+    def test_verify_backup_code_rejects_legacy_code_of_wrong_value(self):
+        """A typed legacy-length code that does not match any stored hash returns -1.
+
+        Defends against the "any 8-char input matches" failure mode that
+        would arise if length checks short-circuited verification.
+        """
+        legacy_code = "deadbeef"
+        legacy_hash = bcrypt.hashpw(
+            legacy_code.encode("utf-8"), bcrypt.gensalt(rounds=4)
+        ).decode("utf-8")
+        assert mfa_service.verify_backup_code("cafebabe", [legacy_hash]) == -1
 
 
 class TestGetTotpUri:
