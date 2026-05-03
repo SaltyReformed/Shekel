@@ -5,7 +5,7 @@ Handles login, registration, and logout with Flask-Login session management.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session as flask_session, url_for
@@ -24,6 +24,16 @@ from app.utils.log_events import log_event, AUTH
 logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
+
+# Maximum time between scanning the QR/typing the manual key on /mfa/setup
+# and submitting the verification code on /mfa/confirm.  Bounds the
+# server-side window in which an unconfirmed TOTP secret remains
+# promotable to an active credential.  Long enough to accommodate users
+# who fumble with an authenticator app and short enough that an attacker
+# who briefly compromised the account cannot revisit /mfa/confirm later
+# to silently enrol their own device.  See audit finding F-031 / commit
+# C-05 of the 2026-04-15 security remediation plan.
+MFA_SETUP_PENDING_TTL = timedelta(minutes=15)
 
 
 def _is_safe_redirect(target):
@@ -352,9 +362,21 @@ def mfa_verify():
 def mfa_setup():
     """Display the MFA setup page with QR code and manual key.
 
-    Generates a new TOTP secret, stores it in the Flask session, and
-    renders the setup template.  If MFA is already enabled the user is
-    redirected back to security settings.
+    Generates a fresh TOTP secret, encrypts it under the application's
+    Fernet/MultiFernet key, and persists the ciphertext on the user's
+    ``MfaConfig`` row in ``pending_secret_encrypted`` (paired with a
+    15-minute expiry in ``pending_secret_expires_at``) instead of in
+    the user's signed-but-unencrypted Flask session cookie.  See audit
+    finding F-031 / commit C-05.
+
+    Each visit overwrites any previous pending secret -- legitimate
+    re-visits after invalid-code retries get a new QR code, and a
+    stale pending row from an abandoned setup is replaced rather than
+    accumulated.
+
+    If MFA is already enabled the user is redirected back to security
+    settings.  If the encryption key is missing the user is redirected
+    with a flash explaining the operator-side prerequisite.
     """
     mfa_config = (
         db.session.query(MfaConfig)
@@ -366,7 +388,30 @@ def mfa_setup():
         return redirect(url_for("settings.show", section="security"))
 
     secret = mfa_service.generate_totp_secret()
-    flask_session["_mfa_setup_secret"] = secret
+    # Encrypt before any DB mutation so a missing TOTP_ENCRYPTION_KEY
+    # leaves the database state untouched -- no orphan pending row, no
+    # half-initialized MfaConfig.  encrypt_secret() raises RuntimeError
+    # when the key is unset (see app/services/mfa_service.py:_build_fernet_list).
+    try:
+        encrypted_pending = mfa_service.encrypt_secret(secret)
+    except RuntimeError:
+        flash(
+            "MFA is not available. The server administrator must set "
+            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+
+    if mfa_config is None:
+        mfa_config = MfaConfig(user_id=current_user.id)
+        db.session.add(mfa_config)
+
+    mfa_config.pending_secret_encrypted = encrypted_pending
+    mfa_config.pending_secret_expires_at = (
+        datetime.now(timezone.utc) + MFA_SETUP_PENDING_TTL
+    )
+    db.session.commit()
+
     qr_data_uri = mfa_service.generate_qr_code_data_uri(
         mfa_service.get_totp_uri(secret, current_user.email)
     )
@@ -382,35 +427,107 @@ def mfa_setup():
 def mfa_confirm():
     """Verify a TOTP code and enable MFA for the current user.
 
-    Reads the secret from the Flask session (stored during /mfa/setup),
-    verifies the submitted code, then encrypts and persists the secret
-    along with freshly-generated backup codes.
+    Reads the encrypted pending secret persisted by ``/mfa/setup``
+    (commit C-05 moved this off the Flask session cookie), checks that
+    it has not expired, decrypts it, and verifies the submitted code.
+    On success the pending secret is re-encrypted under the current
+    primary key and promoted to ``totp_secret_encrypted``; the pending
+    columns are cleared in the same commit so a replay of the
+    confirmation form cannot re-enrol a now-stale device.
+
+    Failure modes handled here:
+
+      * No ``MfaConfig`` row, or one without a pending secret -- the
+        user has not started setup or the previous setup has been
+        consumed/cleared.  Redirect to /mfa/setup with a flash.
+      * Pending expiry has elapsed -- reject and clear the pending
+        columns so the next /mfa/setup call starts cleanly.
+      * Encryption key is missing or the pending ciphertext does not
+        decrypt under any configured key -- redirect with a flash that
+        names the operator-side fix.
+      * Invalid TOTP code -- flash and redirect; pending state is
+        retained until expiry so a typo does not force a re-scan.
     """
-    secret = flask_session.pop("_mfa_setup_secret", None)
-    if secret is None:
-        flash("MFA setup session expired. Please start again.", "danger")
-        return redirect(url_for("auth.mfa_setup"))
-
-    totp_code = request.form.get("totp_code", "")
-    if not mfa_service.verify_totp_code(secret, totp_code):
-        # Re-store the secret so the user can retry without re-scanning.
-        flask_session["_mfa_setup_secret"] = secret
-        flash("Invalid code. Please try again.", "danger")
-        return redirect(url_for("auth.mfa_setup"))
-
-    # Valid code -- enable MFA.
     mfa_config = (
         db.session.query(MfaConfig)
         .filter_by(user_id=current_user.id)
         .first()
     )
-    if not mfa_config:
-        mfa_config = MfaConfig(user_id=current_user.id)
-        db.session.add(mfa_config)
+    # Single guard for "no usable pending secret".  Covers three cases
+    # that share the same user-facing recovery (start over): no row, a
+    # row with no pending columns set, or a row whose expiry has
+    # elapsed.  When the row had stale data we clear it in the same
+    # commit so a request that races a fresh /mfa/setup GET does not
+    # see the same expired ciphertext twice.
+    has_pending = (
+        mfa_config is not None
+        and mfa_config.pending_secret_encrypted is not None
+        and mfa_config.pending_secret_expires_at is not None
+    )
+    if not has_pending or (
+            mfa_config.pending_secret_expires_at
+            < datetime.now(timezone.utc)
+    ):
+        if has_pending:
+            mfa_config.pending_secret_encrypted = None
+            mfa_config.pending_secret_expires_at = None
+            db.session.commit()
+        flash("MFA setup session expired. Please start again.", "danger")
+        return redirect(url_for("auth.mfa_setup"))
 
+    try:
+        secret = mfa_service.decrypt_secret(mfa_config.pending_secret_encrypted)
+    except RuntimeError:
+        # TOTP_ENCRYPTION_KEY is unset.  Sending the user back to
+        # /mfa/setup would only loop them through the same failure
+        # (encrypt_secret would raise RuntimeError too), so clear the
+        # pending state and bounce to the security settings page where
+        # the user can see the status and wait for the operator-side
+        # fix.  Mirrors the recovery path used in /mfa/disable.
+        mfa_config.pending_secret_encrypted = None
+        mfa_config.pending_secret_expires_at = None
+        db.session.commit()
+        flash(
+            "MFA is not available. The server administrator must set "
+            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+    except InvalidToken:
+        # The pending ciphertext is unreadable under the current Fernet
+        # key list -- typically because the key it was written under has
+        # been pruned from TOTP_ENCRYPTION_KEY_OLD between /mfa/setup
+        # and /mfa/confirm.  /mfa/setup itself still works (the primary
+        # key is present), so direct the user there to start over.
+        mfa_config.pending_secret_encrypted = None
+        mfa_config.pending_secret_expires_at = None
+        db.session.commit()
+        flash(
+            "MFA setup could not be verified. Please start again.",
+            "danger",
+        )
+        return redirect(url_for("auth.mfa_setup"))
+
+    totp_code = request.form.get("totp_code", "")
+    if not mfa_service.verify_totp_code(secret, totp_code):
+        # Pending state is preserved -- the user may retry until the
+        # 15-minute expiry without re-scanning the QR code.
+        flash("Invalid code. Please try again.", "danger")
+        return redirect(url_for("auth.mfa_setup"))
+
+    # Re-encrypt under the current primary key rather than copying the
+    # bytes verbatim from the pending column.  If TOTP_ENCRYPTION_KEY
+    # rotated during the setup window the pending ciphertext could
+    # decrypt under a retired key only; promoting that ciphertext as-is
+    # would leave the active credential dependent on a key the operator
+    # is about to remove from TOTP_ENCRYPTION_KEY_OLD.  Re-encrypt
+    # binds the active record to the current primary every time.
     try:
         mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
     except RuntimeError:
+        # decrypt_secret() succeeded above so MultiFernet was usable a
+        # moment ago.  This branch is only hit if TOTP_ENCRYPTION_KEY
+        # was unset between the two calls -- defensive, not expected.
         flash(
             "MFA is not available. The server administrator must set "
             "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
@@ -418,6 +535,8 @@ def mfa_confirm():
         )
         return redirect(url_for("settings.show", section="security"))
 
+    mfa_config.pending_secret_encrypted = None
+    mfa_config.pending_secret_expires_at = None
     mfa_config.is_enabled = True
     mfa_config.confirmed_at = datetime.now(timezone.utc)
 

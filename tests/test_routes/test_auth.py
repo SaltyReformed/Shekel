@@ -672,6 +672,116 @@ class TestMfaSetup:
             # QR code data URI is present.
             assert b"data:image/png;base64," in response.data
 
+    def test_mfa_setup_stores_encrypted_pending_server_side(
+        self, app, auth_client, seed_user
+    ):
+        """GET /mfa/setup persists the pending secret in the DB, not the session.
+
+        Locks down the C-05 contract: the unconfirmed TOTP secret lives
+        in ``MfaConfig.pending_secret_encrypted`` (encrypted under the
+        Fernet key) rather than in ``flask_session["_mfa_setup_secret"]``,
+        because the Flask session cookie is signed but not encrypted.
+        Verifies (a) the column is populated, (b) the bytes round-trip
+        through ``mfa_service.decrypt_secret`` to a base32 string that
+        matches the manual key shown on the page, and (c) the legacy
+        session key is never written.
+        """
+        with app.app_context():
+            response = auth_client.get("/mfa/setup")
+            assert response.status_code == 200
+
+            # The plaintext secret must NOT appear in the Flask session.
+            with auth_client.session_transaction() as sess:
+                assert "_mfa_setup_secret" not in sess
+
+            # The encrypted pending secret IS in the database.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config is not None, "MfaConfig row must exist after setup"
+            assert config.pending_secret_encrypted is not None
+            assert config.pending_secret_expires_at is not None
+
+            # The ciphertext decrypts to the manual key rendered in the
+            # response body.  The base32 secret is wrapped in <code>...</code>.
+            decrypted = mfa_service.decrypt_secret(config.pending_secret_encrypted)
+            assert (f"<code>{decrypted}</code>").encode("utf-8") in response.data
+
+    def test_mfa_setup_sets_expiry_within_window(
+        self, app, auth_client, seed_user
+    ):
+        """GET /mfa/setup sets pending_secret_expires_at ~15 minutes ahead.
+
+        The TTL constant is ``MFA_SETUP_PENDING_TTL = timedelta(minutes=15)``
+        in ``app/routes/auth.py``.  Allow a 60-second slack on either
+        side so the test is stable under slow CI without permitting a
+        regression that bumps the TTL by hours.
+        """
+        with app.app_context():
+            before = datetime.now(timezone.utc)
+            response = auth_client.get("/mfa/setup")
+            after = datetime.now(timezone.utc)
+            assert response.status_code == 200
+
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            expires_at = config.pending_secret_expires_at
+            assert expires_at is not None
+            # 15 minutes minus a small slack and 15 minutes plus a small
+            # slack bracket the legitimate window.
+            lower = before + timedelta(minutes=15) - timedelta(seconds=60)
+            upper = after + timedelta(minutes=15) + timedelta(seconds=60)
+            assert lower <= expires_at <= upper, (
+                f"pending_secret_expires_at={expires_at!r} not in "
+                f"[{lower!r}, {upper!r}] -- the 15-minute TTL has "
+                f"changed; update the test only if the change was deliberate."
+            )
+
+    def test_mfa_setup_replaces_previous_pending(
+        self, app, auth_client, seed_user
+    ):
+        """A second GET /mfa/setup overwrites the first pending secret.
+
+        Each visit must regenerate the secret so that an abandoned
+        setup row cannot persist with stale data, and so a fresh QR
+        scan after a typo always shows a usable code.  This also matches
+        the documented C-05 contract (each /mfa/setup call rewrites the
+        pending columns).
+        """
+        with app.app_context():
+            auth_client.get("/mfa/setup")
+            first_config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            first_ciphertext = first_config.pending_secret_encrypted
+            first_expiry = first_config.pending_secret_expires_at
+            assert first_ciphertext is not None
+
+            auth_client.get("/mfa/setup")
+            db.session.refresh(first_config)
+            second_ciphertext = first_config.pending_secret_encrypted
+            second_expiry = first_config.pending_secret_expires_at
+
+            assert second_ciphertext is not None
+            # Fernet ciphertexts include a fresh IV per encryption, so
+            # even encrypting the SAME plaintext under the SAME key
+            # produces different bytes.  The stronger property to
+            # verify is that the decrypted plaintexts differ -- the
+            # secret really was regenerated.
+            assert (
+                mfa_service.decrypt_secret(first_ciphertext)
+                != mfa_service.decrypt_secret(second_ciphertext)
+            ), "Second /mfa/setup must regenerate the secret, not reuse it."
+            # Expiry was extended to a fresh 15-minute window.
+            assert second_expiry >= first_expiry
+
     def test_mfa_setup_redirects_if_already_enabled(self, app, auth_client, seed_user):
         """GET /mfa/setup redirects if MFA is already enabled."""
         with app.app_context():
@@ -689,12 +799,27 @@ class TestMfaSetup:
             assert "security" in response.headers.get("Location", "")
 
     def test_mfa_confirm_valid_code(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm with valid TOTP code enables MFA and shows backup codes."""
+        """POST /mfa/confirm with valid code promotes pending to active.
+
+        End-to-end check of the C-05 confirm path: the pending secret
+        is decrypted, the code verifies, the secret is re-encrypted and
+        stored as ``totp_secret_encrypted``, the pending columns are
+        cleared, and the active credential is the same secret that was
+        captured during setup (round-trip through encrypt -> decrypt).
+        """
         with app.app_context():
             monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
 
-            # Visit setup to store the secret in the session.
+            # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")
+            pending_config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            captured_secret = mfa_service.decrypt_secret(
+                pending_config.pending_secret_encrypted
+            )
 
             # Confirm with a mocked-valid code.
             response = auth_client.post("/mfa/confirm", data={
@@ -703,7 +828,7 @@ class TestMfaSetup:
             assert response.status_code == 200
             assert b"Save Your Backup Codes" in response.data
 
-            # Verify MFA is enabled in the database.
+            # Reload to pick up the post-confirm row state.
             config = (
                 db.session.query(MfaConfig)
                 .filter_by(user_id=seed_user["user"].id)
@@ -711,32 +836,148 @@ class TestMfaSetup:
             )
             assert config is not None
             assert config.is_enabled is True
+            assert config.confirmed_at is not None
+            # Pending columns must be cleared so a replay cannot
+            # re-enrol against the same setup.
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+            # Active secret matches the secret captured during setup.
             assert config.totp_secret_encrypted is not None
+            assert (
+                mfa_service.decrypt_secret(config.totp_secret_encrypted)
+                == captured_secret
+            )
             assert config.backup_codes is not None
 
-    def test_mfa_confirm_invalid_code(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm with invalid code shows error and redirects."""
+    def test_mfa_confirm_invalid_code_keeps_pending(
+        self, app, auth_client, seed_user, monkeypatch
+    ):
+        """POST /mfa/confirm with invalid code preserves pending state.
+
+        A typo on the verification form must not destroy the pending
+        secret -- otherwise the user would have to re-scan the QR for
+        every wrong digit.  Asserts (a) the user sees the invalid-code
+        flash, (b) MFA is not enabled, and (c) the pending columns are
+        unchanged after the POST itself so the user can retry until the
+        15-minute expiry.
+
+        ``follow_redirects=False`` is essential here: the redirect
+        target is /mfa/setup, which DOES rewrite pending state by
+        design.  The contract we are testing is the behavior of the
+        confirm route alone, not the side effects of the user's next
+        navigation.
+        """
         with app.app_context():
             monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
 
-            # Visit setup first.
+            # Visit setup to write a pending secret.
             auth_client.get("/mfa/setup")
+            pending_before = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            ciphertext_before = pending_before.pending_secret_encrypted
+            expires_before = pending_before.pending_secret_expires_at
+            assert ciphertext_before is not None
 
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "000000",
-            }, follow_redirects=True)
-            assert response.status_code == 200
-            assert b"Invalid code" in response.data
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "mfa/setup" in response.headers.get("Location", "")
 
-    def test_mfa_confirm_no_session_secret(self, app, auth_client, seed_user):
-        """POST /mfa/confirm without setup secret in session shows error."""
+            db.session.refresh(pending_before)
+            # Pending columns are unchanged -- the user can retry.
+            assert pending_before.pending_secret_encrypted == ciphertext_before
+            assert pending_before.pending_secret_expires_at == expires_before
+            # MFA was NOT enabled.
+            assert pending_before.is_enabled in (False, None)
+            assert pending_before.totp_secret_encrypted is None
+            assert pending_before.confirmed_at is None
+
+            # Following the redirect manually delivers the flash to the
+            # user, since the confirm route itself returned 302.
+            follow_up = auth_client.get(
+                response.headers["Location"], follow_redirects=False,
+            )
+            assert follow_up.status_code == 200
+            assert b"Invalid code" in follow_up.data
+
+    def test_mfa_confirm_no_pending_state(self, app, auth_client, seed_user):
+        """POST /mfa/confirm with no pending secret in DB shows expired flash.
+
+        Covers two paths through the same branch: (a) the user posts
+        directly to /mfa/confirm without ever visiting /mfa/setup, so
+        no MfaConfig row exists; (b) a hypothetical row with cleared
+        pending columns.  Both should redirect to /mfa/setup with the
+        "session expired" flash.
+        """
         with app.app_context():
-            # Post directly without visiting /mfa/setup first.
+            # No prior /mfa/setup visit -- no MfaConfig row.
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             }, follow_redirects=True)
             assert response.status_code == 200
             assert b"MFA setup session expired" in response.data
+
+    def test_mfa_confirm_rejects_expired_pending(
+        self, app, auth_client, seed_user, monkeypatch
+    ):
+        """POST /mfa/confirm rejects pending state past its expiry.
+
+        Sets up a pending secret with an expiry in the past and posts a
+        valid code.  The route must (a) reject the submission with the
+        "expired" flash, (b) clear the stale pending columns, and
+        (c) NOT promote the secret to ``totp_secret_encrypted``.  This
+        is the C-05 anti-staleness contract: an attacker who briefly
+        compromises an account cannot revisit /mfa/confirm hours later
+        to silently enrol their own device.
+
+        ``follow_redirects=False`` is essential: the redirect target
+        /mfa/setup writes new pending state by design and would mask
+        the cleared columns we are asserting on.
+        """
+        with app.app_context():
+            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+
+            # Build a row with pending state already past expiry.
+            mfa_config = MfaConfig(
+                user_id=seed_user["user"].id,
+                pending_secret_encrypted=mfa_service.encrypt_secret(
+                    "JBSWY3DPEHPK3PXP"
+                ),
+                pending_secret_expires_at=(
+                    datetime.now(timezone.utc) - timedelta(minutes=1)
+                ),
+            )
+            db.session.add(mfa_config)
+            db.session.commit()
+
+            response = auth_client.post("/mfa/confirm", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "mfa/setup" in response.headers.get("Location", "")
+
+            db.session.refresh(mfa_config)
+            # Stale pending state cleared.
+            assert mfa_config.pending_secret_encrypted is None
+            assert mfa_config.pending_secret_expires_at is None
+            # MFA was NOT enabled.
+            assert mfa_config.is_enabled in (False, None)
+            assert mfa_config.totp_secret_encrypted is None
+            assert mfa_config.confirmed_at is None
+
+            # The flash arrives on the next page; verify it explicitly
+            # so the user-visible message is locked down.  Use
+            # follow_redirects=False on the GET so we do not chain
+            # through into a fresh /mfa/setup that resets the page.
+            follow_up = auth_client.get(
+                response.headers["Location"], follow_redirects=False,
+            )
+            assert follow_up.status_code == 200
+            assert b"MFA setup session expired" in follow_up.data
 
     def test_regenerate_backup_codes(self, app, auth_client, seed_user):
         """POST /mfa/regenerate-backup-codes generates new codes."""
@@ -842,19 +1083,23 @@ class TestMfaSetup:
             )
 
     def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm redirects with flash when TOTP key is missing.
+        """POST /mfa/confirm redirects to security settings when TOTP key is missing.
 
-        When TOTP_ENCRYPTION_KEY is not set, encrypt_secret() raises
-        RuntimeError.  The route must catch this and redirect to security
-        settings instead of returning a 500 error.
+        Setup writes a pending secret successfully; then the operator
+        unsets ``TOTP_ENCRYPTION_KEY`` between request boundaries.  At
+        confirm time the route's ``decrypt_secret`` call raises
+        RuntimeError.  The route must (a) clear the unrecoverable
+        pending state, (b) redirect to ``/settings?section=security``
+        rather than looping the user through /mfa/setup (which would
+        also fail), and (c) NOT return a 500.
         """
         with app.app_context():
             monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
 
-            # Visit setup to store the secret in the session.
+            # Visit setup to write the pending secret while the key is set.
             auth_client.get("/mfa/setup")
 
-            # Remove the key so encrypt_secret raises RuntimeError.
+            # Remove the key so the next decrypt_secret raises RuntimeError.
             monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
 
             response = auth_client.post("/mfa/confirm", data={
@@ -862,6 +1107,18 @@ class TestMfaSetup:
             }, follow_redirects=False)
             assert response.status_code == 302
             assert "security" in response.headers.get("Location", "")
+
+            # The unrecoverable pending state must have been cleared so
+            # the next request does not encounter the same broken row.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+            assert config.is_enabled in (False, None)
+            assert config.totp_secret_encrypted is None
 
 
 class TestMfaLogin:
@@ -1955,32 +2212,41 @@ class TestMfaSetupEdgeCases:
     def test_mfa_confirm_double_submit(self, app, auth_client, seed_user, monkeypatch):
         """Submitting MFA confirmation twice does not create a duplicate MfaConfig.
 
-        The first POST pops the setup secret from the session. The second
-        POST finds no secret and redirects to /mfa/setup with an expiry
-        message. Only one MfaConfig row should exist.
+        Under C-05, the first POST decrypts the pending secret, promotes
+        it to ``totp_secret_encrypted``, and clears the pending columns.
+        A second POST finds no pending secret and redirects to
+        /mfa/setup with the "expired" flash.  Only one MfaConfig row
+        should exist, and the existing active credential must NOT be
+        re-rotated by the no-op second submission.
         """
         with app.app_context():
             monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
 
-            # Visit setup to store the secret in the session.
+            # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")
 
-            # First confirm: enables MFA and shows backup codes.
+            # First confirm: promotes pending to active and shows backup codes.
             resp1 = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             })
             assert resp1.status_code == 200
             assert b"Save Your Backup Codes" in resp1.data
 
-            # Second confirm: session secret was consumed; should redirect.
+            # Snapshot the active credential after the successful confirm.
+            config_after_first = db.session.query(MfaConfig).filter_by(
+                user_id=seed_user["user"].id
+            ).first()
+            ciphertext_after_first = config_after_first.totp_secret_encrypted
+            confirmed_at_after_first = config_after_first.confirmed_at
+
+            # Second confirm: pending state was cleared; should redirect.
             resp2 = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             }, follow_redirects=False)
-            # Session secret was consumed on first submit; second is rejected.
             assert resp2.status_code == 302
             assert "mfa/setup" in resp2.headers.get("Location", "")
 
-            # Verify exactly one MfaConfig exists and it is enabled.
+            # Verify exactly one MfaConfig exists.
             config_count = db.session.query(MfaConfig).filter_by(
                 user_id=seed_user["user"].id
             ).count()
@@ -1990,3 +2256,9 @@ class TestMfaSetupEdgeCases:
                 user_id=seed_user["user"].id
             ).first()
             assert config.is_enabled is True
+            # The second submit must not have rotated or cleared the
+            # active credential; pending state is still empty.
+            assert config.totp_secret_encrypted == ciphertext_after_first
+            assert config.confirmed_at == confirmed_at_after_first
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None

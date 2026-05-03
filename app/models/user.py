@@ -131,6 +131,15 @@ class MfaConfig(db.Model):
     encryption (key from TOTP_ENCRYPTION_KEY env var).  Backup codes
     are stored as a JSON list of bcrypt hashes.
 
+    During an in-progress /mfa/setup flow the unconfirmed secret is
+    held in ``pending_secret_encrypted`` (server-side, encrypted under
+    the same MultiFernet as ``totp_secret_encrypted``) rather than in
+    the user's session cookie, which Flask only signs and does not
+    encrypt.  ``pending_secret_expires_at`` bounds the window in which
+    the pending secret can be promoted to ``totp_secret_encrypted`` --
+    abandoned setups become unusable on their own.  See audit finding
+    F-031 / commit C-05.
+
     Related service: app/services/mfa_service.py
     Related routes: /mfa/setup, /mfa/confirm, /mfa/verify, /mfa/disable
     """
@@ -144,6 +153,22 @@ class MfaConfig(db.Model):
         nullable=False, unique=True,
     )
     totp_secret_encrypted = db.Column(db.LargeBinary)
+    # Pending TOTP secret captured during /mfa/setup but not yet
+    # confirmed by a valid TOTP code on /mfa/confirm.  Encrypted under
+    # the same Fernet/MultiFernet key as ``totp_secret_encrypted``.
+    # Nullable because most rows are NOT mid-setup at any given moment
+    # (no setup ever started, or the most recent setup was confirmed,
+    # expired, or abandoned and cleared).
+    pending_secret_encrypted = db.Column(db.LargeBinary, nullable=True)
+    # Wall-clock expiry of ``pending_secret_encrypted``.  /mfa/confirm
+    # rejects pending state once this timestamp has passed so an
+    # abandoned setup cannot be completed weeks later by an attacker
+    # who briefly gains access to the account.  Nullable for the same
+    # reason as ``pending_secret_encrypted``: most rows have no pending
+    # setup in progress.
+    pending_secret_expires_at = db.Column(
+        db.DateTime(timezone=True), nullable=True,
+    )
     is_enabled = db.Column(db.Boolean, default=False)
     backup_codes = db.Column(db.JSON)
     confirmed_at = db.Column(db.DateTime(timezone=True))
