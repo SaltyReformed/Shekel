@@ -13,7 +13,8 @@
            value="{{ acct.current_anchor_balance or 0 }}"
            class="form-control" autofocus
            aria-label="Current balance for {{ acct.name }}"
-           onkeydown="if(event.key==='Escape'){event.preventDefault();htmx.ajax('GET','{{ url_for('accounts.inline_anchor_display', account_id=acct.id) }}',{target:this.closest('form'),swap:'outerHTML'})}">
+           data-action="anchor-cancel-on-escape"
+           data-revert-url="{{ url_for('accounts.inline_anchor_display', account_id=acct.id) }}">
   </div>
   <button type="submit" class="btn btn-sm btn-primary" aria-label="Save">
     <i class="bi bi-check"></i>

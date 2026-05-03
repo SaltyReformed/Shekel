@@ -206,6 +206,91 @@ def test_no_inline_style_attribute_in_rendered_html(auth_client):
     )
 
 
+# Routes whose rendered HTML must contain ZERO inline event-handler
+# attributes (onclick=, onchange=, onkeydown=, ...).  The CSP forbids
+# inline scripts (``script-src 'self'`` without ``'unsafe-inline'``),
+# so any such attribute is silently ignored by the browser and the
+# associated UI is broken without a visible error.  The migration in
+# the C-02 follow-up moved every handler to delegated listeners in
+# external JS files; this test locks the migration in.
+INLINE_HANDLER_ROUTES = (
+    "/dashboard",
+    "/accounts",
+    "/settings",
+    "/settings?section=categories",
+)
+
+
+# Common DOM event-handler attribute names.  Not exhaustive -- the
+# regex below uses a generic ``on[a-z]+`` pattern, but listing the
+# ones that historically appeared in the codebase here helps the
+# error message be readable when the test fires.
+KNOWN_INLINE_HANDLERS = (
+    "onclick", "onchange", "oninput", "onsubmit", "onkeydown",
+    "onkeypress", "onkeyup", "onmouseover", "onmouseout", "onfocus",
+    "onblur", "onload", "onerror",
+)
+
+
+@pytest.mark.parametrize("path", INLINE_HANDLER_ROUTES)
+def test_no_inline_event_handler_attributes_in_rendered_html(auth_client, path):
+    """No template renders an ``on<event>="..."`` attribute.
+
+    Matches the generic shape ``\\son[a-z]+\\s*=\\s*['\"]`` so a new
+    handler name nobody anticipated will still trip the test.  The
+    leading whitespace requirement avoids false positives on
+    ``data-on-foo=`` and similar attribute names that happen to
+    contain the substring ``on``.
+    """
+    resp = auth_client.get(path, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    inline_handler_re = re.compile(
+        r'\son[a-z]+\s*=\s*["\']', re.IGNORECASE
+    )
+    matches = inline_handler_re.findall(body)
+    # Surface the offending handler name(s) in the error message so
+    # the failure points at exactly which one was reintroduced.
+    if matches:
+        # Strip the leading whitespace and trailing quote from each
+        # match for a clean error message.
+        sample = [m.strip() for m in matches[:5]]
+        known = [m for m in sample if any(
+            m.lower().lstrip().startswith(name) for name in KNOWN_INLINE_HANDLERS
+        )]
+        raise AssertionError(
+            f"Inline event-handler attribute(s) found on {path}. "
+            f"Sample: {sample}. Known-name matches: {known}. "
+            f"All handlers must live in app/static/js/ via delegation."
+        )
+
+
+def test_categories_edit_button_uses_data_action(auth_client):
+    """The categories edit row exposes ``data-action="cat-edit-show"``
+    so categories.js can wire up the display→edit toggle.  Negative
+    test (no onclick=) is covered above; this one proves the
+    positive replacement is actually emitted."""
+    # Seed at least one category for the user.  The default seed_user
+    # fixture creates several; assert one is rendered.
+    resp = auth_client.get(
+        "/settings?section=categories", follow_redirects=True
+    )
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert 'data-action="cat-edit-show"' in body, (
+        "categories template must emit data-action='cat-edit-show' "
+        "for categories.js to attach the edit-toggle handler"
+    )
+    assert 'data-action="cat-edit-cancel"' in body
+    assert 'data-action="cat-group-change"' in body
+    # The Add Category form's group dropdown also uses cat-group-change.
+    # data-custom-id and data-hidden-id are required peers; assert
+    # at least one of each appears (template emits one per row plus
+    # one for the add form).
+    assert "data-custom-id=" in body
+    assert "data-hidden-id=" in body
+
+
 def test_x_content_type_options_nosniff(auth_client):
     """X-Content-Type-Options: nosniff blocks MIME sniffing.  Not new
     in C-02 but locked in by this test because the security-headers

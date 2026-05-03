@@ -14,7 +14,8 @@
            value="{{ account.current_anchor_balance or 0 }}"
            class="form-control" autofocus
            aria-label="{{ account.name }} account balance"
-           onkeydown="if(event.key==='Escape'){event.preventDefault();htmx.ajax('GET','{{ url_for('accounts.anchor_display', account_id=account.id) }}',{target:this.closest('form'),swap:'outerHTML'})}">
+           data-action="anchor-cancel-on-escape"
+           data-revert-url="{{ url_for('accounts.anchor_display', account_id=account.id) }}">
   </div>
   <button type="submit" class="btn btn-sm btn-primary" aria-label="Save balance">
     <i class="bi bi-check"></i>
