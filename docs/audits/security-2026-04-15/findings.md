@@ -1749,7 +1749,28 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add
   `login_manager.session_protection = "strong"` at
   `app/extensions.py:22-25`. One line.
-- **Status:** Open
+- **Status:** Fixed in C-07 (2026-05-04).
+  ``app/extensions.py`` now sets
+  ``login_manager.session_protection = "strong"`` immediately after
+  the ``LoginManager`` instantiation.  Under strong mode,
+  Flask-Login's ``_session_protection_failed`` (see
+  ``flask_login/login_manager.py``) pops every key in
+  ``flask_login.config.SESSION_KEYS`` from the session AND sets
+  ``session["_remember"] = "clear"`` whenever the per-request
+  identifier (``sha512(remote_addr || "|" || user_agent)``) drifts
+  from the value stored at ``login_user()`` time -- forcing a
+  complete re-authentication and clearing the remember-me cookie via
+  the after-request hook.  The default ``"basic"`` mode only flipped
+  ``session["_fresh"]`` to False and left the rest of the session
+  populated, which is the gap ASVS L2 V3.2.1 marked Partial.
+  Regression tests:
+  ``tests/test_config.py::TestLoginManagerConfig::test_login_manager_session_protection_is_strong``
+  (static inspection) and
+  ``tests/test_adversarial/test_session_protection.py``
+  (behavioural -- six end-to-end tests covering REMOTE_ADDR drift,
+  User-Agent drift, X-Forwarded-For drift on the proxy-aware code
+  path, the unchanged-fingerprint control case, full session-key
+  pop on drift, and remember-me cookie clearing on drift).
 
 ### F-039: analytics.calendar_tab passes raw account_id to service without ownership check
 

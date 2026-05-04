@@ -7,11 +7,16 @@ empty / placeholder / short keys, acceptance of valid keys, Dev/Test
 loading without a fallback default).  ``test_routes/test_errors.py``
 also has a small overlap (DEBUG=False, dev-only placeholder rejection)
 exercising the same code path through a different lens.
+
+Extension-level posture (LoginManager session_protection, etc.) is
+asserted alongside the config classes here so a single regression
+gate covers every static security knob the app ships with.
 """
 
 import pytest
 
 from app.config import BaseConfig, DevConfig, ProdConfig, TestConfig
+from app.extensions import login_manager
 
 
 # A plausible SECRET_KEY shape for tests that expect ProdConfig to
@@ -457,3 +462,34 @@ class TestRateLimitConfig:
         )
         with pytest.raises(ValueError, match="SECRET_KEY is required"):
             ProdConfig()
+
+
+class TestLoginManagerConfig:
+    """Tests for Flask-Login posture configured in ``app/extensions.py``.
+
+    These assertions lock in static security knobs that have no other
+    runtime tell-tale until an attacker exploits them.  A regression
+    here means the app's session-fixation defence has silently
+    weakened, and the only place that would surface the change is an
+    audit -- by which time the gap may have already been exploited.
+    """
+
+    def test_login_manager_session_protection_is_strong(self):
+        """``login_manager.session_protection`` is set to ``"strong"``.
+
+        Closes audit finding F-038 / remediation Commit C-07.  The
+        Flask-Login default is ``"basic"``, which only flips
+        ``session["_fresh"]`` to ``False`` on identifier drift and
+        leaves the rest of the session in place; ``"strong"`` pops
+        every Flask-Login session key and clears the remember-me
+        cookie, forcing a complete re-authentication.  See
+        ``flask_login/login_manager.py:_session_protection_failed``
+        for the exact divergence between the two modes.
+
+        Asserting a literal string here (rather than ``in {"basic",
+        "strong"}``) is intentional: the next-strongest valid value
+        ``None`` (disabled) is silently corrosive, and ``"basic"`` is
+        what the audit explicitly rejected.  Either of those values
+        must fail this test.
+        """
+        assert login_manager.session_protection == "strong"

@@ -24,6 +24,26 @@ login_manager = LoginManager()
 login_manager.login_view = "auth.login"  # Redirect target for @login_required
 login_manager.login_message_category = "warning"
 
+# Session-fixation defence.  Flask-Login's default ("basic") flips the
+# session's ``_fresh`` flag to False when the per-request session
+# identifier (sha512 of remote address + User-Agent) drifts from the
+# value captured at login_user() time, but leaves the rest of the
+# session intact -- so an attacker who replays a stolen signed-cookie
+# session from a different IP/UA would still be treated as the
+# original user for any endpoint that does not require ``fresh_login``.
+# "strong" mode pops every Flask-Login session key on identifier drift
+# (see flask_login/login_manager.py:_session_protection_failed) and
+# additionally schedules the remember-me cookie for clearing, forcing
+# a complete re-authentication.  This is required for ASVS L2 V3.2.1
+# (Session Protection) and closes audit finding F-038.  The protection
+# is small defence-in-depth gain today (Flask's signed-cookie session
+# already resists classic fixation) but is load-bearing once the
+# project migrates to a server-side session store (planned remediation
+# Commit C-53) where stolen session IDs would otherwise be replayable
+# from any origin.  See docs/audits/security-2026-04-15/
+# remediation-plan.md "Commit C-07".
+login_manager.session_protection = "strong"
+
 # CSRF protection
 csrf = CSRFProtect()
 
