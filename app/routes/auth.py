@@ -20,6 +20,7 @@ from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.log_events import log_event, AUTH
+from app.utils.session_helpers import invalidate_other_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,128 @@ auth_bp = Blueprint("auth", __name__)
 # to silently enrol their own device.  See audit finding F-031 / commit
 # C-05 of the 2026-04-15 security remediation plan.
 MFA_SETUP_PENDING_TTL = timedelta(minutes=15)
+
+# Maximum time between the password POST that establishes pending MFA
+# state on /login and the verification POST on /mfa/verify that
+# consumes it.  Bounds the cookie-replay window for an attacker who
+# captured a session cookie immediately after the victim's password
+# step but before the MFA step.  Five minutes is long enough for a
+# real user to reach for their phone and type a code, short enough
+# that a stolen cookie is uninteresting -- the TOTP code itself
+# rotates every 30 seconds, so the only useful attack window is the
+# one this constant closes.  See audit finding F-002 / commit C-08.
+_MFA_PENDING_MAX_AGE = timedelta(minutes=5)
+
+# Session-cookie keys used to carry MFA pending state across the two
+# halves of the login flow (password POST -> /mfa/verify POST).
+# Centralised here so the login route, the verify route, and the
+# pending-state helpers below stay in sync; a typo on any one key
+# would silently break the flow.
+_MFA_PENDING_KEYS = (
+    "_mfa_pending_user_id",
+    "_mfa_pending_remember",
+    "_mfa_pending_next",
+    "_mfa_pending_at",
+)
+
+
+def _clear_mfa_pending_state():
+    """Pop every MFA pending key from the request session.
+
+    Used by every exit branch in :func:`mfa_verify` -- the timeout
+    rejection, the missing-user branch, the disabled-MFA branch, the
+    encryption-key-failure branch, and the successful-verification
+    branch.  Centralising the cleanup means a future addition to
+    ``_MFA_PENDING_KEYS`` is automatically picked up by every exit
+    path; an inline ``flask_session.pop(...)`` block at each site
+    would have to be updated in five places, with the usual
+    miss-one-and-leak-state bug.
+
+    Idempotent: safe to call when no pending state is present.
+    """
+    for key in _MFA_PENDING_KEYS:
+        flask_session.pop(key, None)
+
+
+def _consume_backup_code(mfa_config, plaintext):
+    """Verify a backup code against stored hashes and consume on match.
+
+    Single-use backup codes work as a one-time bypass for the TOTP
+    requirement.  This helper handles the verify-and-remove pair as
+    one operation so :func:`mfa_verify` does not have to inline the
+    list-rebuild and commit (one less branch on its R0912 budget,
+    and the consume step lives next to the verify step that
+    motivates it).
+
+    Args:
+        mfa_config: The user's :class:`~app.models.user.MfaConfig`
+            row; ``backup_codes`` is mutated in place on a match
+            and the change is committed.
+        plaintext: User-submitted backup code in plaintext.  Length-
+            agnostic: pre-C-03 codes (8 hex chars) and post-C-03
+            codes (28 hex chars) verify identically because bcrypt
+            ignores length below the 72-byte input cap.
+
+    Returns:
+        True if ``plaintext`` matched a stored hash and was consumed.
+        False if no hash matched (no DB change in that case).
+    """
+    idx = mfa_service.verify_backup_code(plaintext, mfa_config.backup_codes)
+    if idx < 0:
+        return False
+    mfa_config.backup_codes = [
+        h for i, h in enumerate(mfa_config.backup_codes) if i != idx
+    ]
+    db.session.commit()
+    return True
+
+
+def _mfa_pending_is_fresh():
+    """Return True iff the session's ``_mfa_pending_at`` is recent.
+
+    Reads ``flask_session["_mfa_pending_at"]`` (an ISO-8601 string
+    written by /login when MFA is required) and compares it against
+    ``datetime.now(timezone.utc)``.  Returns False, NEVER raising,
+    for any of the following adversarial conditions:
+
+      * No ``_mfa_pending_at`` key in the session -- pending state
+        was constructed without a timestamp (pre-C-08 cookie still
+        in flight, or a tampered/forged cookie missing the field).
+      * The value is not parseable as ISO-8601 -- malformed cookie.
+      * The parsed datetime is naive (no timezone) -- ill-formed
+        cookie that would otherwise raise on the comparison.
+      * The pending timestamp is in the future -- clock skew or
+        tampered cookie; treat as invalid rather than honouring an
+        impossible state.
+      * The age exceeds ``_MFA_PENDING_MAX_AGE`` -- the legitimate
+        case the constant exists to enforce.
+
+    Fail-closed across the board.  The cost of a false rejection is
+    one extra password retry by the user; the cost of a false
+    acceptance is the entire F-002 finding (a stolen cookie can
+    complete login weeks after the password step).
+    """
+    raw = flask_session.get("_mfa_pending_at")
+    if not raw:
+        return False
+    try:
+        pending_at = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return False
+    if pending_at.tzinfo is None:
+        # A naive datetime would raise on the timezone-aware
+        # subtraction below.  Reject explicitly so the failure mode
+        # is "expired pending state" (UX redirect to /login) rather
+        # than "500 from the auth route".
+        return False
+    elapsed = datetime.now(timezone.utc) - pending_at
+    if elapsed < timedelta(0):
+        # Future-dated pending state -- only reachable via a tampered
+        # cookie (the SECRET_KEY signature would have to be forged)
+        # or a backwards clock jump on the server.  Either way the
+        # value cannot be trusted.
+        return False
+    return elapsed <= _MFA_PENDING_MAX_AGE
 
 
 def _is_safe_redirect(target):
@@ -113,6 +236,14 @@ def login():
                 pending_next = request.args.get("next")
                 flask_session["_mfa_pending_next"] = (
                     pending_next if _is_safe_redirect(pending_next) else None
+                )
+                # Stamp the pending state with a timestamp so /mfa/verify
+                # can reject cookies older than _MFA_PENDING_MAX_AGE.
+                # Without this, a captured session cookie remains a valid
+                # MFA pending state for the entire 31-day default Flask
+                # session lifetime -- audit finding F-002.
+                flask_session["_mfa_pending_at"] = (
+                    datetime.now(timezone.utc).isoformat()
                 )
                 return redirect(url_for("auth.mfa_verify"))
 
@@ -259,15 +390,46 @@ def invalidate_sessions():
 
 @auth_bp.route("/mfa/verify", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def mfa_verify():
+def mfa_verify():  # pylint: disable=too-many-return-statements
     """Display the MFA verification form and handle code submission.
 
     Requires a pending MFA user_id in the session (set by the login
     route after successful password verification). Completes the login
     on valid TOTP or backup code.
+
+    Pending state freshness is enforced on every entry to this view
+    (both GET and POST) via :func:`_mfa_pending_is_fresh`.  A pending
+    state older than ``_MFA_PENDING_MAX_AGE`` is cleared and the user
+    is bounced back to /login with a flash message -- the F-002
+    cookie-replay window closes at exactly this gate.
+
+    Pylint note: ``too-many-return-statements`` is suppressed because
+    each early return is a distinct semantic exit (no pending state,
+    stale state, GET render, missing user-or-config, key failure,
+    invalid code, companion success, owner success).  Consolidating
+    these into one return path would force a single flash/redirect
+    template that hides the per-mode messaging; the explicit returns
+    are the readable form.
     """
     pending_user_id = flask_session.get("_mfa_pending_user_id")
     if not pending_user_id:
+        # No pending state at all -- silently redirect.  This is the
+        # normal case for a user who navigated directly to /mfa/verify
+        # without completing the password step; no flash required.
+        return redirect(url_for("auth.login"))
+
+    if not _mfa_pending_is_fresh():
+        # Pending state exists but is stale, malformed, or future-dated
+        # (see _mfa_pending_is_fresh for the full failure list).  Clear
+        # every pending key so a fresh /login starts from a clean slate
+        # and surface a user-visible reason for the bounce -- without
+        # the flash, a user who paused on the verify page for >5 min
+        # would see only an unexplained redirect to /login.  F-002.
+        _clear_mfa_pending_state()
+        flash(
+            "Two-factor authentication timed out. Please log in again.",
+            "warning",
+        )
         return redirect(url_for("auth.login"))
 
     if request.method == "GET":
@@ -278,23 +440,21 @@ def mfa_verify():
     backup_code = request.form.get("backup_code", "").strip()
 
     user = db.session.get(User, pending_user_id)
-    if not user:
-        # User was deleted between login steps -- clear pending state.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
-        return redirect(url_for("auth.login"))
-
-    mfa_config = (
-        db.session.query(MfaConfig)
-        .filter_by(user_id=user.id, is_enabled=True)
-        .first()
-    )
-    if not mfa_config:
-        # MFA was disabled between login steps -- clear pending state.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
+    mfa_config = None
+    if user:
+        mfa_config = (
+            db.session.query(MfaConfig)
+            .filter_by(user_id=user.id, is_enabled=True)
+            .first()
+        )
+    if not user or not mfa_config:
+        # Either the user was deleted between login steps or MFA was
+        # disabled out from under the pending session.  Both are race
+        # conditions that resolve the same way: clear pending state
+        # and silently bounce to /login.  No flash because a fresh
+        # password entry will explain itself (invalid credentials if
+        # the user is gone, no MFA prompt if MFA is disabled).
+        _clear_mfa_pending_state()
         return redirect(url_for("auth.login"))
 
     try:
@@ -302,9 +462,7 @@ def mfa_verify():
     except (RuntimeError, InvalidToken):
         # Key is missing or has changed since MFA was enabled.
         # Clear pending MFA state so the user is not stuck in a loop.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
+        _clear_mfa_pending_state()
         flash(
             "MFA verification failed. The encryption key may have been "
             "changed or removed. Contact your administrator.",
@@ -313,39 +471,51 @@ def mfa_verify():
         return redirect(url_for("auth.login"))
 
     valid = False
+    used_backup_code = False
 
     if totp_code:
         # Verify the 6-digit TOTP code from an authenticator app.
         valid = mfa_service.verify_totp_code(secret, totp_code)
     elif backup_code:
-        # Verify the backup code against stored hashes. Codes generated
-        # before the C-03 entropy upgrade are 8 hex chars; codes generated
-        # after are 28 hex chars. Both lengths verify identically because
-        # bcrypt is length-agnostic.
-        idx = mfa_service.verify_backup_code(backup_code, mfa_config.backup_codes)
-        if idx >= 0:
-            # Remove the consumed backup code hash from the list.
-            mfa_config.backup_codes = [
-                h for i, h in enumerate(mfa_config.backup_codes) if i != idx
-            ]
-            db.session.commit()
-            valid = True
+        # Backup-code path delegates to _consume_backup_code so the
+        # verify+remove+commit sequence stays atomic and is not
+        # duplicated at any other call site.  Length-agnostic; works
+        # for both pre-C-03 (8 hex) and post-C-03 (28 hex) codes.
+        used_backup_code = _consume_backup_code(mfa_config, backup_code)
+        valid = used_backup_code
 
     if not valid:
         flash("Invalid verification code.", "danger")
         return render_template("auth/mfa_verify.html")
 
     # Login completion -- both password and TOTP/backup code are verified.
-    remember = flask_session.pop("_mfa_pending_remember", False)
+    # Read the values we still need from pending state before clearing.
+    remember = flask_session.get("_mfa_pending_remember", False)
     # Validate again at redirect time (defense in depth -- the value was
     # also validated at storage time in the login route).
-    next_page = flask_session.pop("_mfa_pending_next", None)
+    next_page = flask_session.get("_mfa_pending_next")
     if not _is_safe_redirect(next_page):
         next_page = None
-    flask_session.pop("_mfa_pending_user_id", None)
+
+    _clear_mfa_pending_state()
 
     login_user(user, remember=remember)
     flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+
+    if used_backup_code:
+        # Backup-code consumption is the canonical "I lost my
+        # authenticator" signal -- the credential the user just spent
+        # exists precisely because the original device is unavailable
+        # or compromised.  Force every other live session for this
+        # user to re-authenticate so an attacker who has the same
+        # password+device can no longer ride along.  F-003.
+        #
+        # Called after login_user / _session_created_at so the helper
+        # refreshes the cookie (with its single ``now``) AFTER
+        # Flask-Login has populated the session, ensuring the
+        # current request survives the bump.
+        invalidate_other_sessions(user, "backup_code_consumed")
+
     log_event(logger, logging.INFO, "mfa_login_success", AUTH,
               "MFA login succeeded", user_id=user.id)
 
@@ -636,6 +806,16 @@ def mfa_disable_confirm():
     mfa_config.backup_codes = None
     mfa_config.confirmed_at = None
     db.session.commit()
+
+    # MFA disable is a security-relevant state change: a user who
+    # disables MFA because they suspect a session is compromised has
+    # done nothing about that session yet.  Force every other live
+    # session to re-authenticate so the disable cannot be silently
+    # exploited by an attacker who already holds a valid cookie.
+    # Called AFTER the MFA-clear commit so a transient DB error in
+    # the helper does not leave MFA-disabled rows tied to a
+    # non-bumped session_invalidated_at.  F-032.
+    invalidate_other_sessions(current_user, "mfa_disabled")
 
     log_event(logger, logging.INFO, "mfa_disabled", AUTH,
               "MFA disabled", user_id=current_user.id)
