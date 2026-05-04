@@ -78,6 +78,59 @@ def _clear_mfa_pending_state():
         flask_session.pop(key, None)
 
 
+def _verify_totp_with_replay_logging(mfa_config, code, user_id):
+    """Verify a TOTP code, log replays, and commit on success.
+
+    Wraps :func:`mfa_service.verify_totp_code` to keep the
+    replay-rejection logging and the post-success commit out of the
+    route's main flow -- :func:`mfa_verify` was over its
+    ``too-many-branches`` budget after the C-09 changes added the
+    REPLAY/ACCEPTED branches inline.  Pulling the three-way enum
+    handling into a helper restores the route to a flat sequence of
+    business steps and keeps each function within Pylint's limits.
+
+    On REPLAY, emits the structured ``totp_replay_rejected`` event
+    that F-142 requires.  The event includes ``user_id`` and
+    ``ip`` so SOC tooling can correlate replay attempts to a
+    specific account and source address.
+
+    On ACCEPTED, commits the SQLAlchemy session so
+    ``mfa_config.last_totp_timestep`` -- which the verifier mutated
+    in place -- persists across requests.  Without this commit, a
+    crash later in the route would leave the matched step
+    un-recorded and replayable on a retry.
+
+    Args:
+        mfa_config: The user's :class:`~app.models.user.MfaConfig`
+            row.  Mutated in place on ACCEPTED.
+        code: The 6-digit TOTP code submitted by the user.
+        user_id: The :attr:`User.id` whose pending login is being
+            verified.  Carried into the replay-rejected log event.
+
+    Returns:
+        bool: True if the code was ACCEPTED.  False if it was
+            REPLAY or INVALID.
+
+    Raises:
+        cryptography.fernet.InvalidToken: If the encrypted secret
+            cannot be decrypted under any current Fernet key.  Caller
+            handles via the encryption-key-failure redirect.
+        RuntimeError: If ``TOTP_ENCRYPTION_KEY`` is unset.  Same
+            handling.
+    """
+    result = mfa_service.verify_totp_code(mfa_config, code)
+    if result is mfa_service.TotpVerificationResult.REPLAY:
+        log_event(
+            logger, logging.WARNING, "totp_replay_rejected", AUTH,
+            "TOTP replay attempt rejected",
+            user_id=user_id, ip=request.remote_addr,
+        )
+    if result is mfa_service.TotpVerificationResult.ACCEPTED:
+        db.session.commit()
+        return True
+    return False
+
+
 def _consume_backup_code(mfa_config, plaintext):
     """Verify a backup code against stored hashes and consume on match.
 
@@ -457,11 +510,32 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
         _clear_mfa_pending_state()
         return redirect(url_for("auth.login"))
 
+    valid = False
+    used_backup_code = False
+
+    # Single try/except wraps both the up-front decrypt (preserving
+    # the pre-C-09 fail-fast behaviour: a missing encryption key
+    # disables BOTH the TOTP and backup-code paths) and the TOTP
+    # verifier (which decrypts again internally on the TOTP path).
+    # Any of three failure modes -- decrypt-now error, verifier
+    # decrypt error, or impossible-but-defensive key swap mid-flow --
+    # collapses into the same operator-side error message and
+    # redirect.
     try:
-        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        if totp_code:
+            valid = _verify_totp_with_replay_logging(
+                mfa_config, totp_code, user.id,
+            )
+        elif backup_code:
+            # Backup-code path delegates to _consume_backup_code so
+            # the verify+remove+commit sequence stays atomic and is
+            # not duplicated at any other call site.  Length-
+            # agnostic: pre-C-03 (8 hex) and post-C-03 (28 hex) codes
+            # verify identically through bcrypt.
+            used_backup_code = _consume_backup_code(mfa_config, backup_code)
+            valid = used_backup_code
     except (RuntimeError, InvalidToken):
-        # Key is missing or has changed since MFA was enabled.
-        # Clear pending MFA state so the user is not stuck in a loop.
         _clear_mfa_pending_state()
         flash(
             "MFA verification failed. The encryption key may have been "
@@ -469,20 +543,6 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
             "danger",
         )
         return redirect(url_for("auth.login"))
-
-    valid = False
-    used_backup_code = False
-
-    if totp_code:
-        # Verify the 6-digit TOTP code from an authenticator app.
-        valid = mfa_service.verify_totp_code(secret, totp_code)
-    elif backup_code:
-        # Backup-code path delegates to _consume_backup_code so the
-        # verify+remove+commit sequence stays atomic and is not
-        # duplicated at any other call site.  Length-agnostic; works
-        # for both pre-C-03 (8 hex) and post-C-03 (28 hex) codes.
-        used_backup_code = _consume_backup_code(mfa_config, backup_code)
-        valid = used_backup_code
 
     if not valid:
         flash("Invalid verification code.", "danger")
@@ -679,7 +739,8 @@ def mfa_confirm():
         return redirect(url_for("auth.mfa_setup"))
 
     totp_code = request.form.get("totp_code", "")
-    if not mfa_service.verify_totp_code(secret, totp_code):
+    matched_step = mfa_service.verify_totp_setup_code(secret, totp_code)
+    if matched_step is None:
         # Pending state is preserved -- the user may retry until the
         # 15-minute expiry without re-scanning the QR code.
         flash("Invalid code. Please try again.", "danger")
@@ -709,6 +770,13 @@ def mfa_confirm():
     mfa_config.pending_secret_expires_at = None
     mfa_config.is_enabled = True
     mfa_config.confirmed_at = datetime.now(timezone.utc)
+    # Seed replay-prevention state from the confirming code's step so
+    # the same code cannot be replayed at /mfa/verify in the seconds
+    # immediately after enrolment.  Without this seed the first
+    # ~30 seconds of an MFA-protected account would still be vulnerable
+    # to the F-005 attack against an attacker who observed the confirm
+    # POST.  See commit C-09.
+    mfa_config.last_totp_timestep = matched_step
 
     codes = mfa_service.generate_backup_codes()
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
@@ -766,7 +834,12 @@ def mfa_disable():
 def mfa_disable_confirm():
     """Process MFA disable after verifying password and TOTP code.
 
-    Clears the TOTP secret, backup codes, and sets is_enabled to False.
+    Clears the TOTP secret, backup codes, the recorded replay-prevention
+    step, and sets is_enabled to False.  The TOTP step is verified
+    through :func:`mfa_service.verify_totp_code` with replay prevention
+    enforced -- an attacker who has captured the user's password and a
+    recently-used TOTP code cannot use that code to disable MFA, the
+    same defence that ``/mfa/verify`` provides at login.
     """
     current_password = request.form.get("current_password", "")
     totp_code = request.form.get("totp_code", "").strip()
@@ -786,8 +859,15 @@ def mfa_disable_confirm():
         flash("Two-factor authentication is not enabled.", "danger")
         return redirect(url_for("settings.show", section="security"))
 
+    # Same helper as /mfa/verify: emits ``totp_replay_rejected`` on
+    # REPLAY and commits ``last_totp_timestep`` on ACCEPTED so a code
+    # captured at /mfa/verify cannot be reused at /mfa/disable (and
+    # vice versa).  Re-raises decrypt errors so the operator-side
+    # message wins over the generic invalid-code flash.
     try:
-        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        accepted = _verify_totp_with_replay_logging(
+            mfa_config, totp_code, current_user.id,
+        )
     except (RuntimeError, InvalidToken):
         flash(
             "MFA could not be verified because the encryption key has "
@@ -796,15 +876,21 @@ def mfa_disable_confirm():
         )
         return redirect(url_for("settings.show", section="security"))
 
-    if not mfa_service.verify_totp_code(secret, totp_code):
+    if not accepted:
         flash("Invalid authentication code.", "danger")
         return redirect(url_for("auth.mfa_disable"))
 
-    # Clear all MFA fields.
+    # Clear all MFA fields.  ``last_totp_timestep`` is reset to NULL
+    # so that a re-enrollment under a fresh secret does not inherit
+    # the step boundary recorded against the now-cleared secret -- the
+    # two values are unrelated and a stale boundary on the new secret
+    # would be a UX bug (every new code might be rejected as a replay
+    # of the old secret's last step).
     mfa_config.totp_secret_encrypted = None
     mfa_config.is_enabled = False
     mfa_config.backup_codes = None
     mfa_config.confirmed_at = None
+    mfa_config.last_totp_timestep = None
     db.session.commit()
 
     # MFA disable is a security-relevant state change: a user who

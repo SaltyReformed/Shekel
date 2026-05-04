@@ -4,15 +4,81 @@ Handles TOTP secret generation, verification, backup code management,
 and secret encryption/decryption. No Flask imports -- pure service module.
 """
 
+import hmac
 import os
 import secrets
-from io import BytesIO
+import time
 from base64 import b64encode
+from enum import Enum
+from io import BytesIO
 
 import bcrypt
 import pyotp
 import qrcode
 from cryptography.fernet import Fernet, MultiFernet
+
+
+# Width in seconds of one TOTP time-step.  RFC 6238 leaves this
+# implementation-defined; ``pyotp.TOTP`` defaults to 30 seconds and
+# every popular authenticator app (Google Authenticator, Authy, 1Password)
+# matches that.  Pinned as a module constant so the verification path,
+# the replay-prevention path, and the test fixtures all reference the
+# same value -- a divergence here would silently produce off-by-30s
+# step numbers and either accept replays or reject legitimate codes.
+_TOTP_STEP_SECONDS = 30
+
+# Number of step-widths of clock drift accepted in either direction
+# during verification.  ``pyotp.TOTP.verify(..., valid_window=1)`` was
+# the previous default; preserved here so the replay-prevention rewrite
+# does not narrow the verify window for users with skewed device
+# clocks.  Together with strict replay prevention this means an
+# observed code is replayable for at most one step (until the user
+# submits a fresh code that bumps ``last_totp_timestep``) rather than
+# the +-1 step window.
+_TOTP_DRIFT_STEPS = 1
+
+# Number of digits in a TOTP code.  ``pyotp.random_base32`` and
+# ``pyotp.TOTP`` default to RFC 6238's 6-digit codes, and the user-
+# facing form fields enforce the same width.  Codes of any other
+# length are short-circuited as INVALID so a malformed cookie or a
+# user typo never reaches the timing-sensitive ``totp.at`` comparison.
+_TOTP_CODE_LENGTH = 6
+
+
+class TotpVerificationResult(Enum):
+    """Outcome of a TOTP code verification with replay prevention.
+
+    The enum exists -- rather than a plain ``bool`` -- so route
+    handlers can distinguish a wrong/malformed code (a typo, a stale
+    code that has already rotated past the drift window) from a code
+    that matches a previously consumed step (an active replay attack
+    or a same-second double-submit).  Audit finding F-142 requires the
+    second case to emit a structured ``totp_replay_rejected`` event;
+    conflating the two on the wire would either spam the log with
+    benign typos or hide the attack signal in the noise of valid-but-
+    not-quite-right codes.
+
+    ACCEPTED: The code matches a step strictly greater than
+        ``mfa_config.last_totp_timestep``.  ``mfa_config`` has been
+        mutated in place to record the new step; the caller MUST
+        commit the SQLAlchemy session for replay prevention to
+        persist across requests.
+
+    REPLAY: The code matches a valid TOTP step within the drift
+        window, but the matched step is less than or equal to the
+        already-consumed ``last_totp_timestep``.  Treated as
+        unauthorised by the route layer; emits
+        ``totp_replay_rejected``.
+
+    INVALID: The code does not match any step within the drift
+        window, or the input was malformed (wrong length, non-string,
+        non-digits).  Indistinguishable from a typo or a code from
+        another secret.
+    """
+
+    ACCEPTED = "accepted"
+    REPLAY = "replay"
+    INVALID = "invalid"
 
 
 def _build_fernet_list():
@@ -149,20 +215,137 @@ def generate_qr_code_data_uri(uri):
     return f"data:image/png;base64,{encoded}"
 
 
-def verify_totp_code(secret, code):
-    """Verify a 6-digit TOTP code against a secret.
+def _find_matching_step(secret, code):
+    """Locate the time-step at which ``code`` matches ``secret``.
 
-    Allows one period (30 seconds) of clock drift in either direction
-    via valid_window=1.
+    Walks the +-1 step drift window around the current 30-second
+    epoch step.  Each candidate step is converted to its anchoring
+    Unix timestamp (``step * 30``) and ``pyotp.TOTP.at`` regenerates
+    the OTP that the user's authenticator would have produced at
+    that wall-clock instant; ``hmac.compare_digest`` performs the
+    comparison in constant time relative to the input length so the
+    matching step is not leaked through a timing side-channel.
+
+    Returns the matched step on the first hit because two different
+    steps cannot produce the same 6-digit OTP within a 90-second
+    window: the OTP space is 10**6, and at one OTP every 30 seconds
+    the next collision is on the order of 347 days out -- far
+    outside the +-30s drift window we examine.
 
     Args:
-        secret: The base32-encoded TOTP secret.
-        code: The 6-digit code string from the user's authenticator app.
+        secret: Base32-encoded TOTP secret as plaintext.
+        code: Candidate 6-digit code from the user.  Anything that
+            is not a 6-digit numeric string is rejected without
+            invoking ``pyotp`` so malformed input cannot influence
+            timing.
 
     Returns:
-        bool: True if the code is valid, False otherwise.
+        int | None: The integer time-step (Unix-seconds // 30) at
+            which the code matches, or ``None`` if no candidate
+            within the drift window matches.
     """
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+    if not isinstance(code, str):
+        return None
+    if len(code) != _TOTP_CODE_LENGTH or not code.isdigit():
+        return None
+    totp = pyotp.TOTP(secret)
+    current_step = int(time.time()) // _TOTP_STEP_SECONDS
+    for drift in range(-_TOTP_DRIFT_STEPS, _TOTP_DRIFT_STEPS + 1):
+        candidate_step = current_step + drift
+        candidate_otp = totp.at(candidate_step * _TOTP_STEP_SECONDS)
+        if hmac.compare_digest(candidate_otp, code):
+            return candidate_step
+    return None
+
+
+def verify_totp_code(mfa_config, code):
+    """Verify a TOTP code against the active secret with replay prevention.
+
+    Implements ASVS V2.8.4: a successfully matched 30-second time-step
+    must be strictly greater than ``mfa_config.last_totp_timestep``.
+    Without this check, the +-1 step drift window built into TOTP
+    leaves any observed code replayable for ~90 seconds after
+    observation -- the F-005 finding.  See commit C-09 of the
+    2026-04-15 security remediation plan.
+
+    Side effects on ACCEPTED:
+        ``mfa_config.last_totp_timestep`` is mutated in place to the
+        step at which the code matched.  The caller is responsible
+        for committing the SQLAlchemy session so the new value
+        persists; without a commit, the same code remains replayable
+        for the duration of the drift window.
+
+    No side effects on REPLAY or INVALID -- the row is unchanged and
+    a subsequent retry with a fresh code may still succeed.
+
+    Args:
+        mfa_config (app.models.user.MfaConfig): The user's MfaConfig
+            row.  ``totp_secret_encrypted`` is decrypted internally;
+            ``last_totp_timestep`` is read for the replay check and
+            written on success.
+        code (str): The 6-digit code string from the user's
+            authenticator app.  Non-string, wrong-length, and non-
+            digit inputs are rejected as INVALID without consulting
+            the secret.
+
+    Returns:
+        TotpVerificationResult: ACCEPTED if the code matched a step
+            > ``last_totp_timestep`` (or ``last_totp_timestep`` was
+            ``None``); REPLAY if the matched step was already
+            consumed; INVALID otherwise.
+
+    Raises:
+        cryptography.fernet.InvalidToken: If the ciphertext in
+            ``totp_secret_encrypted`` cannot be decrypted under any
+            currently configured Fernet key.  Surfaced to the route
+            layer so the user sees the operator-side error rather
+            than a silent INVALID that would suggest a typo.
+        RuntimeError: If ``TOTP_ENCRYPTION_KEY`` is unset.  Same
+            rationale -- propagated, not swallowed.
+    """
+    secret = decrypt_secret(mfa_config.totp_secret_encrypted)
+    matched_step = _find_matching_step(secret, code)
+    if matched_step is None:
+        return TotpVerificationResult.INVALID
+    if (mfa_config.last_totp_timestep is not None
+            and matched_step <= mfa_config.last_totp_timestep):
+        return TotpVerificationResult.REPLAY
+    mfa_config.last_totp_timestep = matched_step
+    return TotpVerificationResult.ACCEPTED
+
+
+def verify_totp_setup_code(secret, code):
+    """Verify a TOTP code against a setup-pending secret.
+
+    Used by ``/mfa/confirm`` where the secret being verified lives
+    in ``mfa_config.pending_secret_encrypted`` and has not yet been
+    promoted to the active credential.  Replay prevention does not
+    apply at this stage -- there is no ``last_totp_timestep`` to
+    compare against, the secret has never been used, and the user
+    is mid-enrolment in a flow gated by an authenticated session
+    plus a 15-minute pending-state expiry.
+
+    The matched step is RETURNED (not stored) so the calling route
+    can persist it as ``mfa_config.last_totp_timestep`` in the same
+    commit that promotes the pending secret to active.  That
+    handoff closes the only window in which the confirming code
+    could otherwise be replayed: the ~30 seconds between
+    ``/mfa/confirm`` and the user's first ``/mfa/verify`` after
+    enrolment.
+
+    Args:
+        secret (str): Base32-encoded TOTP secret as plaintext
+            (decrypted from ``mfa_config.pending_secret_encrypted``
+            by the caller, since the encrypted payload may decrypt
+            under a retired key in the MultiFernet list).
+        code (str): The 6-digit code string from the user's
+            authenticator.
+
+    Returns:
+        int | None: The matched step on success, or ``None`` if no
+            step within the drift window matched.
+    """
+    return _find_matching_step(secret, code)
 
 
 def generate_backup_codes(count=10):

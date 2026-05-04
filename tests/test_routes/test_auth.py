@@ -16,6 +16,7 @@ from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
 from app.routes.auth import _is_safe_redirect
 from app.services import mfa_service
+from app.services.mfa_service import TotpVerificationResult
 from app.services.auth_service import hash_password
 
 
@@ -808,7 +809,14 @@ class TestMfaSetup:
         captured during setup (round-trip through encrypt -> decrypt).
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            # /mfa/confirm verifies the *pending* secret via
+            # verify_totp_setup_code (returns int|None), not the
+            # active-secret path.  The fixed integer is the matched
+            # step that the route persists as
+            # ``mfa_config.last_totp_timestep``.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
             # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")
@@ -868,7 +876,11 @@ class TestMfaSetup:
         navigation.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+            # /mfa/confirm uses verify_totp_setup_code which returns
+            # int (matched step) or None (no match).  None == invalid.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: None,
+            )
 
             # Visit setup to write a pending secret.
             auth_client.get("/mfa/setup")
@@ -939,7 +951,12 @@ class TestMfaSetup:
         the cleared columns we are asserting on.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            # The expired-pending guard runs BEFORE setup-code
+            # verification; the patch is here only as a defensive
+            # backstop in case the order is ever reordered.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
             # Build a row with pending state already past expiry.
             mfa_config = MfaConfig(
@@ -1068,7 +1085,9 @@ class TestMfaSetup:
         format.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
             auth_client.get("/mfa/setup")
 
             response = auth_client.post("/mfa/confirm", data={"totp_code": "123456"})
@@ -1094,7 +1113,13 @@ class TestMfaSetup:
         also fail), and (c) NOT return a 500.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            # The decrypt failure occurs BEFORE setup-code verification
+            # in the mfa_confirm route; the patch is here defensively
+            # so a refactor cannot accidentally let a "wrong code" path
+            # mask the missing-key path.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
             # Visit setup to write the pending secret while the key is set.
             auth_client.get("/mfa/setup")
@@ -1192,7 +1217,10 @@ class TestMfaLogin:
         """POST /mfa/verify with valid TOTP code completes login."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: enter pending state.
             client.post("/login", data={
@@ -1219,7 +1247,10 @@ class TestMfaLogin:
         """POST /mfa/verify with invalid TOTP code shows generic error."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.INVALID,
+            )
 
             client.post("/login", data={
                 "email": "test@shekel.local",
@@ -1380,7 +1411,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with malicious next parameter.
             client.post("/login?next=https://evil.com", data={
@@ -1411,7 +1445,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with protocol-relative next.
             client.post("/login?next=//evil.com", data={
@@ -1440,7 +1477,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with a safe next parameter.
             client.post("/login?next=/templates", data={
@@ -1504,7 +1544,10 @@ class TestMfaDisable:
         """POST /mfa/disable with valid password + TOTP disables MFA."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             response = auth_client.post("/mfa/disable", data={
                 "current_password": "testpass",
@@ -1550,7 +1593,10 @@ class TestMfaDisable:
         """POST /mfa/disable with wrong TOTP code shows error."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.INVALID,
+            )
 
             response = auth_client.post("/mfa/disable", data={
                 "current_password": "testpass",
@@ -2220,7 +2266,9 @@ class TestMfaSetupEdgeCases:
         re-rotated by the no-op second submission.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
             # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")

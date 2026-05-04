@@ -140,6 +140,11 @@ class MfaConfig(db.Model):
     abandoned setups become unusable on their own.  See audit finding
     F-031 / commit C-05.
 
+    Replay prevention: ``last_totp_timestep`` records the highest 30-
+    second time-step ever accepted from this row.  Subsequent verifies
+    must produce a strictly greater step or are rejected as replays.
+    See audit findings F-005, F-142 / commit C-09.
+
     Related service: app/services/mfa_service.py
     Related routes: /mfa/setup, /mfa/confirm, /mfa/verify, /mfa/disable
     """
@@ -172,6 +177,20 @@ class MfaConfig(db.Model):
     is_enabled = db.Column(db.Boolean, default=False)
     backup_codes = db.Column(db.JSON)
     confirmed_at = db.Column(db.DateTime(timezone=True))
+    # Highest TOTP time-step (Unix-seconds // 30) that the user has
+    # successfully presented.  Replay prevention rejects any code that
+    # decodes to a step less than or equal to this value -- without it,
+    # a 30-second TOTP code with the standard +-1 drift window remains
+    # replayable for ~90 seconds after observation.  See ASVS V2.8.4
+    # and audit findings F-005, F-142 / commit C-09 of the 2026-04-15
+    # security remediation plan.
+    #
+    # Nullable for two complementary reasons: rows that pre-date this
+    # column have no recorded step (and the first successful verify
+    # populates it), and rows where MFA has been disabled clear it
+    # back to NULL so a re-enrollment under a new secret does not
+    # inherit a stale step boundary.
+    last_totp_timestep = db.Column(db.BigInteger, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     updated_at = db.Column(
         db.DateTime(timezone=True),

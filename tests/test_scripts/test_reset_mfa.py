@@ -44,6 +44,11 @@ class TestResetMfa:
             assert config.totp_secret_encrypted is None
             assert config.backup_codes is None
             assert config.confirmed_at is None
+            # last_totp_timestep is cleared too -- a stale step
+            # boundary on a re-enrollment under a new secret would
+            # be a subtle source of legitimate-code rejections.  See
+            # commit C-09.
+            assert config.last_totp_timestep is None
 
     def test_reset_mfa_user_not_found(self, app, db, capsys):
         """reset_mfa() prints error and exits for unknown email."""

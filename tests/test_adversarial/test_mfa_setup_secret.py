@@ -272,8 +272,11 @@ class TestMfaSetupSecretIsServerSide:
 
             # Confirm.  Decrypt should succeed via the retired key,
             # the route should re-encrypt under the new primary.
+            # /mfa/confirm now goes through verify_totp_setup_code
+            # (returns matched step or None) instead of the active-
+            # secret verify_totp_code path.
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
             )
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
@@ -320,7 +323,9 @@ class TestMfaSetupExpiryEnforcement:
         users out of their last-second confirms.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
             mfa_config = MfaConfig(
                 user_id=seed_user["user"].id,

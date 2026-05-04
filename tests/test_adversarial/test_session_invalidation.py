@@ -37,6 +37,7 @@ from flask import g
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
+from app.services.mfa_service import TotpVerificationResult
 
 
 _KNOWN_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
@@ -241,7 +242,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             # Step 1: legitimate password POST establishes pending.
@@ -329,7 +331,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client.post("/login", data={
@@ -362,7 +365,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client.post("/login", data={
@@ -395,7 +399,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client.post("/login", data={
@@ -426,7 +431,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client.post("/login", data={
@@ -460,7 +466,8 @@ class TestPendingMfaTimeout:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client.post("/login", data={
@@ -509,7 +516,8 @@ class TestBackupCodeInvalidatesOtherSessions:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             # Client A: existing session (pre-compromise scenario).
@@ -598,7 +606,8 @@ class TestBackupCodeInvalidatesOtherSessions:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
             user_id = seed_user["user"].id
 
@@ -669,7 +678,8 @@ class TestMfaDisableInvalidatesOtherSessions:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             # Client A: the (potentially compromised) parallel session.
@@ -712,7 +722,8 @@ class TestMfaDisableInvalidatesOtherSessions:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
 
             client = _login_with_totp(
@@ -748,7 +759,8 @@ class TestMfaDisableInvalidatesOtherSessions:
         with app.app_context():
             _enable_mfa(seed_user["user"].id)
             monkeypatch.setattr(
-                mfa_service, "verify_totp_code", lambda s, c: True,
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
             )
             user_id = seed_user["user"].id
 

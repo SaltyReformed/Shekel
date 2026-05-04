@@ -1,5 +1,6 @@
 """Tests for the MFA service module."""
 
+import os
 import re
 from unittest.mock import patch
 
@@ -46,19 +47,381 @@ class TestEncryptDecrypt:
         assert encrypted != secret.encode("utf-8")
 
 
-class TestVerifyTotpCode:
-    """Tests for mfa_service.verify_totp_code()."""
+class TestVerifyTotpSetupCode:
+    """Tests for mfa_service.verify_totp_setup_code().
 
-    def test_valid_code_accepted(self):
-        """verify_totp_code() returns True for the current valid code."""
-        secret = mfa_service.generate_totp_secret()
-        code = pyotp.TOTP(secret).now()
-        assert mfa_service.verify_totp_code(secret, code) is True
+    The setup-code variant takes a plaintext secret (the pending
+    secret captured at /mfa/setup time, which has not yet been
+    promoted to ``totp_secret_encrypted``) and returns the matched
+    30-second step on success or ``None`` on failure.  Replay
+    prevention does not apply because no ``last_totp_timestep`` exists
+    yet -- the calling route persists the returned step into the
+    column at the same time as the secret is promoted to active.
+    """
 
-    def test_invalid_code_rejected(self):
-        """verify_totp_code() returns False for a wrong code."""
+    def test_valid_code_returns_matched_step(self):
+        """A valid current code returns the step it matched.
+
+        The value is the integer ``time.time() // 30`` evaluated at
+        the moment the code was produced.  Asserting on the returned
+        step (not just truthiness) pins the contract that the route
+        relies on for seeding ``last_totp_timestep``.
+
+        ``pyotp.TOTP.at(time.time())`` is used in preference to
+        ``.now()`` because the autouse ``freeze_today`` fixture in
+        ``test_services/conftest.py`` patches ``datetime.datetime.now``
+        but not ``time.time``; ``.now()`` would fetch a code for the
+        frozen wall-clock midnight while the production verifier
+        reads real ``time.time()``, leaving the two paths reading
+        different time sources.  Using ``.at(time.time())`` collapses
+        them onto a single source of truth for the test.
+        """
+        import time as _time  # pylint: disable=import-outside-toplevel
+
         secret = mfa_service.generate_totp_secret()
-        assert mfa_service.verify_totp_code(secret, "000000") is False
+        now_unix = int(_time.time())
+        code = pyotp.TOTP(secret).at(now_unix)
+        result = mfa_service.verify_totp_setup_code(secret, code)
+        assert isinstance(result, int)
+        # Result must equal the step the code was generated for.  Allow
+        # a 1-step jitter only if the wall-clock crossed a 30-second
+        # boundary between code generation and verification (rare
+        # but possible on a slow runner).
+        expected_step = now_unix // 30
+        assert result in (expected_step - 1, expected_step, expected_step + 1)
+
+    def test_invalid_code_returns_none(self):
+        """A wrong code returns None, signalling no step matched."""
+        secret = mfa_service.generate_totp_secret()
+        assert mfa_service.verify_totp_setup_code(secret, "000000") is None
+
+
+class TestVerifyTotpCodeReplayPrevention:
+    """Tests for ``mfa_service.verify_totp_code`` -- the active-secret
+    verifier that enforces replay prevention via
+    ``mfa_config.last_totp_timestep``.
+
+    Closes audit findings F-005 (TOTP replay window) and F-142
+    (structured replay logging hook).  See ASVS V2.8.4 and commit C-09
+    of the 2026-04-15 security remediation plan.
+
+    Pin policy: every test in this class fixes ``time.time()`` to a
+    deterministic instant (``_FROZEN_UNIX``) so the matched step is
+    a function of the input code alone -- without this pin, a slow
+    runner crossing a 30-second boundary between fixture setup and
+    assertion would flip pass/fail seemingly at random.  Patches
+    ``time.time`` (the source ``mfa_service._find_matching_step``
+    consults) rather than ``datetime.now`` (pyotp's helper consults
+    that, but our tests bypass the helper by calling
+    ``pyotp.TOTP.at(unix_time)`` directly).
+    """
+
+    # A wall-clock instant in 2026 chosen so that ``_FROZEN_UNIX // 30``
+    # is a non-trivial integer not coincidentally equal to any other
+    # constant in this file.  No business meaning -- pure determinism.
+    _FROZEN_UNIX = 1_777_777_770  # 2026-05-03 04:09:30 UTC
+    _FROZEN_STEP = _FROZEN_UNIX // 30
+
+    @pytest.fixture()
+    def frozen_time(self, monkeypatch):
+        """Pin ``time.time`` to ``_FROZEN_UNIX`` for the duration of a test."""
+        monkeypatch.setattr("time.time", lambda: float(self._FROZEN_UNIX))
+        return self._FROZEN_UNIX
+
+    def _make_mfa_config(self, secret, last_step=None):
+        """Build an in-memory MfaConfig with the given encrypted secret.
+
+        Pure object construction -- no DB round-trip.  The verifier
+        only reads ``totp_secret_encrypted`` and ``last_totp_timestep``
+        and writes to ``last_totp_timestep``, all of which work on a
+        detached SQLAlchemy instance.
+        """
+        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
+        return MfaConfig(
+            totp_secret_encrypted=mfa_service.encrypt_secret(secret),
+            last_totp_timestep=last_step,
+        )
+
+    def test_accepts_current_step_first_use(self, frozen_time):
+        """A first-use code at the current step is ACCEPTED and the column is set.
+
+        ``last_totp_timestep`` starts at None to model a freshly
+        enrolled MFA config (the migration default).  After ACCEPTED
+        the column equals the matched step so subsequent verifies
+        enforce strict-greater.  Without the column update the next
+        call would still see None and accept the same code again --
+        the F-005 condition.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        code = pyotp.TOTP(secret).at(frozen_time)
+
+        result = mfa_service.verify_totp_code(config, code)
+
+        assert result is mfa_service.TotpVerificationResult.ACCEPTED
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+    def test_rejects_replay_of_same_step(self, frozen_time):
+        """The same code submitted twice in a row is REPLAY on the second call.
+
+        Direct test of the F-005 attack: an attacker who observes a
+        single valid code (over the shoulder, MITM, screen capture)
+        re-presents it within the drift window.  The second
+        ``verify_totp_code`` call must return REPLAY without re-
+        accepting the code.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        code = pyotp.TOTP(secret).at(frozen_time)
+
+        first = mfa_service.verify_totp_code(config, code)
+        assert first is mfa_service.TotpVerificationResult.ACCEPTED
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+        second = mfa_service.verify_totp_code(config, code)
+        assert second is mfa_service.TotpVerificationResult.REPLAY
+        # The column is unchanged on REPLAY -- a future legitimate
+        # code at a higher step is still acceptable.
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+    def test_rejects_replay_of_previous_step(self, frozen_time):
+        """A drift=-1 code is REPLAY when ``last_totp_timestep`` already
+        sits at the current step.
+
+        Defends the case where an attacker captured a code one step
+        earlier than the user's most recent legitimate verification.
+        Without the strict-greater check this code would still match
+        the drift window (the previous step is +-1 from current) and
+        complete the login.  The attack window is the F-005 ~90-second
+        replay window that ASVS V2.8.4 forbids.
+        """
+        secret = mfa_service.generate_totp_secret()
+        # Pretend the current step has already been consumed by a
+        # legitimate prior verification.
+        config = self._make_mfa_config(secret, last_step=self._FROZEN_STEP)
+        previous_step_unix = (self._FROZEN_STEP - 1) * 30
+        previous_code = pyotp.TOTP(secret).at(previous_step_unix)
+
+        result = mfa_service.verify_totp_code(config, previous_code)
+
+        assert result is mfa_service.TotpVerificationResult.REPLAY
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+    def test_accepts_step_plus_one(self, frozen_time):
+        """A code one step ahead of ``last_totp_timestep`` is ACCEPTED.
+
+        Models the legitimate sequential-login case: the user
+        verified at step N, the wall-clock advances to step N+1,
+        and the user submits a fresh code matching step N+1.  Strict
+        replay prevention must not turn this into a self-DoS.
+        """
+        secret = mfa_service.generate_totp_secret()
+        # The previously consumed step is one BEHIND current.
+        config = self._make_mfa_config(
+            secret, last_step=self._FROZEN_STEP - 1,
+        )
+        code_for_current = pyotp.TOTP(secret).at(frozen_time)
+
+        result = mfa_service.verify_totp_code(config, code_for_current)
+
+        assert result is mfa_service.TotpVerificationResult.ACCEPTED
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+    def test_rejects_wrong_code_without_updating_column(self, frozen_time):
+        """An invalid code returns INVALID and does not write to the column.
+
+        Distinguishes the typo-or-attack wrong-code case from the
+        replay-detection case.  Critically the column must NOT be
+        advanced -- otherwise an attacker could DoS a legitimate user
+        by pre-emptying the step counter, locking out the next
+        legitimate verify.
+        """
+        secret = mfa_service.generate_totp_secret()
+        prior_step = self._FROZEN_STEP - 5
+        config = self._make_mfa_config(secret, last_step=prior_step)
+
+        result = mfa_service.verify_totp_code(config, "000000")
+
+        assert result is mfa_service.TotpVerificationResult.INVALID
+        assert config.last_totp_timestep == prior_step
+
+    def test_drift_window_minus_one_accepted_when_never_used(self, frozen_time):
+        """A code one step behind the current is ACCEPTED on a fresh config.
+
+        With ``last_totp_timestep`` None, the only check that gates
+        acceptance is the +-1 drift window.  Drift=-1 is inside the
+        window so the code is matched and the column is updated to
+        ``current_step - 1`` -- meaning the *next* successful verify
+        must be at step >= current_step (no replay of the same -1
+        code, no acceptance of step -2).
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        previous_unix = (self._FROZEN_STEP - 1) * 30
+        prev_code = pyotp.TOTP(secret).at(previous_unix)
+
+        result = mfa_service.verify_totp_code(config, prev_code)
+
+        assert result is mfa_service.TotpVerificationResult.ACCEPTED
+        assert config.last_totp_timestep == self._FROZEN_STEP - 1
+
+    def test_drift_window_minus_two_rejected(self, frozen_time):
+        """A code two steps behind is INVALID -- outside the +-1 drift window.
+
+        Boundary check: the verifier walks ``range(-1, 2)`` so step
+        ``current - 2`` is never tested.  Without this assertion a
+        regression that widened the drift to +-2 (e.g. matching
+        Microsoft Authenticator's looser default) would silently re-
+        open the F-005 window for an additional 30 seconds.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        far_past_unix = (self._FROZEN_STEP - 2) * 30
+        far_past_code = pyotp.TOTP(secret).at(far_past_unix)
+
+        result = mfa_service.verify_totp_code(config, far_past_code)
+
+        assert result is mfa_service.TotpVerificationResult.INVALID
+        assert config.last_totp_timestep is None
+
+    def test_drift_window_plus_two_rejected(self, frozen_time):
+        """A code two steps ahead is INVALID -- outside the +-1 drift window.
+
+        Symmetric counterpart to the minus-two test.  Closes the
+        forward edge of the window so an attacker cannot pre-compute
+        a future code and replay it the moment the wall-clock
+        catches up.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        far_future_unix = (self._FROZEN_STEP + 2) * 30
+        far_future_code = pyotp.TOTP(secret).at(far_future_unix)
+
+        result = mfa_service.verify_totp_code(config, far_future_code)
+
+        assert result is mfa_service.TotpVerificationResult.INVALID
+        assert config.last_totp_timestep is None
+
+    def test_decrypts_secret_via_multifernet(self, frozen_time, monkeypatch):
+        """A secret written under a retired key still verifies after rotation.
+
+        ``verify_totp_code`` does its own decrypt via
+        ``mfa_service.decrypt_secret`` which goes through MultiFernet.
+        After ``TOTP_ENCRYPTION_KEY`` rotation, ciphertexts written
+        under the old primary still decrypt because the old key is
+        retained in ``TOTP_ENCRYPTION_KEY_OLD`` -- the C-04 contract.
+        Without this test, a refactor that swapped to a bare Fernet
+        for verify (but not for setup) would silently lock out every
+        pre-rotation user.
+        """
+        from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
+
+        # Generate the secret + ciphertext under the CURRENT primary
+        # key (whatever the conftest seeded).
+        secret = mfa_service.generate_totp_secret()
+        original_ciphertext = mfa_service.encrypt_secret(secret)
+
+        # Rotate: a brand new primary, the previously-current key
+        # becomes the retired one.  ``decrypt_secret`` should still
+        # succeed via MultiFernet's fallback path.
+        old_primary = os.environ["TOTP_ENCRYPTION_KEY"]
+        new_primary = Fernet.generate_key().decode()
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_primary)
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_primary)
+
+        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
+        config = MfaConfig(
+            totp_secret_encrypted=original_ciphertext,
+            last_totp_timestep=None,
+        )
+        code = pyotp.TOTP(secret).at(frozen_time)
+
+        result = mfa_service.verify_totp_code(config, code)
+
+        assert result is mfa_service.TotpVerificationResult.ACCEPTED
+        assert config.last_totp_timestep == self._FROZEN_STEP
+
+    def test_setup_code_does_not_consult_last_totp_timestep(
+        self, frozen_time,
+    ):
+        """``verify_totp_setup_code`` ignores ``last_totp_timestep`` entirely.
+
+        The setup-code path takes a plaintext secret and never sees
+        the MfaConfig row.  Even when the row's column is ahead of
+        the matched step, the setup verifier still returns the
+        matched step -- the route is responsible for seeding the
+        column from the returned value.  Pins this contract so a
+        future refactor that conflates the two helpers does not
+        accidentally apply replay prevention to enrollment.
+        """
+        secret = mfa_service.generate_totp_secret()
+        # A "stale" mfa_config row whose column is already AHEAD of
+        # the step our setup code will match.  Demonstrates that
+        # verify_totp_setup_code does not consult mfa_config at all.
+        code = pyotp.TOTP(secret).at(frozen_time)
+
+        result = mfa_service.verify_totp_setup_code(secret, code)
+
+        assert result == self._FROZEN_STEP
+
+    def test_invalid_secret_raises_invalidtoken(self, frozen_time):
+        """A garbled ciphertext propagates ``InvalidToken`` to the caller.
+
+        The decrypt happens inside ``verify_totp_code``.  Surfacing
+        the exception (rather than swallowing it as INVALID) lets the
+        route layer distinguish "wrong code" from "encryption key
+        unavailable" -- the latter requires an operator-side fix and
+        a different user-facing message.
+        """
+        from cryptography.fernet import InvalidToken  # pylint: disable=import-outside-toplevel
+        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
+
+        config = MfaConfig(
+            totp_secret_encrypted=b"not-valid-fernet-token",
+            last_totp_timestep=None,
+        )
+
+        with pytest.raises(InvalidToken):
+            mfa_service.verify_totp_code(config, "123456")
+
+    def test_missing_encryption_key_raises_runtimeerror(
+        self, frozen_time, monkeypatch,
+    ):
+        """An unset ``TOTP_ENCRYPTION_KEY`` propagates RuntimeError.
+
+        Surfaced rather than swallowed for the same reason as
+        InvalidToken: a missing primary key is an operator-side
+        condition that the route layer must distinguish from a wrong
+        code so the user sees an actionable message.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        code = pyotp.TOTP(secret).at(frozen_time)
+
+        monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="TOTP_ENCRYPTION_KEY"):
+            mfa_service.verify_totp_code(config, code)
+
+    def test_malformed_code_returns_invalid(self, frozen_time):
+        """Wrong-length / non-string / non-digit input returns INVALID.
+
+        Boundary collection: 5- and 7-digit strings (off-by-one), an
+        all-alpha string (copy-paste from a non-numeric field), the
+        empty string (form submitted with no code), ``None`` (a
+        defaulted form field), and a bare integer (a caller bug
+        passing the wrong type).  All must short-circuit to INVALID
+        without raising and without mutating ``last_totp_timestep``.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+
+        for bad in ("12345", "1234567", "abcdef", "", None, 123456):
+            result = mfa_service.verify_totp_code(config, bad)
+            assert result is mfa_service.TotpVerificationResult.INVALID, (
+                f"Expected INVALID for bad input {bad!r}; got {result!r}"
+            )
+        assert config.last_totp_timestep is None
 
 
 class TestBackupCodes:
@@ -262,34 +625,36 @@ class TestNegativeAndBoundaryPaths:
         with pytest.raises(InvalidToken):
             mfa_service.decrypt_secret(b"")
 
-    def test_verify_totp_wrong_length_five_digits(self):
-        """A 5-digit TOTP code is rejected (returns False, does not crash).
+    def test_verify_totp_setup_code_wrong_length_five_digits(self):
+        """A 5-digit code is rejected (returns None, does not crash).
 
-        A user manually typing a code could miss a digit. pyotp's verify()
-        returns False for wrong-length codes.
+        A user manually typing a code could miss a digit.  The setup-
+        code helper short-circuits to None for any input that does
+        not match the configured 6-digit width, never invoking pyotp.
         """
         secret = mfa_service.generate_totp_secret()
-        result = mfa_service.verify_totp_code(secret, "12345")
-        assert result is False
+        result = mfa_service.verify_totp_setup_code(secret, "12345")
+        assert result is None
 
-    def test_verify_totp_non_numeric(self):
-        """A non-numeric TOTP code is rejected (returns False, does not crash).
+    def test_verify_totp_setup_code_non_numeric(self):
+        """A non-numeric code is rejected (returns None, does not crash).
 
-        Copy-paste errors could insert non-numeric characters. pyotp's verify()
-        handles non-numeric input gracefully.
+        Copy-paste errors could insert non-numeric characters.  The
+        helper rejects anything that is not exclusively ASCII digits.
         """
         secret = mfa_service.generate_totp_secret()
-        result = mfa_service.verify_totp_code(secret, "abcdef")
-        assert result is False
+        result = mfa_service.verify_totp_setup_code(secret, "abcdef")
+        assert result is None
 
-    def test_verify_totp_empty_string(self):
-        """An empty-string TOTP code is rejected (returns False, does not crash).
+    def test_verify_totp_setup_code_empty_string(self):
+        """An empty-string code is rejected (returns None, does not crash).
 
-        Empty form submission must be handled gracefully.
+        Empty form submission must be handled gracefully without
+        invoking pyotp.
         """
         secret = mfa_service.generate_totp_secret()
-        result = mfa_service.verify_totp_code(secret, "")
-        assert result is False
+        result = mfa_service.verify_totp_setup_code(secret, "")
+        assert result is None
 
     def test_generate_backup_codes_zero_count(self):
         """generate_backup_codes(0) returns an empty list, not a crash.
@@ -308,14 +673,15 @@ class TestNegativeAndBoundaryPaths:
         result = mfa_service.generate_backup_codes(-1)
         assert result == []
 
-    def test_verify_totp_seven_digits(self):
-        """A 7-digit TOTP code is rejected (returns False).
+    def test_verify_totp_setup_code_seven_digits(self):
+        """A 7-digit code is rejected (returns None).
 
-        Authenticator apps produce 6-digit codes. More digits must be rejected.
+        Authenticator apps produce 6-digit codes.  More digits must
+        be rejected before the timing-sensitive comparison runs.
         """
         secret = mfa_service.generate_totp_secret()
-        result = mfa_service.verify_totp_code(secret, "1234567")
-        assert result is False
+        result = mfa_service.verify_totp_setup_code(secret, "1234567")
+        assert result is None
 
     def test_encrypt_empty_string_secret(self):
         """Encrypting an empty string round-trips correctly.
