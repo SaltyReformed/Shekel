@@ -18,7 +18,7 @@ entrypoint_failed() {
     echo "  - Missing or invalid values in .env (POSTGRES_PASSWORD, SECRET_KEY)"
     echo "  - Database migration conflict"
     echo ""
-    echo "To view full logs:  docker logs shekel-app"
+    echo "To view full logs:  docker logs shekel-prod-app"
     echo "Troubleshooting:    https://github.com/SaltyReformed/Shekel#troubleshooting"
     echo ""
 }

@@ -76,12 +76,12 @@ This is the single operational reference for the Shekel budget application. It c
 | `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh <backup_file>` |
 | `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh <backup_file>` |
 | `scripts/backup_retention.sh` | Prune old backups | `./scripts/backup_retention.sh [--dry-run]` |
-| `scripts/integrity_check.py` | Validate database integrity | `docker exec shekel-app python scripts/integrity_check.py [--verbose] [--category CAT]` |
-| `scripts/audit_cleanup.py` | Clean old audit log entries | `docker exec shekel-app python scripts/audit_cleanup.py [--days N] [--dry-run]` |
-| `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-app python scripts/reset_mfa.py <email>` |
-| `scripts/seed_ref_tables.py` | Seed reference lookup tables | `docker exec shekel-app python scripts/seed_ref_tables.py` |
-| `scripts/seed_user.py` | Create initial seed user | `docker exec shekel-app python scripts/seed_user.py` |
-| `scripts/seed_tax_brackets.py` | Seed US tax brackets | `docker exec shekel-app python scripts/seed_tax_brackets.py` |
+| `scripts/integrity_check.py` | Validate database integrity | `docker exec shekel-prod-app python scripts/integrity_check.py [--verbose] [--category CAT]` |
+| `scripts/audit_cleanup.py` | Clean old audit log entries | `docker exec shekel-prod-app python scripts/audit_cleanup.py [--days N] [--dry-run]` |
+| `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-prod-app python scripts/reset_mfa.py <email>` |
+| `scripts/seed_ref_tables.py` | Seed reference lookup tables | `docker exec shekel-prod-app python scripts/seed_ref_tables.py` |
+| `scripts/seed_user.py` | Create initial seed user | `docker exec shekel-prod-app python scripts/seed_user.py` |
+| `scripts/seed_tax_brackets.py` | Seed US tax brackets | `docker exec shekel-prod-app python scripts/seed_tax_brackets.py` |
 
 ### Cron Schedule
 
@@ -99,9 +99,9 @@ Crontab entries (replace `/opt/shekel` with your actual path):
 # ── Shekel Backups & Maintenance ─────────────────────────────────
 0 2 * * * /opt/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 30 2 * * * /opt/shekel/scripts/backup_retention.sh >> /var/log/shekel_backup.log 2>&1
-0 3 * * * docker exec shekel-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
+0 3 * * * docker exec shekel-prod-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
 0 3 * * 0 /opt/shekel/scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) >> /var/log/shekel_backup.log 2>&1
-30 3 * * 0 docker exec shekel-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
+30 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
 ```
 
 ---
@@ -182,8 +182,13 @@ git checkout <commit-hash>
 docker compose build app
 docker compose up -d --no-deps --force-recreate app
 
-# Option B: If the previous image is still tagged:
-docker tag shekel-app:previous shekel-shekel-app:latest
+# Option B: If the previous image is still tagged.
+# deploy.sh tags the in-place image as ${APP_CONTAINER}:previous
+# (so shekel-prod-app:previous) before each deploy, then on rollback
+# re-tags it as <compose_image>:latest.  The compose image for the
+# bundled deployment is ghcr.io/saltyreformed/shekel:latest -- adjust
+# below if you build a custom image with a different name.
+docker tag shekel-prod-app:previous ghcr.io/saltyreformed/shekel:latest
 docker compose up -d --no-deps --force-recreate app
 ```
 
@@ -218,9 +223,9 @@ docker compose ps
 # All three services (db, app, nginx) should show "healthy".
 
 # 6. Seed the database (first run only).
-docker exec shekel-app python scripts/seed_ref_tables.py
-docker exec shekel-app python scripts/seed_tax_brackets.py
-docker exec shekel-app python scripts/seed_user.py
+docker exec shekel-prod-app python scripts/seed_ref_tables.py
+docker exec shekel-prod-app python scripts/seed_tax_brackets.py
+docker exec shekel-prod-app python scripts/seed_user.py
 
 # 7. Verify the application.
 curl -s http://localhost/health
@@ -278,7 +283,7 @@ The restore script will:
 **Post-restore verification:**
 ```bash
 curl -s http://localhost/health
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 ### 3.3 Restoring from NAS
@@ -323,13 +328,13 @@ RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh
 
 ```bash
 # Run all checks inside the app container.
-docker exec shekel-app python scripts/integrity_check.py
+docker exec shekel-prod-app python scripts/integrity_check.py
 
 # Verbose output (shows every check, not just failures).
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 
 # Run only one category: referential, orphan, balance, or consistency.
-docker exec shekel-app python scripts/integrity_check.py --category referential
+docker exec shekel-prod-app python scripts/integrity_check.py --category referential
 ```
 
 **Exit codes:** 0 = all passed, 1 = critical failures, 2 = warnings only, 3 = script error.
@@ -361,7 +366,7 @@ For complete secret rotation procedures, see `docs/runbook_secrets.md`.
 
 **WARNING: Changing this key makes ALL existing MFA enrollments unreadable.**
 
-1. Disable MFA for all users: `docker exec shekel-app python scripts/reset_mfa.py --all`
+1. Disable MFA for all users: `docker exec shekel-prod-app python scripts/reset_mfa.py --all`
 2. Generate a new key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 3. Update `TOTP_ENCRYPTION_KEY` in `.env`
 4. Restart the app: `docker compose restart app`
@@ -379,7 +384,7 @@ For complete secret rotation procedures, see `docs/runbook_secrets.md`.
 
 ```bash
 # SSH into the Proxmox host.
-docker exec shekel-app python scripts/reset_mfa.py admin@shekel.local
+docker exec shekel-prod-app python scripts/reset_mfa.py admin@shekel.local
 ```
 
 Output: `MFA has been disabled for admin@shekel.local.`
@@ -391,14 +396,14 @@ The user can now log in with email + password only. They should re-enable MFA vi
 **Via database (psql):**
 ```bash
 # Recent changes to transactions.
-docker exec shekel-db psql -U shekel_user -d shekel -c \
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
   "SELECT executed_at, operation, row_id, changed_fields
    FROM system.audit_log
    WHERE table_name = 'transactions'
    ORDER BY executed_at DESC LIMIT 20;"
 
 # Changes by a specific user.
-docker exec shekel-db psql -U shekel_user -d shekel -c \
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
   "SELECT executed_at, table_name, operation, row_id
    FROM system.audit_log
    WHERE user_id = 1
@@ -415,10 +420,10 @@ Old audit log rows are cleaned up automatically by cron (daily at 3:00 AM). The 
 
 ```bash
 # Preview what would be deleted.
-docker exec shekel-app python scripts/audit_cleanup.py --dry-run
+docker exec shekel-prod-app python scripts/audit_cleanup.py --dry-run
 
 # Manual cleanup with a custom retention period.
-docker exec shekel-app python scripts/audit_cleanup.py --days 90
+docker exec shekel-prod-app python scripts/audit_cleanup.py --days 90
 ```
 
 ### 4.8 Backing Up the .env File
@@ -526,16 +531,16 @@ served.
 
 ```bash
 # View recent Flask application logs (JSON format).
-docker logs shekel-app --tail 20
+docker logs shekel-prod-app --tail 20
 
 # Follow logs in real time.
-docker logs shekel-app -f
+docker logs shekel-prod-app -f
 
 # View Nginx access logs (JSON format).
-docker logs shekel-nginx --tail 20
+docker logs shekel-prod-nginx --tail 20
 
 # View PostgreSQL logs.
-docker logs shekel-db --tail 20
+docker logs shekel-prod-db --tail 20
 
 # View cloudflared tunnel logs.
 journalctl -u cloudflared --no-pager -n 20
@@ -574,17 +579,17 @@ If Loki is not configured as a data source:
 
 | Purpose | Query |
 |---------|-------|
-| All app logs | `{container="shekel-app"}` |
-| All auth events | `{container="shekel-app"} \| json \| category="auth"` |
-| Login failures | `{container="shekel-app"} \| json \| event="login_failed"` |
-| Login successes | `{container="shekel-app"} \| json \| event="login_success"` |
-| Password changes | `{container="shekel-app"} \| json \| event="password_changed"` |
-| MFA events | `{container="shekel-app"} \| json \| event=~"mfa_.*"` |
-| Slow requests | `{container="shekel-app"} \| json \| event="slow_request"` |
-| All errors | `{container="shekel-app"} \| json \| level="ERROR"` |
-| Business events | `{container="shekel-app"} \| json \| category="business"` |
-| By user ID | `{container="shekel-app"} \| json \| user_id="1"` |
-| Trace a request | `{container="shekel-app"} \| json \| request_id="<uuid>"` |
+| All app logs | `{container="shekel-prod-app"}` |
+| All auth events | `{container="shekel-prod-app"} \| json \| category="auth"` |
+| Login failures | `{container="shekel-prod-app"} \| json \| event="login_failed"` |
+| Login successes | `{container="shekel-prod-app"} \| json \| event="login_success"` |
+| Password changes | `{container="shekel-prod-app"} \| json \| event="password_changed"` |
+| MFA events | `{container="shekel-prod-app"} \| json \| event=~"mfa_.*"` |
+| Slow requests | `{container="shekel-prod-app"} \| json \| event="slow_request"` |
+| All errors | `{container="shekel-prod-app"} \| json \| level="ERROR"` |
+| Business events | `{container="shekel-prod-app"} \| json \| category="business"` |
+| By user ID | `{container="shekel-prod-app"} \| json \| user_id="1"` |
+| Trace a request | `{container="shekel-prod-app"} \| json \| request_id="<uuid>"` |
 
 ### 5.4 Monitoring Stack Management
 
@@ -601,7 +606,7 @@ docker compose up -d
 # Restart Promtail (e.g., after config changes).
 docker restart promtail
 
-# Check Promtail targets (verify it sees the shekel-app container).
+# Check Promtail targets (verify it sees the shekel-prod-app container).
 curl -s http://localhost:9080/targets
 
 # Check Promtail logs for errors.
@@ -615,7 +620,7 @@ docker logs promtail --tail 20
 docker network create monitoring
 
 # Verify the app container is on the network.
-docker network inspect monitoring | grep shekel-app
+docker network inspect monitoring | grep shekel-prod-app
 ```
 
 ### 5.5 Health Checks
@@ -775,26 +780,26 @@ curl -s https://<domain>/health
 | App unreachable externally | cloudflared service down | `sudo systemctl status cloudflared` then `sudo systemctl restart cloudflared` |
 | App unreachable externally | Docker containers down | `docker compose ps` then `docker compose up -d` |
 | "Access Denied" on all requests | Cloudflare Access misconfigured | Check Access policy in Zero Trust dashboard; verify email is in the allowed list |
-| Cloudflare 502 Bad Gateway | Nginx or app container unhealthy | `docker compose ps` to check health; `docker logs shekel-nginx` and `docker logs shekel-app` for errors |
+| Cloudflare 502 Bad Gateway | Nginx or app container unhealthy | `docker compose ps` to check health; `docker logs shekel-prod-nginx` and `docker logs shekel-prod-app` for errors |
 | Cloudflare 522 Connection Timed Out | cloudflared cannot reach Nginx | Verify Nginx is running: `docker compose ps`. Check cloudflared logs: `journalctl -u cloudflared -n 20` |
 | 429 on first login attempt | Cloudflare rate limit too aggressive | Check WAF rules in Cloudflare dashboard (Security > WAF > Rate limiting rules); increase threshold |
 | 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. To clear immediately: `docker exec shekel-prod-redis redis-cli FLUSHDB` -- counters are stored in Redis, not in app memory, so restarting the app does NOT reset them |
 | 500 on every login attempt | Redis container down or unreachable | App is configured fail-closed: rate-limit storage outage rejects every limited request. `docker compose ps redis` to check status; `docker logs shekel-prod-redis --tail 50` for errors; `docker compose up -d redis` to restart. Login resumes immediately once Redis answers PING |
 | Wrong IP in logs (127.0.0.1) | Nginx real IP config issue | Verify `set_real_ip_from` and `real_ip_header CF-Connecting-IP` in `nginx/nginx.conf` |
 | No logs in Grafana | Promtail not scraping | `docker logs promtail`. Verify `monitoring` network exists. Verify app is on the network: `docker network inspect monitoring` |
-| CSS/JS not loading | Static files volume issue | `docker exec shekel-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |
-| Health check returns 500 | Database connection issue | `docker exec shekel-db pg_isready -U shekel_user -d shekel`. Check `docker logs shekel-app --tail 20` |
-| Database backup failed | Container down or disk full | `docker ps` to check shekel-db. `df -h` to check disk space |
+| CSS/JS not loading | Static files volume issue | `docker exec shekel-prod-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |
+| Health check returns 500 | Database connection issue | `docker exec shekel-prod-db pg_isready -U shekel_user -d shekel`. Check `docker logs shekel-prod-app --tail 20` |
+| Database backup failed | Container down or disk full | `docker ps` to check shekel-prod-db. `df -h` to check disk space |
 | NAS backup failed | NAS not mounted | `mount \| grep nas`. Remount: `sudo mount -a` |
-| Deploy script rollback failed | No previous image tagged | Manual intervention: `docker logs shekel-app` to diagnose, then fix and redeploy |
+| Deploy script rollback failed | No previous image tagged | Manual intervention: `docker logs shekel-prod-app` to diagnose, then fix and redeploy |
 
 ### 7.2 Log Locations
 
 | Log | Command | Contents |
 |-----|---------|----------|
-| Flask app (JSON) | `docker logs shekel-app` | Request logs, auth events, business events, errors |
-| Nginx (JSON) | `docker logs shekel-nginx` | HTTP access logs, upstream errors |
-| PostgreSQL | `docker logs shekel-db` | Database server logs, connection errors |
+| Flask app (JSON) | `docker logs shekel-prod-app` | Request logs, auth events, business events, errors |
+| Nginx (JSON) | `docker logs shekel-prod-nginx` | HTTP access logs, upstream errors |
+| PostgreSQL | `docker logs shekel-prod-db` | Database server logs, connection errors |
 | Cloudflared | `journalctl -u cloudflared` | Tunnel connection logs, reconnects |
 | Backups | `cat /var/log/shekel_backup.log` | Cron job output for backup, retention, verify, integrity |
 | Grafana | `docker logs grafana` | Grafana server logs |
@@ -809,9 +814,9 @@ curl -s https://<domain>/health
 docker compose ps
 
 # 2. Check container logs for the failing service.
-docker logs shekel-app --tail 50
-docker logs shekel-nginx --tail 20
-docker logs shekel-db --tail 20
+docker logs shekel-prod-app --tail 50
+docker logs shekel-prod-nginx --tail 20
+docker logs shekel-prod-db --tail 20
 
 # 3. Restart the failing service.
 docker compose restart app    # or: nginx, db
@@ -834,7 +839,7 @@ ls -lht /var/backups/shekel/
 
 # 3. Verify the restore.
 curl -s http://localhost/health
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 If local backups are corrupted, restore from NAS:
@@ -848,7 +853,7 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz
 
 ```bash
 # SSH to the Proxmox host.
-docker exec shekel-app python scripts/reset_mfa.py your-email@example.com
+docker exec shekel-prod-app python scripts/reset_mfa.py your-email@example.com
 # Output: MFA has been disabled for your-email@example.com.
 
 # Log in with email + password (MFA is now disabled).
