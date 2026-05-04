@@ -38,6 +38,9 @@ This is the single operational reference for the Shekel budget application. It c
        v
 [Flask Application]        -- Shekel budget app, structured JSON logging
        |
+       +------> [Redis :6379]     -- Docker container, Flask-Limiter counters
+       |                              (no persistence; counters evaporate on
+       |                              restart by design)
        v
 [PostgreSQL :5432]         -- Docker container, multi-schema, audit triggers
 ```
@@ -59,9 +62,10 @@ This is the single operational reference for the Shekel budget application. It c
 
 | Container | Image | Network(s) | Health Check |
 |-----------|-------|------------|--------------|
-| `shekel-db` | `postgres:16-alpine` | backend | `pg_isready` every 10s |
-| `shekel-app` | Built from Dockerfile | backend, monitoring | `GET /health` every 30s |
-| `shekel-nginx` | `nginx:1.27-alpine` | frontend, backend | `wget /health` every 30s |
+| `shekel-prod-db` | `postgres:16-alpine` | backend | `pg_isready` every 10s |
+| `shekel-prod-redis` | `redis:7.4-alpine` | backend | `redis-cli ping` every 10s |
+| `shekel-prod-app` | Built from Dockerfile | backend, monitoring | `GET /health` every 30s |
+| `shekel-prod-nginx` | `nginx:1.27-alpine` | frontend, backend | `wget /health` every 30s |
 
 ### Script Inventory
 
@@ -774,7 +778,8 @@ curl -s https://<domain>/health
 | Cloudflare 502 Bad Gateway | Nginx or app container unhealthy | `docker compose ps` to check health; `docker logs shekel-nginx` and `docker logs shekel-app` for errors |
 | Cloudflare 522 Connection Timed Out | cloudflared cannot reach Nginx | Verify Nginx is running: `docker compose ps`. Check cloudflared logs: `journalctl -u cloudflared -n 20` |
 | 429 on first login attempt | Cloudflare rate limit too aggressive | Check WAF rules in Cloudflare dashboard (Security > WAF > Rate limiting rules); increase threshold |
-| 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. Or restart app to clear in-memory state: `docker compose restart app` |
+| 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. To clear immediately: `docker exec shekel-prod-redis redis-cli FLUSHDB` -- counters are stored in Redis, not in app memory, so restarting the app does NOT reset them |
+| 500 on every login attempt | Redis container down or unreachable | App is configured fail-closed: rate-limit storage outage rejects every limited request. `docker compose ps redis` to check status; `docker logs shekel-prod-redis --tail 50` for errors; `docker compose up -d redis` to restart. Login resumes immediately once Redis answers PING |
 | Wrong IP in logs (127.0.0.1) | Nginx real IP config issue | Verify `set_real_ip_from` and `real_ip_header CF-Connecting-IP` in `nginx/nginx.conf` |
 | No logs in Grafana | Promtail not scraping | `docker logs promtail`. Verify `monitoring` network exists. Verify app is on the network: `docker network inspect monitoring` |
 | CSS/JS not loading | Static files volume issue | `docker exec shekel-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |

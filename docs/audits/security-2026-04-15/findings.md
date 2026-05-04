@@ -1597,7 +1597,27 @@ lives in the same database the attacker would be tampering with.
   `default_limits=["200 per hour", "30 per minute"]` at the
   Limiter constructor so every route has a ceiling. Addresses
   F-033 residual and many authenticated-endpoint DoS paths.
-- **Status:** Open
+- **Status:** Fixed in C-06 (2026-05-03). Implemented option (a) +
+  option (c).  Production now resolves rate-limit storage from
+  ``app.config["RATELIMIT_STORAGE_URI"]`` (ProdConfig defaults to
+  ``redis://redis:6379/0`` and rejects ``memory://`` at startup),
+  pointing at a hardened ``redis:7.4-alpine`` sibling container on
+  the backend Docker network (read-only fs, cap_drop ALL,
+  no-new-privileges, mem_limit 96M, no persistence -- counters
+  evaporate on Redis restart by design).  ``BaseConfig.RATELIMIT_DEFAULT
+  = "200 per hour;30 per minute"`` puts a per-IP ceiling on every
+  un-decorated route (closes the "4 of 93 mutating routes" gap).  The
+  developer chose fail-closed (Phase D-12):
+  ``RATELIMIT_IN_MEMORY_FALLBACK_ENABLED = False`` and
+  ``RATELIMIT_SWALLOW_ERRORS = False`` so a Redis outage surfaces as
+  500 (via the existing Flask error handler) rather than silently
+  falling back to per-worker memory.  ``moving-window`` strategy
+  closes the fixed-window straddling gap.  ``/health`` exempted via
+  ``@limiter.exempt`` so Docker / Nginx healthcheck loops do not
+  consume the per-IP budget.  Tests:
+  ``tests/test_config.py::TestRateLimitConfig`` (12 assertions) and
+  ``tests/test_integration/test_rate_limiter.py`` (8 behaviors
+  including the fail-closed storage-outage simulation).
 
 ### F-035: PERMANENT_SESSION_LIFETIME unset -- default 31 days
 

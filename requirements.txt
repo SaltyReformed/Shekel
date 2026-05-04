@@ -34,3 +34,10 @@ python-dotenv==1.2.2
 
 # Logging
 python-json-logger==4.1.0
+
+# Rate limiting -- Redis client used by Flask-Limiter's RedisStorage
+# backend (limits.storage.redis).  Required in production where the
+# limiter writes counters to the bundled docker-compose ``redis``
+# service so they are shared across Gunicorn workers and survive app
+# container restarts.  See audit finding F-034.
+redis==7.4.0

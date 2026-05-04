@@ -27,5 +27,15 @@ login_manager.login_message_category = "warning"
 # CSRF protection
 csrf = CSRFProtect()
 
-# Rate limiting (in-memory, single-user app)
-limiter = Limiter(key_func=get_remote_address, default_limits=[], storage_uri="memory://")
+# Rate limiting.  All operational settings (storage backend, default
+# limits, swallow_errors, in-memory fallback, strategy) are intentionally
+# resolved from app.config inside Limiter.init_app(), NOT from constructor
+# arguments here.  Reason: Flask-Limiter 4.x (_extension.py:371-376)
+# preferentially uses the constructor's storage_uri over the value in
+# app.config[ConfigVars.STORAGE_URI], which means a value set here would
+# silently override TestConfig's "memory://" override and ProdConfig's
+# Redis URI.  Keeping the constructor minimal lets each environment
+# (DevConfig / TestConfig / ProdConfig) own its own posture without
+# touching this file.  See audit finding F-034 and remediation Commit
+# C-06.
+limiter = Limiter(key_func=get_remote_address)
