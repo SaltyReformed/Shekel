@@ -1060,142 +1060,27 @@ def companion_client(app, db, seed_companion):
 def _create_audit_infrastructure():
     """Create system.audit_log table, trigger function, and triggers.
 
-    Mirrors the Alembic migration for the audit system.  Called once
-    during test-session setup because ``create_all()`` only knows about
-    SQLAlchemy models and the audit infrastructure is raw SQL.
+    Delegates to ``app.audit_infrastructure.apply_audit_infrastructure``
+    so the Alembic migration, ``scripts/init_database.py`` (fresh-DB
+    bootstrap), and the test-session setup all materialise the same
+    schema.  The previous in-line copy of the SQL drifted six tables
+    behind the production migration before this consolidation; the
+    shared module is the only way to keep the three call sites in
+    lock-step.
+
+    Called once during test-session setup because ``create_all()``
+    only knows about SQLAlchemy models and the audit infrastructure
+    is raw SQL (PL/pgSQL function, row-level triggers, JSONB
+    columns) outside the model registry.
     """
-    # Table
-    _db.session.execute(_db.text("""
-        CREATE TABLE IF NOT EXISTS system.audit_log (
-            id              BIGSERIAL       PRIMARY KEY,
-            table_schema    VARCHAR(50)     NOT NULL,
-            table_name      VARCHAR(100)    NOT NULL,
-            operation       VARCHAR(10)     NOT NULL,
-            row_id          INTEGER,
-            old_data        JSONB,
-            new_data        JSONB,
-            changed_fields  TEXT[],
-            user_id         INTEGER,
-            db_user         VARCHAR(100)    DEFAULT current_user,
-            executed_at     TIMESTAMPTZ     DEFAULT now()
-        )
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_table
-            ON system.audit_log (table_schema, table_name)
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_executed
-            ON system.audit_log (executed_at)
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_row
-            ON system.audit_log (table_name, row_id)
-    """))
+    # pylint: disable=import-outside-toplevel  -- avoid pulling app
+    # imports at conftest module-load time so SECRET_KEY can be set
+    # via os.environ.setdefault() before the first ``app`` import.
+    from app.audit_infrastructure import apply_audit_infrastructure
 
-    # Trigger function
-    _db.session.execute(_db.text(r"""
-        CREATE OR REPLACE FUNCTION system.audit_trigger_func()
-        RETURNS TRIGGER AS $$
-        DECLARE
-            v_old_data  JSONB;
-            v_new_data  JSONB;
-            v_changed   TEXT[] := '{}';
-            v_user_id   INTEGER;
-            v_row_id    INTEGER;
-            v_key       TEXT;
-        BEGIN
-            BEGIN
-                v_user_id := current_setting('app.current_user_id', true)::INTEGER;
-            EXCEPTION WHEN OTHERS THEN
-                v_user_id := NULL;
-            END;
-
-            IF TG_OP = 'DELETE' THEN
-                v_old_data := to_jsonb(OLD);
-                v_row_id   := OLD.id;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     v_old_data, NULL, NULL, v_user_id);
-                RETURN OLD;
-
-            ELSIF TG_OP = 'INSERT' THEN
-                v_new_data := to_jsonb(NEW);
-                v_row_id   := NEW.id;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     NULL, v_new_data, NULL, v_user_id);
-                RETURN NEW;
-
-            ELSIF TG_OP = 'UPDATE' THEN
-                v_old_data := to_jsonb(OLD);
-                v_new_data := to_jsonb(NEW);
-                v_row_id   := NEW.id;
-                FOR v_key IN
-                    SELECT key FROM jsonb_each(v_new_data)
-                    WHERE NOT v_old_data ? key
-                       OR v_old_data -> key IS DISTINCT FROM v_new_data -> key
-                LOOP
-                    v_changed := array_append(v_changed, v_key);
-                END LOOP;
-                IF array_length(v_changed, 1) IS NULL THEN
-                    RETURN NEW;
-                END IF;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     v_old_data, v_new_data, v_changed, v_user_id);
-                RETURN NEW;
-            END IF;
-            RETURN NULL;
-        END;
-        $$ LANGUAGE plpgsql;
-    """))
-
-    # Attach triggers to all audited tables.
-    audited_tables = [
-        ("budget", "accounts"),
-        ("budget", "transactions"),
-        ("budget", "transaction_templates"),
-        ("budget", "transfers"),
-        ("budget", "transfer_templates"),
-        ("budget", "savings_goals"),
-        ("budget", "recurrence_rules"),
-        ("budget", "pay_periods"),
-        ("budget", "account_anchor_history"),
-        ("budget", "interest_params"),
-        ("budget", "loan_params"),
-        ("budget", "rate_history"),
-        ("budget", "escrow_components"),
-        ("budget", "investment_params"),
-        ("salary", "salary_profiles"),
-        ("salary", "salary_raises"),
-        ("salary", "paycheck_deductions"),
-        ("salary", "pension_profiles"),
-        ("salary", "calibration_overrides"),
-        ("salary", "calibration_deduction_overrides"),
-        ("auth", "users"),
-        ("auth", "user_settings"),
-        ("auth", "mfa_configs"),
-    ]
-    for schema, table in audited_tables:
-        trigger_name = f"audit_{table}"
-        _db.session.execute(_db.text(f"""
-            DROP TRIGGER IF EXISTS {trigger_name} ON {schema}.{table}
-        """))
-        _db.session.execute(_db.text(f"""
-            CREATE TRIGGER {trigger_name}
-            AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table}
-            FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()
-        """))
+    apply_audit_infrastructure(
+        lambda sql: _db.session.execute(_db.text(sql))
+    )
 
 
 def _seed_ref_tables():

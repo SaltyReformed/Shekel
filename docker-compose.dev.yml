@@ -95,9 +95,19 @@ services:
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (see .env.example)}
       DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/shekel
       DB_HOST: db
+      DB_PORT: "5432"
       DB_USER: shekel_user
       DB_PASSWORD: shekel_pass
       DB_NAME: shekel
+      # Least-privilege app role password.  Required by entrypoint.sh
+      # in every environment.  The value below is a non-secret
+      # development default -- anyone reading the compose file knows
+      # it and the dev DB is host-only -- so we hard-code it here
+      # rather than forcing every developer to add another line to
+      # .env.  Production uses a real random secret via
+      # docker-compose.yml's APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?...}
+      # check.  See audit finding F-081 / Commit C-13.
+      APP_ROLE_PASSWORD: dev-only-shekel-app-role-password-change-in-prod
       SEED_USER_EMAIL: admin@shekel.local
       SEED_USER_PASSWORD: ChangeMe!2026
       SEED_USER_DISPLAY_NAME: Budget Admin

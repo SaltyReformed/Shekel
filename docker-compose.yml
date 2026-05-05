@@ -138,14 +138,27 @@ services:
     environment:
       FLASK_ENV: production
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      # Owner role connection URL (full DDL rights).  Used by
+      # entrypoint.sh's deployment scripts (init_db.sql,
+      # init_database.py, seed_*.py).  See audit finding F-081 /
+      # remediation Commit C-13 for the two-role policy.
       DATABASE_URL: postgresql://shekel_user:${POSTGRES_PASSWORD}@db:5432/shekel
       DB_HOST: db
+      DB_PORT: "5432"
       DB_USER: shekel_user
       # DB_PASSWORD must match POSTGRES_PASSWORD (set on the db service
       # above).  entrypoint.sh reads it as PGPASSWORD for psql commands
       # that create schemas and run seed scripts.
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: shekel
+      # Least-privilege application role password.  entrypoint.sh
+      # provisions the shekel_app role under this password (via
+      # init_db.sql) and constructs DATABASE_URL_APP from it
+      # immediately before exec'ing Gunicorn so the runtime app uses
+      # DML-only credentials.  Required, no default -- a missing
+      # value fails the entrypoint shape check.  See audit finding
+      # F-081.
+      APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?Set APP_ROLE_PASSWORD in .env}
       SEED_USER_EMAIL: ${SEED_USER_EMAIL:-}
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-}
       SEED_USER_DISPLAY_NAME: ${SEED_USER_DISPLAY_NAME:-Budget Admin}

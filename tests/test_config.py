@@ -15,7 +15,9 @@ gate covers every static security knob the app ships with.
 
 import pytest
 
-from app.config import BaseConfig, DevConfig, ProdConfig, TestConfig
+from app.config import (
+    BaseConfig, DevConfig, ProdConfig, TestConfig, _runtime_database_uri,
+)
 from app.extensions import login_manager
 
 
@@ -291,6 +293,87 @@ class TestProdConfig:
         monkeypatch.setattr(BaseConfig, "TOTP_ENCRYPTION_KEY", None)
         config = ProdConfig()
         assert config.TOTP_ENCRYPTION_KEY is None
+
+
+class TestRuntimeDatabaseUri:
+    """Tests for the DATABASE_URL_APP / DATABASE_URL preference helper.
+
+    Closes audit finding F-081 / Commit C-13: the runtime app must
+    use the least-privilege ``shekel_app`` role (DATABASE_URL_APP)
+    while deployment scripts continue to run as the owner role
+    (DATABASE_URL).  The helper centralises the lookup so DevConfig
+    and ProdConfig both observe the same preference order.
+    """
+
+    def test_prefers_database_url_app_over_database_url(self, monkeypatch):
+        """When both are set, DATABASE_URL_APP wins.
+
+        This is the core least-privilege invariant: the runtime app
+        process picks up the ``shekel_app`` URI even when the owner
+        URI is also visible in the environment (which it must be
+        because ``init_database.py`` and the seed scripts depend on
+        it).
+        """
+        monkeypatch.setenv(
+            "DATABASE_URL_APP",
+            "postgresql://shekel_app:p@db:5432/shekel",
+        )
+        monkeypatch.setenv(
+            "DATABASE_URL",
+            "postgresql://shekel_user:p@db:5432/shekel",
+        )
+        assert _runtime_database_uri() == (
+            "postgresql://shekel_app:p@db:5432/shekel"
+        )
+
+    def test_falls_back_to_database_url(self, monkeypatch):
+        """With no DATABASE_URL_APP, the helper returns DATABASE_URL.
+
+        Deployment scripts (``init_database.py``, ``seed_*.py``) pop
+        DATABASE_URL_APP at startup; the runtime fallback below is
+        what they observe afterwards.
+        """
+        monkeypatch.delenv("DATABASE_URL_APP", raising=False)
+        monkeypatch.setenv(
+            "DATABASE_URL",
+            "postgresql://shekel_user:p@db:5432/shekel",
+        )
+        assert _runtime_database_uri() == (
+            "postgresql://shekel_user:p@db:5432/shekel"
+        )
+
+    def test_returns_default_when_neither_is_set(self, monkeypatch):
+        """With both env vars unset, the helper returns the supplied default.
+
+        DevConfig's instantiation path passes a peer-auth fallback so
+        a developer with neither variable set still gets a working
+        local connection.  ProdConfig passes ``None`` so the
+        ``__init__`` validator can raise.
+        """
+        monkeypatch.delenv("DATABASE_URL_APP", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        assert _runtime_database_uri("postgresql:///fallback") == (
+            "postgresql:///fallback"
+        )
+        assert _runtime_database_uri() is None
+
+    def test_empty_database_url_app_falls_through(self, monkeypatch):
+        """An empty DATABASE_URL_APP value is treated as unset.
+
+        ``os.getenv`` returns the empty string (truthy as a string,
+        falsy via ``or``) when the var is set but empty.  The helper
+        uses ``or`` rather than the explicit ``is None`` check so an
+        empty value falls through to DATABASE_URL -- protecting
+        against an operator who exports the variable with no value.
+        """
+        monkeypatch.setenv("DATABASE_URL_APP", "")
+        monkeypatch.setenv(
+            "DATABASE_URL",
+            "postgresql://shekel_user:p@db:5432/shekel",
+        )
+        assert _runtime_database_uri() == (
+            "postgresql://shekel_user:p@db:5432/shekel"
+        )
 
 
 class TestRateLimitConfig:

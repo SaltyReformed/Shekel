@@ -236,15 +236,51 @@ class BaseConfig:
     )
 
 
+def _runtime_database_uri(default: str | None = None) -> str | None:
+    """Return the database URI the runtime app should connect under.
+
+    Production deploys provision two PostgreSQL roles:
+
+    * ``shekel_user`` (owner) -- holds DDL rights and runs migrations,
+      seeds, and audit cleanup.  The owner URL is exposed as
+      ``DATABASE_URL`` so the entrypoint scripts and migration
+      tooling pick it up by default.
+    * ``shekel_app`` (least-privilege) -- DML-only role with no
+      ability to ``DROP TABLE``, ``ALTER TABLE``, or otherwise mutate
+      the schema.  An attacker with RCE in the Gunicorn process
+      cannot use ``shekel_app`` to remove the audit triggers that
+      this commit adds.  The least-privilege URL is exposed as
+      ``DATABASE_URL_APP``.
+
+    The runtime app prefers ``DATABASE_URL_APP`` whenever it is set,
+    falling back to ``DATABASE_URL`` otherwise.  Deployment scripts
+    (``scripts/init_database.py``, ``scripts/seed_*.py``, etc.) pop
+    ``DATABASE_URL_APP`` from ``os.environ`` at startup so they
+    always run as the owner role -- see the file-level docstring of
+    ``scripts/init_database.py`` for the rationale.
+
+    Args:
+        default: Fallback URI used when neither ``DATABASE_URL_APP``
+            nor ``DATABASE_URL`` is set in the environment.  ``None``
+            in production (forcing the ``ProdConfig.__init__`` check
+            to raise), a peer-auth local URL in development.
+
+    Returns:
+        The URI as a string, or ``default`` when neither env var is
+        set.  Callers must propagate ``None`` to whichever validation
+        the relevant config class performs.
+    """
+    return os.getenv("DATABASE_URL_APP") or os.getenv("DATABASE_URL", default)
+
+
 class DevConfig(BaseConfig):
     """Development configuration -- debug mode, local PostgreSQL."""
 
     DEBUG = True
-    # Falls back to peer-auth local connection if DATABASE_URL is not
-    # set in .env.  Matches the Quick Start instructions in README.md.
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "DATABASE_URL", "postgresql:///shekel"
-    )
+    # Falls back to peer-auth local connection if neither
+    # DATABASE_URL_APP nor DATABASE_URL is set in .env.  Matches the
+    # Quick Start instructions in README.md.
+    SQLALCHEMY_DATABASE_URI = _runtime_database_uri("postgresql:///shekel")
 
 
 class TestConfig(BaseConfig):
@@ -287,7 +323,13 @@ class ProdConfig(BaseConfig):
     """Production configuration -- no debug, require real secret key."""
 
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    # Prefers DATABASE_URL_APP (least-privilege ``shekel_app`` role)
+    # when set, falling back to DATABASE_URL (owner ``shekel_user``).
+    # ``__init__`` below rejects a missing URI; deployment scripts
+    # pop DATABASE_URL_APP before ``create_app`` to force themselves
+    # onto the owner role.  See ``_runtime_database_uri`` and
+    # ``scripts/init_database.py`` for the full policy.
+    SQLALCHEMY_DATABASE_URI = _runtime_database_uri()
 
     # Connection pool settings for production.  Made explicit rather than
     # relying on SQLAlchemy defaults to prevent surprises under load.

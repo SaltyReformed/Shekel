@@ -7,8 +7,8 @@ old/new data capture, and changed-field detection.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.audit_infrastructure import AUDITED_TABLES, EXPECTED_TRIGGER_COUNT
 from app.extensions import db
-from app.models.account import Account
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
@@ -330,36 +330,24 @@ class TestAuditTriggerMetadata:
 
 
 class TestAuditTriggerAllTables:
-    """Verify triggers are attached to all 22 audited tables."""
+    """Verify triggers are attached to every table named in :data:`AUDITED_TABLES`.
 
-    def test_trigger_exists_on_all_tables(self, app, db):
-        """All 22 audited tables have an audit trigger attached."""
-        expected = [
-            ("budget", "accounts"),
-            ("budget", "transactions"),
-            ("budget", "transaction_templates"),
-            ("budget", "transfers"),
-            ("budget", "transfer_templates"),
-            ("budget", "savings_goals"),
-            ("budget", "recurrence_rules"),
-            ("budget", "pay_periods"),
-            ("budget", "account_anchor_history"),
-            ("budget", "interest_params"),
-            ("budget", "loan_params"),
-            ("budget", "rate_history"),
-            ("budget", "escrow_components"),
-            ("budget", "investment_params"),
-            ("salary", "salary_profiles"),
-            ("salary", "salary_raises"),
-            ("salary", "paycheck_deductions"),
-            ("salary", "pension_profiles"),
-            ("auth", "users"),
-            ("auth", "user_settings"),
-            ("auth", "mfa_configs"),
-        ]
+    The expected list is sourced from ``app.audit_infrastructure``
+    (the same module the migration and conftest delegate to) so a
+    future schema addition that forgets to update the canonical list
+    cannot pass this test by accident.
+    """
+
+    def test_trigger_exists_on_all_audited_tables(self, app, db):
+        """Every entry in AUDITED_TABLES has an audit trigger attached.
+
+        Walks the full canonical list rather than a hard-coded subset
+        so a forgotten table fails this test loudly.  Trigger names
+        must match the ``audit_<table>`` convention enforced by
+        :func:`app.audit_infrastructure._trigger_sql_for_table`.
+        """
         result = db.session.execute(db.text("""
-            SELECT n.nspname AS schema_name, c.relname AS table_name,
-                   t.tgname AS trigger_name
+            SELECT n.nspname AS schema_name, c.relname AS table_name
             FROM pg_trigger t
             JOIN pg_class c ON t.tgrelid = c.oid
             JOIN pg_namespace n ON c.relnamespace = n.oid
@@ -370,10 +358,32 @@ class TestAuditTriggerAllTables:
         triggered = {
             (row.schema_name, row.table_name) for row in result
         }
-        for schema, table in expected:
+        for schema, table in AUDITED_TABLES:
             assert (schema, table) in triggered, (
-                f"Missing audit trigger on {schema}.{table}"
+                f"Missing audit trigger on {schema}.{table}; "
+                "add the table to AUDITED_TABLES in "
+                "app/audit_infrastructure.py and re-run "
+                "the rebuild migration."
             )
+
+    def test_trigger_count_matches_expected(self, app, db):
+        """Total ``audit_*`` trigger count equals EXPECTED_TRIGGER_COUNT.
+
+        Mirrors the assertion that ``entrypoint.sh`` runs at
+        container start.  A miscount here means the test environment
+        and the production health check would diverge -- either an
+        extra trigger was attached to an un-audited table or the
+        canonical list grew without the test fixture catching up.
+        """
+        actual = db.session.execute(db.text(
+            "SELECT count(*) FROM pg_trigger "
+            "WHERE tgname LIKE 'audit_%' AND NOT tgisinternal"
+        )).scalar()
+        assert actual == EXPECTED_TRIGGER_COUNT, (
+            f"Expected exactly {EXPECTED_TRIGGER_COUNT} audit_* "
+            f"triggers, found {actual}.  See "
+            "app/audit_infrastructure.py:AUDITED_TABLES."
+        )
 
 
 # ── User ID Capture via Middleware (WU-2) ─────────────────────────────────
