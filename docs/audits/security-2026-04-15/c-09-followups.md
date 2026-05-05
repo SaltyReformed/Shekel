@@ -197,7 +197,9 @@ b. Most other tables (users, accounts, transactions, etc.) have
 This follow-up addresses (a) only. (b) is a separate question of "should
 every audit timestamp be NOT NULL across the codebase" that should be
 resolved as a project-wide standard, not as a side effect of fixing this
-drift.
+drift. Detailed scope and sizing for (b) -- 28 tables, 46 columns, zero
+actual NULLs in production data -- are documented in the "Sub-point (b):
+broader audit-timestamp tightening" subsection below.
 
 ### Fix
 
@@ -254,7 +256,113 @@ queries the audit log and finds NULL timestamps.
 - `app/models/transaction_entry.py:83-88` (the drift)
 - `docs/coding-standards.md` "NOT NULL by default. Every new column should
   be NOT NULL unless there is a specific reason for nullability."
-- Companion question (b) above is broader and worth its own discussion.
+- Companion question (b) is fully scoped in the following subsection.
+
+### Sub-point (b): broader audit-timestamp tightening
+
+The drift fixed above only restored model/DB consistency on the
+`transaction_entries` table. The deeper question -- "should every
+`created_at`/`updated_at` column in the codebase be NOT NULL?" --
+remains open and is a separate piece of work, because in this case the
+model and DB are wrong *in the same direction*: both declare nullable
+on most tables. A model-only fix is therefore not an option; the DB
+schema migration is the load-bearing change.
+
+#### Enumeration (verified 2026-05-04 against the development DB)
+
+Across the four user-facing schemas (`auth`, `budget`, `salary`, `ref`
+-- `system` carries no SQLAlchemy-managed tables; the audit log is
+trigger-based) there are 48 `created_at`/`updated_at` columns:
+
+- 2 are NOT NULL in the DB and now NOT NULL in the model:
+  `budget.transaction_entries.created_at` and `.updated_at`, addressed
+  by sub-point (a) above.
+- 46 are nullable in both model and DB.
+
+The 46 nullable columns are distributed across 28 tables:
+
+| Schema | Tables | Columns | Detail |
+|---|---|---|---|
+| `auth` | 3 | 6 | `mfa_configs`, `user_settings`, `users` -- all carry both columns |
+| `budget` | 16 | 26 | 11 with both columns; 5 with `created_at` only (`account_anchor_history`, `categories`, `pay_periods`, `rate_history`, `recurrence_rules`) |
+| `salary` | 9 | 14 | 5 with both; 4 with `created_at` only (`calibration_deduction_overrides`, `fica_configs`, `salary_raises`, `state_tax_configs`, `tax_bracket_sets`) |
+
+The `ref` schema's lookup tables do not carry audit timestamps, and
+the `system` schema is currently empty of SQLAlchemy-managed tables.
+
+#### Data check (verified 2026-05-04)
+
+Across all 46 nullable columns, spanning **2,289 production rows**:
+**zero NULL values.** `server_default=db.func.now()` populates the
+timestamp on every ORM-mediated INSERT, and no production code path
+writes to these columns via raw SQL. **No data backfill is required
+for the migration** -- only the schema tightening itself.
+
+#### Why this is not "a model issue"
+
+The model and DB agree on a weaker-than-desired invariant. Both say
+nullable; the DB never receives a NULL only because every writer
+goes through SQLAlchemy and `server_default` always fires. Closing
+this gap requires both halves:
+
+1. **Alembic migration** with one `op.alter_column(..., nullable=False,
+   ...)` per column (46 in `upgrade()`, 46 reverse statements in
+   `downgrade()`). Per `docs/coding-standards.md` "Destructive
+   migrations require explicit approval", this needs developer sign-
+   off before anyone runs `flask db migrate` on it.
+2. **Model sweep** across ~16 model files to add `nullable=False` to
+   the affected column declarations. Purely a schema-generation hint
+   -- runtime behavior is unchanged because the DB still populates
+   the value via `server_default` before the NOT NULL check fires.
+
+A model-only fix would create drift in the *opposite* direction of
+sub-point (a): tests using `conftest.py`'s `db.create_all()` would
+build a stricter test schema than production, and the next
+`flask db migrate` would propose tightening the production DB
+without explicit review.
+
+#### Sizing
+
+- **Effort:** 1-2 hours, almost entirely mechanical.
+- **Migration:** one file, 46 uniform `alter_column` statements --
+  easy to review because every line follows the same pattern.
+- **Model edits:** ~16 files, single-token change (`nullable=False`)
+  per column declaration.
+- **Test verification:** targeted runs per affected service area
+  (e.g. `tests/test_routes/test_accounts.py`,
+  `tests/test_services/test_balance_calculator.py`,
+  `tests/test_routes/test_users.py`). Greps performed during the
+  Issue 2 (a) work showed no test asserts on these columns being
+  `None`, but a code-wide sweep should confirm before applying.
+- **Pylint:** baseline check on touched models.
+- **Full suite** as final gate.
+
+#### Risk if not fixed
+
+**Theoretical, not present today.** Every INSERT runs through
+SQLAlchemy and `server_default` always populates the timestamp.
+The constraint would only catch:
+
+1. A future code path that bypasses the ORM with raw SQL omitting
+   the column.
+2. A future model edit that drops `server_default` from one of these
+   columns.
+3. A backfill or import script that writes explicit `NULL`.
+
+None are imminent. The benefit of the migration is defense-in-depth:
+the constraint would surface any of the above as a loud
+`IntegrityError` instead of silently writing `NULL` into an audit
+trail.
+
+#### Cross-refs
+
+- The 28-table breakdown is regenerable on demand from
+  `information_schema.columns` filtered to `column_name IN
+  ('created_at', 'updated_at')` and `is_nullable = 'YES'` across
+  schemas `auth`, `budget`, `salary`.
+- `docs/coding-standards.md` "NOT NULL by default."
+- `docs/coding-standards.md` "Destructive migrations require explicit
+  approval."
 
 ---
 
