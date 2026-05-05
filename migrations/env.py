@@ -39,6 +39,26 @@ def include_name(name, type_, parent_names):
     return True
 
 
+def include_object(object_, name, type_, reflected, compare_to):
+    """Skip Alembic's own bookkeeping table during autogenerate.
+
+    The version table lives in ``public`` (see ``version_table_schema``
+    below) and is intentionally not declared in any model.  Without
+    this filter, autogenerate sees a live ``public.alembic_version``
+    table that ``target_metadata`` does not know about and proposes
+    ``op.drop_table('alembic_version')`` -- which would brick
+    migration tracking on the next ``flask db upgrade``.
+
+    Returning ``False`` at the ``"table"`` type short-circuits both
+    the drop-table op and any child column/constraint comparison
+    (see ``alembic/autogenerate/compare/tables.py``), which is the
+    documented Alembic idiom for excluding a table from autogenerate.
+    """
+    if type_ == "table" and name == "alembic_version":
+        return False
+    return True
+
+
 def run_migrations_offline():
     """Run migrations in 'offline' mode (generates SQL without a live DB)."""
     url = config.get_main_option("sqlalchemy.url")
@@ -49,6 +69,7 @@ def run_migrations_offline():
         dialect_opts={"paramstyle": "named"},
         include_schemas=True,
         include_name=include_name,
+        include_object=include_object,
         version_table_schema="public",
     )
 
@@ -76,6 +97,7 @@ def run_migrations_online():
             process_revision_directives=process_revision_directives,
             include_schemas=True,
             include_name=include_name,
+            include_object=include_object,
             version_table_schema="public",
         )
 
