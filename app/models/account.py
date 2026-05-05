@@ -6,9 +6,10 @@ for the true-up workflow.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin, TimestampMixin
 
 
-class Account(db.Model):
+class Account(TimestampMixin, db.Model):
     """A financial account (checking or savings) owned by a user."""
 
     __tablename__ = "accounts"
@@ -33,15 +34,6 @@ class Account(db.Model):
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
@@ -57,7 +49,7 @@ class Account(db.Model):
         return f"<Account {self.name} ({self.id})>"
 
 
-class AccountAnchorHistory(db.Model):
+class AccountAnchorHistory(CreatedAtMixin, db.Model):
     """Audit trail of anchor balance true-ups for an account."""
 
     __tablename__ = "account_anchor_history"
@@ -81,9 +73,6 @@ class AccountAnchorHistory(db.Model):
     )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     notes = db.Column(db.Text)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")

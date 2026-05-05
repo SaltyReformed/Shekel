@@ -8,9 +8,10 @@ rows into future pay periods.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class TransferTemplate(db.Model):
+class TransferTemplate(TimestampMixin, db.Model):
     """Blueprint for a recurring transfer between two accounts."""
 
     __tablename__ = "transfer_templates"
@@ -50,15 +51,6 @@ class TransferTemplate(db.Model):
     sort_order = db.Column(db.Integer, default=0)
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
-    )
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
     )
 
     # Relationships

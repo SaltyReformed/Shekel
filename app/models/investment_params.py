@@ -6,9 +6,10 @@ Stores type-specific parameters for investment and retirement accounts
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class InvestmentParams(db.Model):
+class InvestmentParams(TimestampMixin, db.Model):
     """Parameters for an investment or retirement account."""
 
     __tablename__ = "investment_params"
@@ -42,15 +43,6 @@ class InvestmentParams(db.Model):
     employer_flat_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_cap_percentage = db.Column(db.Numeric(5, 4), nullable=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

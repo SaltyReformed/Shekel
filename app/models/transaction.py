@@ -12,9 +12,10 @@ from decimal import Decimal
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
+from app.models.mixins import TimestampMixin
 
 
-class Transaction(db.Model):
+class Transaction(TimestampMixin, db.Model):
     """A single income or expense entry within a pay period."""
 
     __tablename__ = "transactions"
@@ -112,15 +113,6 @@ class Transaction(db.Model):
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

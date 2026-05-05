@@ -6,9 +6,10 @@ used by the paycheck calculator to compute tax withholdings.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin
 
 
-class TaxBracketSet(db.Model):
+class TaxBracketSet(CreatedAtMixin, db.Model):
     """A set of federal income tax brackets for a specific year and filing status."""
 
     __tablename__ = "tax_bracket_sets"
@@ -40,9 +41,6 @@ class TaxBracketSet(db.Model):
         db.Numeric(12, 2), nullable=False, default=0
     )  # Per other dependent
     description = db.Column(db.String(200))
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     # Relationships
     filing_status = db.relationship("FilingStatus", lazy="joined")
@@ -88,7 +86,7 @@ class TaxBracket(db.Model):
         return f"<TaxBracket {self.rate} ({self.min_income}-{self.max_income})>"
 
 
-class StateTaxConfig(db.Model):
+class StateTaxConfig(CreatedAtMixin, db.Model):
     """State-level tax configuration (flat rate or none), per year."""
 
     __tablename__ = "state_tax_configs"
@@ -116,9 +114,6 @@ class StateTaxConfig(db.Model):
     tax_year = db.Column(db.Integer, nullable=False)
     flat_rate = db.Column(db.Numeric(5, 4))
     standard_deduction = db.Column(db.Numeric(12, 2))
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     # Relationships
     tax_type = db.relationship("TaxType", lazy="joined")
@@ -127,7 +122,7 @@ class StateTaxConfig(db.Model):
         return f"<StateTaxConfig {self.state_code} rate={self.flat_rate}>"
 
 
-class FicaConfig(db.Model):
+class FicaConfig(CreatedAtMixin, db.Model):
     """FICA (Social Security + Medicare) tax configuration per year."""
 
     __tablename__ = "fica_configs"
@@ -159,9 +154,6 @@ class FicaConfig(db.Model):
     medicare_surtax_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0090)
     medicare_surtax_threshold = db.Column(
         db.Numeric(12, 2), nullable=False, default=200000
-    )
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
 
     def __repr__(self):

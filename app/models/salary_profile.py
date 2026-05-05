@@ -6,9 +6,10 @@ state tax config, and links to raises and deductions for paycheck calculation.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class SalaryProfile(db.Model):
+class SalaryProfile(TimestampMixin, db.Model):
     """A salary income profile used for net paycheck calculation."""
 
     __tablename__ = "salary_profiles"
@@ -63,15 +64,6 @@ class SalaryProfile(db.Model):
 
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     scenario = db.relationship("Scenario", lazy="joined")

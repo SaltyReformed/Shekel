@@ -7,9 +7,10 @@ amortizing account, linked one-to-one via account_id.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class LoanParams(db.Model):
+class LoanParams(TimestampMixin, db.Model):
     """Loan parameters linked one-to-one with an Account.
 
     Serves the amortization engine for all installment loan types
@@ -58,15 +59,6 @@ class LoanParams(db.Model):
     is_arm = db.Column(db.Boolean, nullable=False, server_default=db.text("false"))
     arm_first_adjustment_months = db.Column(db.Integer, nullable=True)
     arm_adjustment_interval_months = db.Column(db.Integer, nullable=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship(

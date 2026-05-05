@@ -8,9 +8,10 @@ and MFA/TOTP configuration.
 from flask_login import UserMixin
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class User(UserMixin, db.Model):
+class User(UserMixin, TimestampMixin, db.Model):
     """Application user.  Flask-Login's UserMixin provides is_authenticated, etc."""
 
     __tablename__ = "users"
@@ -21,15 +22,6 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(100))
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
     # Timestamp of most recent "log out all sessions" or password change event.
     # The user loader compares this against the session creation time to reject stale sessions.
     session_invalidated_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -54,7 +46,7 @@ class User(UserMixin, db.Model):
         return f"<User {self.email}>"
 
 
-class UserSettings(db.Model):
+class UserSettings(TimestampMixin, db.Model):
     """Per-user application preferences (grid defaults, inflation rate, etc.)."""
 
     __tablename__ = "user_settings"
@@ -105,15 +97,6 @@ class UserSettings(db.Model):
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Back-reference to User
     user = db.relationship("User", back_populates="settings")
@@ -126,7 +109,7 @@ class UserSettings(db.Model):
         return f"<UserSettings user_id={self.user_id}>"
 
 
-class MfaConfig(db.Model):
+class MfaConfig(TimestampMixin, db.Model):
     """MFA/TOTP configuration for a user.
 
     Stores the encrypted TOTP secret, enabled state, hashed backup
@@ -197,12 +180,3 @@ class MfaConfig(db.Model):
     # back to NULL so a re-enrollment under a new secret does not
     # inherit a stale step boundary.
     last_totp_timestep = db.Column(db.BigInteger, nullable=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )

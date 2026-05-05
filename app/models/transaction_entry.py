@@ -8,9 +8,10 @@ budget and the checking balance impact.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class TransactionEntry(db.Model):
+class TransactionEntry(TimestampMixin, db.Model):
     """An individual purchase recorded against a parent transaction.
 
     Entries accumulate against the parent transaction's estimated amount.
@@ -79,15 +80,6 @@ class TransactionEntry(db.Model):
     credit_payback_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
-    )
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
     )
 
     # Relationships

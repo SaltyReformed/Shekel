@@ -8,9 +8,10 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class Transfer(db.Model):
+class Transfer(TimestampMixin, db.Model):
     """A transfer between two accounts within a pay period."""
 
     __tablename__ = "transfers"
@@ -79,15 +80,6 @@ class Transfer(db.Model):
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     template = db.relationship("TransferTemplate", back_populates="transfers")

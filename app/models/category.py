@@ -6,9 +6,10 @@ Example: group='Auto', item='Car Payment'.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin
 
 
-class Category(db.Model):
+class Category(CreatedAtMixin, db.Model):
     """A budget category with a group and item name (two-level flat hierarchy)."""
 
     __tablename__ = "categories"
@@ -30,9 +31,6 @@ class Category(db.Model):
     item_name = db.Column(db.String(100), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default='true')
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     @property
     def display_name(self):

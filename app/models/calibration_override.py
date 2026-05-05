@@ -7,9 +7,10 @@ bracket-based estimates for more accurate projections.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin, TimestampMixin
 
 
-class CalibrationOverride(db.Model):
+class CalibrationOverride(TimestampMixin, db.Model):
     """Effective tax rates derived from a real pay stub.
 
     One calibration per salary profile.  Stores both the raw actual
@@ -72,15 +73,6 @@ class CalibrationOverride(db.Model):
     pay_stub_date = db.Column(db.Date, nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.Text)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships.
     salary_profile = db.relationship(
@@ -101,7 +93,7 @@ class CalibrationOverride(db.Model):
         )
 
 
-class CalibrationDeductionOverride(db.Model):
+class CalibrationDeductionOverride(CreatedAtMixin, db.Model):
     """Actual deduction amount from a pay stub, linked to a calibration.
 
     Allows the user to record what each deduction actually was on the
@@ -134,9 +126,6 @@ class CalibrationDeductionOverride(db.Model):
         nullable=False,
     )
     actual_amount = db.Column(db.Numeric(10, 2), nullable=False)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     # Relationships.
     calibration = db.relationship(

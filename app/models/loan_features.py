@@ -7,9 +7,10 @@ Both FK to account_id, not to any params table.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin, TimestampMixin
 
 
-class RateHistory(db.Model):
+class RateHistory(CreatedAtMixin, db.Model):
     """Historical record of rate changes for a variable-rate loan account."""
 
     __tablename__ = "rate_history"
@@ -24,9 +25,6 @@ class RateHistory(db.Model):
     effective_date = db.Column(db.Date, nullable=False)
     interest_rate = db.Column(db.Numeric(7, 5), nullable=False)
     notes = db.Column(db.Text, nullable=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship(
@@ -41,7 +39,7 @@ class RateHistory(db.Model):
         )
 
 
-class EscrowComponent(db.Model):
+class EscrowComponent(TimestampMixin, db.Model):
     """An escrow line item (property tax, insurance, etc.) for a loan account."""
 
     __tablename__ = "escrow_components"
@@ -62,15 +60,6 @@ class EscrowComponent(db.Model):
     annual_amount = db.Column(db.Numeric(12, 2), nullable=False)
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
     is_active = db.Column(db.Boolean, server_default=db.text("true"))
-    created_at = db.Column(
-        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     account = db.relationship(
