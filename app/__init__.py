@@ -325,6 +325,80 @@ def _register_context_processors(app):
             }
         }
 
+    @app.context_processor
+    def inject_mfa_nag_visible():
+        """Compute whether the owner-role MFA enrollment nag should render.
+
+        Returns a single template variable, ``mfa_nag_visible``,
+        consumed by ``base.html`` to decide whether to ``{% include %}``
+        ``dashboard/_mfa_nag.html``.
+
+        Visible iff ALL of the following hold:
+
+          * The current request has an authenticated user
+            (anonymous visitors hitting ``/login`` and friends never
+            see the banner -- they cannot act on it).
+          * The current user's ``role_id`` matches the cached owner
+            role.  Companions are excluded by design: the audit
+            scopes the nag to the de facto administrator role, and
+            companions cannot reach ``/settings/companions`` or any
+            other owner-only action that the finding cited as
+            unprotected.
+          * The user has no ``MfaConfig`` row with ``is_enabled=True``.
+            A row with ``is_enabled=False`` (e.g. a setup that was
+            started but never confirmed) still counts as "no MFA" and
+            keeps the banner visible.
+          * The current request endpoint is not part of the MFA
+            enrolment / management flow itself (``auth.mfa_*``).
+            Suppressing on those endpoints prevents the banner from
+            stacking on top of the page that fulfils the nag (e.g.
+            ``/mfa/setup`` already shows the QR code; a banner above
+            it just adds noise).
+
+        Failure modes are handled by returning ``mfa_nag_visible=False``
+        so the banner errs on the side of NOT appearing during
+        ambiguous startup windows -- showing a CTA that points to a
+        broken endpoint would be worse than briefly missing the nag.
+
+        Audit reference: F-095 / commit C-12 of the 2026-04-15
+        security remediation plan.
+        """
+        # pylint: disable=import-outside-toplevel
+        from flask_login import current_user
+        if not current_user.is_authenticated:
+            return {"mfa_nag_visible": False}
+
+        # Suppress on the MFA enrolment / management endpoints.  ``request``
+        # is bound during request handling; context processors only run in
+        # that scope, so a missing ``endpoint`` (e.g. a 404 before route
+        # matching) is treated as "show the banner" rather than swallowing
+        # silently.
+        endpoint = request.endpoint or ""
+        if endpoint.startswith("auth.mfa_"):
+            return {"mfa_nag_visible": False}
+
+        from app import ref_cache as _rc
+        from app.enums import RoleEnum as _RoleEnum
+        try:
+            owner_role_id = _rc.role_id(_RoleEnum.OWNER)
+        except (RuntimeError, KeyError):
+            # ref_cache not yet initialised (e.g. during migration or
+            # mid-startup).  Fail closed -- absent role data, we cannot
+            # confirm the user is an owner, so do not show the nag.
+            return {"mfa_nag_visible": False}
+        if current_user.role_id != owner_role_id:
+            return {"mfa_nag_visible": False}
+
+        from sqlalchemy import exists
+        from app.models.user import MfaConfig
+        has_enabled_mfa = db.session.query(
+            exists().where(
+                MfaConfig.user_id == current_user.id,
+                MfaConfig.is_enabled.is_(True),
+            )
+        ).scalar()
+        return {"mfa_nag_visible": not has_enabled_mfa}
+
 
 def _register_blueprints(app):
     """Import and register all route blueprints."""

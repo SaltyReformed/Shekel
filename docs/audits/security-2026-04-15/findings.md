@@ -3581,7 +3581,26 @@ lives in the same database the attacker would be tampering with.
   enrolled within N days), or (b) prompt-nag the owner on
   every login until MFA is enabled. Easier and
   comparable effect.
-- **Status:** Open
+- **Status:** Fixed in C-12 (2026-05-05). Implemented
+  option (b): a Bootstrap dismissible alert
+  (`app/templates/dashboard/_mfa_nag.html`) is rendered
+  globally from `app/templates/base.html` whenever the
+  authenticated user is owner-role and has no
+  `MfaConfig.is_enabled=True` row. Visibility is computed
+  by the `inject_mfa_nag_visible` context processor in
+  `app/__init__.py`, which queries `auth.mfa_configs` per
+  request and short-circuits for anonymous visitors,
+  companion-role users, and `auth.mfa_*` endpoints (so
+  the banner does not stack on the page that fulfils the
+  nag). Per-page-load dismissal only -- the banner
+  reappears on the next navigation until the owner
+  enrolls and confirms TOTP. Regression tests:
+  `tests/test_routes/test_mfa_nag.py` -- ten cases covering
+  visibility for owner-without-MFA / pending-only / fully
+  enabled, role scoping (companion + anonymous), endpoint
+  suppression on `/mfa/setup`, cross-page consistency
+  (settings / savings / grid), and the dismissibility
+  markup contract.
 
 ### F-096: SESSION_COOKIE_NAME -- no `__Host-` prefix
 

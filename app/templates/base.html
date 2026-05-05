@@ -165,6 +165,15 @@
     {% endwith %}
   </div>
 
+  {# --- MFA Enrollment Nag (owner role without MFA enabled) ---
+     Rendered before breadcrumbs and the welcome banner so the
+     security CTA is the first non-nav element on the page.  See
+     audit F-095 / commit C-12; visibility is computed by the
+     ``inject_mfa_nag_visible`` context processor in app/__init__.py. #}
+  {% if mfa_nag_visible %}
+    {% include "dashboard/_mfa_nag.html" %}
+  {% endif %}
+
   {# --- Breadcrumbs --- #}
   {% block breadcrumbs %}{% endblock %}
 
