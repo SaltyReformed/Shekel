@@ -150,8 +150,8 @@ packages, no exposed ports, no systemd. `.env` config: `DATABASE_URL`, `SECRET_K
 
 ## Style
 
-No Unicode dashes. Use `--` for sentence breaks, `-` for ranges. All development on the `dev`
-branch.
+No Unicode dashes. Use periods, commas, semicolons, or colons for sentence
+breaks. Use - for ranges. All development on the `dev` branch.
 
 ## Standards and Protocols
 
