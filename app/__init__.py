@@ -7,13 +7,18 @@ to get a fully wired Flask instance.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import sqlalchemy.exc
-from flask import Flask, render_template
+from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.utils.logging_config import setup_logging
+from app.utils.session_helpers import (
+    SESSION_CREATED_AT_KEY,
+    SESSION_LAST_ACTIVITY_KEY,
+)
 
 
 def create_app(config_name=None):
@@ -60,8 +65,17 @@ def create_app(config_name=None):
     def load_user(user_id):
         """Load a user by ID for Flask-Login session hydration.
 
-        Returns None (forcing re-login) if the user's sessions have been
-        invalidated after the current session was created.
+        Returns None (forcing re-login) for any of:
+          * Unknown user ID.
+          * Deactivated user (``is_active=False``).
+          * Session created before the most recent
+            ``session_invalidated_at`` bump (commit C-08 -- F-002,
+            F-003, F-032).
+          * Session whose last activity is older than
+            ``IDLE_TIMEOUT_MINUTES`` (commit C-10 -- F-006).
+
+        A None return triggers Flask-Login's "logged out" flow on the
+        next request, redirecting to the configured ``login_view``.
         """
         user = db.session.get(User, int(user_id))
         if user is None:
@@ -74,13 +88,19 @@ def create_app(config_name=None):
         # Check whether this session was created before the most recent
         # "log out all sessions" or password change event.
         if user.session_invalidated_at is not None:
-            from flask import session  # pylint: disable=import-outside-toplevel
-            session_created = session.get("_session_created_at")
+            session_created = flask_session.get(SESSION_CREATED_AT_KEY)
             if session_created is not None:
-                from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
                 created_dt = datetime.fromisoformat(session_created)
                 if created_dt < user.session_invalidated_at:
                     return None
+        # Idle-timeout check (commit C-10 / F-006).  Reject the
+        # session if ``_session_last_activity_at`` is older than
+        # ``IDLE_TIMEOUT_MINUTES``.  See ``_idle_session_is_fresh``
+        # docstring for the per-state policy (missing -> fresh,
+        # malformed/naive -> stale, future-dated -> fresh,
+        # within-window -> fresh, beyond-window -> stale).
+        if not _idle_session_is_fresh(app):
+            return None
         return user
 
     # --- Template Filters --------------------------------------------------
@@ -106,6 +126,9 @@ def create_app(config_name=None):
 
     # --- Error Handlers ---------------------------------------------------
     _register_error_handlers(app)
+
+    # --- Session activity refresh (commit C-10 / F-006) -------------------
+    _register_session_activity_refresh(app)
 
     # --- Security Headers -------------------------------------------------
     _register_security_headers(app)
@@ -406,6 +429,137 @@ def _register_error_handlers(app):
         return render_template("errors/500.html"), 500
 
 
+def _idle_session_is_fresh(app):
+    """Return True iff ``_session_last_activity_at`` is within the
+    configured ``IDLE_TIMEOUT_MINUTES`` window.
+
+    Fail-closed for unparseable input (commit C-10 / F-006).  False
+    is returned -- never an exception -- for any of:
+
+      * Malformed (non-ISO-8601) timestamp -- a tampered cookie that
+        would otherwise raise ``ValueError`` from ``fromisoformat``
+        and 500 the request.  ``flask.session`` is signed but not
+        encrypted; an attacker who somehow forged a signature could
+        still write garbage into a key, and the failure mode here
+        must be "log in again", not "stack trace".
+
+      * Naive (timezone-less) timestamp -- would raise ``TypeError``
+        on the timezone-aware subtraction below.  Reject explicitly
+        so the failure mode is consistent with the malformed case.
+
+      * Age exceeds the configured window -- the legitimate "user
+        walked away from their desk" case the constant exists to
+        enforce.
+
+    Missing key returns True (the chicken-and-egg branch documented
+    in ``load_user``).
+
+    Future-dated timestamps (``elapsed < 0``) are treated as FRESH
+    rather than rejected.  The two real-world causes are:
+
+      * A backwards clock jump on the server (NTP correction, manual
+        adjustment, VM resume from suspend).  Logging every active
+        user out after such a jump is bad UX and the project's
+        existing posture in MFA verify (which DOES reject) is
+        load-bearing only because that gate is single-use; an
+        always-on idle check should be more forgiving so a 100ms NTP
+        slew does not invalidate every cookie in the system.
+
+      * A forged future-dated cookie.  Forgery requires the SECRET_KEY
+        signature, and an attacker with SECRET_KEY can already mint
+        any cookie value; rejecting future timestamps adds no
+        defensive value beyond the signature itself.
+
+    Args:
+        app: The Flask application instance whose
+            ``IDLE_TIMEOUT_MINUTES`` config value drives the
+            comparison.  Passed in (not pulled from
+            ``flask.current_app``) so the helper is testable in a
+            request context bound to a specific app.
+
+    Returns:
+        bool: True if the session may continue; False if ``load_user``
+            must reject it.
+    """
+    raw = flask_session.get(SESSION_LAST_ACTIVITY_KEY)
+    if raw is None:
+        # Chicken-and-egg: first request after login has no stamp
+        # yet (the before_request hook runs after load_user).  Treat
+        # missing as fresh; the hook will write a value before this
+        # request's response goes out.
+        return True
+    try:
+        last_activity = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return False
+    if last_activity.tzinfo is None:
+        return False
+    elapsed = datetime.now(timezone.utc) - last_activity
+    if elapsed < timedelta(0):
+        # Future-dated last-activity is from a backwards clock jump
+        # or (with SECRET_KEY compromise) a forged cookie.  Treat as
+        # fresh -- see docstring for the threat-model rationale.
+        return True
+    threshold = timedelta(minutes=app.config["IDLE_TIMEOUT_MINUTES"])
+    return elapsed <= threshold
+
+
+def _register_session_activity_refresh(app):
+    """Update ``_session_last_activity_at`` on every authenticated request.
+
+    Pairs with the idle-timeout check in ``load_user``: the loader
+    rejects the session when the gap to ``now()`` exceeds
+    ``IDLE_TIMEOUT_MINUTES``; this hook keeps refreshing the gap to
+    zero on every interaction so an actively-used session never
+    crosses the threshold.
+
+    Skips:
+
+      * Static asset requests (``request.endpoint == 'static'``) --
+        these would burn a Set-Cookie write per CSS / JS file with
+        no auth signal in return.  Static files are not gated on
+        authentication anyway.
+
+      * Unauthenticated requests -- ``current_user.is_authenticated``
+        triggers ``load_user``, which is a no-op when no session
+        cookie is present.  Writing a stamp for an unauthenticated
+        visitor would create a session cookie out of thin air.
+
+    The authenticated branch writes the stamp UNCONDITIONALLY (every
+    request, not just every Nth) because ``flask.session`` does not
+    expose a "session.modified=False if value already current" path:
+    the only way to keep the cookie's last-activity in sync with
+    real activity is to write it on every request.  Cookie size
+    impact is negligible (one ISO-8601 string).
+    """
+    # pylint: disable=import-outside-toplevel
+    from flask_login import current_user
+
+    @app.before_request
+    def _refresh_last_activity():
+        """Stamp ``_session_last_activity_at`` for the current request.
+
+        Runs before every route.  See the enclosing
+        ``_register_session_activity_refresh`` docstring for the
+        skip conditions.
+        """
+        if request.endpoint == "static":
+            return
+        # Accessing current_user.is_authenticated triggers load_user
+        # (which performs the idle-timeout check using the PRE-update
+        # value -- correct: we want to reject sessions whose LAST
+        # activity, not THIS one, is stale).  If the loader rejects
+        # the session this comparison evaluates to False and we skip
+        # the stamp; the in-flight request still proceeds as
+        # unauthenticated, and the stale cookie is naturally replaced
+        # by Flask-Login's logout flow on the next request.
+        if not current_user.is_authenticated:
+            return
+        flask_session[SESSION_LAST_ACTIVITY_KEY] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+
+
 # Content Security Policy directives.  Bound at module load (not on
 # every request) because the policy is static -- there is no per-request
 # nonce or hash.  Built as a tuple so the join order is stable and
@@ -458,8 +612,6 @@ def _register_security_headers(app):
     Phase-1 hardening bundle (Commit C-02).  See findings F-017, F-018,
     F-019, F-036, F-037, F-096, F-097 for the per-control rationale.
     """
-    # pylint: disable=import-outside-toplevel
-    from flask import request
 
     @app.after_request
     def set_security_headers(response):

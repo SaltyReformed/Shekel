@@ -1,8 +1,26 @@
 """
 Shekel Budget App -- Auth Routes
 
-Handles login, registration, and logout with Flask-Login session management.
+Handles login, registration, logout, MFA setup/verify/disable, password
+change, session invalidation, and step-up re-authentication
+(``/reauth``).  All these routes share a single blueprint because they
+all mutate the same authenticated-session state and the helper
+constants (``_MFA_PENDING_KEYS``, ``_MFA_PENDING_MAX_AGE``,
+``MFA_SETUP_PENDING_TTL``) are co-owned by multiple routes; splitting
+the file along route lines would force cross-module imports of those
+constants and lose the local audit-rationale comments.
 """
+# Pylint module-size waiver: the auth blueprint legitimately spans more
+# than 1000 lines because of the dense per-route audit rationale
+# (every branch carries a F-NNN finding reference and a security-
+# relevant explanation, all of which would lose context if split into
+# separate modules).  Splitting /reauth into its own module would also
+# lose the shared imports of stamp_login_session / stamp_reauth_session
+# / stamp_session_refresh and require duplicating the
+# _verify_totp_with_replay_logging helper (which is the single point
+# of truth for replay-rejection logging across login, MFA verify, MFA
+# disable, AND reauth).  See commit C-10.
+# pylint: disable=too-many-lines
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -20,7 +38,12 @@ from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.log_events import log_event, AUTH
-from app.utils.session_helpers import invalidate_other_sessions
+from app.utils.session_helpers import (
+    invalidate_other_sessions,
+    stamp_login_session,
+    stamp_reauth_session,
+    stamp_session_refresh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +323,13 @@ def login():
                 )
                 return redirect(url_for("auth.mfa_verify"))
 
-            # No MFA -- complete login immediately.
+            # No MFA -- complete login immediately.  Stamp all three
+            # session lifecycle timestamps in one call so the
+            # idle-timeout check (commit C-10 / F-006) and the
+            # fresh-login check (commit C-10 / F-045) start from the
+            # same instant the session was created.
             login_user(user, remember=remember)
-            flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+            stamp_login_session(datetime.now(timezone.utc))
             log_event(logger, logging.INFO, "login_success", AUTH,
                       "User logged in", user_id=user.id, email=email)
 
@@ -407,10 +434,18 @@ def change_password():
     try:
         auth_service.change_password(current_user, current_password, new_password)
         db.session.commit()
-        # Invalidate all other sessions after password change.
-        current_user.session_invalidated_at = datetime.now(timezone.utc)
+        # Invalidate all other sessions after password change.  A
+        # single ``now`` value flows into both the DB column and
+        # every cookie key so the strict-less-than comparison in
+        # ``load_user`` accepts this session and rejects every
+        # parallel one.  ``stamp_login_session`` ALSO refreshes
+        # ``_fresh_login_at``: the user just typed their current
+        # password, so this counts as a step-up re-auth and the
+        # five-minute fresh-login window restarts here.
+        now = datetime.now(timezone.utc)
+        current_user.session_invalidated_at = now
         db.session.commit()
-        flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+        stamp_login_session(now)
         log_event(logger, logging.INFO, "password_changed", AUTH,
                   "Password changed", user_id=current_user.id)
         flash("Password changed successfully.", "success")
@@ -428,17 +463,120 @@ def invalidate_sessions():
     """Invalidate all sessions for the current user except the current one.
 
     Sets session_invalidated_at to now, which causes load_user() to
-    reject any session created before this timestamp. The current
-    session is refreshed with a new creation timestamp.
+    reject any session created before this timestamp.  The current
+    session is refreshed via :func:`stamp_session_refresh` so that
+    ``_session_created_at`` advances past the new invalidation point
+    (and survives the loader's strict-less-than check).
+    ``_fresh_login_at`` is deliberately left untouched: the user
+    pressed a "log everyone else out" button without re-typing a
+    password, so the step-up re-auth window must NOT silently
+    extend.
     """
-    current_user.session_invalidated_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    current_user.session_invalidated_at = now
     db.session.commit()
-    # Refresh the current session so it survives the invalidation.
-    flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+    stamp_session_refresh(now)
     log_event(logger, logging.INFO, "sessions_invalidated", AUTH,
               "All sessions invalidated", user_id=current_user.id)
     flash("All other sessions have been logged out.", "success")
     return redirect(url_for("settings.show", section="security"))
+
+
+@auth_bp.route("/reauth", methods=["GET", "POST"])
+@login_required
+@limiter.limit("5 per 15 minutes", methods=["POST"])
+def reauth():
+    """Step-up re-authentication for high-value operations.
+
+    Users land here when ``fresh_login_required`` (commit C-10 /
+    F-045) determines that their last password verification is older
+    than ``FRESH_LOGIN_MAX_AGE_MINUTES``.  Successful POST stamps
+    ``_fresh_login_at`` to ``now`` via
+    :func:`~app.utils.session_helpers.stamp_reauth_session` and
+    redirects to the validated ``next`` URL.
+
+    Verification mirrors the /login flow:
+
+      * Password is verified through ``auth_service.verify_password``
+        -- the same bcrypt path used at primary login.
+      * If the user has MFA enabled, a TOTP code is required.  The
+        same ``_verify_totp_with_replay_logging`` helper used by
+        /mfa/verify and /mfa/disable enforces replay prevention --
+        a code captured at primary login cannot be reused here, and
+        vice versa, because the helper bumps and persists
+        ``mfa_config.last_totp_timestep`` on every ACCEPTED match.
+      * Backup codes are intentionally NOT accepted here.  They are
+        single-use and reserved for the "I lost my authenticator"
+        scenario at primary login.  Spending one on a step-up
+        prompt would burn a recovery credential for the wrong
+        purpose; the user can /logout and /login with a backup code
+        if their device is unavailable.
+      * Decryption errors (missing TOTP_ENCRYPTION_KEY, ciphertext
+        unreadable under any current Fernet) flash an
+        operator-actionable message and re-render the form, mirroring
+        /mfa/verify and /mfa/disable.
+
+    The ``next`` parameter is validated through ``_is_safe_redirect``
+    on every read (storage time and post-success redirect) so an
+    attacker cannot stage an open-redirect via the step-up flow.
+    For most decorated routes the original action URL is a POST or
+    PATCH endpoint, so the redirect-back GET will return 405 -- the
+    user is expected to re-issue their action manually.  The
+    fall-through to /dashboard handles the no-next case (direct
+    navigation to /reauth).
+    """
+    next_url = request.args.get("next")
+    safe_next = next_url if _is_safe_redirect(next_url) else None
+
+    if request.method == "GET":
+        return render_template("auth/reauth.html", next=safe_next)
+
+    password = request.form.get("password", "")
+    if not auth_service.verify_password(password, current_user.password_hash):
+        log_event(
+            logger, logging.WARNING, "reauth_failed", AUTH,
+            "Step-up re-auth failed: bad password",
+            user_id=current_user.id, ip=request.remote_addr,
+        )
+        flash("Invalid password.", "danger")
+        return render_template("auth/reauth.html", next=safe_next)
+
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=current_user.id, is_enabled=True)
+        .first()
+    )
+    if mfa_config:
+        totp_code = request.form.get("totp_code", "").strip()
+        try:
+            accepted = _verify_totp_with_replay_logging(
+                mfa_config, totp_code, current_user.id,
+            )
+        except (RuntimeError, InvalidToken):
+            flash(
+                "MFA could not be verified because the encryption key "
+                "has changed or been removed. Contact your "
+                "administrator.",
+                "danger",
+            )
+            return render_template("auth/reauth.html", next=safe_next)
+        if not accepted:
+            log_event(
+                logger, logging.WARNING, "reauth_failed", AUTH,
+                "Step-up re-auth failed: bad TOTP",
+                user_id=current_user.id, ip=request.remote_addr,
+            )
+            flash("Invalid authentication code.", "danger")
+            return render_template("auth/reauth.html", next=safe_next)
+
+    stamp_reauth_session(datetime.now(timezone.utc))
+    log_event(
+        logger, logging.INFO, "reauth_success", AUTH,
+        "Step-up re-auth succeeded", user_id=current_user.id,
+    )
+    if safe_next:
+        return redirect(safe_next)
+    return redirect(url_for("dashboard.page"))
 
 
 @auth_bp.route("/mfa/verify", methods=["GET", "POST"])
@@ -560,7 +698,16 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
     _clear_mfa_pending_state()
 
     login_user(user, remember=remember)
-    flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
+    # Stamp every lifecycle key in one call so the idle-timeout check
+    # (commit C-10 / F-006) and the fresh-login check (commit C-10 /
+    # F-045) start from the same instant the MFA-protected session
+    # was completed.  The backup-code branch below ALSO calls
+    # ``invalidate_other_sessions``, which writes ``_session_created_at``
+    # again with its own internal ``now`` -- the small microsecond
+    # drift is harmless because the load_user check is strict less-
+    # than, not equality, and the cookie's later value is still > the
+    # DB's earlier session_invalidated_at.
+    stamp_login_session(datetime.now(timezone.utc))
 
     if used_backup_code:
         # Backup-code consumption is the canonical "I lost my

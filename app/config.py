@@ -58,9 +58,59 @@ class BaseConfig:
     # SQLAlchemy
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # Flask-Login session lifetime
+    # ---- Session lifetime + idle timeout + step-up auth -----------------
+    #
+    # Three cooperating settings bound the "unattended access" blast
+    # radius for a stolen session cookie or a forgotten signed-in
+    # browser.  See audit findings F-006, F-035, F-045 / commit C-10.
+
+    # Hard cap on the lifetime of a permanent (logged-in) session
+    # cookie.  Flask's default is 31 days, which is too generous for a
+    # money app: a stolen browser profile would carry valid auth for a
+    # month with no further interaction required.  12 hours covers a
+    # normal work day; "remember me" is the supported path for users
+    # who want a longer window (see REMEMBER_COOKIE_DURATION below).
+    # Operators can override via SESSION_LIFETIME_HOURS in .env -- the
+    # range is intentionally wide to support short-lived test envs and
+    # longer-lived dev shells.
+    PERMANENT_SESSION_LIFETIME = timedelta(
+        hours=int(os.getenv("SESSION_LIFETIME_HOURS", "12"))
+    )
+
+    # Maximum gap between authenticated requests before ``load_user``
+    # rejects the session.  Defends against the "I left the browser
+    # open at the coffee shop" scenario: a 30-minute idle window is
+    # short enough that an attacker who reaches an unlocked device has
+    # to act fast, long enough that legitimate switching between tabs
+    # or apps does not constantly bounce the user back to /login.
+    # Refreshed by the ``before_request`` hook in
+    # ``app/__init__.py`` on every authenticated request; checked by
+    # ``load_user`` via ``_session_last_activity_at``.
+    IDLE_TIMEOUT_MINUTES = int(os.getenv("IDLE_TIMEOUT_MINUTES", "30"))
+
+    # Maximum age of the most recent password verification before
+    # ``fresh_login_required`` redirects to ``/reauth``.  Five
+    # minutes is the default ASVS L2 V4.3.3 step-up window: long
+    # enough that a sequence of related high-value operations (e.g.
+    # adjust anchor balance, then add a deduction, then update tax
+    # config) does not require multiple re-auths in a row, short
+    # enough that a session-hijack attacker who lacks the password
+    # cannot ride a stolen cookie into a destructive operation.
+    FRESH_LOGIN_MAX_AGE_MINUTES = int(
+        os.getenv("FRESH_LOGIN_MAX_AGE_MINUTES", "5")
+    )
+
+    # Flask-Login "remember me" cookie lifetime.  Shortened from the
+    # historical 30-day default to 7 days per ASVS L2 guidance for
+    # financial apps -- a stolen remember-me cookie is a password-
+    # equivalent credential, and 7 days is the right tradeoff between
+    # legitimate "stay logged in on my home machine" UX and stolen-
+    # device blast radius.  Operators who need a different window can
+    # set REMEMBER_COOKIE_DURATION_DAYS in .env without code changes;
+    # the ProdConfig further hardens this cookie with Secure, HttpOnly,
+    # and SameSite flags (see audit finding F-017).
     REMEMBER_COOKIE_DURATION = timedelta(
-        days=int(os.getenv("REMEMBER_COOKIE_DURATION_DAYS", "30"))
+        days=int(os.getenv("REMEMBER_COOKIE_DURATION_DAYS", "7"))
     )
 
     # Budget defaults

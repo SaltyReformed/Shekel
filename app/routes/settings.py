@@ -13,7 +13,7 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import RoleEnum
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import fresh_login_required, require_owner
 
 from app.extensions import db
 from app.models.account import Account
@@ -371,6 +371,7 @@ def _render_companions_section(errors=None, form_values=None,
 @settings_bp.route("/settings/companions", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def companion_create():
     """Create a new companion user linked to the current owner."""
     schema = CompanionCreateSchema()
@@ -432,6 +433,7 @@ def companion_create():
 )
 @login_required
 @require_owner
+@fresh_login_required()
 def companion_edit(companion_id):
     """Update an existing companion's email, name, and optional password."""
     companion = _load_companion_or_404(companion_id)
@@ -490,6 +492,7 @@ def companion_edit(companion_id):
 )
 @login_required
 @require_owner
+@fresh_login_required()
 def companion_deactivate(companion_id):
     """Soft-delete a companion by flipping is_active to False.
 

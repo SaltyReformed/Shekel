@@ -1,20 +1,31 @@
 """Shekel Budget App -- Unit tests for app.utils.session_helpers.
 
-Locks down the contract documented in
-``app/utils/session_helpers.py``: every auth-factor state change
-that needs to invalidate parallel sessions does so by stamping
-``users.session_invalidated_at`` and refreshing
-``flask.session[SESSION_CREATED_AT_KEY]`` with the SAME timestamp.
-The strict less-than comparison in :func:`app.load_user` then rejects
-every other live session for that user while letting the request that
-issued the helper survive.
+Locks down two cooperating contracts documented in
+``app/utils/session_helpers.py``:
 
-These tests exercise the helper in isolation against a real DB and a
-real Flask test request context -- no mocks of ``db.session`` or
-``flask.session``, because the helper's correctness depends on the
-exact serialization round-trip of those two pieces of state.
+1. Every auth-factor state change that needs to invalidate parallel
+   sessions does so by stamping ``users.session_invalidated_at`` and
+   refreshing ``flask.session[SESSION_CREATED_AT_KEY]`` with the SAME
+   timestamp.  The strict less-than comparison in :func:`app.load_user`
+   then rejects every other live session for that user while letting
+   the request that issued the helper survive (commit C-08 -- F-002,
+   F-003, F-032).
 
-Audit references: F-002, F-003, F-032 (commit C-08).
+2. The three ``stamp_*`` helpers (``stamp_login_session``,
+   ``stamp_reauth_session``, ``stamp_session_refresh``) write the
+   right SUBSET of lifecycle keys for each semantic event so the
+   loader, the idle-timeout check, and the fresh-login check all
+   stay coherent (commit C-10 -- F-006, F-035, F-045).  A regression
+   that wrote ``_session_created_at`` on /reauth would silently let
+   an attacker bypass a future ``invalidate_other_sessions`` bump;
+   a regression that wrote ``_fresh_login_at`` on /invalidate-sessions
+   would let the same UI extend the step-up window without typing a
+   password.
+
+These tests exercise the helpers in isolation against a real DB and
+a real Flask test request context -- no mocks of ``db.session`` or
+``flask.session``, because correctness depends on the exact
+serialization round-trip of those two pieces of state.
 """
 
 import logging
@@ -25,8 +36,13 @@ import pytest
 from app.models.user import User
 from app.utils.log_events import AUTH
 from app.utils.session_helpers import (
+    FRESH_LOGIN_AT_KEY,
     SESSION_CREATED_AT_KEY,
+    SESSION_LAST_ACTIVITY_KEY,
     invalidate_other_sessions,
+    stamp_login_session,
+    stamp_reauth_session,
+    stamp_session_refresh,
 )
 
 
@@ -328,3 +344,181 @@ class TestInvalidateOtherSessionsLoadUserIntegration:
                 "invalidation bump must be rejected by load_user; "
                 "got a non-None user instead."
             )
+
+
+class TestStampLoginSession:
+    """``stamp_login_session`` writes ALL THREE lifecycle keys."""
+
+    def test_writes_all_three_keys_with_identical_value(self, app):
+        """Every key carries the same ISO-8601 string from the
+        single ``now`` argument.
+
+        Reusing one value across the three writes is required so a
+        later audit comparison cannot falsely flag the keys as
+        clock-skewed.  This test is the unit-level enforcement of
+        that contract; the integration test in
+        ``tests/test_adversarial/test_step_up.py`` exercises the
+        same property via /login.
+        """
+        with app.test_request_context("/") as ctx:
+            now = datetime.now(timezone.utc)
+            stamp_login_session(now)
+
+            iso = now.isoformat()
+            assert ctx.session[SESSION_CREATED_AT_KEY] == iso
+            assert ctx.session[SESSION_LAST_ACTIVITY_KEY] == iso
+            assert ctx.session[FRESH_LOGIN_AT_KEY] == iso
+
+    def test_overwrites_existing_values(self, app):
+        """Subsequent calls overwrite, never append.
+
+        A regression that mutated rather than overwrote could leak
+        an older timestamp into a freshly-stamped session, and the
+        idle / fresh checks would compare against the leaked value.
+        """
+        with app.test_request_context("/") as ctx:
+            ctx.session[SESSION_CREATED_AT_KEY] = "stale-1"
+            ctx.session[SESSION_LAST_ACTIVITY_KEY] = "stale-2"
+            ctx.session[FRESH_LOGIN_AT_KEY] = "stale-3"
+
+            now = datetime.now(timezone.utc)
+            stamp_login_session(now)
+
+            iso = now.isoformat()
+            assert ctx.session[SESSION_CREATED_AT_KEY] == iso
+            assert ctx.session[SESSION_LAST_ACTIVITY_KEY] == iso
+            assert ctx.session[FRESH_LOGIN_AT_KEY] == iso
+
+
+class TestStampReauthSession:
+    """``stamp_reauth_session`` updates activity + fresh; preserves created."""
+
+    def test_updates_activity_and_fresh_only(self, app):
+        """``_session_created_at`` is left untouched.
+
+        Critical invariant: writing ``_session_created_at`` on
+        /reauth would silently promote the session past every prior
+        ``invalidate_other_sessions`` bump.  An attacker with a
+        hijacked cookie could then use /reauth to defeat the user's
+        later "log out all sessions" click -- a security-relevant
+        regression.
+        """
+        with app.test_request_context("/") as ctx:
+            original_created = "2026-01-01T00:00:00+00:00"
+            ctx.session[SESSION_CREATED_AT_KEY] = original_created
+
+            now = datetime.now(timezone.utc)
+            stamp_reauth_session(now)
+
+            iso = now.isoformat()
+            # Created is preserved.
+            assert ctx.session[SESSION_CREATED_AT_KEY] == original_created
+            # Activity and fresh are advanced.
+            assert ctx.session[SESSION_LAST_ACTIVITY_KEY] == iso
+            assert ctx.session[FRESH_LOGIN_AT_KEY] == iso
+
+    def test_does_not_create_session_created_at_key(self, app):
+        """The helper never CREATES ``_session_created_at`` either.
+
+        Belt-and-suspenders: a session that somehow reached /reauth
+        without ``_session_created_at`` (e.g. a pre-C-08 cookie)
+        should remain in that state.  Adding the key here would
+        accidentally upgrade the cookie past prior invalidations.
+        """
+        with app.test_request_context("/") as ctx:
+            assert SESSION_CREATED_AT_KEY not in ctx.session
+
+            stamp_reauth_session(datetime.now(timezone.utc))
+
+            assert SESSION_CREATED_AT_KEY not in ctx.session
+
+
+class TestStampSessionRefresh:
+    """``stamp_session_refresh`` updates created + activity; preserves fresh."""
+
+    def test_updates_created_and_activity_only(self, app):
+        """``_fresh_login_at`` is left untouched.
+
+        Critical invariant: writing ``_fresh_login_at`` on
+        /invalidate-sessions would let the same UI silently extend
+        the step-up window without typing a password -- a security-
+        relevant regression of F-045.
+        """
+        with app.test_request_context("/") as ctx:
+            original_fresh = "2026-01-01T00:00:00+00:00"
+            ctx.session[FRESH_LOGIN_AT_KEY] = original_fresh
+
+            now = datetime.now(timezone.utc)
+            stamp_session_refresh(now)
+
+            iso = now.isoformat()
+            # Created and activity are advanced.
+            assert ctx.session[SESSION_CREATED_AT_KEY] == iso
+            assert ctx.session[SESSION_LAST_ACTIVITY_KEY] == iso
+            # Fresh is preserved.
+            assert ctx.session[FRESH_LOGIN_AT_KEY] == original_fresh
+
+    def test_does_not_create_fresh_login_at_key(self, app):
+        """The helper never CREATES ``_fresh_login_at`` either.
+
+        A session that lacks ``_fresh_login_at`` (pre-C-10 cookie or
+        a session that has never required a fresh re-auth) must stay
+        in that state -- creating the key would let
+        /invalidate-sessions silently bypass the very next
+        ``fresh_login_required`` gate.
+        """
+        with app.test_request_context("/") as ctx:
+            assert FRESH_LOGIN_AT_KEY not in ctx.session
+
+            stamp_session_refresh(datetime.now(timezone.utc))
+
+            assert FRESH_LOGIN_AT_KEY not in ctx.session
+
+
+class TestStampHelpersWriteIsoStrings:
+    """All three stamp helpers serialize as ``datetime.isoformat()``.
+
+    ``app.load_user`` and the decorators call ``fromisoformat`` on
+    every read; a regression that wrote a non-string (e.g. the raw
+    datetime, or ``str(now)`` which omits the timezone for naive
+    values) would round-trip-explode and 500 every authenticated
+    request after a successful login.
+    """
+
+    def test_stamp_login_session_writes_iso_strings(self, app):
+        """All three keys parse with ``datetime.fromisoformat``."""
+        with app.test_request_context("/") as ctx:
+            stamp_login_session(datetime.now(timezone.utc))
+            for key in (
+                SESSION_CREATED_AT_KEY,
+                SESSION_LAST_ACTIVITY_KEY,
+                FRESH_LOGIN_AT_KEY,
+            ):
+                value = ctx.session[key]
+                assert isinstance(value, str)
+                parsed = datetime.fromisoformat(value)
+                assert parsed.tzinfo is not None, (
+                    f"{key} must round-trip as a timezone-aware "
+                    "datetime so the load_user / decorator subtraction "
+                    "does not raise on a naive value."
+                )
+
+    def test_stamp_reauth_session_writes_iso_strings(self, app):
+        """Activity and fresh keys parse with ``datetime.fromisoformat``."""
+        with app.test_request_context("/") as ctx:
+            stamp_reauth_session(datetime.now(timezone.utc))
+            for key in (SESSION_LAST_ACTIVITY_KEY, FRESH_LOGIN_AT_KEY):
+                value = ctx.session[key]
+                assert isinstance(value, str)
+                parsed = datetime.fromisoformat(value)
+                assert parsed.tzinfo is not None
+
+    def test_stamp_session_refresh_writes_iso_strings(self, app):
+        """Created and activity keys parse with ``datetime.fromisoformat``."""
+        with app.test_request_context("/") as ctx:
+            stamp_session_refresh(datetime.now(timezone.utc))
+            for key in (SESSION_CREATED_AT_KEY, SESSION_LAST_ACTIVITY_KEY):
+                value = ctx.session[key]
+                assert isinstance(value, str)
+                parsed = datetime.fromisoformat(value)
+                assert parsed.tzinfo is not None

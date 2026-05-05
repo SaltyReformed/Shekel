@@ -11,7 +11,7 @@ from datetime import date
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import fresh_login_required, require_owner
 from markupsafe import Markup
 
 from app.extensions import db
@@ -498,6 +498,7 @@ def unarchive_template(template_id):
 @templates_bp.route("/templates/<int:template_id>/hard-delete", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no payment history.
 
