@@ -85,6 +85,29 @@ def set_totp_key(monkeypatch):
     monkeypatch.setenv("TOTP_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
 
+@pytest.fixture(autouse=True)
+def disable_hibp_check(monkeypatch):
+    """Disable the HIBP breached-password check by default.
+
+    ``hash_password`` is invoked from dozens of fixtures (every
+    ``seed_user`` variant, plus per-test registration helpers) and
+    making each one perform an outbound HTTP call would (a) break the
+    suite's hermeticity, (b) slow it by an order of magnitude, and
+    (c) silently mask test results during HIBP outages.
+
+    Tests that exercise HIBP behaviour explicitly flip this back on
+    via ``monkeypatch.setenv("HIBP_CHECK_ENABLED", "true")`` after
+    mocking ``requests.get``.  ``monkeypatch`` is function-scoped so
+    the override is local to a single test even when the autouse
+    fixture has already run.
+
+    See audit finding F-086 / commit C-11 for the production posture
+    (default-on) and ``app/services/auth_service.py:_check_pwned_password``
+    for the runtime read.
+    """
+    monkeypatch.setenv("HIBP_CHECK_ENABLED", "false")
+
+
 @pytest.fixture(scope="session")
 def app():
     """Create the Flask application configured for testing."""

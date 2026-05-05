@@ -83,4 +83,13 @@
 {% if active_section == 'account-types' %}
 <script src="{{ url_for('static', filename='js/account_types.js') }}"></script>
 {% endif %}
+{% if active_section == 'security' %}
+{# Strength meter (audit F-089) and show/hide toggle (audit F-090) on
+   the change-password form.  Loaded only when the security section is
+   active so the ~400 KB zxcvbn asset does not download on every
+   settings page view. #}
+<script src="{{ url_for('static', filename='vendor/zxcvbn/zxcvbn.js') }}"></script>
+<script src="{{ url_for('static', filename='js/password_strength.js') }}"></script>
+<script src="{{ url_for('static', filename='js/password_toggle.js') }}"></script>
+{% endif %}
 {% endblock %}

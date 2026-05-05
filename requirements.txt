@@ -41,3 +41,13 @@ python-json-logger==4.1.0
 # service so they are shared across Gunicorn workers and survive app
 # container restarts.  See audit finding F-034.
 redis==7.4.0
+
+# HTTP client -- used by ``app/services/auth_service.py`` to query the
+# Have I Been Pwned k-anonymity API at password-set time.  See audit
+# finding F-086 / commit C-11.  Only this single outbound endpoint is
+# called (``api.pwnedpasswords.com``), so the dependency is small in
+# scope; ``requests`` is preferred over the stdlib ``urllib`` for its
+# reliable timeout semantics and its already-pervasive presence in
+# the wider Python ecosystem (matches what most operators expect to
+# audit).
+requests==2.32.5

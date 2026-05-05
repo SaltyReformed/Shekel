@@ -183,6 +183,58 @@ class BaseConfig:
     # a "5 per 15 minutes" rule).  moving-window keeps a sliding count.
     RATELIMIT_STRATEGY = "moving-window"
 
+    # ---- Account lockout (audit finding F-033 / commit C-11) ----------
+    #
+    # Per-account brute-force throttling that cannot be bypassed by IP
+    # rotation.  See ``app/models/user.py`` for the column-level
+    # documentation and ``app/services/auth_service.py:authenticate``
+    # for the enforcement path.  These settings are documented here for
+    # operator discovery; the service itself reads ``os.getenv`` at call
+    # time (matching the ``mfa_service.TOTP_ENCRYPTION_KEY`` pattern) so
+    # tests can adjust thresholds via ``monkeypatch.setenv`` without
+    # going through the Flask config object.
+    #
+    # Threshold of 10 leaves a comfortable margin for typo storms while
+    # still clamping a credential-stuffing attack to a single attempt
+    # per 15-minute window per account.  An attacker who guesses 10
+    # wrong passwords burns one lockout window and gains nothing.
+    LOCKOUT_THRESHOLD = int(os.getenv("LOCKOUT_THRESHOLD", "10"))
+
+    # Lockout duration of 15 minutes.  Long enough that an attacker
+    # cannot trivially wait it out across many accounts; short enough
+    # that a legitimate user who locked themselves out via typos can
+    # try again within a coffee-break window without administrator
+    # intervention.
+    LOCKOUT_DURATION_MINUTES = int(
+        os.getenv("LOCKOUT_DURATION_MINUTES", "15")
+    )
+
+    # ---- Breached-password check (audit finding F-086 / commit C-11) --
+    #
+    # Toggle for the HIBP k-anonymity check at password-set time.
+    # Defaults to enabled in every non-test environment so that
+    # registration, password change, and companion-account creation
+    # reject passwords that have appeared in a public breach.  The
+    # service reads this via ``os.getenv("HIBP_CHECK_ENABLED", "true")``
+    # so tests can enable or disable it per-test through
+    # ``monkeypatch.setenv`` without touching the Flask config.
+    HIBP_CHECK_ENABLED = os.getenv(
+        "HIBP_CHECK_ENABLED", "true",
+    ).lower() in ("true", "1", "yes")
+
+    # Network timeout for the HIBP API in seconds.  Short enough that a
+    # registration form does not hang on a slow upstream; long enough
+    # to absorb normal jitter on api.pwnedpasswords.com.  The service
+    # treats a timeout as fail-open (logs a warning and accepts the
+    # password) so the registration flow continues to work during
+    # transient HIBP outages.  Operators who want fail-closed behavior
+    # can run a self-hosted Pwned Passwords mirror and point
+    # ``HIBP_ENDPOINT`` at it; that is documented as a future option
+    # in the C-11 plan rather than implemented here.
+    HIBP_TIMEOUT_SECONDS = float(
+        os.getenv("HIBP_TIMEOUT_SECONDS", "3")
+    )
+
 
 class DevConfig(BaseConfig):
     """Development configuration -- debug mode, local PostgreSQL."""

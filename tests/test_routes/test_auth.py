@@ -2310,3 +2310,214 @@ class TestMfaSetupEdgeCases:
             assert config.confirmed_at == confirmed_at_after_first
             assert config.pending_secret_encrypted is None
             assert config.pending_secret_expires_at is None
+
+
+# ---------------------------------------------------------------------------
+# Account-lockout integration with the /login route (audit F-033 / C-11)
+# ---------------------------------------------------------------------------
+
+
+class TestLoginLockoutIntegration:
+    """End-to-end tests that exercise lockout through the /login route.
+
+    The service-level tests in
+    ``tests/test_services/test_auth_service.py`` cover the lockout
+    semantics in isolation; this class verifies the integration with
+    the Flask route -- in particular that the route's flash message,
+    redirect target, and ``failed_login_count`` persistence remain
+    consistent under the new behaviour.
+    """
+
+    def test_failed_login_increments_db_counter(
+        self, app, client, seed_user,
+    ):
+        """A bad-password POST persists the increment across requests.
+
+        Verifies the ``db.session.commit`` inside ``authenticate``
+        survives the request-response boundary.  Without the commit,
+        the counter would only live in the request's session and
+        reset on the next request.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "wrong-password",
+            }, follow_redirects=True)
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 1
+
+    def test_threshold_failures_lock_account_via_route(
+        self, app, client, seed_user, monkeypatch,
+    ):
+        """Threshold-many bad POSTs through /login lock the account.
+
+        Uses a low threshold (3) to avoid running into the @limiter
+        rate limit (5/15min) that fires before the lockout would.
+        Rate limiting is disabled in TestConfig so the limit is not
+        actually enforced; the explicit threshold reduction keeps
+        the test future-proof if rate limiting is enabled.
+        """
+        monkeypatch.setenv("LOCKOUT_THRESHOLD", "3")
+        monkeypatch.setenv("LOCKOUT_DURATION_MINUTES", "15")
+        user_id = seed_user["user"].id
+        with app.app_context():
+            for _ in range(3):
+                client.post("/login", data={
+                    "email": "test@shekel.local",
+                    "password": "wrong",
+                }, follow_redirects=True)
+
+            user = db.session.get(User, user_id)
+            assert user.locked_until is not None
+            assert user.locked_until > datetime.now(timezone.utc)
+
+    def test_locked_account_login_returns_generic_error(
+        self, app, client, seed_user,
+    ):
+        """A POST during lockout shows the generic invalid-credential message.
+
+        The server MUST NOT distinguish the lockout state from a wrong
+        password in the user-facing response: an attacker probing
+        whether an account is locked would otherwise get a free signal
+        about the lockout window.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            user = db.session.get(User, user_id)
+            user.locked_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=10)
+            )
+            db.session.commit()
+
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+            # The response body must NOT name the lockout state.
+            assert b"locked" not in response.data.lower()
+
+    def test_successful_login_after_typo_resets_counter(
+        self, app, client, seed_user,
+    ):
+        """A correct password after a few typos zeroes the counter.
+
+        Mirrors the service-level test but goes through the HTTP
+        boundary so the route's commit-after-authenticate path is
+        exercised.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            for _ in range(3):
+                client.post("/login", data={
+                    "email": "test@shekel.local",
+                    "password": "wrong",
+                }, follow_redirects=True)
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 3
+
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 0
+            assert user.locked_until is None
+
+
+# ---------------------------------------------------------------------------
+# Password-form chrome (audit F-089 / F-090 / C-11)
+# ---------------------------------------------------------------------------
+
+
+class TestPasswordFormChrome:
+    """Sanity checks on the rendered HTML for the strength meter and toggle.
+
+    These tests assert presence of the data attributes that the JS
+    binders look for, so a future template refactor that drops the
+    attributes does not silently disable the meter or toggle.
+    """
+
+    def test_register_form_has_strength_meter_attributes(
+        self, app, client,
+    ):
+        """The /register form exposes the meter wiring.
+
+        ``data-password-input`` on the input is what
+        ``password_strength.js::bind`` queries; the matching
+        ``data-password-meter-for=password`` container hosts the
+        progress bar.  Both must be present together.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"data-password-input" in response.data
+            assert b'data-password-meter-for="password"' in response.data
+            assert b"data-password-meter-bar" in response.data
+
+    def test_register_form_has_password_toggle(self, app, client):
+        """The /register form has show/hide toggle buttons.
+
+        ``data-action='password-toggle'`` is the selector that
+        ``password_toggle.js`` uses to bind the click listener; the
+        ``data-target`` attribute names the input id to flip.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"data-action=\"password-toggle\"" in response.data
+            assert b"data-target=\"password\"" in response.data
+            assert b"data-target=\"confirm_password\"" in response.data
+
+    def test_register_form_loads_zxcvbn_and_meter_script(
+        self, app, client,
+    ):
+        """The /register form loads zxcvbn and the meter script.
+
+        Without the vendored zxcvbn asset the meter falls back to
+        empty (see ``password_strength.js`` clearMeter), which is a
+        silent UX downgrade.  Asserting the script tags here catches
+        a future template that loses the include.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"vendor/zxcvbn/zxcvbn.js" in response.data
+            assert b"js/password_strength.js" in response.data
+            assert b"js/password_toggle.js" in response.data
+
+    def test_login_form_has_password_toggle(self, app, client):
+        """The /login form carries the show/hide toggle and its loader.
+
+        Login does not get the strength meter (no zxcvbn analysis on
+        an existing password), but the toggle is in scope so a user
+        verifying a typo sees the actual characters they typed.
+        """
+        with app.app_context():
+            response = client.get("/login")
+            assert response.status_code == 200
+            assert b"data-action=\"password-toggle\"" in response.data
+            assert b"js/password_toggle.js" in response.data
+            assert b"vendor/zxcvbn/zxcvbn.js" not in response.data
+
+    def test_security_panel_has_strength_meter_and_toggle(
+        self, app, auth_client,
+    ):
+        """The /settings security section exposes meter and toggle wiring.
+
+        Mirror of the /register check for the change-password form.
+        """
+        with app.app_context():
+            response = auth_client.get("/settings?section=security")
+            assert response.status_code == 200
+            assert b"data-password-input" in response.data
+            assert b'data-password-meter-for="new_password"' in response.data
+            assert b"data-action=\"password-toggle\"" in response.data
+            # Scripts loaded only when the security section is active.
+            assert b"vendor/zxcvbn/zxcvbn.js" in response.data
+            assert b"js/password_strength.js" in response.data
+            assert b"js/password_toggle.js" in response.data

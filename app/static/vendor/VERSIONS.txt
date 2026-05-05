@@ -46,6 +46,18 @@ htmx/htmx.min.js                       | https://unpkg.com/htmx.org@2.0.4/dist/h
 # retirement); not required for the core app.
 chart-js/chart.umd.min.js              | https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js                 | sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC
 
+# ── zxcvbn 4.4.2 ──────────────────────────────────────────────────────
+# Distribution: https://github.com/dropbox/zxcvbn (archived but stable)
+# License: MIT (https://github.com/dropbox/zxcvbn/blob/master/LICENSE.txt)
+# Used by app/static/js/password_strength.js to score the password
+# strength meter on the registration and change-password forms.  See
+# audit finding F-089 / commit C-11 of the 2026-04-15 security
+# remediation plan.  The script falls back to a no-op when this asset
+# is missing, so a deferred refresh does not break the form -- but
+# without it the meter cannot render and users lose the strength
+# feedback.
+zxcvbn/zxcvbn.js                       | https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js                          | sha384-LXuP8lknSGBOLVn4fwVOl+rWR+zOEtZx6CF9ZLaN6gKBgLByU4D79VWWjV4/gefq
+
 # ── Inter (variable font) + JetBrains Mono ────────────────────────────
 # Source: https://fonts.googleapis.com/css2 (latin + latin-ext subsets only)
 # Inter:           https://rsms.me/inter/ -- SIL Open Font License 1.1

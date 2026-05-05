@@ -6,18 +6,55 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="mb-3">
     <label for="current_password" class="form-label">Current Password</label>
-    <input type="password" class="form-control form-control-sm" id="current_password"
-           name="current_password" required>
+    <div class="input-group input-group-sm">
+      <input type="password" class="form-control form-control-sm" id="current_password"
+             name="current_password" required>
+      <button class="btn btn-outline-secondary password-toggle-btn"
+              type="button" data-action="password-toggle"
+              data-target="current_password" aria-label="Show password"
+              aria-pressed="false">
+        <i class="bi bi-eye-slash"></i>
+      </button>
+    </div>
   </div>
-  <div class="mb-3">
+  {# New-password block carries the strength meter (audit F-089) and the
+     show/hide toggle (audit F-090).  ``data-password-input`` and the
+     matching ``data-password-meter-for`` pair wire the input to the
+     meter container; same DOM contract as the registration form. #}
+  <div class="mb-3 password-strength-meter">
     <label for="new_password" class="form-label">New Password</label>
-    <input type="password" class="form-control form-control-sm" id="new_password"
-           name="new_password" required minlength="12">
+    <div class="input-group input-group-sm">
+      <input type="password" class="form-control form-control-sm" id="new_password"
+             name="new_password" required minlength="12"
+             data-password-input>
+      <button class="btn btn-outline-secondary password-toggle-btn"
+              type="button" data-action="password-toggle"
+              data-target="new_password" aria-label="Show password"
+              aria-pressed="false">
+        <i class="bi bi-eye-slash"></i>
+      </button>
+    </div>
+    <div data-password-meter-for="new_password" class="mt-2">
+      <div class="progress" role="progressbar"
+           aria-label="Password strength" aria-valuemin="0"
+           aria-valuemax="100" aria-valuenow="0">
+        <div class="progress-bar" data-password-meter-bar></div>
+      </div>
+      <small data-password-meter-text class="form-text"></small>
+    </div>
   </div>
   <div class="mb-3">
     <label for="confirm_password" class="form-label">Confirm New Password</label>
-    <input type="password" class="form-control form-control-sm" id="confirm_password"
-           name="confirm_password" required>
+    <div class="input-group input-group-sm">
+      <input type="password" class="form-control form-control-sm" id="confirm_password"
+             name="confirm_password" required>
+      <button class="btn btn-outline-secondary password-toggle-btn"
+              type="button" data-action="password-toggle"
+              data-target="confirm_password" aria-label="Show password"
+              aria-pressed="false">
+        <i class="bi bi-eye-slash"></i>
+      </button>
+    </div>
     <div class="form-text">Minimum 12 characters.</div>
   </div>
   <button type="submit" class="btn btn-primary">

@@ -21,9 +21,17 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label for="password" class="form-label">Password</label>
-            <input type="password" class="form-control" id="password"
-                   name="password" required autofocus
-                   autocomplete="current-password">
+            <div class="input-group">
+              <input type="password" class="form-control" id="password"
+                     name="password" required autofocus
+                     autocomplete="current-password">
+              <button class="btn btn-outline-secondary password-toggle-btn"
+                      type="button" data-action="password-toggle"
+                      data-target="password" aria-label="Show password"
+                      aria-pressed="false">
+                <i class="bi bi-eye-slash"></i>
+              </button>
+            </div>
           </div>
 
           {# TOTP field is always rendered so a user with a hardware
@@ -55,4 +63,8 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/password_toggle.js') }}"></script>
 {% endblock %}

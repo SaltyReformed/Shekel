@@ -1389,3 +1389,29 @@ body {
   background-color: var(--shekel-surface-raised);
 }
 
+/* =============================================
+   Password strength meter (audit F-089 / C-11)
+   =============================================
+   Bootstrap's .progress is 16 px tall by default which dominates a
+   compact registration form.  6 px is a thin status ribbon that does
+   not push the submit button below the fold.  The strength text under
+   the bar uses .form-text so it inherits the muted-foreground colour
+   from Bootstrap. */
+.password-strength-meter .progress {
+  height: 6px;
+}
+
+/* Show/hide password toggle (audit F-090 / C-11)
+   ============================================
+   The toggle button sits in a Bootstrap input-group beside the
+   password input.  The default input-group height matches the input,
+   so no extra sizing is needed; this rule only adjusts the icon
+   colour to match the surrounding form text. */
+.password-toggle-btn {
+  color: var(--shekel-text-secondary);
+}
+.password-toggle-btn:hover,
+.password-toggle-btn:focus {
+  color: var(--shekel-text-primary);
+}
+
