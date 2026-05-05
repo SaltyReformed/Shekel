@@ -17,6 +17,8 @@ import pyotp
 import qrcode
 from cryptography.fernet import Fernet, MultiFernet
 
+from app.models.user import MfaConfig
+
 
 # Width in seconds of one TOTP time-step.  RFC 6238 leaves this
 # implementation-defined; ``pyotp.TOTP`` defaults to 30 seconds and
@@ -161,7 +163,7 @@ def generate_totp_secret():
     return pyotp.random_base32()
 
 
-def encrypt_secret(plaintext_secret):
+def encrypt_secret(plaintext_secret: str) -> bytes:
     """Encrypt a TOTP secret for database storage.
 
     Args:
@@ -173,7 +175,7 @@ def encrypt_secret(plaintext_secret):
     return get_encryption_key().encrypt(plaintext_secret.encode("utf-8"))
 
 
-def decrypt_secret(encrypted_secret):
+def decrypt_secret(encrypted_secret: bytes) -> str:
     """Decrypt a TOTP secret retrieved from the database.
 
     Args:
@@ -185,7 +187,7 @@ def decrypt_secret(encrypted_secret):
     return get_encryption_key().decrypt(encrypted_secret).decode("utf-8")
 
 
-def get_totp_uri(secret, email, issuer="Shekel"):
+def get_totp_uri(secret: str, email: str, issuer: str = "Shekel") -> str:
     """Build an otpauth:// provisioning URI for QR code generation.
 
     Args:
@@ -199,7 +201,7 @@ def get_totp_uri(secret, email, issuer="Shekel"):
     return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name=issuer)
 
 
-def generate_qr_code_data_uri(uri):
+def generate_qr_code_data_uri(uri: str) -> str:
     """Generate a base64-encoded PNG data URI from an otpauth:// URI.
 
     Args:
@@ -215,7 +217,7 @@ def generate_qr_code_data_uri(uri):
     return f"data:image/png;base64,{encoded}"
 
 
-def _find_matching_step(secret, code):
+def _find_matching_step(secret: str, code: str) -> int | None:
     """Locate the time-step at which ``code`` matches ``secret``.
 
     Walks the +-1 step drift window around the current 30-second
@@ -258,7 +260,7 @@ def _find_matching_step(secret, code):
     return None
 
 
-def verify_totp_code(mfa_config, code):
+def verify_totp_code(mfa_config: MfaConfig, code: str) -> TotpVerificationResult:
     """Verify a TOTP code against the active secret with replay prevention.
 
     Implements ASVS V2.8.4: a successfully matched 30-second time-step
@@ -279,11 +281,11 @@ def verify_totp_code(mfa_config, code):
     a subsequent retry with a fresh code may still succeed.
 
     Args:
-        mfa_config (app.models.user.MfaConfig): The user's MfaConfig
-            row.  ``totp_secret_encrypted`` is decrypted internally;
+        mfa_config: The user's MfaConfig row.
+            ``totp_secret_encrypted`` is decrypted internally;
             ``last_totp_timestep`` is read for the replay check and
             written on success.
-        code (str): The 6-digit code string from the user's
+        code: The 6-digit code string from the user's
             authenticator app.  Non-string, wrong-length, and non-
             digit inputs are rejected as INVALID without consulting
             the secret.
@@ -314,7 +316,7 @@ def verify_totp_code(mfa_config, code):
     return TotpVerificationResult.ACCEPTED
 
 
-def verify_totp_setup_code(secret, code):
+def verify_totp_setup_code(secret: str, code: str) -> int | None:
     """Verify a TOTP code against a setup-pending secret.
 
     Used by ``/mfa/confirm`` where the secret being verified lives
@@ -334,11 +336,11 @@ def verify_totp_setup_code(secret, code):
     enrolment.
 
     Args:
-        secret (str): Base32-encoded TOTP secret as plaintext
+        secret: Base32-encoded TOTP secret as plaintext
             (decrypted from ``mfa_config.pending_secret_encrypted``
             by the caller, since the encrypted payload may decrypt
             under a retired key in the MultiFernet list).
-        code (str): The 6-digit code string from the user's
+        code: The 6-digit code string from the user's
             authenticator.
 
     Returns:
@@ -348,7 +350,7 @@ def verify_totp_setup_code(secret, code):
     return _find_matching_step(secret, code)
 
 
-def generate_backup_codes(count=10):
+def generate_backup_codes(count: int = 10) -> list[str]:
     """Generate a list of single-use backup codes.
 
     Each code is 14 random bytes rendered as 28 lowercase hex characters,
@@ -376,7 +378,7 @@ def generate_backup_codes(count=10):
     return [secrets.token_hex(14) for _ in range(count)]
 
 
-def hash_backup_codes(codes, rounds=None):
+def hash_backup_codes(codes: list[str], rounds: int | None = None) -> list[str]:
     """Hash a list of plaintext backup codes with bcrypt.
 
     Args:
@@ -395,7 +397,7 @@ def hash_backup_codes(codes, rounds=None):
     ]
 
 
-def verify_backup_code(code, hashed_codes):
+def verify_backup_code(code: str, hashed_codes: list[str]) -> int:
     """Check a plaintext backup code against a list of bcrypt hashes.
 
     Args:
