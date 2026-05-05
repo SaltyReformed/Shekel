@@ -30,7 +30,9 @@ class Category(db.Model):
     item_name = db.Column(db.String(100), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default='true')
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     @property
     def display_name(self):

@@ -33,9 +33,12 @@ class Account(db.Model):
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
@@ -78,7 +81,9 @@ class AccountAnchorHistory(db.Model):
     )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     notes = db.Column(db.Text)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")

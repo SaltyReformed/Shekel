@@ -28,7 +28,9 @@ class PayPeriod(db.Model):
     start_date = db.Column(db.Date, nullable=False)
     end_date = db.Column(db.Date, nullable=False)
     period_index = db.Column(db.Integer, nullable=False)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     # Relationships -- transactions loaded via back_populates on Transaction
     transactions = db.relationship(

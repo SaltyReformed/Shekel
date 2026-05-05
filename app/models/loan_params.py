@@ -59,10 +59,11 @@ class LoanParams(db.Model):
     arm_first_adjustment_months = db.Column(db.Integer, nullable=True)
     arm_adjustment_interval_months = db.Column(db.Integer, nullable=True)
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

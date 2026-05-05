@@ -37,10 +37,11 @@ class InterestParams(db.Model):
         db.String(10), nullable=False, server_default="daily"
     )
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

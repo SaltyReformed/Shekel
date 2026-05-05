@@ -21,9 +21,12 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(100))
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
@@ -102,9 +105,12 @@ class UserSettings(db.Model):
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
@@ -191,9 +197,12 @@ class MfaConfig(db.Model):
     # back to NULL so a re-enrollment under a new secret does not
     # inherit a stale step boundary.
     last_totp_timestep = db.Column(db.BigInteger, nullable=True)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

@@ -73,10 +73,11 @@ class CalibrationOverride(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.Text)
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
@@ -134,7 +135,7 @@ class CalibrationDeductionOverride(db.Model):
     )
     actual_amount = db.Column(db.Numeric(10, 2), nullable=False)
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
 
     # Relationships.

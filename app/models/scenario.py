@@ -27,9 +27,12 @@ class Scenario(db.Model):
     cloned_from_id = db.Column(
         db.Integer, db.ForeignKey("budget.scenarios.id", ondelete="SET NULL")
     )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

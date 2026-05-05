@@ -43,10 +43,11 @@ class InvestmentParams(db.Model):
     employer_match_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_cap_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

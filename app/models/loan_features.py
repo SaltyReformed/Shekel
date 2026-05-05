@@ -25,7 +25,7 @@ class RateHistory(db.Model):
     interest_rate = db.Column(db.Numeric(7, 5), nullable=False)
     notes = db.Column(db.Text, nullable=True)
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
 
     # Relationships
@@ -63,10 +63,11 @@ class EscrowComponent(db.Model):
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
     is_active = db.Column(db.Boolean, server_default=db.text("true"))
     created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

@@ -79,9 +79,12 @@ class Transfer(db.Model):
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )

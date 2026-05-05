@@ -40,7 +40,9 @@ class TaxBracketSet(db.Model):
         db.Numeric(12, 2), nullable=False, default=0
     )  # Per other dependent
     description = db.Column(db.String(200))
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     # Relationships
     filing_status = db.relationship("FilingStatus", lazy="joined")
@@ -114,7 +116,9 @@ class StateTaxConfig(db.Model):
     tax_year = db.Column(db.Integer, nullable=False)
     flat_rate = db.Column(db.Numeric(5, 4))
     standard_deduction = db.Column(db.Numeric(12, 2))
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     # Relationships
     tax_type = db.relationship("TaxType", lazy="joined")
@@ -156,7 +160,9 @@ class FicaConfig(db.Model):
     medicare_surtax_threshold = db.Column(
         db.Numeric(12, 2), nullable=False, default=200000
     )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     def __repr__(self):
         return f"<FicaConfig year={self.tax_year}>"

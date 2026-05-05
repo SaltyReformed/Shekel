@@ -42,7 +42,9 @@ class SalaryRaise(db.Model):
     flat_amount = db.Column(db.Numeric(12, 2))
     is_recurring = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="raises")

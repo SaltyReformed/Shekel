@@ -50,9 +50,12 @@ class TransactionTemplate(db.Model):
     companion_visible = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
