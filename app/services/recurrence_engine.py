@@ -35,7 +35,14 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.exceptions import RecurrenceConflict
 from app.models.salary_profile import SalaryProfile
-from app.utils.log_events import log_event, BUSINESS
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_CROSS_USER_BLOCKED,
+    EVT_RECURRENCE_CONFLICTS_RESOLVED,
+    EVT_RECURRENCE_GENERATED,
+    EVT_RECURRENCE_REGENERATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +70,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # silently create transactions in another user's scenario (IDOR).
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(logger, logging.WARNING, "cross_user_blocked", BUSINESS,
+        log_event(logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
                   "Blocked cross-user recurrence generation",
+                  template_id=template.id,
                   template_user_id=template.user_id,
                   scenario_id=scenario_id)
         return []
@@ -154,9 +162,12 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         created.append(txn)
 
     db.session.flush()
-    log_event(logger, logging.INFO, "recurrence_generated", BUSINESS,
+    log_event(logger, logging.INFO, EVT_RECURRENCE_GENERATED, BUSINESS,
               "Transactions generated from template",
-              template_id=template.id, count=len(created))
+              user_id=template.user_id,
+              template_id=template.id,
+              scenario_id=scenario_id,
+              count=len(created))
     return created
 
 
@@ -259,8 +270,9 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     # Defense-in-depth: verify ownership before deleting and regenerating.
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(logger, logging.WARNING, "cross_user_blocked", BUSINESS,
+        log_event(logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
                   "Blocked cross-user recurrence regeneration",
+                  template_id=template.id,
                   template_user_id=template.user_id,
                   scenario_id=scenario_id)
         return []
@@ -310,6 +322,18 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     # Regenerate new entries.
     created = generate_for_template(template, periods, scenario_id, effective_from)
 
+    log_event(
+        logger, logging.INFO, EVT_RECURRENCE_REGENERATED, BUSINESS,
+        "Recurrence regenerated for template",
+        user_id=template.user_id,
+        template_id=template.id,
+        scenario_id=scenario_id,
+        deleted_count=len(to_delete),
+        created_count=len(created),
+        overridden_conflict_count=len(overridden_ids),
+        deleted_conflict_count=len(deleted_ids),
+    )
+
     # If there are conflicts, raise so the caller can prompt the user.
     if overridden_ids or deleted_ids:
         raise RecurrenceConflict(overridden=overridden_ids, deleted=deleted_ids)
@@ -335,28 +359,61 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
     """
     if action == "keep":
         # Nothing to do -- the user wants to keep their overrides.
+        log_event(
+            logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
+            "Recurrence conflicts kept (no mutation)",
+            user_id=user_id, action=action,
+            transaction_id_count=len(transaction_ids),
+        )
         return
 
     if action == "update":
+        resolved_count = 0
+        skipped_count = 0
         for txn_id in transaction_ids:
             txn = db.session.get(Transaction, txn_id)
             if txn is None:
+                skipped_count += 1
                 continue
 
             # Ownership check: Transaction -> PayPeriod -> user_id.
             if txn.pay_period.user_id != user_id:
-                logger.warning(
-                    "resolve_conflicts blocked: transaction %d belongs to "
-                    "user %d, not requesting user %d",
-                    txn_id, txn.pay_period.user_id, user_id,
+                # Cross-user request: emit the IDOR-detection event so
+                # SOC tooling sees the probe.  ACCESS-category is the
+                # right home for this -- the requester does not own
+                # the row even though we silently skip it.  Imported
+                # locally to avoid widening the module-top imports for
+                # a single defense-in-depth branch.
+                from app.utils.log_events import (  # pylint: disable=import-outside-toplevel
+                    ACCESS,
+                    EVT_ACCESS_DENIED_CROSS_USER,
                 )
+                log_event(
+                    logger, logging.WARNING,
+                    EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+                    "Cross-user resource access blocked",
+                    user_id=user_id,
+                    model="Transaction",
+                    pk=txn_id,
+                    owner_id=txn.pay_period.user_id,
+                )
+                skipped_count += 1
                 continue
 
             txn.is_override = False
             txn.is_deleted = False
             if new_amount is not None:
                 txn.estimated_amount = new_amount
+            resolved_count += 1
         db.session.flush()
+        log_event(
+            logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
+            "Recurrence conflicts resolved (update)",
+            user_id=user_id, action=action,
+            resolved_count=resolved_count,
+            skipped_count=skipped_count,
+            new_amount=str(new_amount) if new_amount is not None else None,
+        )
 
 
 # --- Pattern Matching Helpers -------------------------------------------

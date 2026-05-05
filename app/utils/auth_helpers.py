@@ -21,8 +21,17 @@ companion management, tax-config edits, account hard-delete).
 The decorator redirects to /reauth when the user's last password
 verification is older than ``FRESH_LOGIN_MAX_AGE_MINUTES``.  See
 audit finding F-045 / commit C-10.
+
+Every ownership-failure branch in this module emits a structured
+``log_event`` so probing patterns surface in dashboards and SOC
+alerting (audit finding F-144 / commit C-14).  Successful loads stay
+silent: the per-request summary in ``logging_config`` already covers
+the audit-trail "who hit which path" question, and emitting a record
+on every successful ``get_or_404`` would drown the failure signal in
+volume.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -35,7 +44,33 @@ from flask_login import current_user
 from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
+from app.utils.log_events import (
+    ACCESS,
+    EVT_ACCESS_DENIED_CROSS_USER,
+    EVT_ACCESS_DENIED_OWNER_ONLY,
+    EVT_RESOURCE_NOT_FOUND,
+    log_event,
+)
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_user_id():
+    """Return ``current_user.id`` if authenticated, else ``None``.
+
+    The ownership helpers run after ``@login_required`` in the normal
+    flow so ``current_user`` is always authenticated, but the access
+    decorators are also reachable in adversarial paths (a misordered
+    decorator stack, a future code path that drops ``@login_required``
+    by mistake, or test scaffolding that hits the helper directly).
+    Returning ``None`` rather than raising on the
+    ``AttributeError`` from an anonymous user keeps the audit log
+    informative on every branch -- a missing ``user_id`` on a
+    ``resource_not_found`` event signals "anonymous probe" rather than
+    "the helper crashed".
+    """
+    return getattr(current_user, "id", None)
 
 
 def require_owner(f):
@@ -50,6 +85,12 @@ def require_owner(f):
     when ``role_id`` is absent (e.g. test fixtures that do not
     explicitly set it) -- the user is treated as an owner.
 
+    On the deny branch, emits ``access_denied_owner_only`` (ACCESS
+    category, WARNING level) with the offending user's id, role id,
+    and the request path.  Without this event a probing companion
+    would leave no application-tier trace; the event is what F-144
+    closed.
+
     Decorator order::
 
         @bp.route("/example")
@@ -61,7 +102,17 @@ def require_owner(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         owner_id = ref_cache.role_id(RoleEnum.OWNER)
-        if getattr(current_user, "role_id", owner_id) != owner_id:
+        actual_role_id = getattr(current_user, "role_id", owner_id)
+        if actual_role_id != owner_id:
+            log_event(
+                logger, logging.WARNING,
+                EVT_ACCESS_DENIED_OWNER_ONLY, ACCESS,
+                "Non-owner blocked from owner-only route",
+                user_id=_safe_user_id(),
+                role_id=actual_role_id,
+                path=request.path,
+                method=request.method,
+            )
             abort(404)
         return f(*args, **kwargs)
     return decorated
@@ -72,6 +123,18 @@ def get_or_404(model, pk, user_id_field="user_id"):
 
     Uses the model's direct ``user_id`` column (or a custom column
     name via *user_id_field*) to check ownership.
+
+    Both denial branches emit a structured log event so cross-user
+    probing leaves a forensic trail (audit finding F-144 / commit
+    C-14):
+
+      * Missing PK -> ``resource_not_found`` at INFO.  Common in
+        normal use (a deleted resource the user navigates to) so the
+        level is INFO, not WARNING.
+      * Cross-user PK -> ``access_denied_cross_user`` at WARNING.
+        This is the IDOR signal SOC tooling alerts on; the event
+        records the requesting user's id and the owning user's id so
+        an analyst can correlate probes against a target account.
 
     Args:
         model: The SQLAlchemy model class to query.
@@ -89,8 +152,28 @@ def get_or_404(model, pk, user_id_field="user_id"):
     """
     record = db.session.get(model, pk)
     if record is None:
+        log_event(
+            logger, logging.INFO,
+            EVT_RESOURCE_NOT_FOUND, ACCESS,
+            "Ownership check on a non-existent primary key",
+            user_id=_safe_user_id(),
+            model=model.__name__,
+            pk=pk,
+            path=request.path,
+        )
         return None
-    if getattr(record, user_id_field, None) != current_user.id:
+    owner_id = getattr(record, user_id_field, None)
+    if owner_id != _safe_user_id():
+        log_event(
+            logger, logging.WARNING,
+            EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+            "Cross-user resource access blocked",
+            user_id=_safe_user_id(),
+            model=model.__name__,
+            pk=pk,
+            owner_id=owner_id,
+            path=request.path,
+        )
         return None
     return record
 
@@ -103,6 +186,14 @@ def get_owned_via_parent(model, pk, parent_attr,
     through a FK parent (e.g. Transaction -> PayPeriod, SalaryRaise
     -> SalaryProfile), this function lazy-loads the parent and checks
     the parent's user_id.
+
+    Mirrors :func:`get_or_404`'s logging contract: the missing-PK
+    branch emits ``resource_not_found`` at INFO, the cross-user
+    branch emits ``access_denied_cross_user`` at WARNING.  A missing
+    parent attribute or missing parent ``user_id`` (e.g. orphaned
+    relationship) also emits ``access_denied_cross_user`` because the
+    failure mode is observationally identical to "this row belongs to
+    someone else" from the requester's perspective.
 
     Args:
         model: The SQLAlchemy model class to query.
@@ -127,11 +218,47 @@ def get_owned_via_parent(model, pk, parent_attr,
     """
     record = db.session.get(model, pk)
     if record is None:
+        log_event(
+            logger, logging.INFO,
+            EVT_RESOURCE_NOT_FOUND, ACCESS,
+            "Ownership check on a non-existent primary key",
+            user_id=_safe_user_id(),
+            model=model.__name__,
+            pk=pk,
+            path=request.path,
+        )
         return None
     parent = getattr(record, parent_attr, None)
     if parent is None:
+        # Orphaned relationship or wrong parent_attr -- observationally
+        # identical to "not yours" from the requester's perspective.
+        # Emit the cross-user event so SOC tooling sees the probe;
+        # owner_id is None to signal the orphaned-relationship case.
+        log_event(
+            logger, logging.WARNING,
+            EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+            "Cross-user resource access blocked (parent unloadable)",
+            user_id=_safe_user_id(),
+            model=model.__name__,
+            pk=pk,
+            parent_attr=parent_attr,
+            owner_id=None,
+            path=request.path,
+        )
         return None
-    if getattr(parent, parent_user_id_attr, None) != current_user.id:
+    parent_owner_id = getattr(parent, parent_user_id_attr, None)
+    if parent_owner_id != _safe_user_id():
+        log_event(
+            logger, logging.WARNING,
+            EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+            "Cross-user resource access blocked",
+            user_id=_safe_user_id(),
+            model=model.__name__,
+            pk=pk,
+            parent_attr=parent_attr,
+            owner_id=parent_owner_id,
+            path=request.path,
+        )
         return None
     return record
 

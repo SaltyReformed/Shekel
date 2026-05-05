@@ -25,6 +25,16 @@ from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
+from app.utils.log_events import (
+    ACCESS,
+    BUSINESS,
+    EVT_ACCESS_DENIED_CROSS_USER,
+    EVT_CROSS_USER_BLOCKED,
+    EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
+    EVT_TRANSFER_RECURRENCE_GENERATED,
+    EVT_TRANSFER_RECURRENCE_REGENERATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +57,12 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # silently create transfers in another user's scenario (IDOR).
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        logger.warning(
-            "Blocked cross-user transfer generation: template user_id=%s, "
-            "scenario_id=%s", template.user_id, scenario_id,
+        log_event(
+            logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
+            "Blocked cross-user transfer recurrence generation",
+            template_id=template.id,
+            template_user_id=template.user_id,
+            scenario_id=scenario_id,
         )
         return []
 
@@ -113,9 +126,13 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         created.append(xfer)
 
     db.session.flush()
-    logger.info(
-        "Generated %d transfers for template '%s' (id=%d)",
-        len(created), template.name, template.id,
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_RECURRENCE_GENERATED, BUSINESS,
+        "Transfers generated from template",
+        user_id=template.user_id,
+        template_id=template.id,
+        scenario_id=scenario_id,
+        count=len(created),
     )
     return created
 
@@ -138,9 +155,12 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     # Defense-in-depth: verify ownership before deleting and regenerating.
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        logger.warning(
-            "Blocked cross-user transfer regeneration: template user_id=%s, "
-            "scenario_id=%s", template.user_id, scenario_id,
+        log_event(
+            logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
+            "Blocked cross-user transfer recurrence regeneration",
+            template_id=template.id,
+            template_user_id=template.user_id,
+            scenario_id=scenario_id,
         )
         return []
 
@@ -182,6 +202,18 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
 
     created = generate_for_template(template, periods, scenario_id, effective_from)
 
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_RECURRENCE_REGENERATED, BUSINESS,
+        "Transfer recurrence regenerated for template",
+        user_id=template.user_id,
+        template_id=template.id,
+        scenario_id=scenario_id,
+        deleted_count=len(to_delete),
+        created_count=len(created),
+        overridden_conflict_count=len(overridden_ids),
+        deleted_conflict_count=len(deleted_ids),
+    )
+
     if overridden_ids or deleted_ids:
         raise RecurrenceConflict(overridden=overridden_ids, deleted=deleted_ids)
 
@@ -208,21 +240,36 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
         new_amount:   The new default amount (required if action='update').
     """
     if action == "keep":
+        log_event(
+            logger, logging.INFO,
+            EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
+            "Transfer recurrence conflicts kept (no mutation)",
+            user_id=user_id, action=action,
+            transfer_id_count=len(transfer_ids),
+        )
         return
 
     if action == "update":
+        resolved_count = 0
+        skipped_count = 0
         for xfer_id in transfer_ids:
             xfer = db.session.get(Transfer, xfer_id)
             if xfer is None:
+                skipped_count += 1
                 continue
 
             # Ownership check: Transfer has a direct user_id column.
             if xfer.user_id != user_id:
-                logger.warning(
-                    "resolve_conflicts blocked: transfer %d belongs to "
-                    "user %d, not requesting user %d",
-                    xfer_id, xfer.user_id, user_id,
+                log_event(
+                    logger, logging.WARNING,
+                    EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+                    "Cross-user resource access blocked",
+                    user_id=user_id,
+                    model="Transfer",
+                    pk=xfer_id,
+                    owner_id=xfer.user_id,
                 )
+                skipped_count += 1
                 continue
 
             # Soft-deleted transfers must be restored before they can
@@ -239,8 +286,18 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
                 svc_kwargs["amount"] = new_amount
 
             transfer_service.update_transfer(xfer_id, user_id, **svc_kwargs)
+            resolved_count += 1
 
         db.session.flush()
+        log_event(
+            logger, logging.INFO,
+            EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
+            "Transfer recurrence conflicts resolved (update)",
+            user_id=user_id, action=action,
+            resolved_count=resolved_count,
+            skipped_count=skipped_count,
+            new_amount=str(new_amount) if new_amount is not None else None,
+        )
 
 
 def _get_existing_map(template_id, scenario_id, periods):

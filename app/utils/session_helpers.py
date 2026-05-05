@@ -122,7 +122,7 @@ from flask import session as flask_session
 
 from app.extensions import db
 from app.models.user import User
-from app.utils.log_events import AUTH, log_event
+from app.utils.log_events import AUTH, EVT_OTHER_SESSIONS_INVALIDATED, log_event
 
 
 logger = logging.getLogger(__name__)
@@ -300,7 +300,7 @@ def invalidate_other_sessions(user: User, reason: str) -> None:
     flask_session[SESSION_CREATED_AT_KEY] = now.isoformat()
 
     log_event(
-        logger, logging.INFO, "other_sessions_invalidated", AUTH,
+        logger, logging.INFO, EVT_OTHER_SESSIONS_INVALIDATED, AUTH,
         "Other sessions invalidated",
         user_id=user.id, reason=reason,
     )

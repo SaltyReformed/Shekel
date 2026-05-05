@@ -15,6 +15,12 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_CREDIT_MARKED,
+    EVT_CREDIT_UNMARKED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +129,14 @@ def mark_as_credit(transaction_id, user_id):
     db.session.add(payback)
     db.session.flush()
 
-    logger.info(
-        "Marked transaction %d as credit; created payback %d in period %d",
-        txn.id, payback.id, next_period.id,
+    log_event(
+        logger, logging.INFO, EVT_CREDIT_MARKED, BUSINESS,
+        "Transaction marked Credit; payback expense generated",
+        user_id=user_id,
+        transaction_id=txn.id,
+        payback_id=payback.id,
+        next_period_id=next_period.id,
+        amount=str(payback_amount),
     )
     return payback
 
@@ -161,11 +172,18 @@ def unmark_credit(transaction_id, user_id):
         .filter_by(credit_payback_for_id=txn.id)
         .first()
     )
+    deleted_payback_id = None
     if payback:
+        deleted_payback_id = payback.id
         db.session.delete(payback)
-        logger.info("Deleted payback transaction %d for original %d", payback.id, txn.id)
 
-    logger.info("Unmarked credit on transaction %d", txn.id)
+    log_event(
+        logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
+        "Credit reverted to Projected; payback deleted",
+        user_id=user_id,
+        transaction_id=txn.id,
+        deleted_payback_id=deleted_payback_id,
+    )
 
 
 def get_or_create_cc_category(user_id: int) -> Category:

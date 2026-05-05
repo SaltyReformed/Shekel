@@ -37,6 +37,15 @@ from app.models.transfer_template import TransferTemplate
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_TRANSFER_CREATED,
+    EVT_TRANSFER_HARD_DELETED,
+    EVT_TRANSFER_RESTORED,
+    EVT_TRANSFER_SOFT_DELETED,
+    EVT_TRANSFER_UPDATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -409,11 +418,21 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     db.session.add(income_shadow)
     db.session.flush()
 
-    logger.info(
-        "Created transfer %d (%s, $%s) with shadows %d (expense) "
-        "and %d (income).",
-        xfer.id, transfer_name, amount,
-        expense_shadow.id, income_shadow.id,
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_CREATED, BUSINESS,
+        "Transfer created with shadow transactions",
+        user_id=user_id,
+        transfer_id=xfer.id,
+        from_account_id=from_account_id,
+        to_account_id=to_account_id,
+        pay_period_id=pay_period_id,
+        scenario_id=scenario_id,
+        amount=str(amount),
+        status_id=status_id,
+        category_id=category_id,
+        transfer_template_id=transfer_template_id,
+        expense_shadow_id=expense_shadow.id,
+        income_shadow_id=income_shadow.id,
     )
     return xfer
 
@@ -540,7 +559,16 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.is_override = flag
 
     db.session.flush()
-    logger.info("Updated transfer %d.", transfer_id)
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,
+        "Transfer updated",
+        user_id=user_id,
+        transfer_id=transfer_id,
+        # Sorting the field list keeps the structured log deterministic
+        # so dashboards can group by ``fields_changed`` without spurious
+        # cardinality from kwarg ordering.
+        fields_changed=sorted(kwargs.keys()),
+    )
     return xfer
 
 
@@ -579,8 +607,13 @@ def delete_transfer(transfer_id, user_id, soft=False):
         for shadow in shadows:
             shadow.is_deleted = True
         db.session.flush()
-        logger.info("Soft-deleted transfer %d and %d shadows.",
-                     transfer_id, len(shadows))
+        log_event(
+            logger, logging.INFO, EVT_TRANSFER_SOFT_DELETED, BUSINESS,
+            "Transfer and shadows soft-deleted",
+            user_id=user_id,
+            transfer_id=transfer_id,
+            shadow_count=len(shadows),
+        )
         return xfer
 
     # Hard delete -- rely on ON DELETE CASCADE to remove shadows.
@@ -601,7 +634,13 @@ def delete_transfer(transfer_id, user_id, soft=False):
             orphan_count, transfer_id,
         )
 
-    logger.info("Hard-deleted transfer %d.", transfer_id)
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_HARD_DELETED, BUSINESS,
+        "Transfer hard-deleted (CASCADE)",
+        user_id=user_id,
+        transfer_id=transfer_id,
+        orphan_count=orphan_count,
+    )
     return None
 
 
@@ -720,8 +759,11 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
             shadow.pay_period_id = xfer.pay_period_id
 
     db.session.flush()
-    logger.info(
-        "Restored transfer %d with %d shadows.",
-        transfer_id, len(shadows),
+    log_event(
+        logger, logging.INFO, EVT_TRANSFER_RESTORED, BUSINESS,
+        "Transfer restored from soft-delete",
+        user_id=user_id,
+        transfer_id=transfer_id,
+        shadow_count=len(shadows),
     )
     return xfer

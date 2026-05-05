@@ -31,7 +31,13 @@ from app.models.ref import FilingStatus, TaxType
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.exceptions import AuthError, ConflictError, ValidationError
-from app.utils.log_events import AUTH, log_event
+from app.utils.log_events import (
+    AUTH,
+    EVT_ACCOUNT_LOCKED,
+    EVT_HIBP_CHECK_FAILED,
+    EVT_HIBP_CHECK_REJECTED,
+    log_event,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -219,7 +225,7 @@ def _check_pwned_password(plain_password):
         # ``hibp_check_failed`` event without having to grep
         # WARNING-level lines.
         log_event(
-            logger, logging.WARNING, "hibp_check_failed", AUTH,
+            logger, logging.WARNING, EVT_HIBP_CHECK_FAILED, AUTH,
             "HIBP breached-password check failed; allowing password",
             error_class=type(exc).__name__,
         )
@@ -237,7 +243,7 @@ def _check_pwned_password(plain_password):
         record_suffix = parts[0].strip().upper()
         if record_suffix == suffix:
             log_event(
-                logger, logging.INFO, "hibp_check_rejected", AUTH,
+                logger, logging.INFO, EVT_HIBP_CHECK_REJECTED, AUTH,
                 "HIBP rejected breached password at hash time",
             )
             raise ValidationError(
@@ -612,7 +618,7 @@ def authenticate(email, password):
             # window expires.
             user.failed_login_count = 0
             log_event(
-                logger, logging.WARNING, "account_locked", AUTH,
+                logger, logging.WARNING, EVT_ACCOUNT_LOCKED, AUTH,
                 "Account locked after consecutive failed logins",
                 user_id=user.id, lockout_until=user.locked_until.isoformat(),
             )

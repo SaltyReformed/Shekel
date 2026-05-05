@@ -12,6 +12,11 @@ from datetime import date, timedelta
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.exceptions import ValidationError
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_PAY_PERIODS_GENERATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +82,13 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
         current_start += timedelta(days=cadence_days)
 
     db.session.flush()  # Assign IDs without committing.
-    logger.info(
-        "Generated %d pay periods for user %d starting %s",
-        len(created), user_id, start_date,
+    log_event(
+        logger, logging.INFO, EVT_PAY_PERIODS_GENERATED, BUSINESS,
+        "Pay periods generated",
+        user_id=user_id,
+        count=len(created),
+        start_date=start_date.isoformat(),
+        cadence_days=cadence_days,
     )
     return created
 

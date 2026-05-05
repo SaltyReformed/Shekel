@@ -37,7 +37,23 @@ from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ConflictError, ValidationError
-from app.utils.log_events import log_event, AUTH
+from app.utils.log_events import (
+    AUTH,
+    EVT_BACKUP_CODES_REGENERATED,
+    EVT_LOGIN_FAILED,
+    EVT_LOGIN_SUCCESS,
+    EVT_LOGOUT,
+    EVT_MFA_DISABLED,
+    EVT_MFA_ENABLED,
+    EVT_MFA_LOGIN_SUCCESS,
+    EVT_PASSWORD_CHANGED,
+    EVT_REAUTH_FAILED,
+    EVT_REAUTH_SUCCESS,
+    EVT_SESSIONS_INVALIDATED,
+    EVT_TOTP_REPLAY_REJECTED,
+    EVT_USER_REGISTERED,
+    log_event,
+)
 from app.utils.session_helpers import (
     invalidate_other_sessions,
     stamp_login_session,
@@ -144,7 +160,7 @@ def _verify_totp_with_replay_logging(mfa_config, code, user_id):
     result = mfa_service.verify_totp_code(mfa_config, code)
     if result is mfa_service.TotpVerificationResult.REPLAY:
         log_event(
-            logger, logging.WARNING, "totp_replay_rejected", AUTH,
+            logger, logging.WARNING, EVT_TOTP_REPLAY_REJECTED, AUTH,
             "TOTP replay attempt rejected",
             user_id=user_id, ip=request.remote_addr,
         )
@@ -330,7 +346,7 @@ def login():
             # same instant the session was created.
             login_user(user, remember=remember)
             stamp_login_session(datetime.now(timezone.utc))
-            log_event(logger, logging.INFO, "login_success", AUTH,
+            log_event(logger, logging.INFO, EVT_LOGIN_SUCCESS, AUTH,
                       "User logged in", user_id=user.id, email=email)
 
             # Companions always go to companion.index (ignore next param).
@@ -346,7 +362,7 @@ def login():
             return redirect(next_page or url_for("dashboard.page"))
 
         except AuthError:
-            log_event(logger, logging.WARNING, "login_failed", AUTH,
+            log_event(logger, logging.WARNING, EVT_LOGIN_FAILED, AUTH,
                       "Login failed", email=email, ip=request.remote_addr)
             flash("Invalid email or password.", "danger")
 
@@ -395,9 +411,18 @@ def register():
         return render_template("auth/register.html")
 
     try:
-        auth_service.register_user(email, password, display_name)
+        # Capture the user so the structured ``user_registered`` event
+        # can include the assigned user_id.  ``register_user`` already
+        # returned the user (audit-finding F-085 / commit C-14
+        # required no signature change here -- the route was simply
+        # discarding the value).
+        user = auth_service.register_user(email, password, display_name)
         db.session.commit()
-        logger.info("action=user_registered email=%s", email)
+        log_event(
+            logger, logging.INFO, EVT_USER_REGISTERED, AUTH,
+            "User registered",
+            user_id=user.id, email=email,
+        )
         flash("Account created. Please sign in.", "success")
         return redirect(url_for("auth.login"))
     except ConflictError as e:
@@ -412,7 +437,7 @@ def register():
 @login_required
 def logout():
     """End the user's session and redirect to login."""
-    log_event(logger, logging.INFO, "logout", AUTH,
+    log_event(logger, logging.INFO, EVT_LOGOUT, AUTH,
               "User logged out", user_id=current_user.id)
     logout_user()
     flash("You have been logged out.", "info")
@@ -446,7 +471,7 @@ def change_password():
         current_user.session_invalidated_at = now
         db.session.commit()
         stamp_login_session(now)
-        log_event(logger, logging.INFO, "password_changed", AUTH,
+        log_event(logger, logging.INFO, EVT_PASSWORD_CHANGED, AUTH,
                   "Password changed", user_id=current_user.id)
         flash("Password changed successfully.", "success")
     except AuthError as e:
@@ -476,7 +501,7 @@ def invalidate_sessions():
     current_user.session_invalidated_at = now
     db.session.commit()
     stamp_session_refresh(now)
-    log_event(logger, logging.INFO, "sessions_invalidated", AUTH,
+    log_event(logger, logging.INFO, EVT_SESSIONS_INVALIDATED, AUTH,
               "All sessions invalidated", user_id=current_user.id)
     flash("All other sessions have been logged out.", "success")
     return redirect(url_for("settings.show", section="security"))
@@ -534,7 +559,7 @@ def reauth():
     password = request.form.get("password", "")
     if not auth_service.verify_password(password, current_user.password_hash):
         log_event(
-            logger, logging.WARNING, "reauth_failed", AUTH,
+            logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
             "Step-up re-auth failed: bad password",
             user_id=current_user.id, ip=request.remote_addr,
         )
@@ -562,7 +587,7 @@ def reauth():
             return render_template("auth/reauth.html", next=safe_next)
         if not accepted:
             log_event(
-                logger, logging.WARNING, "reauth_failed", AUTH,
+                logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
                 "Step-up re-auth failed: bad TOTP",
                 user_id=current_user.id, ip=request.remote_addr,
             )
@@ -571,7 +596,7 @@ def reauth():
 
     stamp_reauth_session(datetime.now(timezone.utc))
     log_event(
-        logger, logging.INFO, "reauth_success", AUTH,
+        logger, logging.INFO, EVT_REAUTH_SUCCESS, AUTH,
         "Step-up re-auth succeeded", user_id=current_user.id,
     )
     if safe_next:
@@ -723,7 +748,7 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
         # current request survives the bump.
         invalidate_other_sessions(user, "backup_code_consumed")
 
-    log_event(logger, logging.INFO, "mfa_login_success", AUTH,
+    log_event(logger, logging.INFO, EVT_MFA_LOGIN_SUCCESS, AUTH,
               "MFA login succeeded", user_id=user.id)
 
     # Companions always go to companion.index (ignore next_page).
@@ -929,7 +954,7 @@ def mfa_confirm():
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
     db.session.commit()
 
-    log_event(logger, logging.INFO, "mfa_enabled", AUTH,
+    log_event(logger, logging.INFO, EVT_MFA_ENABLED, AUTH,
               "MFA enabled", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
@@ -951,7 +976,7 @@ def regenerate_backup_codes():
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
     db.session.commit()
 
-    log_event(logger, logging.INFO, "backup_codes_regenerated", AUTH,
+    log_event(logger, logging.INFO, EVT_BACKUP_CODES_REGENERATED, AUTH,
               "Backup codes regenerated", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
@@ -1050,7 +1075,7 @@ def mfa_disable_confirm():
     # non-bumped session_invalidated_at.  F-032.
     invalidate_other_sessions(current_user, "mfa_disabled")
 
-    log_event(logger, logging.INFO, "mfa_disabled", AUTH,
+    log_event(logger, logging.INFO, EVT_MFA_DISABLED, AUTH,
               "MFA disabled", user_id=current_user.id)
     flash("Two-factor authentication has been disabled.", "success")
     return redirect(url_for("settings.show", section="security"))

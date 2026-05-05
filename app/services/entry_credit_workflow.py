@@ -25,6 +25,13 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.services.credit_workflow import get_or_create_cc_category
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_ENTRY_PAYBACK_CREATED,
+    EVT_ENTRY_PAYBACK_DELETED,
+    EVT_ENTRY_PAYBACK_UPDATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +99,7 @@ def sync_entry_payback(
         if existing_payback is None:
             return _create_payback(txn, owner_id, credit_entries, total_credit)
         # UPDATE: adjust the payback amount and link any new entries.
+        previous_amount = existing_payback.estimated_amount
         existing_payback.estimated_amount = total_credit
         for entry in credit_entries:
             if entry.credit_payback_id != existing_payback.id:
@@ -102,23 +110,33 @@ def sync_entry_payback(
             if not entry.is_credit and entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
         db.session.flush()
-        logger.info(
-            "Updated entry-level payback %d to %s for transaction %d",
-            existing_payback.id, total_credit, txn.id,
+        log_event(
+            logger, logging.INFO, EVT_ENTRY_PAYBACK_UPDATED, BUSINESS,
+            "Entry-level payback amount updated",
+            user_id=owner_id,
+            transaction_id=txn.id,
+            payback_id=existing_payback.id,
+            previous_amount=str(previous_amount),
+            new_amount=str(total_credit),
+            credit_entry_count=len(credit_entries),
         )
         return existing_payback
 
     # total_credit == 0
     if existing_payback is not None:
         # DELETE: clear entry links before deleting the payback.
+        deleted_payback_id = existing_payback.id
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
         db.session.delete(existing_payback)
         db.session.flush()
-        logger.info(
-            "Deleted entry-level payback %d for transaction %d",
-            existing_payback.id, txn.id,
+        log_event(
+            logger, logging.INFO, EVT_ENTRY_PAYBACK_DELETED, BUSINESS,
+            "Entry-level payback deleted (no credit entries remain)",
+            user_id=owner_id,
+            transaction_id=txn.id,
+            payback_id=deleted_payback_id,
         )
     return None
 
@@ -179,9 +197,14 @@ def _create_payback(
         entry.credit_payback_id = payback.id
     db.session.flush()
 
-    logger.info(
-        "Created entry-level payback %d (amount=%s) in period %d "
-        "for transaction %d",
-        payback.id, total_credit, next_period.id, txn.id,
+    log_event(
+        logger, logging.INFO, EVT_ENTRY_PAYBACK_CREATED, BUSINESS,
+        "Entry-level payback created from credit entries",
+        user_id=owner_id,
+        transaction_id=txn.id,
+        payback_id=payback.id,
+        next_period_id=next_period.id,
+        amount=str(total_credit),
+        credit_entry_count=len(credit_entries),
     )
     return payback

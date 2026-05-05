@@ -5,6 +5,7 @@ Tests login, logout, route protection, disabled accounts, rate limiting,
 password change, session management, and open redirect prevention.
 """
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -1682,6 +1683,47 @@ class TestRegistration:
                 user_id=user.id, is_baseline=True
             ).first()
             assert scenario is not None
+
+    def test_register_success_emits_user_registered_event(
+        self, app, client, caplog,
+    ):
+        """POST /register emits ``user_registered`` (F-085 / C-14).
+
+        Replaces the pre-C-14 ``logger.info("action=user_registered ...")``
+        with a structured event including user_id and email so the
+        Python tier of the audit story is queryable by event-name.
+        """
+        from app.utils.log_events import AUTH, EVT_USER_REGISTERED
+
+        with app.app_context():
+            with caplog.at_level(logging.INFO, logger="app.routes.auth"):
+                response = client.post("/register", data={
+                    "email": "audit-event@example.com",
+                    "display_name": "Audit Event",
+                    "password": "securepass123",
+                    "confirm_password": "securepass123",
+                }, follow_redirects=False)
+            assert response.status_code == 302
+
+            user = db.session.query(User).filter_by(
+                email="audit-event@example.com"
+            ).first()
+            assert user is not None
+
+            matching = [
+                r for r in caplog.records
+                if getattr(r, "event", None) == EVT_USER_REGISTERED
+            ]
+            assert len(matching) == 1, (
+                f"Expected exactly one ``user_registered`` event; "
+                f"observed: "
+                f"{[(r.levelname, getattr(r, 'event', None)) for r in caplog.records]}"
+            )
+            record = matching[0]
+            assert record.levelno == logging.INFO
+            assert record.category == AUTH
+            assert record.user_id == user.id
+            assert record.email == "audit-event@example.com"
 
     def test_register_success_user_can_login(self, app, client):
         """A newly registered user can log in with their credentials.
