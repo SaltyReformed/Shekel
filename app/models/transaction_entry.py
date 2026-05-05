@@ -80,9 +80,12 @@ class TransactionEntry(db.Model):
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
     )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
+    )
     updated_at = db.Column(
         db.DateTime(timezone=True),
+        nullable=False,
         server_default=db.func.now(),
         onupdate=db.func.now(),
     )
