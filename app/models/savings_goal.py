@@ -28,6 +28,12 @@ class SavingsGoal(TimestampMixin, db.Model):
             multiple of net pay (in paychecks or months).  target_amount
             is NULL -- the resolved dollar target is calculated on read
             by the savings dashboard service.
+
+    Optimistic locking: see :class:`Transaction` for the
+    ``version_id_col`` contract.  Concurrent goal edits race for the
+    bump; the loser raises ``StaleDataError`` and the route surfaces
+    a flash + redirect.  See commit C-18 of the 2026-04-15 security
+    remediation plan.
     """
 
     __tablename__ = "savings_goals"
@@ -43,6 +49,10 @@ class SavingsGoal(TimestampMixin, db.Model):
         db.CheckConstraint(
             "income_multiplier IS NULL OR income_multiplier > 0",
             name="ck_savings_goals_multiplier_positive",
+        ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_savings_goals_version_id_positive",
         ),
         db.UniqueConstraint(
             "user_id", "account_id", "name",
@@ -85,6 +95,14 @@ class SavingsGoal(TimestampMixin, db.Model):
         db.Numeric(8, 2),
         nullable=True,
     )
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

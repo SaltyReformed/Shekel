@@ -11,6 +11,7 @@ from datetime import date
 
 from flask import Blueprint, render_template, request
 from flask_login import current_user, login_required
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -64,7 +65,7 @@ def _get_accessible_transaction(txn_id):
     return txn
 
 
-def _render_entry_list(txn, editing_id=None):
+def _render_entry_list(txn, editing_id=None, conflict=False):
     """Render the entry list partial for a transaction.
 
     Loads entries, computes remaining balance, and checks for
@@ -75,6 +76,9 @@ def _render_entry_list(txn, editing_id=None):
         editing_id: Optional entry ID currently being edited.
             When set, the template shows an inline edit form
             for that entry instead of the display row.
+        conflict: When True, surface a warning banner that the
+            most recent edit was rejected by the optimistic-lock
+            check.  See commit C-18.
 
     Returns:
         Rendered HTML string.
@@ -97,7 +101,35 @@ def _render_entry_list(txn, editing_id=None):
         today=date.today().isoformat(),
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
+        conflict=conflict,
     )
+
+
+def _stale_entry_response(txn):
+    """Roll back the session and render the entry list in conflict mode.
+
+    Used by every entry-mutating PATCH/DELETE handler to convert a
+    stale form or ``StaleDataError`` flush failure into a coherent
+    UI response instead of a 500.  Re-fetches the entries so the
+    user's view shows the winner's state -- never the loser's
+    stale in-memory copies -- and tags the list with
+    ``conflict=True`` so the template surfaces a warning banner.
+
+    Args:
+        txn: The parent Transaction whose entry list is being
+            rendered.  The transaction itself is reloaded as well
+            so any sibling-level changes (e.g. a concurrent paid
+            event) are reflected.
+
+    Returns:
+        Flask response tuple ``(html, 409)``.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    fresh_txn = db.session.get(Transaction, txn.id) if txn is not None else None
+    if fresh_txn is None:
+        return "Not found", 404
+    return _render_entry_list(fresh_txn, conflict=True), 409
 
 
 @entries_bp.route("/transactions/<int:txn_id>/entries", methods=["GET"])
@@ -162,6 +194,13 @@ def update_entry(txn_id, entry_id):
     where a companion could modify entries on non-visible
     transactions by using a visible transaction's URL with a
     different entry ID.
+
+    Optimistic locking (commit C-18 / F-010): the inline edit form
+    ships ``version_id`` as a hidden input.  When the submitted
+    value differs from the entry's current counter, the handler
+    short-circuits with a 409 + entry list refreshed in conflict
+    mode so the user sees the winner's values.  ``StaleDataError``
+    raised at flush time is caught and produces the same response.
     """
     txn = _get_accessible_transaction(txn_id)
     if txn is None:
@@ -177,9 +216,25 @@ def update_entry(txn_id, entry_id):
         return str(errors), 422
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != entry.version_id:
+        logger.info(
+            "Stale-form conflict on update_entry id=%d "
+            "(submitted=%d, current=%d)",
+            entry_id, submitted_version, entry.version_id,
+        )
+        return _stale_entry_response(txn)
+
     try:
         entry_service.update_entry(entry_id, current_user.id, **data)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_entry id=%d", entry_id,
+        )
+        return _stale_entry_response(txn)
     except (NotFoundError, ValidationError) as exc:
         db.session.rollback()
         return str(exc), 400
@@ -204,6 +259,12 @@ def toggle_cleared(txn_id, entry_id):
 
     Returns the refreshed entry list and a balanceChanged HX-Trigger
     so the grid re-renders with the new projection.
+
+    Optimistic locking (commit C-18 / F-010): no form-side
+    ``version_id`` is shipped with the toggle button; the
+    SQLAlchemy ``version_id_col`` lock catches concurrent races at
+    flush time and the handler converts ``StaleDataError`` into a
+    409 + conflict entry list.
     """
     txn = _get_accessible_transaction(txn_id)
     if txn is None:
@@ -217,6 +278,11 @@ def toggle_cleared(txn_id, entry_id):
     try:
         entry_service.toggle_cleared(entry_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on toggle_cleared id=%d", entry_id,
+        )
+        return _stale_entry_response(txn)
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404
@@ -235,6 +301,8 @@ def delete_entry(txn_id, entry_id):
 
     Same parameter confusion guard as update_entry: verifies the
     entry belongs to the specified transaction.
+
+    Optimistic locking: see :func:`toggle_cleared`.
     """
     txn = _get_accessible_transaction(txn_id)
     if txn is None:
@@ -248,6 +316,11 @@ def delete_entry(txn_id, entry_id):
     try:
         entry_service.delete_entry(entry_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on delete_entry id=%d", entry_id,
+        )
+        return _stale_entry_response(txn)
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404

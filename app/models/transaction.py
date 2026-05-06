@@ -16,7 +16,19 @@ from app.models.mixins import TimestampMixin
 
 
 class Transaction(TimestampMixin, db.Model):
-    """A single income or expense entry within a pay period."""
+    """A single income or expense entry within a pay period.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
+    DELETE is automatically narrowed to ``WHERE id = ? AND
+    version_id = ?`` and the stored value is incremented in the same
+    statement.  Two concurrent requests that both load the row at
+    version N race for the bump; the loser's WHERE matches zero
+    rows, SQLAlchemy raises :class:`sqlalchemy.orm.exc.StaleDataError`,
+    and the calling route returns 409 (HTMX endpoints) or
+    flash + redirect (non-HTMX form posts).  See commit C-18 of the
+    2026-04-15 security remediation plan.
+    """
 
     __tablename__ = "transactions"
     __table_args__ = (
@@ -63,6 +75,10 @@ class Transaction(TimestampMixin, db.Model):
         db.CheckConstraint(
             "actual_amount IS NULL OR actual_amount >= 0",
             name="ck_transactions_actual_amount",
+        ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transactions_version_id_positive",
         ),
         {"schema": "budget"},
     )
@@ -113,6 +129,21 @@ class Transaction(TimestampMixin, db.Model):
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.  NOT NULL with server_default="1" so existing
+    # production rows are filled at ALTER TABLE time and new rows
+    # always start at version 1.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: SQLAlchemy will (a) issue
+    # ``UPDATE ... WHERE id = ? AND version_id = ?`` for every flush
+    # of a dirty Transaction, (b) atomically increment version_id in
+    # the same statement, and (c) raise StaleDataError when rowcount
+    # = 0.  Routes that mutate Transaction MUST catch StaleDataError
+    # and surface a 409 / flash + redirect.  See app/routes/transactions.py.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

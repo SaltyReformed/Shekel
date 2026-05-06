@@ -13,6 +13,7 @@ from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import GoalModeEnum
@@ -177,7 +178,16 @@ def edit_goal(goal_id):
 @login_required
 @require_owner
 def update_goal(goal_id):
-    """Update a savings goal."""
+    """Update a savings goal.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent edit that races past the form-side check
+    -- is caught and converted to the same flash + redirect.
+    """
     goal = db.session.get(SavingsGoal, goal_id)
     if goal is None or goal.user_id != current_user.id:
         flash("Goal not found.", "danger")
@@ -190,6 +200,21 @@ def update_goal(goal_id):
         return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     data = _update_schema.load(cleaned)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != goal.version_id:
+        logger.info(
+            "Stale-form conflict on update_goal id=%d "
+            "(submitted=%d, current=%d)",
+            goal_id, submitted_version, goal.version_id,
+        )
+        flash(
+            "This savings goal was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     # Validate account ownership if account is being changed.
     if "account_id" in data:
@@ -212,7 +237,19 @@ def update_goal(goal_id):
         if field in _GOAL_UPDATE_FIELDS:
             setattr(goal, field, value)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_goal id=%d", goal_id,
+        )
+        flash(
+            "This savings goal was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
     logger.info("user_id=%d updated savings goal %d", current_user.id, goal_id)
     flash(f"Savings goal '{goal.name}' updated.", "success")
     return redirect(url_for("savings.dashboard"))
@@ -222,14 +259,32 @@ def update_goal(goal_id):
 @login_required
 @require_owner
 def delete_goal(goal_id):
-    """Deactivate a savings goal."""
+    """Deactivate a savings goal.
+
+    Optimistic locking (commit C-18 / F-010): the
+    ``is_active = False`` flush is version-pinned by SQLAlchemy.
+    A concurrent edit raises ``StaleDataError`` which the handler
+    converts into a flash + redirect.
+    """
     goal = db.session.get(SavingsGoal, goal_id)
     if goal is None or goal.user_id != current_user.id:
         flash("Goal not found.", "danger")
         return redirect(url_for("savings.dashboard"))
 
     goal.is_active = False
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_goal id=%d", goal_id,
+        )
+        flash(
+            "This savings goal was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("savings.dashboard"))
     logger.info("user_id=%d deleted savings goal %d", current_user.id, goal_id)
 
     flash(f"Savings goal '{goal.name}' deactivated.", "info")

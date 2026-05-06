@@ -18,7 +18,20 @@ class BaseSchema(Schema):
 
 
 class TransactionUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating a transaction."""
+    """Validates PATCH data for updating a transaction.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the cell or popover was rendered.  The route handler
+    compares the submitted value against ``Transaction.version_id``
+    and short-circuits with 409 Conflict if they differ -- a stale-
+    form check that catches the Tab-1/Tab-2 race even when the two
+    requests are sequential rather than truly concurrent.  Optional
+    so callers without a way to plumb the version through still
+    pass validation; in that case only the SQLAlchemy
+    ``version_id_col`` race detection applies, which catches the
+    truly-concurrent case at flush time.  See commit C-18 of the
+    2026-04-15 security remediation plan.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -34,6 +47,7 @@ class TransactionUpdateSchema(BaseSchema):
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
     paid_at = fields.DateTime(allow_none=True, dump_only=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class TransactionCreateSchema(BaseSchema):
@@ -175,6 +189,9 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     two relevant fields, the validator returns early and the route
     layer applies the rule against the existing template's stored
     values.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     # Override -- all fields optional for update.
@@ -186,6 +203,9 @@ class TemplateUpdateSchema(TemplateCreateSchema):
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class AnchorUpdateSchema(BaseSchema):
@@ -276,7 +296,11 @@ class SalaryProfileCreateSchema(BaseSchema):
 
 
 class SalaryProfileUpdateSchema(BaseSchema):
-    """Validates POST data for updating a salary profile."""
+    """Validates POST data for updating a salary profile.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -299,6 +323,9 @@ class SalaryProfileUpdateSchema(BaseSchema):
     additional_income = fields.Decimal(places=2, as_string=True)
     additional_deductions = fields.Decimal(places=2, as_string=True)
     extra_withholding = fields.Decimal(places=2, as_string=True)
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class RaiseCreateSchema(BaseSchema):
@@ -336,6 +363,20 @@ class RaiseCreateSchema(BaseSchema):
             )
 
 
+class RaiseUpdateSchema(RaiseCreateSchema):
+    """Validates POST data for updating an existing salary raise.
+
+    Inherits all required-field and cross-field rules from
+    :class:`RaiseCreateSchema` (the salary edit form submits the
+    full record on every save), and adds the optimistic-locking
+    ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
+    contract.  Commit C-18 of the 2026-04-15 security remediation
+    plan.
+    """
+
+    version_id = fields.Integer(validate=validate.Range(min=1))
+
+
 class DeductionCreateSchema(BaseSchema):
     """Validates POST data for adding a paycheck deduction."""
 
@@ -357,6 +398,20 @@ class DeductionCreateSchema(BaseSchema):
         validate=validate.Range(min=1, max=12), allow_none=True
     )
     target_account_id = fields.Integer(allow_none=True)
+
+
+class DeductionUpdateSchema(DeductionCreateSchema):
+    """Validates POST data for updating an existing paycheck deduction.
+
+    Inherits the required-field rules from
+    :class:`DeductionCreateSchema` (the salary edit form submits the
+    full record on every save), and adds the optimistic-locking
+    ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
+    contract.  Commit C-18 of the 2026-04-15 security remediation
+    plan.
+    """
+
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class TaxBracketSetSchema(BaseSchema):
@@ -468,7 +523,11 @@ class TransferTemplateCreateSchema(BaseSchema):
 
 
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
-    """Validates PUT data for updating a transfer template."""
+    """Validates PUT data for updating a transfer template.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
@@ -481,6 +540,9 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class TransferCreateSchema(BaseSchema):
@@ -509,7 +571,11 @@ class TransferCreateSchema(BaseSchema):
 
 
 class TransferUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating a transfer (inline edit)."""
+    """Validates PATCH data for updating a transfer (inline edit).
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -522,6 +588,9 @@ class TransferUpdateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 # ── Savings Goal Schemas (Phase 4) ────────────────────────────────
@@ -634,6 +703,9 @@ class SavingsGoalUpdateSchema(BaseSchema):
     defaults to None (not provided) for updates -- the cross-field
     validator only fires when goal_mode_id is explicitly included in
     the update payload.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     @pre_load
@@ -659,6 +731,9 @@ class SavingsGoalUpdateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
     @validates_schema
     def validate_goal_mode_fields(self, data, **kwargs):
@@ -1420,6 +1495,9 @@ class EntryUpdateSchema(BaseSchema):
 
     All fields optional for partial updates.  When present, the same
     validation rules as EntryCreateSchema apply.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     @pre_load
@@ -1434,6 +1512,9 @@ class EntryUpdateSchema(BaseSchema):
     description = fields.String(validate=validate.Length(min=1, max=200))
     entry_date = fields.Date()
     is_credit = fields.Boolean()
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 # --- Companion user management -------------------------------------------

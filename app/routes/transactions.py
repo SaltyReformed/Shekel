@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
@@ -58,7 +59,7 @@ def _render_cell(txn, **extra):
     Args:
         txn: The Transaction object to render.
         **extra: Additional keyword arguments forwarded to render_template
-            (e.g. wrap_div=True).
+            (e.g. wrap_div=True, conflict=True).
 
     Returns:
         Rendered HTML string.
@@ -69,6 +70,34 @@ def _render_cell(txn, **extra):
         entry_sums=build_entry_sums_dict([txn]),
         **extra,
     )
+
+
+def _stale_transaction_response(txn_id):
+    """Roll back the session and render the cell in conflict mode + 409.
+
+    Used by every PATCH/POST/DELETE handler that can race a
+    concurrent commit against the version-pinned UPDATE.  Re-fetches
+    the transaction from the database so the user sees the winner's
+    state -- never the loser's stale in-memory copy -- and tags the
+    cell with ``conflict=True`` so the template surfaces a warning
+    indicator.  Returns a 404 if the row was hard-deleted by the
+    winning request.
+
+    Args:
+        txn_id: Primary key of the transaction the route was trying
+            to mutate.  Used to re-fetch under ownership checks so
+            the conflict UI renders the correct row.
+
+    Returns:
+        Flask response tuple ``(html, 409)`` or ``("Not found", 404)``
+        when the row vanished entirely.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+    return _render_cell(txn, conflict=True), 409
 
 
 def _get_owned_transaction(txn_id):
@@ -194,6 +223,23 @@ def update_transaction(txn_id):
 
     Returns the updated cell fragment.  Sends an HX-Trigger header
     to refresh the balance row.
+
+    Optimistic locking (commit C-18 / F-010) operates in two layers:
+
+      1. Stale-form check: the cell ships ``version_id`` as a hidden
+         input set to ``Transaction.version_id`` at render time.
+         When the submitted value differs from the row's current
+         counter, the handler short-circuits with a 409 + conflict
+         cell partial and records nothing.  This catches the
+         sequential Tab-1/Tab-2 race documented in C-17.
+
+      2. SQLAlchemy ``version_id_col``: any concurrent flush that
+         races past the stale-form check is still narrowed by
+         ``WHERE version_id = ?`` at the database tier; the loser
+         raises ``StaleDataError`` which the handler converts into
+         the same 409 + conflict cell.  The two layers together
+         close every interleaving the optimistic-lock contract is
+         meant to cover.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -205,6 +251,19 @@ def update_transaction(txn_id):
         return jsonify(errors=errors), 400
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check.  Performed before any mutation so audit-log
+    # triggers record only successful edits.  Conditional on the
+    # form having submitted a version (clients that omit it fall
+    # through to the SQLAlchemy-tier check at flush time).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != txn.version_id:
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(submitted=%d, current=%d)",
+            txn_id, submitted_version, txn.version_id,
+        )
+        return _render_cell(txn, conflict=True), 409
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
@@ -231,10 +290,15 @@ def update_transaction(txn_id):
             transfer_service.update_transfer(
                 txn.transfer_id, current_user.id, **svc_kwargs
             )
+            db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on update_transaction shadow id=%d", txn_id,
+            )
+            return _stale_transaction_response(txn_id)
         except (NotFoundError, ValidationError) as exc:
             return str(exc), 400
 
-        db.session.commit()
         db.session.refresh(txn)
         logger.info(
             "user_id=%d updated shadow transaction %d (transfer %d)",
@@ -277,6 +341,11 @@ def update_transaction(txn_id):
 
     try:
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -299,6 +368,13 @@ def mark_done(txn_id):
     For entry-capable transactions with entries, auto-computes
     actual_amount from the entry sum.  For all others, accepts an
     optional actual_amount from the form.
+
+    Optimistic locking (commit C-18 / F-010): the button-click path
+    has no form-side ``version_id`` to compare, so the optimistic
+    lock relies on SQLAlchemy's ``version_id_col`` race detection
+    at flush time.  ``StaleDataError`` is converted to a 409 +
+    conflict cell so the user retries against fresh state instead
+    of seeing a 500.
     """
     txn = _get_accessible_transaction_for_status(txn_id)
     if txn is None:
@@ -327,11 +403,16 @@ def mark_done(txn_id):
             except (InvalidOperation, ValueError, ArithmeticError):
                 return "Invalid actual amount", 400
 
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs
-        )
         try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id, **svc_kwargs
+            )
             db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on mark_done shadow id=%d", txn_id,
+            )
+            return _stale_transaction_response(txn_id)
         except IntegrityError:
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
@@ -375,6 +456,11 @@ def mark_done(txn_id):
 
     try:
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on mark_done id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -388,7 +474,14 @@ def mark_done(txn_id):
 @login_required
 @require_owner
 def mark_credit(txn_id):
-    """Mark a transaction as 'credit' and auto-generate a payback expense."""
+    """Mark a transaction as 'credit' and auto-generate a payback expense.
+
+    Optimistic locking (commit C-18 / F-010): no form-side
+    ``version_id`` is shipped with the button click; the SQLAlchemy
+    ``version_id_col`` lock catches concurrent races at flush time
+    and the handler converts ``StaleDataError`` into a 409 +
+    conflict cell.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
@@ -398,8 +491,13 @@ def mark_credit(txn_id):
         return "Cannot mark a transfer shadow as credit.", 400
 
     try:
-        payback = credit_workflow.mark_as_credit(txn_id, current_user.id)
+        credit_workflow.mark_as_credit(txn_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on mark_credit id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
     response = _render_cell(txn)
@@ -410,7 +508,10 @@ def mark_credit(txn_id):
 @login_required
 @require_owner
 def unmark_credit(txn_id):
-    """Revert credit status and delete the auto-generated payback."""
+    """Revert credit status and delete the auto-generated payback.
+
+    Optimistic locking: see :func:`mark_credit`.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
@@ -422,6 +523,11 @@ def unmark_credit(txn_id):
     try:
         credit_workflow.unmark_credit(txn_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on unmark_credit id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except NotFoundError as exc:
         return str(exc), 404
     response = _render_cell(txn)
@@ -436,6 +542,8 @@ def cancel_transaction(txn_id):
 
     Shadow transactions route through the transfer service to cancel
     the parent transfer and both shadows atomically.
+
+    Optimistic locking: see :func:`mark_credit`.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -443,11 +551,18 @@ def cancel_transaction(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id,
-            status_id=ref_cache.status_id(StatusEnum.CANCELLED),
-        )
-        db.session.commit()
+        try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id,
+                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+            db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on cancel_transaction shadow id=%d",
+                txn_id,
+            )
+            return _stale_transaction_response(txn_id)
         db.session.refresh(txn)
         response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -455,7 +570,13 @@ def cancel_transaction(txn_id):
 
     txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on cancel_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
     response = _render_cell(txn)
@@ -705,6 +826,12 @@ def delete_transaction(txn_id):
 
     Shadow transactions cannot be directly deleted -- the user must
     delete the parent transfer instead.
+
+    Optimistic locking (commit C-18 / F-010): both the soft-delete
+    UPDATE and the hard-delete DELETE are version-pinned by
+    SQLAlchemy.  A concurrent commit that bumps the row's version
+    raises ``StaleDataError`` which the handler converts to a 409 +
+    conflict cell so the user can retry against fresh state.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -721,7 +848,13 @@ def delete_transaction(txn_id):
         # Ad-hoc: hard delete.
         db.session.delete(txn)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on delete_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     logger.info("user_id=%d deleted transaction %d", current_user.id, txn_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 

@@ -12,12 +12,26 @@ from app.models.mixins import TimestampMixin
 
 
 class TransactionTemplate(TimestampMixin, db.Model):
-    """Blueprint for a recurring income or expense line item."""
+    """Blueprint for a recurring income or expense line item.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row, narrowing every ORM UPDATE/DELETE
+    with ``WHERE id = ? AND version_id = ?`` and atomically
+    incrementing the counter.  Concurrent template edits (e.g. two
+    tabs both adjusting ``default_amount``) race for the bump; the
+    loser raises :class:`sqlalchemy.orm.exc.StaleDataError`, which
+    the route converts into a flash + redirect.  See commit C-18 of
+    the 2026-04-15 security remediation plan.
+    """
 
     __tablename__ = "transaction_templates"
     __table_args__ = (
         db.Index("idx_templates_user_type", "user_id", "transaction_type_id"),
         db.CheckConstraint("default_amount >= 0", name="ck_transaction_templates_nonneg_amount"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transaction_templates_version_id_positive",
+        ),
         {"schema": "budget"},
     )
 
@@ -51,6 +65,14 @@ class TransactionTemplate(TimestampMixin, db.Model):
     companion_visible = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

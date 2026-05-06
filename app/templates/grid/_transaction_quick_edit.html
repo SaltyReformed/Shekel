@@ -9,6 +9,8 @@
       hx-target="#txn-cell-{{ txn.id }}"
       hx-swap="innerHTML"
       hx-disabled-elt="find input">
+  {# Optimistic-locking pin (commit C-18). #}
+  <input type="hidden" name="version_id" value="{{ txn.version_id }}">
   <input type="number"
          step="0.01"
          name="estimated_amount"

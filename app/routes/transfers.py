@@ -14,6 +14,7 @@ from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import fresh_login_required, require_owner
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.category import Category
@@ -283,7 +284,17 @@ def edit_transfer_template(template_id):
 @login_required
 @require_owner
 def update_transfer_template(template_id):
-    """Update a transfer template and regenerate future transfers."""
+    """Update a transfer template and regenerate future transfers.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent transfer-template edit that races past
+    the form-side check -- is caught and converted to the same
+    flash + redirect.
+    """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
         flash("Recurring transfer not found.", "danger")
@@ -295,6 +306,24 @@ def update_transfer_template(template_id):
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != template.version_id:
+        logger.info(
+            "Stale-form conflict on update_transfer_template id=%d "
+            "(submitted=%d, current=%d)",
+            template_id, submitted_version, template.version_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
+
     effective_from = data.pop("effective_from", date.today())
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
@@ -381,6 +410,20 @@ def update_transfer_template(template_id):
 
     try:
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
     except IntegrityError:
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
@@ -398,6 +441,12 @@ def archive_transfer_template(template_id):
     Soft-deletes projected transfers and their shadow transactions via
     the transfer service to maintain the three-level cascade:
     template archival -> transfer soft-delete -> shadow soft-delete.
+
+    Optimistic locking (commit C-18 / F-010): the template's
+    ``version_id`` is enforced by SQLAlchemy on the
+    ``is_active = False`` flush; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect so the user retries against fresh state.
     """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
@@ -422,7 +471,20 @@ def archive_transfer_template(template_id):
     for xfer in transfers_to_delete:
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on archive_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(
         f"Recurring transfer '{template.name}' archived. "
@@ -439,6 +501,8 @@ def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
 
     Restores soft-deleted transfers and their shadow transactions.
+
+    Optimistic locking: see :func:`archive_transfer_template`.
     """
     template = db.session.get(TransferTemplate, template_id)
     if template is None or template.user_id != current_user.id:
@@ -478,7 +542,20 @@ def unarchive_transfer_template(template_id):
                 template, periods, scenario.id, effective_from=date.today(),
             )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on unarchive_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
     flash(
         f"Recurring transfer '{template.name}' unarchived. "
         f"{restored_count} projected transfer(s) restored.",
@@ -542,7 +619,19 @@ def hard_delete_transfer_template(template_id):
             )
             for xfer in transfers_to_delete:
                 transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-            db.session.commit()
+            try:
+                db.session.commit()
+            except StaleDataError:
+                db.session.rollback()
+                logger.info(
+                    "Stale-data conflict during archive-fallback in "
+                    "hard_delete_transfer_template id=%d", template_id,
+                )
+                flash(
+                    "This recurring transfer was changed by another action.  "
+                    "Please reload and try again.",
+                    "warning",
+                )
         return redirect(url_for("transfers.list_transfer_templates"))
 
     # No history -- safe to permanently delete.
@@ -560,7 +649,20 @@ def hard_delete_transfer_template(template_id):
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
 
     db.session.delete(template)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on hard_delete_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
     return redirect(url_for("transfers.list_transfer_templates"))
@@ -619,7 +721,18 @@ def get_full_edit(xfer_id):
 @login_required
 @require_owner
 def update_transfer(xfer_id):
-    """Update a transfer and its shadow transactions (inline edit save)."""
+    """Update a transfer and its shadow transactions (inline edit save).
+
+    Optimistic locking (commit C-18 / F-010): the cell ships
+    ``version_id`` as a hidden input set to ``Transfer.version_id``
+    at render time.  When the submitted value differs from the
+    row's current counter, the handler short-circuits with a 409 +
+    conflict cell partial and records nothing.  ``StaleDataError``
+    raised at flush time -- the truly-concurrent case the form-side
+    check cannot see -- is caught and converted to the same 409 +
+    conflict cell so the user retries against fresh state instead
+    of seeing a 500.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
@@ -630,19 +743,32 @@ def update_transfer(xfer_id):
 
     data = _xfer_update_schema.load(request.form)
 
+    # Stale-form check.
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != xfer.version_id:
+        logger.info(
+            "Stale-form conflict on update_transfer id=%d "
+            "(submitted=%d, current=%d)",
+            xfer_id, submitted_version, xfer.version_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
+
     # Auto-set is_override when a template-linked transfer's amount changes.
     if xfer.transfer_template_id and "amount" in data:
         data["is_override"] = True
 
     try:
         transfer_service.update_transfer(xfer.id, current_user.id, **data)
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except NotFoundError:
         return "Not found", 404
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
-
-    try:
-        db.session.commit()
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -721,15 +847,26 @@ def delete_transfer(xfer_id):
 
     Routes through transfer_service to ensure shadow transactions are
     also deleted (soft or hard) alongside the parent transfer.
+
+    Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE
+    and hard-delete DELETE are both version-pinned by SQLAlchemy.
+    A concurrent commit that bumped the row's version raises
+    ``StaleDataError`` which the handler converts into a 409 +
+    conflict cell.
     """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     soft = bool(xfer.transfer_template_id)
-    transfer_service.delete_transfer(xfer.id, current_user.id, soft=soft)
-
-    db.session.commit()
+    try:
+        transfer_service.delete_transfer(xfer.id, current_user.id, soft=soft)
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on delete_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     logger.info("user_id=%d deleted transfer %d", current_user.id, xfer_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
@@ -741,16 +878,27 @@ def delete_transfer(xfer_id):
 @login_required
 @require_owner
 def mark_done(xfer_id):
-    """Mark a transfer and its shadows as 'done' (settled)."""
+    """Mark a transfer and its shadows as 'done' (settled).
+
+    Optimistic locking (commit C-18 / F-010): no form-side
+    ``version_id`` is shipped with the button click; the SQLAlchemy
+    ``version_id_col`` lock catches concurrent races at flush time
+    and the handler converts ``StaleDataError`` into a 409 +
+    conflict cell.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
-    transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
-
     try:
+        transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on transfer mark_done id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -779,18 +927,25 @@ def mark_done(xfer_id):
 @login_required
 @require_owner
 def cancel_transfer(xfer_id):
-    """Mark a transfer and its shadows as 'cancelled'."""
+    """Mark a transfer and its shadows as 'cancelled'.
+
+    Optimistic locking: see :func:`mark_done`.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-    transfer_service.update_transfer(
-        xfer.id, current_user.id, status_id=cancelled_id
-    )
-
     try:
+        transfer_service.update_transfer(
+            xfer.id, current_user.id, status_id=cancelled_id,
+        )
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on cancel_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -826,6 +981,56 @@ def _get_owned_transfer(xfer_id):
     if xfer.user_id != current_user.id:
         return None
     return xfer
+
+
+def _stale_transfer_response(xfer_id):
+    """Roll back the session and render the transfer cell in conflict mode.
+
+    Used by every transfer-mutating HTMX route to convert a stale
+    form or ``StaleDataError`` flush failure into a coherent UI
+    response instead of a 500.  Re-fetches the transfer so the
+    user's view shows the winner's state (never the loser's stale
+    in-memory copy) and tags the cell with ``conflict=True``.
+    Falls back to a 404 string when the row was hard-deleted by
+    the winning request.
+
+    Note: caller adds the 409 status code -- this helper returns
+    only the rendered HTML so it can be reused both before and
+    after the database commit.
+
+    Args:
+        xfer_id: Primary key of the transfer the route was trying
+            to mutate.
+
+    Returns:
+        Rendered HTML string, or the literal string ``"Not found"``
+        when the row no longer exists.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found"
+
+    # Render the shadow's transaction cell when the request came
+    # from the grid (source_txn_id present and validated), or the
+    # transfer cell otherwise.  Mirrors the shadow-context handling
+    # in :func:`update_transfer`.
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        return render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+            conflict=True,
+        )
+
+    account = resolve_grid_account(current_user.id, current_user.settings)
+    return render_template(
+        "transfers/_transfer_cell.html",
+        xfer=xfer, account=account, conflict=True,
+    )
 
 
 def _resolve_shadow_context(xfer):

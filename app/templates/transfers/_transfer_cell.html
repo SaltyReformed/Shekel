@@ -2,19 +2,28 @@
    Clicking opens the inline edit form via HTMX.
 
    Expected context: xfer -- a Transfer object, account -- the active Account.
-   Optional: wrap_div -- if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
+   Optional:
+     wrap_div -- if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
+     conflict -- if true, surfaces a warning indicator hint that the
+                 row was changed by another action.  See commit C-18
+                 of the 2026-04-15 security remediation plan.
 #}
 {% if xfer %}
+{% set is_conflict = conflict is defined and conflict %}
 {% if wrap_div is defined and wrap_div %}<div id="xfer-cell-{{ xfer.id }}">{% endif %}
-<div class="txn-cell"
+<div class="txn-cell{% if is_conflict %} text-warning{% endif %}"
      hx-get="{{ url_for('transfers.get_quick_edit', xfer_id=xfer.id) }}"
      hx-trigger="click"
      hx-target="#xfer-cell-{{ xfer.id }}"
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
-     title="{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
+     aria-label="{% if is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     title="{% if is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
+  {% if is_conflict %}
+  <i class="bi bi-exclamation-triangle text-warning small me-1"
+     aria-label="Edit conflict"></i>
+  {% endif %}
 
   {# Direction icon #}
   {% if account %}

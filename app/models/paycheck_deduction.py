@@ -10,7 +10,14 @@ from app.models.mixins import TimestampMixin
 
 
 class PaycheckDeduction(TimestampMixin, db.Model):
-    """A payroll deduction (e.g., 401k, health insurance, Roth IRA)."""
+    """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
+
+    Optimistic locking: see :class:`Transaction` for the
+    ``version_id_col`` contract.  Concurrent deduction edits race
+    for the bump; the loser raises ``StaleDataError`` and the route
+    surfaces a flash + redirect.  See commit C-18 of the 2026-04-15
+    security remediation plan.
+    """
 
     __tablename__ = "paycheck_deductions"
     __table_args__ = (
@@ -19,6 +26,10 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.CheckConstraint(
             "annual_cap IS NULL OR annual_cap > 0",
             name="ck_paycheck_deductions_positive_cap",
+        ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_paycheck_deductions_version_id_positive",
         ),
         {"schema": "salary"},
     )
@@ -49,6 +60,14 @@ class PaycheckDeduction(TimestampMixin, db.Model):
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="deductions")

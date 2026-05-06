@@ -28,6 +28,13 @@
     <form method="POST"
           action="{{ url_for('templates.update_template', template_id=template.id) if template else url_for('templates.create_template') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# Optimistic-locking version pin (commit C-18 / F-010).
+         Submitted on update; the handler compares against the
+         current row and short-circuits with a flash + redirect if
+         the form was rendered against an older version. #}
+      {% if template %}
+      <input type="hidden" name="version_id" value="{{ template.version_id }}">
+      {% endif %}
       {# Basic fields #}
       <div class="mb-3">
         <label for="name" class="form-label">Name</label>

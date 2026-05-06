@@ -10,6 +10,7 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, require_owner
 from markupsafe import Markup
@@ -48,8 +49,10 @@ from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
     DeductionCreateSchema,
+    DeductionUpdateSchema,
     FicaConfigSchema,
     RaiseCreateSchema,
+    RaiseUpdateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
@@ -66,7 +69,9 @@ salary_bp = Blueprint("salary", __name__)
 _create_schema = SalaryProfileCreateSchema()
 _update_schema = SalaryProfileUpdateSchema()
 _raise_schema = RaiseCreateSchema()
+_raise_update_schema = RaiseUpdateSchema()
 _deduction_schema = DeductionCreateSchema()
+_deduction_update_schema = DeductionUpdateSchema()
 _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
@@ -289,7 +294,16 @@ def edit_profile(profile_id):
 @login_required
 @require_owner
 def update_profile(profile_id):
-    """Update a salary profile and recalculate linked transactions."""
+    """Update a salary profile and recalculate linked transactions.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent edit that races past the form-side check
+    -- is caught and converted to the same flash + redirect.
+    """
     profile = db.session.get(SalaryProfile, profile_id)
     if profile is None or profile.user_id != current_user.id:
         flash("Salary profile not found.", "danger")
@@ -301,6 +315,21 @@ def update_profile(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != profile.version_id:
+        logger.info(
+            "Stale-form conflict on update_profile id=%d "
+            "(submitted=%d, current=%d)",
+            profile_id, submitted_version, profile.version_id,
+        )
+        flash(
+            "This salary profile was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     try:
         _PROFILE_UPDATE_FIELDS = {
@@ -323,6 +352,17 @@ def update_profile(profile_id):
         _regenerate_salary_transactions(profile)
 
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_profile id=%d", profile_id,
+        )
+        flash(
+            "This salary profile was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to update salary profile %d", current_user.id, profile_id)
@@ -338,7 +378,13 @@ def update_profile(profile_id):
 @login_required
 @require_owner
 def delete_profile(profile_id):
-    """Soft-delete a salary profile and deactivate its template."""
+    """Soft-delete a salary profile and deactivate its template.
+
+    Optimistic locking (commit C-18 / F-010): the
+    ``is_active = False`` flush is version-pinned by SQLAlchemy.
+    A concurrent edit raises ``StaleDataError`` which the handler
+    converts into a flash + redirect.
+    """
     profile = db.session.get(SalaryProfile, profile_id)
     if profile is None or profile.user_id != current_user.id:
         flash("Salary profile not found.", "danger")
@@ -348,7 +394,19 @@ def delete_profile(profile_id):
     if profile.template:
         profile.template.is_active = False
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_profile id=%d", profile_id,
+        )
+        flash(
+            "This salary profile was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.list_profiles"))
     logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' deactivated.", "info")
     return redirect(url_for("salary.list_profiles"))
@@ -405,7 +463,13 @@ def add_raise(profile_id):
 @login_required
 @require_owner
 def delete_raise(raise_id):
-    """Remove a raise from a salary profile."""
+    """Remove a raise from a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the DELETE statement
+    is version-pinned by SQLAlchemy; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect.
+    """
     salary_raise = db.session.get(SalaryRaise, raise_id)
     if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
         flash("Raise not found.", "danger")
@@ -417,6 +481,17 @@ def delete_raise(raise_id):
         db.session.delete(salary_raise)
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_raise id=%d", raise_id,
+        )
+        flash(
+            "This raise was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
@@ -435,7 +510,14 @@ def delete_raise(raise_id):
 @login_required
 @require_owner
 def update_raise(raise_id):
-    """Update an existing raise on a salary profile."""
+    """Update an existing raise on a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input populated by app.js.  A stale
+    submission is rejected with a flash + redirect; the
+    SQLAlchemy-tier check catches the truly-concurrent case at
+    flush time and produces the same response.
+    """
     salary_raise = db.session.get(SalaryRaise, raise_id)
     if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
         flash("Raise not found.", "danger")
@@ -443,13 +525,28 @@ def update_raise(raise_id):
 
     profile = salary_raise.salary_profile
 
-    errors = _raise_schema.validate(request.form)
+    errors = _raise_update_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    data = _raise_schema.load(request.form)
+    data = _raise_update_schema.load(request.form)
     data["is_recurring"] = request.form.get("is_recurring") == "on"
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != salary_raise.version_id:
+        logger.info(
+            "Stale-form conflict on update_raise id=%d "
+            "(submitted=%d, current=%d)",
+            raise_id, submitted_version, salary_raise.version_id,
+        )
+        flash(
+            "This raise was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
@@ -467,6 +564,17 @@ def update_raise(raise_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_raise id=%d", raise_id,
+        )
+        flash(
+            "This raise was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception(
@@ -536,7 +644,13 @@ def add_deduction(profile_id):
 @login_required
 @require_owner
 def delete_deduction(ded_id):
-    """Remove a deduction from a salary profile."""
+    """Remove a deduction from a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the DELETE statement
+    is version-pinned by SQLAlchemy; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect.
+    """
     deduction = db.session.get(PaycheckDeduction, ded_id)
     if deduction is None or deduction.salary_profile.user_id != current_user.id:
         flash("Deduction not found.", "danger")
@@ -548,6 +662,17 @@ def delete_deduction(ded_id):
         db.session.delete(deduction)
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_deduction id=%d", ded_id,
+        )
+        flash(
+            "This deduction was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
@@ -566,7 +691,14 @@ def delete_deduction(ded_id):
 @login_required
 @require_owner
 def update_deduction(ded_id):
-    """Update an existing deduction on a salary profile."""
+    """Update an existing deduction on a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input populated by app.js.  A stale
+    submission is rejected with a flash + redirect; the
+    SQLAlchemy-tier check catches the truly-concurrent case at
+    flush time and produces the same response.
+    """
     deduction = db.session.get(PaycheckDeduction, ded_id)
     if deduction is None or deduction.salary_profile.user_id != current_user.id:
         flash("Deduction not found.", "danger")
@@ -574,13 +706,28 @@ def update_deduction(ded_id):
 
     profile = deduction.salary_profile
 
-    errors = _deduction_schema.validate(request.form)
+    errors = _deduction_update_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    data = _deduction_schema.load(request.form)
+    data = _deduction_update_schema.load(request.form)
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != deduction.version_id:
+        logger.info(
+            "Stale-form conflict on update_deduction id=%d "
+            "(submitted=%d, current=%d)",
+            ded_id, submitted_version, deduction.version_id,
+        )
+        flash(
+            "This deduction was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     from decimal import Decimal as D
@@ -601,6 +748,17 @@ def update_deduction(ded_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_deduction id=%d", ded_id,
+        )
+        flash(
+            "This deduction was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception(

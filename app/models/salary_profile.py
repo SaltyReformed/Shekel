@@ -10,7 +10,14 @@ from app.models.mixins import TimestampMixin
 
 
 class SalaryProfile(TimestampMixin, db.Model):
-    """A salary income profile used for net paycheck calculation."""
+    """A salary income profile used for net paycheck calculation.
+
+    Optimistic locking: see :class:`Transaction` for the
+    ``version_id_col`` contract.  Concurrent profile edits race for
+    the bump; the loser raises ``StaleDataError`` and the route
+    surfaces a flash + redirect.  See commit C-18 of the 2026-04-15
+    security remediation plan.
+    """
 
     __tablename__ = "salary_profiles"
     __table_args__ = (
@@ -25,6 +32,10 @@ class SalaryProfile(TimestampMixin, db.Model):
         db.CheckConstraint("additional_income >= 0", name="ck_salary_profiles_nonneg_add_income"),
         db.CheckConstraint("additional_deductions >= 0", name="ck_salary_profiles_nonneg_add_deductions"),
         db.CheckConstraint("extra_withholding >= 0", name="ck_salary_profiles_nonneg_extra_withholding"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_salary_profiles_version_id_positive",
+        ),
         {"schema": "salary"},
     )
 
@@ -64,6 +75,14 @@ class SalaryProfile(TimestampMixin, db.Model):
 
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     scenario = db.relationship("Scenario", lazy="joined")

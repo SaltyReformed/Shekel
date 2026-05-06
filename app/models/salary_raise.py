@@ -10,7 +10,14 @@ from app.models.mixins import CreatedAtMixin
 
 
 class SalaryRaise(CreatedAtMixin, db.Model):
-    """A scheduled salary raise event."""
+    """A scheduled salary raise event.
+
+    Optimistic locking: see :class:`Transaction` for the
+    ``version_id_col`` contract.  Concurrent raise edits race for
+    the bump; the loser raises ``StaleDataError`` and the route
+    surfaces a flash + redirect.  See commit C-18 of the 2026-04-15
+    security remediation plan.
+    """
 
     __tablename__ = "salary_raises"
     __table_args__ = (
@@ -25,6 +32,10 @@ class SalaryRaise(CreatedAtMixin, db.Model):
         ),
         db.CheckConstraint("percentage IS NULL OR percentage > 0", name="ck_salary_raises_positive_pct"),
         db.CheckConstraint("flat_amount IS NULL OR flat_amount > 0", name="ck_salary_raises_positive_flat"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_salary_raises_version_id_positive",
+        ),
         {"schema": "salary"},
     )
 
@@ -43,6 +54,14 @@ class SalaryRaise(CreatedAtMixin, db.Model):
     flat_amount = db.Column(db.Numeric(12, 2))
     is_recurring = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="raises")

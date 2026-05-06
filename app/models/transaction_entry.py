@@ -52,6 +52,10 @@ class TransactionEntry(TimestampMixin, db.Model):
             "amount > 0",
             name="ck_transaction_entries_positive_amount",
         ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transaction_entries_version_id_positive",
+        ),
         {"schema": "budget"},
     )
 
@@ -81,6 +85,22 @@ class TransactionEntry(TimestampMixin, db.Model):
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
     )
+    # Optimistic-locking version counter.  See commit C-18 of the
+    # 2026-04-15 security remediation plan.  NOT NULL with
+    # server_default="1" so existing production rows are filled at
+    # ALTER TABLE time and new rows always start at version 1.
+    # Concurrent entry edits race for the bump; the loser raises
+    # :class:`sqlalchemy.orm.exc.StaleDataError` and the entries
+    # route surfaces a 409 conflict partial.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: SQLAlchemy narrows ORM UPDATE/DELETE with
+    # ``WHERE id = ? AND version_id = ?`` and atomically increments
+    # version_id.  Routes that mutate TransactionEntry MUST catch
+    # StaleDataError and surface a 409 conflict partial.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     transaction = db.relationship(

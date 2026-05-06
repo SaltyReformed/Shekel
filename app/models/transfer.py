@@ -12,7 +12,20 @@ from app.models.mixins import TimestampMixin
 
 
 class Transfer(TimestampMixin, db.Model):
-    """A transfer between two accounts within a pay period."""
+    """A transfer between two accounts within a pay period.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
+    DELETE is narrowed to ``WHERE id = ? AND version_id = ?`` and
+    the stored value is atomically incremented; concurrent
+    mutations race for the bump and the loser raises
+    :class:`sqlalchemy.orm.exc.StaleDataError`.  The transfer
+    service propagates parent-transfer mutations to both shadow
+    transactions, so the parent's version pin protects the entire
+    three-row write set even though the shadow rows carry their
+    own ``version_id`` columns.  See commit C-18 of the 2026-04-15
+    security remediation plan.
+    """
 
     __tablename__ = "transfers"
     __table_args__ = (
@@ -22,6 +35,10 @@ class Transfer(TimestampMixin, db.Model):
             name="ck_transfers_different_accounts",
         ),
         db.CheckConstraint("amount > 0", name="ck_transfers_positive_amount"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transfers_version_id_positive",
+        ),
         # One non-deleted, non-override transfer per template per period
         # per scenario.  Mirrors the relaxed transactions index: override
         # siblings may coexist with their rule-generated parent so
@@ -80,6 +97,18 @@ class Transfer(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.  NOT NULL with server_default="1" so existing
+    # production rows are filled at ALTER TABLE time and new rows
+    # always start at version 1.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.  Routes that mutate
+    # Transfer (or call transfer_service helpers that flush) MUST
+    # catch StaleDataError and surface a 409 / flash + redirect.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     template = db.relationship("TransferTemplate", back_populates="transfers")
