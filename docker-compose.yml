@@ -107,6 +107,19 @@ services:
     # Redis only needs to write to /tmp (for any temp files it might
     # create) and /data (which we mount as tmpfs since persistence
     # is disabled anyway).
+    #
+    # ``user: redis`` is load-bearing alongside ``cap_drop: ALL``.  The
+    # redis:7.4-alpine entrypoint, when it sees uid 0, runs
+    # ``chown -R redis /data`` and then drops to the redis user via
+    # ``gosu``.  With ``cap_drop: ALL`` the chown lacks ``CAP_CHOWN`` and
+    # exits non-zero, taking the container with it.  Starting as the
+    # redis user from the outset makes the entrypoint's ``id -u != 0``
+    # branch fire instead -- chown is skipped entirely and ``redis-server``
+    # exec's with the same uid the chown would have switched to.  The
+    # tmpfs /data mount is owned by root:root at creation, but Redis
+    # never tries to chown it in this branch and only writes to it when
+    # AOF / RDB are enabled (both disabled above).
+    user: redis
     security_opt:
       - no-new-privileges:true
     cap_drop:
