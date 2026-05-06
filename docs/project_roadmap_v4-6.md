@@ -1,5 +1,12 @@
 # Budget App -- Project Roadmap v4.6
 
+> **Superseded by `project_roadmap_v5.md` (May 6, 2026).** This file is preserved as a
+> historical archive. v5 collapsed the dual Priority/Section numbering system into a single
+> sequential top-level track, marked Visualization and Reporting Overhaul (v4-6 Section 8) and
+> Spending Tracker and Companion View (v4-6 Section 9) complete, and added new sections for
+> the April 2026 security remediation and a financial calculation consistency initiative. See
+> `project_roadmap_v5.md` for the current roadmap.
+
 **Version:** 4.6
 **Date:** April 9, 2026
 **Parent Documents:** project_requirements_v2.md, project_requirements_v3_addendum.md
