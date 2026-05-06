@@ -189,9 +189,22 @@ class TemplateUpdateSchema(TemplateCreateSchema):
 
 
 class AnchorUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating the account anchor balance."""
+    """Validates PATCH data for updating the account anchor balance.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the form was rendered.  The route handler compares
+    the submitted value against ``Account.version_id`` and returns
+    409 Conflict if they differ -- a stale-form check that catches
+    the Tab-1/Tab-2 race even when the two requests are sequential
+    rather than truly concurrent.  Optional so callers that have
+    no way to plumb the version through (e.g. a future programmatic
+    client) still pass validation; in that case only the
+    SQLAlchemy ``version_id_col`` race detection applies, which
+    catches the truly-concurrent case at flush time.
+    """
 
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class PayPeriodGenerateSchema(BaseSchema):
@@ -727,7 +740,14 @@ class AccountCreateSchema(BaseSchema):
 
 
 class AccountUpdateSchema(BaseSchema):
-    """Validates POST data for updating an account."""
+    """Validates POST data for updating an account.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the edit form was rendered.  The handler compares
+    the submitted value against the current ``Account.version_id``
+    and short-circuits with 409 Conflict on mismatch; see the
+    matching docstring on :class:`AnchorUpdateSchema`.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -737,6 +757,7 @@ class AccountUpdateSchema(BaseSchema):
     account_type_id = fields.Integer()
     is_active = fields.Boolean()
     anchor_balance = fields.Decimal(places=2, as_string=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class AccountTypeCreateSchema(BaseSchema):

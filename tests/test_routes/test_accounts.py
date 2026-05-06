@@ -8,6 +8,11 @@ management endpoints (§2.1 of the test plan).
 from datetime import date
 from decimal import Decimal
 
+import pytest
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
+
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
@@ -2318,3 +2323,744 @@ class TestCheckingDashboardLink:
             # But the checking account should have one.
             checking_url = f"/accounts/{seed_user['account'].id}/checking"
             assert checking_url.encode() in resp.data
+
+
+# ── Optimistic Locking (commit C-17 / F-009) ────────────────────────
+
+
+def _bump_account_version_outside_session(account_id):
+    """Simulate a concurrent commit by bumping ``version_id`` directly.
+
+    Uses a fresh DB connection (NOT the test session) so the in-memory
+    identity map of the calling session is unaffected.  After this
+    helper returns, any object the caller previously loaded for
+    ``account_id`` retains its old in-memory ``version_id`` while the
+    database row carries the bumped value -- exactly the state a
+    concurrent request from another browser tab would produce.
+
+    The connection commit is essential: without it the UPDATE would
+    sit in an open transaction and ``READ COMMITTED`` MVCC would
+    hide the bump from the test session.
+    """
+    with db.engine.connect() as conn:
+        conn.execute(
+            text(
+                "UPDATE budget.accounts "
+                "SET version_id = version_id + 1 "
+                "WHERE id = :id"
+            ),
+            {"id": account_id},
+        )
+        conn.commit()
+
+
+class TestAccountVersionIdColumn:
+    """Schema-level invariants for the optimistic-lock counter."""
+
+    def test_version_id_column_present_and_not_null(self, app):
+        """The live ``budget.accounts`` table carries a NOT NULL ``version_id``."""
+        with app.app_context():
+            insp = inspect(db.engine)
+            cols = {
+                c["name"]: c
+                for c in insp.get_columns("accounts", schema="budget")
+            }
+
+            assert "version_id" in cols, (
+                "Account.version_id column is missing from the live "
+                "schema -- migration 861a48e11960 may not have run."
+            )
+            assert cols["version_id"]["nullable"] is False, (
+                "Account.version_id must be NOT NULL or the optimistic "
+                "lock silently fails on rows that have a NULL counter."
+            )
+
+    def test_version_id_check_constraint_present(self, app):
+        """The CHECK constraint that pins ``version_id > 0`` is on the live table."""
+        with app.app_context():
+            insp = inspect(db.engine)
+            checks = {
+                c["name"]: c["sqltext"]
+                for c in insp.get_check_constraints(
+                    "accounts", schema="budget",
+                )
+            }
+
+            assert "ck_accounts_version_id_positive" in checks, (
+                "ck_accounts_version_id_positive missing -- the schema "
+                "no longer matches the model declaration."
+            )
+            # PostgreSQL normalises the predicate; either form is valid.
+            normalised = checks["ck_accounts_version_id_positive"].lower().replace(" ", "")
+            assert "version_id>0" in normalised, (
+                "CHECK constraint expression has changed; rerun the "
+                "migration or update the model in lockstep."
+            )
+
+    def test_version_id_check_rejects_zero(self, app, db, seed_user):
+        """Inserting a row with ``version_id = 0`` raises IntegrityError.
+
+        The application never sets ``version_id`` directly; this test
+        exercises the database-tier guard against a future raw-SQL
+        path or a buggy migration that writes 0.
+        """
+        with app.app_context():
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            with pytest.raises(IntegrityError):
+                db.session.execute(
+                    text(
+                        "INSERT INTO budget.accounts "
+                        "(user_id, account_type_id, name, version_id) "
+                        "VALUES (:u, :t, :n, 0)"
+                    ),
+                    {
+                        "u": seed_user["user"].id,
+                        "t": checking_type.id,
+                        "n": "Bad Version",
+                    },
+                )
+                db.session.flush()
+            db.session.rollback()
+
+    def test_mapper_declares_version_id_col(self, app):
+        """``Account.__mapper_args__`` exposes the version counter to SQLAlchemy.
+
+        Without this declaration SQLAlchemy emits ``UPDATE`` without
+        the ``WHERE version_id = ?`` narrowing and the optimistic-lock
+        contract collapses; the rest of the test class would still pass
+        but production would silently regress.
+        """
+        with app.app_context():
+            mapper = inspect(Account)
+            assert mapper.version_id_col is not None, (
+                "Account mapper has no version_id_col -- "
+                "__mapper_args__ regression."
+            )
+            assert mapper.version_id_col.name == "version_id"
+
+
+class TestAccountVersionIdLifecycle:
+    """End-to-end behaviour of the ``version_id`` counter through ORM operations."""
+
+    def test_new_account_starts_at_version_one(self, app, auth_client, seed_user):
+        """Newly created accounts have ``version_id == 1``.
+
+        ``server_default='1'`` on the column guarantees this for rows
+        inserted via SQLAlchemy with no explicit ``version_id``.  The
+        seed_user fixture path exercises this exact code path.
+        """
+        with app.app_context():
+            acct = db.session.get(Account, seed_user["account"].id)
+            assert acct.version_id == 1
+
+    def test_seed_user_account_starts_at_version_one(self, app, seed_user):
+        """The seed fixture's account has ``version_id == 1`` after creation."""
+        with app.app_context():
+            acct = db.session.get(Account, seed_user["account"].id)
+            assert acct.version_id == 1, (
+                f"seed_user fixture account should start at version 1, "
+                f"got {acct.version_id}"
+            )
+
+    def test_version_does_not_increment_on_read(self, app, db, seed_user):
+        """Pure SELECT operations leave ``version_id`` unchanged.
+
+        The optimistic-lock contract increments only on UPDATE/DELETE;
+        a regression here would inflate the counter on every page
+        view and turn every form submit into a stale-form 409.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            initial_version = db.session.get(Account, acct_id).version_id
+
+            for _ in range(5):
+                _ = db.session.get(Account, acct_id).current_anchor_balance
+                db.session.expire_all()
+
+            final_version = db.session.get(Account, acct_id).version_id
+            assert final_version == initial_version
+
+    def test_version_increments_on_update(self, app, db, seed_user):
+        """Each ORM-emitted UPDATE bumps ``version_id`` by exactly one."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            v0 = db.session.get(Account, acct_id).version_id
+
+            acct = db.session.get(Account, acct_id)
+            acct.name = "Renamed Once"
+            db.session.commit()
+            v1 = db.session.get(Account, acct_id).version_id
+
+            acct.name = "Renamed Twice"
+            db.session.commit()
+            v2 = db.session.get(Account, acct_id).version_id
+
+            assert v1 == v0 + 1
+            assert v2 == v1 + 1
+
+
+class TestAccountConcurrentMutationStaleData:
+    """SQLAlchemy ``StaleDataError`` is raised on truly concurrent races."""
+
+    def test_concurrent_update_raises_stale_data_error(
+        self, app, db, seed_user,
+    ):
+        """A race that bumps the version between load and commit raises StaleDataError.
+
+        The simulated concurrent commit advances the row to version 2;
+        the test session, still holding an in-memory copy at version
+        1, attempts an UPDATE -- the version-pinned WHERE matches no
+        rows and SQLAlchemy raises ``StaleDataError``.  This is the
+        load-bearing invariant that makes the SQLAlchemy tier of the
+        optimistic lock work.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            acct = db.session.get(Account, acct_id)
+            assert acct.version_id == 1
+
+            _bump_account_version_outside_session(acct_id)
+
+            acct.current_anchor_balance = Decimal("9999.00")
+
+            with pytest.raises(StaleDataError):
+                db.session.commit()
+
+            db.session.rollback()
+
+            db.session.expire_all()
+            persisted = db.session.get(Account, acct_id)
+            assert persisted.current_anchor_balance != Decimal("9999.00")
+            assert persisted.version_id == 2
+
+    def test_concurrent_delete_raises_stale_data_error(
+        self, app, db, seed_user,
+    ):
+        """DELETE also enforces the version pin; concurrent bump blocks the delete."""
+        with app.app_context():
+            checking_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Checking").one()
+            )
+            spare = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Spare",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(spare)
+            db.session.commit()
+            spare_id = spare.id
+
+            _bump_account_version_outside_session(spare_id)
+
+            db.session.delete(spare)
+            with pytest.raises(StaleDataError):
+                db.session.commit()
+            db.session.rollback()
+
+            persisted = db.session.get(Account, spare_id)
+            assert persisted is not None, (
+                "Stale-data DELETE must leave the row intact for the "
+                "winner of the race to handle."
+            )
+
+
+class TestTrueUpStaleForm:
+    """``true_up`` (PATCH /accounts/<id>/true-up) optimistic-locking behaviour."""
+
+    def test_true_up_succeeds_with_matching_version(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A submitted ``version_id`` that matches the row succeeds and bumps the counter."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            initial_version = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={
+                    "anchor_balance": "1100.00",
+                    "version_id": str(initial_version),
+                },
+            )
+
+            assert response.status_code == 200, response.data
+
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.current_anchor_balance == Decimal("1100.00")
+            assert acct.version_id == initial_version + 1
+
+    def test_true_up_returns_409_on_stale_version(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A submitted ``version_id`` older than the current row returns 409.
+
+        The route MUST short-circuit before touching the database; the
+        anchor balance and ``AccountAnchorHistory`` table both stay
+        unchanged.  This is the manual-verification scenario from the
+        C-17 plan: Tab 1 holds an old version, Tab 2 commits to bump
+        the row, Tab 1 resubmits with the stale version -- the
+        server must refuse.
+
+        ``stale_version`` is captured from the row state before the
+        bump rather than hard-coded to 1; ``seed_periods_today`` also
+        commits an UPDATE to set the anchor period and would otherwise
+        leave the row at version 2 before this test even runs.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            # Capture the version Tab 1 would have loaded.
+            stale_version = db.session.get(Account, acct_id).version_id
+
+            # Simulate Tab 2 having already advanced the row.
+            _bump_account_version_outside_session(acct_id)
+            db.session.expire_all()
+            current_version = db.session.get(Account, acct_id).version_id
+            assert current_version == stale_version + 1, (
+                "fixture invariant: bump must advance the version by "
+                "exactly one"
+            )
+            balance_before = db.session.get(Account, acct_id).current_anchor_balance
+            history_count_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id).count()
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+
+            assert response.status_code == 409, (
+                f"stale version_id must produce 409 Conflict, got "
+                f"{response.status_code}: {response.data!r}"
+            )
+            # The conflict UI must include the "changed by another action"
+            # affordance and the latest balance.
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            # The display partial uses the warning class plus icon.
+            assert "text-warning" in body
+            assert "exclamation-triangle" in body
+
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.current_anchor_balance == balance_before, (
+                "Stale-form 409 must NOT mutate the anchor balance."
+            )
+            assert acct.version_id == current_version, (
+                "Stale-form 409 must NOT bump the version counter."
+            )
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id).count()
+            ) == history_count_before, (
+                "Stale-form 409 must NOT write a history row -- the "
+                "audit trail records only the winner."
+            )
+
+    def test_true_up_route_catches_stale_data_error_as_409(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A StaleDataError raised at flush time is converted to a 409 response.
+
+        Engineers a true race using a SQLAlchemy mapper event: the
+        route loads the row at version N, mutates it, then begins
+        the flush; the event listener fires during the UPDATE and
+        bumps the row from a separate connection, defeating the
+        version-pinned WHERE clause.  SQLAlchemy raises
+        ``StaleDataError`` and the route's ``except`` clause
+        converts it into the same 409 + conflict partial the form-
+        side check produces.  This exercises the SQLAlchemy-tier
+        of the optimistic lock end-to-end through the HTTP layer.
+        """
+        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            balance_before = db.session.get(Account, acct_id).current_anchor_balance
+
+            fired = {"flag": False}
+
+            def make_stale(mapper, connection, target):
+                """Bump version_id from a separate connection mid-flush."""
+                if fired["flag"] or target.id != acct_id:
+                    return
+                fired["flag"] = True
+                _bump_account_version_outside_session(acct_id)
+
+            event.listen(Account, "before_update", make_stale)
+            try:
+                response = auth_client.patch(
+                    f"/accounts/{acct_id}/true-up",
+                    data={"anchor_balance": "5555.00"},
+                )
+            finally:
+                event.remove(Account, "before_update", make_stale)
+
+            assert response.status_code == 409, (
+                f"StaleDataError must convert to 409, got "
+                f"{response.status_code}"
+            )
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert "exclamation-triangle" in body
+
+            db.session.expire_all()
+            persisted = db.session.get(Account, acct_id)
+            assert persisted.current_anchor_balance == balance_before, (
+                "StaleDataError-on-commit must roll back the pending "
+                "balance change."
+            )
+
+    def test_true_up_omitted_version_falls_through_to_db_check(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Omitting ``version_id`` skips the form-side check.
+
+        Backwards-compat: a future programmatic client that has no
+        way to plumb the version through still validates and reaches
+        the SQLAlchemy-tier check.  In the no-conflict case the
+        update succeeds; in the conflict case StaleDataError fires
+        on flush -- both are tested elsewhere.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            v0 = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={"anchor_balance": "1400.00"},
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.current_anchor_balance == Decimal("1400.00")
+            assert acct.version_id == v0 + 1
+
+
+class TestInlineAnchorStaleForm:
+    """``inline_anchor_update`` (PATCH /accounts/<id>/inline-anchor) optimistic locking."""
+
+    def test_inline_anchor_succeeds_with_matching_version(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A matching ``version_id`` updates the balance and bumps the counter."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            v0 = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/inline-anchor",
+                data={
+                    "anchor_balance": "2500.00",
+                    "version_id": str(v0),
+                },
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.current_anchor_balance == Decimal("2500.00")
+            assert acct.version_id == v0 + 1
+
+    def test_inline_anchor_returns_409_on_stale_version(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A stale ``version_id`` returns 409 with the conflict partial."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+
+            _bump_account_version_outside_session(acct_id)
+            db.session.expire_all()
+            balance_before = db.session.get(Account, acct_id).current_anchor_balance
+            history_count_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id).count()
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/inline-anchor",
+                data={
+                    "anchor_balance": "9999.99",
+                    "version_id": str(stale_version),
+                },
+            )
+
+            assert response.status_code == 409
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert "text-warning" in body
+
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.current_anchor_balance == balance_before
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id).count()
+            ) == history_count_before
+
+
+class TestUpdateAccountStaleForm:
+    """``update_account`` (POST /accounts/<id>) optimistic locking on the full edit form."""
+
+    def test_update_account_succeeds_with_matching_version(
+        self, app, auth_client, seed_user,
+    ):
+        """A matching ``version_id`` on the edit form updates and bumps the counter."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            v0 = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.post(
+                f"/accounts/{acct_id}",
+                data={
+                    "name": "Primary Checking",
+                    "account_type_id": str(checking_type.id),
+                    "version_id": str(v0),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Account &#39;Primary Checking&#39; updated." in response.data
+
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.name == "Primary Checking"
+            assert acct.version_id == v0 + 1
+
+    def test_update_account_redirects_with_warning_on_stale_version(
+        self, app, auth_client, seed_user,
+    ):
+        """A stale ``version_id`` redirects back to the edit form with a warning flash.
+
+        The non-HTMX update_account path uses flash + redirect rather
+        than a 409 partial because the surrounding UX is a full-page
+        form, not a swap.  The behaviour invariant is the same: NO
+        write occurs and the user is told the row changed.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            stale_version = db.session.get(Account, acct_id).version_id
+
+            _bump_account_version_outside_session(acct_id)
+            db.session.expire_all()
+            name_before = db.session.get(Account, acct_id).name
+
+            response = auth_client.post(
+                f"/accounts/{acct_id}",
+                data={
+                    "name": "Should Not Apply",
+                    "account_type_id": str(checking_type.id),
+                    "version_id": str(stale_version),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"changed by another action" in response.data.lower()
+
+            db.session.expire_all()
+            acct = db.session.get(Account, acct_id)
+            assert acct.name == name_before, (
+                "Stale-form on update_account must NOT mutate any field."
+            )
+
+
+class TestArchiveAndDeleteStaleData:
+    """``archive_account`` / ``unarchive_account`` / ``hard_delete_account`` StaleDataError handling."""
+
+    def test_archive_account_stale_data_redirects_with_warning(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A StaleDataError during archive surfaces as a flash + redirect.
+
+        The contract: the user always receives a useful response,
+        never a 500.  The account stays unchanged; the user reloads
+        and retries.
+        """
+        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            spare = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Archive Target",
+                current_anchor_balance=Decimal("0.00"),
+                is_active=True,
+            )
+            db.session.add(spare)
+            db.session.commit()
+            spare_id = spare.id
+
+            fired = {"flag": False}
+
+            def make_stale(mapper, connection, target):
+                if fired["flag"] or target.id != spare_id:
+                    return
+                fired["flag"] = True
+                _bump_account_version_outside_session(spare_id)
+
+            event.listen(Account, "before_update", make_stale)
+            try:
+                response = auth_client.post(
+                    f"/accounts/{spare_id}/archive",
+                    follow_redirects=True,
+                )
+            finally:
+                event.remove(Account, "before_update", make_stale)
+
+            assert response.status_code == 200
+            assert b"changed by another action" in response.data.lower()
+
+            db.session.expire_all()
+            persisted = db.session.get(Account, spare_id)
+            assert persisted.is_active is True, (
+                "StaleDataError on archive must NOT flip is_active."
+            )
+
+    def test_hard_delete_account_stale_data_redirects_with_warning(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A StaleDataError during hard-delete leaves the row intact.
+
+        Unlike a normal delete, the row does NOT get removed when the
+        version race goes against this request.  The user receives a
+        warning flash and the row remains for the winner of the race.
+        """
+        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            spare = Account(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Delete Target",
+                current_anchor_balance=Decimal("0.00"),
+            )
+            db.session.add(spare)
+            db.session.commit()
+            spare_id = spare.id
+
+            fired = {"flag": False}
+
+            def make_stale(mapper, connection, target):
+                if fired["flag"] or target.id != spare_id:
+                    return
+                fired["flag"] = True
+                _bump_account_version_outside_session(spare_id)
+
+            event.listen(Account, "before_delete", make_stale)
+            try:
+                response = auth_client.post(
+                    f"/accounts/{spare_id}/hard-delete",
+                    follow_redirects=True,
+                )
+            finally:
+                event.remove(Account, "before_delete", make_stale)
+
+            assert response.status_code == 200
+            assert b"changed by another action" in response.data.lower()
+
+            db.session.expire_all()
+            persisted = db.session.get(Account, spare_id)
+            assert persisted is not None, (
+                "StaleDataError on hard-delete must leave the row in "
+                "place for the winner of the race to handle."
+            )
+
+
+class TestAnchorTemplatesEmitVersionPin:
+    """Templates that render anchor edit forms must include a hidden ``version_id`` input."""
+
+    def test_grid_anchor_form_includes_version_pin(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/anchor-form returns a form with the version_id pin."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            current_version = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.get(f"/accounts/{acct_id}/anchor-form")
+
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'name="version_id"' in body, (
+                "grid anchor form must ship version_id as a hidden "
+                "input for the optimistic-lock contract."
+            )
+            assert f'value="{current_version}"' in body, (
+                "version_id hidden input must carry the current row's "
+                "version, not a placeholder."
+            )
+
+    def test_inline_anchor_form_includes_version_pin(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/inline-anchor-form ships ``version_id`` to the client."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            current_version = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.get(
+                f"/accounts/{acct_id}/inline-anchor-form"
+            )
+
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'name="version_id"' in body
+            assert f'value="{current_version}"' in body
+
+    def test_account_edit_form_includes_version_pin(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/edit ships ``version_id`` so the POST round-trips."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            current_version = db.session.get(Account, acct_id).version_id
+
+            response = auth_client.get(f"/accounts/{acct_id}/edit")
+
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'name="version_id"' in body
+            assert f'value="{current_version}"' in body
+
+    def test_account_create_form_omits_version_pin(
+        self, app, auth_client, seed_user,
+    ):
+        """The create form has no ``version_id`` -- there is no row to pin yet.
+
+        Catching the regression of a copy-paste that puts an
+        ``account.version_id`` reference into the create form would
+        produce a Jinja UndefinedError because ``account`` is None
+        on that path.
+        """
+        with app.app_context():
+            response = auth_client.get("/accounts/new")
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'name="version_id"' not in body

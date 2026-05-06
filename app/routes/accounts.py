@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, require_owner
 
@@ -231,6 +232,24 @@ def update_account(account_id):
     avoids the inline editors and POSTs to ``/accounts/<id>`` directly
     would sidestep the step-up requirement that protects the other
     two anchor-balance paths.
+
+    Optimistic locking (commit C-17 / F-009) operates in two layers:
+
+      1. Stale-form check: the edit form ships ``version_id`` as a
+         hidden input set to the row's counter at render time.  When
+         the submitted value differs from the current
+         ``Account.version_id``, the handler short-circuits with a
+         flash + redirect (renders well in a non-HTMX flow) and
+         records nothing.  This catches the sequential Tab-1/Tab-2
+         race documented in the C-17 manual verification.
+
+      2. SQLAlchemy ``version_id_col``: any concurrent flush that
+         races past the stale-form check is still narrowed by
+         ``WHERE version_id = ?`` at the database tier; the loser
+         raises ``StaleDataError`` which the handler converts into
+         the same flash + redirect path.  The two layers together
+         close every interleaving the optimistic-lock contract is
+         meant to cover.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
@@ -244,6 +263,20 @@ def update_account(account_id):
 
     data = _update_schema.load(request.form)
 
+    # Stale-form check.  Performed before any mutation so the audit
+    # trail (AccountAnchorHistory, audit_log triggers) records only
+    # successful edits.  The check is conditional on the form
+    # having submitted a version (clients that omit it fall through
+    # to the SQLAlchemy-tier check at flush time).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != account.version_id:
+        flash(
+            "This account was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("accounts.edit_account", account_id=account_id))
+
     # Check for duplicate name (if name is changing).
     if "name" in data and data["name"] != account.name:
         existing = (
@@ -255,11 +288,19 @@ def update_account(account_id):
             flash("An account with that name already exists.", "warning")
             return redirect(url_for("accounts.edit_account", account_id=account_id))
 
-    # Handle anchor balance update with audit trail.
+    # Handle anchor balance update with audit trail.  Tracking
+    # ``anchor_changed`` separately from ``new_anchor`` is necessary
+    # because the in-place ``account.current_anchor_balance =
+    # new_anchor`` mutates the field used for the equality check;
+    # a later ``new_anchor != account.current_anchor_balance`` would
+    # always be False and skip the reconcile call.  The flag is set
+    # exactly when the balance actually changed.
     new_anchor = data.pop("anchor_balance", None)
+    anchor_changed = False
     if new_anchor is not None:
         new_anchor = Decimal(str(new_anchor))
         if new_anchor != account.current_anchor_balance:
+            anchor_changed = True
             current_period = pay_period_service.get_current_period(current_user.id)
             account.current_anchor_balance = new_anchor
             if current_period:
@@ -270,20 +311,36 @@ def update_account(account_id):
                     anchor_balance=new_anchor,
                 )
                 db.session.add(history)
-            # Reconcile entries on checking true-ups (see true_up()
-            # route for rationale).  Fires whenever the balance
-            # actually changes, regardless of whether a current
-            # period exists.
-            checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-            if account.account_type_id == checking_type_id:
-                entry_service.clear_entries_for_anchor_true_up(current_user.id)
 
     _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
     for field, value in data.items():
         if field in _ACCOUNT_UPDATE_FIELDS:
             setattr(account, field, value)
 
-    db.session.commit()
+    # Reconcile entries on checking true-ups and commit.  Both
+    # operations live inside the same try/except because
+    # ``clear_entries_for_anchor_true_up`` autoflushes the pending
+    # Account mutation before issuing its own bulk UPDATE -- the
+    # version-pinned WHERE clause is checked at autoflush time, so
+    # ``StaleDataError`` would otherwise escape outside the catch.
+    # See the matching comment in :func:`true_up`.
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    try:
+        if anchor_changed and account.account_type_id == checking_type_id:
+            entry_service.clear_entries_for_anchor_true_up(current_user.id)
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_account id=%d", account_id,
+        )
+        flash(
+            "This account was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("accounts.edit_account", account_id=account_id))
+
     logger.info("Updated account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' updated.", "success")
     return redirect(url_for("accounts.list_accounts"))
@@ -293,7 +350,14 @@ def update_account(account_id):
 @login_required
 @require_owner
 def archive_account(account_id):
-    """Archive an account (soft delete)."""
+    """Archive an account (soft delete).
+
+    The Account model carries a ``version_id_col`` (commit C-17),
+    so a concurrent mutation interleaving with this archive will
+    raise ``StaleDataError`` at flush time.  The handler converts
+    it into a flash + redirect so the user can retry against the
+    fresh row state instead of seeing a 500.
+    """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
@@ -323,7 +387,19 @@ def archive_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = False
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on archive_account id=%d", account_id,
+        )
+        flash(
+            "This account was changed by another action.  Please reload "
+            "the page and try again.",
+            "warning",
+        )
+        return redirect(url_for("accounts.list_accounts"))
     logger.info("Archived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' archived.", "info")
     return redirect(url_for("accounts.list_accounts"))
@@ -333,14 +409,29 @@ def archive_account(account_id):
 @login_required
 @require_owner
 def unarchive_account(account_id):
-    """Unarchive an account."""
+    """Unarchive an account.
+
+    See :func:`archive_account` for the optimistic-lock contract.
+    """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = True
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on unarchive_account id=%d", account_id,
+        )
+        flash(
+            "This account was changed by another action.  Please reload "
+            "the page and try again.",
+            "warning",
+        )
+        return redirect(url_for("accounts.list_accounts"))
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' unarchived.", "success")
     return redirect(url_for("accounts.list_accounts"))
@@ -426,7 +517,19 @@ def hard_delete_account(account_id):
         )
         if account.is_active:
             account.is_active = False
-            db.session.commit()
+            try:
+                db.session.commit()
+            except StaleDataError:
+                db.session.rollback()
+                logger.info(
+                    "Stale-data conflict during archive-fallback in "
+                    "hard_delete_account id=%d", account_id,
+                )
+                flash(
+                    "This account was changed by another action.  "
+                    "Please reload the page and try again.",
+                    "warning",
+                )
         return redirect(url_for("accounts.list_accounts"))
 
     # All guards passed -- permanently delete.
@@ -463,9 +566,25 @@ def hard_delete_account(account_id):
 
     # Step 4: delete the account.  AccountAnchorHistory is handled by
     # the ORM relationship cascade="all, delete-orphan" on Account.
+    # The DELETE narrows by version_id thanks to the optimistic-lock
+    # contract; a concurrent UPDATE that bumped the version since
+    # this request loaded the row raises StaleDataError, which the
+    # handler converts into a flash + redirect rather than a 500.
     account_name = account.name
     db.session.delete(account)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on hard_delete_account id=%d", account_id,
+        )
+        flash(
+            "This account was changed by another action.  Please reload "
+            "the page and try again.",
+            "warning",
+        )
+        return redirect(url_for("accounts.list_accounts"))
 
     flash(f"Account '{account_name}' permanently deleted.", "info")
     return redirect(url_for("accounts.list_accounts"))
@@ -479,7 +598,19 @@ def hard_delete_account(account_id):
 @require_owner
 @fresh_login_required()
 def inline_anchor_update(account_id):
-    """HTMX endpoint: update anchor balance inline from the accounts list."""
+    """HTMX endpoint: update anchor balance inline from the accounts list.
+
+    Optimistic locking (commit C-17 / F-009): the form ships
+    ``version_id`` as a hidden input set to the row's counter at
+    render time.  A submitted value that no longer matches
+    ``Account.version_id`` causes the handler to render the
+    ``_anchor_cell.html`` partial in conflict mode and return 409
+    Conflict, which HTMX swaps in place of the form so the user
+    sees the latest balance and can retry.  The same partial is
+    rendered when SQLAlchemy raises ``StaleDataError`` at flush
+    time, so a concurrent in-flight commit produces an identical
+    UX to a long-stale form.
+    """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         return "Not found", 404
@@ -490,6 +621,21 @@ def inline_anchor_update(account_id):
 
     data = _anchor_schema.load(request.form)
     new_balance = Decimal(str(data["anchor_balance"]))
+
+    submitted_version = data.get("version_id")
+    if submitted_version is not None and submitted_version != account.version_id:
+        logger.info(
+            "Stale-form conflict on inline_anchor_update id=%d "
+            "(submitted=%d, current=%d)",
+            account_id, submitted_version, account.version_id,
+        )
+        return (
+            render_template(
+                "accounts/_anchor_cell.html",
+                acct=account, editing=False, conflict=True,
+            ),
+            409,
+        )
 
     current_period = pay_period_service.get_current_period(current_user.id)
 
@@ -503,12 +649,32 @@ def inline_anchor_update(account_id):
         )
         db.session.add(history)
 
-    # Reconcile entries on checking true-ups (see true_up() for rationale).
+    # Reconcile entries on checking true-ups and commit.  See
+    # true_up() for the autoflush ordering rationale -- both
+    # operations live inside the same try/except so a concurrent
+    # version bump surfaces as a 409 partial regardless of which
+    # statement actually triggers the SQLAlchemy flush.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    if account.account_type_id == checking_type_id:
-        entry_service.clear_entries_for_anchor_true_up(current_user.id)
+    try:
+        if account.account_type_id == checking_type_id:
+            entry_service.clear_entries_for_anchor_true_up(current_user.id)
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        # Re-fetch a fresh, post-conflict copy so the partial renders
+        # the winner's balance, not the loser's stale in-memory value.
+        account = db.session.get(Account, account_id)
+        logger.info(
+            "Stale-data conflict on inline_anchor_update id=%d", account_id,
+        )
+        return (
+            render_template(
+                "accounts/_anchor_cell.html",
+                acct=account, editing=False, conflict=True,
+            ),
+            409,
+        )
 
-    db.session.commit()
     db.session.refresh(account)
 
     logger.info(
@@ -666,6 +832,17 @@ def true_up(account_id):
 
     Records the true-up in anchor_history for audit trail, then
     triggers a balance recalculation via HX-Trigger.
+
+    Optimistic locking (commit C-17 / F-009): the grid edit form
+    submits ``version_id`` as a hidden input.  When the value no
+    longer matches ``Account.version_id`` (because another tab,
+    window, or concurrent request advanced the row), the handler
+    returns the ``grid/_anchor_edit.html`` partial in conflict mode
+    with HTTP 409 and DOES NOT write either the balance or a
+    history row -- the audit trail captures only the winner.  The
+    same conflict UX is rendered when SQLAlchemy raises
+    ``StaleDataError`` at flush time for the truly-concurrent
+    interleaving the form-side check cannot see.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
@@ -677,6 +854,21 @@ def true_up(account_id):
 
     data = _anchor_schema.load(request.form)
     new_balance = Decimal(str(data["anchor_balance"]))
+
+    submitted_version = data.get("version_id")
+    if submitted_version is not None and submitted_version != account.version_id:
+        logger.info(
+            "Stale-form conflict on true_up id=%d "
+            "(submitted=%d, current=%d)",
+            account_id, submitted_version, account.version_id,
+        )
+        return (
+            render_template(
+                "grid/_anchor_edit.html",
+                account=account, editing=False, conflict=True,
+            ),
+            409,
+        )
 
     # Find the current pay period and set it as the anchor period.
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -695,17 +887,42 @@ def true_up(account_id):
     )
     db.session.add(history)
 
-    # Reconcile entries: when the user trues up a checking account they
-    # are declaring "my real checking is now $X" -- by definition every
-    # past-dated debit purchase recorded against a projected transaction
-    # is already in that number, so mark those entries is_cleared=TRUE
-    # to stop the balance calculator from double-counting them.  Only
-    # fires for checking accounts (debit purchases only hit checking).
+    # Reconcile entries (checking only) and commit.  Both
+    # operations are wrapped in the same try/except because
+    # ``clear_entries_for_anchor_true_up`` triggers a session
+    # autoflush before its own bulk UPDATE -- which is where
+    # ``StaleDataError`` is actually raised when a concurrent
+    # commit has bumped ``Account.version_id``.  Catching only
+    # around ``db.session.commit()`` would let the autoflush
+    # error propagate as a 500 instead of the conflict UI.
+    #
+    # Why entries clear on a checking true-up: when the user trues
+    # up the checking anchor they are declaring "my real checking
+    # is now $X" -- every past-dated debit purchase recorded
+    # against a projected transaction is already in that number,
+    # so flipping ``is_cleared = TRUE`` stops the balance
+    # calculator from double-counting them.  Debit purchases
+    # only hit checking, so the reconcile fires only for that
+    # account type.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    if account.account_type_id == checking_type_id:
-        entry_service.clear_entries_for_anchor_true_up(current_user.id)
+    try:
+        if account.account_type_id == checking_type_id:
+            entry_service.clear_entries_for_anchor_true_up(current_user.id)
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        account = db.session.get(Account, account_id)
+        logger.info(
+            "Stale-data conflict on true_up id=%d", account_id,
+        )
+        return (
+            render_template(
+                "grid/_anchor_edit.html",
+                account=account, editing=False, conflict=True,
+            ),
+            409,
+        )
 
-    db.session.commit()
     db.session.refresh(account)
 
     logger.info(

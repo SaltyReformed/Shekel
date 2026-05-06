@@ -10,11 +10,31 @@ from app.models.mixins import CreatedAtMixin, TimestampMixin
 
 
 class Account(TimestampMixin, db.Model):
-    """A financial account (checking or savings) owned by a user."""
+    """A financial account (checking or savings) owned by a user.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
+    DELETE is automatically narrowed to ``WHERE id = ? AND
+    version_id = ?`` and the stored value is incremented in the same
+    statement.  When two concurrent requests both load the same row
+    at version N, the first commit advances the row to N+1; the
+    second commit's WHERE matches zero rows, SQLAlchemy raises
+    :class:`sqlalchemy.orm.exc.StaleDataError`, and the calling
+    route returns HTTP 409 Conflict.
+
+    The column has ``server_default="1"`` so existing rows on the
+    production database are populated automatically when the
+    accompanying migration runs ALTER TABLE; new rows insert with
+    version_id = 1 on either path (default or explicit).
+    """
 
     __tablename__ = "accounts"
     __table_args__ = (
         db.UniqueConstraint("user_id", "name", name="uq_accounts_user_name"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_accounts_version_id_positive",
+        ),
         {"schema": "budget"},
     )
 
@@ -34,6 +54,21 @@ class Account(TimestampMixin, db.Model):
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
+    # Optimistic-locking version counter.  See the class docstring
+    # for the contract.  NOT NULL with server_default="1" so existing
+    # production rows are filled at ALTER TABLE time and new rows
+    # always start at version 1.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: SQLAlchemy will (a) issue
+    # ``UPDATE ... WHERE id = ? AND version_id = ?`` for every flush
+    # of a dirty Account, (b) atomically increment version_id in the
+    # same statement, and (c) raise StaleDataError when rowcount = 0.
+    # Routes that mutate Account MUST catch StaleDataError and
+    # return 409 Conflict.  See app/routes/accounts.py.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
