@@ -50,6 +50,44 @@ class User(UserMixin, TimestampMixin, db.Model):
             "failed_login_count >= 0",
             name="ck_users_failed_login_count_non_negative",
         ),
+        # ``last_security_event_kind`` is a free-text VARCHAR at the
+        # SQL level so the column type stays interchangeable with any
+        # future kind without an Alembic ``ALTER TYPE`` dance, but
+        # the application only ever writes one of four enum values
+        # (see ``app.utils.security_events.SecurityEventKind``).  The
+        # CHECK pins the column to that whitelist at the database
+        # tier so a future caller that bypasses the helper -- a
+        # raw-SQL UPDATE, a forgotten branch in an admin script -- is
+        # rejected at COMMIT instead of silently writing a kind the
+        # banner template cannot render.  Audit finding F-091 / C-16
+        # of the 2026-04-15 security remediation plan.
+        #
+        # The constraint is conditional on the column being non-NULL
+        # so that historical rows where no security event has yet
+        # been recorded continue to satisfy it.  Adding a kind to
+        # ``SecurityEventKind`` requires a follow-up migration that
+        # extends this whitelist; the migration must be deployed
+        # before any code path that emits the new kind.
+        db.CheckConstraint(
+            "last_security_event_kind IS NULL OR "
+            "last_security_event_kind IN ("
+            "'password_changed', 'mfa_enabled', "
+            "'mfa_disabled', 'backup_codes_regenerated')",
+            name="ck_users_security_event_kind",
+        ),
+        # Pair invariant: ``kind`` and ``at`` are stamped together by
+        # ``record_security_event`` and remain non-NULL together for
+        # the row's lifetime.  A row carrying one without the other
+        # would either fail the visibility check (kind missing -> banner
+        # cannot render) or leak an indeterminate banner kind (at
+        # missing -> banner shows "at None" copy).  Either case is a
+        # programming error in a future caller; the CHECK promotes it
+        # from a silent UI bug to a visible IntegrityError at COMMIT.
+        db.CheckConstraint(
+            "(last_security_event_at IS NULL) = "
+            "(last_security_event_kind IS NULL)",
+            name="ck_users_security_event_at_kind_paired",
+        ),
         {"schema": "auth"},
     )
 
@@ -88,6 +126,44 @@ class User(UserMixin, TimestampMixin, db.Model):
     linked_owner_id = db.Column(
         db.Integer,
         db.ForeignKey("auth.users.id", ondelete="SET NULL"),
+    )
+    # Security-event "was this you?" notification state (audit
+    # finding F-091 / commit C-16 of the 2026-04-15 security
+    # remediation plan).  See ``app/utils/security_events.py`` for
+    # the recording / acknowledgement helpers and the kind enum;
+    # see ``app/templates/_security_event_banner.html`` for the
+    # rendering site.
+    #
+    # ``last_security_event_at`` -- timezone-aware moment of the
+    # most recent password change, MFA enrol/disable, or backup-
+    # code regeneration.  Nullable: rows that have never had a
+    # security event are the common case for fresh accounts and
+    # for accounts that have never rotated credentials, so the
+    # NULL state is meaningful (no banner ever rendered).
+    last_security_event_at = db.Column(
+        db.DateTime(timezone=True), nullable=True,
+    )
+    # ``last_security_event_kind`` -- short machine code from
+    # ``SecurityEventKind`` naming the change.  Database CHECK
+    # constraint (``ck_users_security_event_kind``) pins the value
+    # to the enum whitelist; pair CHECK
+    # (``ck_users_security_event_at_kind_paired``) keeps this
+    # NULL iff ``last_security_event_at`` is also NULL.  VARCHAR(50)
+    # is generously sized so adding a longer kind in the future
+    # does not require an ALTER TYPE.
+    last_security_event_kind = db.Column(
+        db.String(50), nullable=True,
+    )
+    # ``last_security_event_acknowledged_at`` -- timezone-aware
+    # moment the user dismissed the banner.  Nullable: NULL means
+    # "never dismissed" (the banner remains visible whenever an
+    # event is present).  Stored on the row rather than in the
+    # session cookie so dismissal persists across browsers /
+    # devices and so an attacker who triggers a change cannot
+    # suppress the legitimate user's banner just by dismissing it
+    # on their own session first.
+    last_security_event_acknowledged_at = db.Column(
+        db.DateTime(timezone=True), nullable=True,
     )
 
     # Relationships

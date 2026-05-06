@@ -331,6 +331,69 @@ def _register_context_processors(app):
         }
 
     @app.context_processor
+    def inject_security_event_banner():
+        """Compute whether the security-event "was this you?" banner renders.
+
+        Returns three template variables consumed by ``base.html`` and
+        ``_security_event_banner.html``:
+
+          * ``security_event_visible`` (bool) -- whether the partial
+            should be included at all.  False for unauthenticated
+            visitors and for users with no recorded event or with a
+            dismissal more recent than the latest event.
+          * ``security_event_kind`` (str | None) -- the bare kind
+            string used by the partial to look up display copy.
+            None when the banner is not visible.
+          * ``security_event_display`` (dict) -- the
+            ``KIND_DISPLAY`` mapping.  Always set so the partial can
+            do ``security_event_display.get(...)`` without an extra
+            None guard.
+
+        The visibility decision is delegated entirely to
+        :func:`~app.utils.security_events.banner_visible_for` so the
+        same comparison drives both the rendering side and the
+        dismiss-route's idempotency guard.
+
+        Failure modes return ``security_event_visible=False`` so the
+        banner errs on the side of NOT appearing during ambiguous
+        startup windows.  Showing a banner that points to a broken
+        endpoint would be worse than briefly missing the alert.
+
+        Audit reference: F-091 / commit C-16 of the 2026-04-15
+        security remediation plan.
+        """
+        # pylint: disable=import-outside-toplevel
+        from flask_login import current_user
+        from app.utils.security_events import (
+            KIND_DISPLAY, banner_visible_for,
+        )
+
+        # ``security_event_display`` is exposed unconditionally so the
+        # partial can run a ``.get(kind)`` without a separate
+        # ``defined`` check.  The dict reference itself carries no PII
+        # and is cheap to ship into every template render.
+        defaults = {
+            "security_event_visible": False,
+            "security_event_kind": None,
+            "security_event_display": KIND_DISPLAY,
+        }
+
+        if not current_user.is_authenticated:
+            return defaults
+
+        # ``banner_visible_for`` reads two columns off the user row;
+        # both are already loaded by Flask-Login's user_loader so
+        # this is in-memory, not an extra query.
+        if not banner_visible_for(current_user):
+            return defaults
+
+        return {
+            "security_event_visible": True,
+            "security_event_kind": current_user.last_security_event_kind,
+            "security_event_display": KIND_DISPLAY,
+        }
+
+    @app.context_processor
     def inject_mfa_nag_visible():
         """Compute whether the owner-role MFA enrollment nag should render.
 

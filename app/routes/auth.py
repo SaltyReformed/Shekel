@@ -54,6 +54,12 @@ from app.utils.log_events import (
     EVT_USER_REGISTERED,
     log_event,
 )
+from app.utils.security_events import (
+    SecurityEventKind,
+    acknowledge_security_event,
+    banner_visible_for,
+    record_security_event,
+)
 from app.utils.session_helpers import (
     invalidate_other_sessions,
     stamp_login_session,
@@ -467,8 +473,19 @@ def change_password():
         # ``_fresh_login_at``: the user just typed their current
         # password, so this counts as a step-up re-auth and the
         # five-minute fresh-login window restarts here.
+        #
+        # The same ``now`` is also written to the security-event
+        # columns (audit F-091 / C-16) so the "was this you?" banner
+        # uses the identical timestamp the audit_log row carries --
+        # an analyst correlating the two cannot see drift between
+        # the password-change moment and the banner-trigger moment.
+        # The stamp lives BEFORE the second commit so both writes
+        # land in one transaction.
         now = datetime.now(timezone.utc)
         current_user.session_invalidated_at = now
+        record_security_event(
+            current_user, SecurityEventKind.PASSWORD_CHANGED, now=now,
+        )
         db.session.commit()
         stamp_login_session(now)
         log_event(logger, logging.INFO, EVT_PASSWORD_CHANGED, AUTH,
@@ -938,10 +955,19 @@ def mfa_confirm():
         )
         return redirect(url_for("settings.show", section="security"))
 
+    # Single ``now`` flows into both ``confirmed_at`` and the
+    # security-event timestamp so an analyst correlating the audit
+    # log row against the banner trigger sees identical microseconds
+    # rather than two near-identical clock samples.  Audit F-091 /
+    # C-16.
+    enrolled_at = datetime.now(timezone.utc)
     mfa_config.pending_secret_encrypted = None
     mfa_config.pending_secret_expires_at = None
     mfa_config.is_enabled = True
-    mfa_config.confirmed_at = datetime.now(timezone.utc)
+    mfa_config.confirmed_at = enrolled_at
+    record_security_event(
+        current_user, SecurityEventKind.MFA_ENABLED, now=enrolled_at,
+    )
     # Seed replay-prevention state from the confirming code's step so
     # the same code cannot be replayed at /mfa/verify in the seconds
     # immediately after enrolment.  Without this seed the first
@@ -974,6 +1000,14 @@ def regenerate_backup_codes():
 
     codes = mfa_service.generate_backup_codes()
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
+    # Stamp the security-event columns in the same transaction as
+    # the backup-code rotation so a rollback rolls back both.  Audit
+    # F-091 / C-16: the banner the user sees on next page load is
+    # the legitimate "your backup codes were regenerated, was that
+    # you?" alert.
+    record_security_event(
+        current_user, SecurityEventKind.BACKUP_CODES_REGENERATED,
+    )
     db.session.commit()
 
     log_event(logger, logging.INFO, EVT_BACKUP_CODES_REGENERATED, AUTH,
@@ -1063,6 +1097,16 @@ def mfa_disable_confirm():
     mfa_config.backup_codes = None
     mfa_config.confirmed_at = None
     mfa_config.last_totp_timestep = None
+    # Stamp the security-event columns in the same transaction as
+    # the MFA-clear so the banner the user sees on next page load
+    # is anchored to the same moment the mfa_configs row was
+    # updated.  Audit F-091 / C-16: an attacker who pivots into the
+    # session and disables MFA cannot prevent the legitimate user
+    # from seeing the alert -- the banner state lives on the
+    # auth.users row, not in the attacker's session cookie.
+    record_security_event(
+        current_user, SecurityEventKind.MFA_DISABLED,
+    )
     db.session.commit()
 
     # MFA disable is a security-relevant state change: a user who
@@ -1079,3 +1123,75 @@ def mfa_disable_confirm():
               "MFA disabled", user_id=current_user.id)
     flash("Two-factor authentication has been disabled.", "success")
     return redirect(url_for("settings.show", section="security"))
+
+
+@auth_bp.route("/security-event/dismiss", methods=["POST"])
+@login_required
+def dismiss_security_event():
+    """Acknowledge the in-app security-event banner for ``current_user``.
+
+    The banner is rendered by ``base.html`` whenever
+    :func:`~app.utils.security_events.banner_visible_for` returns True
+    for the authenticated user.  This handler clears the banner by
+    stamping ``last_security_event_acknowledged_at`` to the current
+    moment; the visibility check then returns False on the next page
+    load (and on every subsequent load, on every device, until a new
+    security event is recorded).
+
+    The route is a POST (CSRF-protected via Flask-WTF's global
+    ``csrf.init_app`` plus the ``csrf_token()`` field rendered in the
+    banner partial) because it changes server state.  ``hx-post`` from
+    the banner's dismiss button targets the same URL with the same CSRF
+    token; an HTMX request gets a 204 No Content swap directive that
+    removes the banner element from the DOM, while a non-HTMX request
+    redirects back to the referring page (or the dashboard if no
+    referer is present) so users without JavaScript still see a sane
+    response.
+
+    Acknowledgement is intentionally idempotent.  A user who clicks
+    dismiss twice (double-click, retry on a flaky network) writes a
+    second timestamp on top of the first; the visibility comparison
+    against ``last_security_event_at`` resolves the same way.
+
+    Audit reference: F-091 (Low) / commit C-16 of the 2026-04-15
+    security remediation plan.
+    """
+    # Defensive guard: if the user reaches this endpoint without a
+    # currently visible banner, the dismiss is a no-op rather than an
+    # error.  This handles the race where two browser tabs both POST
+    # the dismiss after observing the banner; the second tab's POST
+    # simply re-stamps acknowledged_at.
+    if banner_visible_for(current_user):
+        acknowledge_security_event(current_user)
+        db.session.commit()
+
+    # HTMX requests prefer an empty 204 swap; the banner partial uses
+    # ``hx-target="closest .security-event-banner"`` and
+    # ``hx-swap="outerHTML"`` so the empty body removes the element.
+    if request.headers.get("HX-Request") == "true":
+        return ("", 204)
+
+    # Non-HTMX fallback: bounce to the referring page so the user
+    # sees the banner gone on reload.  Two layers of validation guard
+    # against an open-redirect via a tampered Referer:
+    #
+    #   1. Reject any non-empty scheme that is not ``http`` / ``https``.
+    #      A ``javascript:`` Referer parses to scheme=``javascript``,
+    #      path=``alert(1)`` -- using ``parsed.path`` directly would
+    #      hand the JS source string to ``redirect()`` and trip the
+    #      same open-redirect surface the safe-redirect helper exists
+    #      to close.
+    #   2. Run the candidate path through ``_is_safe_redirect`` so a
+    #      ``\\evil.com`` or whitespace-prefixed path is rejected.
+    #
+    # Either failure mode falls back to the dashboard.
+    referer = request.headers.get("Referer", "")
+    parsed = urlparse(referer)
+    if parsed.scheme and parsed.scheme.lower() not in ("http", "https"):
+        return redirect(url_for("dashboard.page"))
+    next_target = parsed.path or url_for("dashboard.page")
+    if parsed.query:
+        next_target = f"{next_target}?{parsed.query}"
+    if not _is_safe_redirect(next_target):
+        next_target = url_for("dashboard.page")
+    return redirect(next_target)

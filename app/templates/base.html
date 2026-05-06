@@ -165,6 +165,18 @@
     {% endwith %}
   </div>
 
+  {# --- Security-event "was this you?" Banner ---
+     Rendered above the MFA nag so a fresh security-relevant change
+     (password rotation, MFA enrol/disable, backup-code regeneration)
+     surfaces on top of any standing security CTA.  Visibility is
+     computed by the ``inject_security_event_banner`` context
+     processor in app/__init__.py; per-kind copy comes from
+     ``KIND_DISPLAY`` in app/utils/security_events.py.  Audit F-091 /
+     commit C-16. #}
+  {% if security_event_visible %}
+    {% include "_security_event_banner.html" %}
+  {% endif %}
+
   {# --- MFA Enrollment Nag (owner role without MFA enabled) ---
      Rendered before breadcrumbs and the welcome banner so the
      security CTA is the first non-nav element on the page.  See

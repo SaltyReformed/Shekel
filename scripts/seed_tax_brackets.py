@@ -50,7 +50,15 @@ def seed_tax_brackets():
         return
 
     for user in users:
-        print(f"\nSeeding tax data for user: {user.email} (id={user.id})")
+        # Audit finding F-114 / C-16: the seed script's stdout is
+        # captured by the container log driver and forwarded off-
+        # host.  Logging ``user.email`` on every container start
+        # would surface a real PII value in long-term log storage
+        # with no operational benefit (the operator already knows
+        # which accounts exist).  user_id is the authoritative
+        # identifier for cross-referencing; the email is intentionally
+        # omitted from the log line.
+        print(f"\nSeeding tax data for user id={user.id}")
         for tax_year, year_data in DEFAULT_FEDERAL_BRACKETS.items():
             _seed_brackets_for_user(user, filing_statuses, tax_year, year_data)
         _seed_fica_for_user(user)
