@@ -123,6 +123,31 @@ or a real quality problem in this project.
 - **Review auto-generated migrations.** Verify intended changes, no phantom diffs, named
   constraints, and correct downgrade.
 
+### Audit Triggers
+
+The `system.audit_log` infrastructure (table, trigger function, per-table row-level triggers)
+is the project's only tamper-resistant forensic record of financial state changes. It is
+materialised by the rebuild migration (`migrations/versions/a5be2a99ea14_rebuild_audit_infrastructure.py`)
+and the canonical table list lives in `app/audit_infrastructure.py:AUDITED_TABLES`.
+
+- **Every new table in `auth`, `budget`, or `salary` MUST be added to `AUDITED_TABLES`.**
+  Adding a table without auditing it leaves a gap in the forensic trail. Reference tables
+  in the `ref` schema are the only schema-level exception (read-only seed data managed by
+  `scripts/seed_ref_tables.py`).
+- **Add the table to `AUDITED_TABLES`, then re-run `flask db upgrade`.** The rebuild
+  migration's idempotent `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` pair attaches the
+  audit trigger on the next upgrade. The entrypoint trigger-count health check
+  (`entrypoint.sh`) refuses to start Gunicorn if the count is short of
+  `EXPECTED_TRIGGER_COUNT`.
+- **Never write directly to `system.audit_log`.** All rows must come through
+  `system.audit_trigger_func`, which captures `app.current_user_id`, `db_user`, and
+  `executed_at` via session-local state. Direct INSERTs from application code would
+  bypass the user-id capture and produce orphaned forensic rows.
+- **The runtime app role (`shekel_app`) cannot drop, alter, or replace audit triggers.**
+  An attacker who pivots into the Gunicorn process retains DML on financial tables but
+  cannot remove the audit trail behind their actions; this is the load-bearing
+  invariant the two-role policy provides.
+
 ### Reference Tables
 
 - **IDs for logic, strings for display only.** Enums in `app/enums.py`. Cache in

@@ -5,7 +5,7 @@
 <div class="row g-3">
   <div class="col-md-4">
     <div class="text-muted small">New Payoff Date</div>
-    <div class="fw-bold" style="color: var(--shekel-accent);">
+    <div class="fw-bold text-accent">
       {{ payoff_summary.payoff_date_with_extra.strftime('%b %Y') }}
     </div>
   </div>
@@ -43,12 +43,11 @@
 {% endif %}
 {% if chart_labels %}
 <canvas id="payoff-chart-results"
-        class="mt-3"
+        class="mt-3 canvas-max-h-300"
         data-labels='{{ chart_labels|tojson }}'
         data-original='{{ chart_original|tojson if chart_original is defined else "[]" }}'
         data-committed='{{ chart_committed|tojson if chart_committed is defined else "[]" }}'
-        data-accelerated='{{ chart_accelerated|tojson }}'
-        style="max-height: 300px;"></canvas>
+        data-accelerated='{{ chart_accelerated|tojson }}'></canvas>
 {% endif %}
 {% elif mode == "target_date" %}
 {% if required_extra is none %}
@@ -63,7 +62,7 @@
 <div class="row g-3">
   <div class="col-md-6">
     <div class="text-muted small">Required Extra Monthly Payment</div>
-    <div class="fs-5 fw-bold font-mono" style="color: var(--shekel-accent);">
+    <div class="fs-5 fw-bold font-mono text-accent">
       ${{ "{:,.2f}".format(required_extra|float) }}
     </div>
   </div>

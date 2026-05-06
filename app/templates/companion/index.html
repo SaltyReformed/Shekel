@@ -2,7 +2,7 @@
 {% block title %}My Budget -- Shekel{% endblock %}
 
 {% block content %}
-<div class="container px-2" style="max-width: 600px;">
+<div class="container px-2 mw-px-600">
 
   {% if period %}
   {# Period navigation header #}
@@ -14,7 +14,7 @@
       <i class="bi bi-chevron-left"></i>
     </a>
     {% else %}
-    <div style="width: 32px;"></div>
+    <div class="w-px-32"></div>
     {% endif %}
 
     <h5 class="mb-0 text-center">
@@ -28,7 +28,7 @@
       <i class="bi bi-chevron-right"></i>
     </a>
     {% else %}
-    <div style="width: 32px;"></div>
+    <div class="w-px-32"></div>
     {% endif %}
   </div>
 
@@ -39,7 +39,7 @@
 
   {% if not transactions %}
   <div class="text-center text-muted py-5">
-    <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+    <i class="bi bi-inbox fs-display"></i>
     <p class="mt-2">No transactions for this period.</p>
   </div>
   {% endif %}
@@ -47,7 +47,7 @@
   {% else %}
   {# No period available (misconfigured or no periods generated) #}
   <div class="text-center text-muted py-5">
-    <i class="bi bi-calendar-x" style="font-size: 2rem;"></i>
+    <i class="bi bi-calendar-x fs-display"></i>
     <p class="mt-2">No pay periods available yet.</p>
   </div>
   {% endif %}

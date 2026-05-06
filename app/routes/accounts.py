@@ -11,7 +11,7 @@ from decimal import Decimal
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import fresh_login_required, require_owner
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
@@ -220,8 +220,18 @@ def edit_account(account_id):
 @accounts_bp.route("/accounts/<int:account_id>", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def update_account(account_id):
-    """Update an account."""
+    """Update an account.
+
+    Step-up gated (commit C-10 / F-045) because the form payload
+    accepts ``anchor_balance`` and writes it through with the same
+    ``AccountAnchorHistory`` audit trail as :func:`true_up` and
+    :func:`inline_anchor_update`.  Without the gate, an attacker who
+    avoids the inline editors and POSTs to ``/accounts/<id>`` directly
+    would sidestep the step-up requirement that protects the other
+    two anchor-balance paths.
+    """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
         flash("Account not found.", "danger")
@@ -339,6 +349,7 @@ def unarchive_account(account_id):
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def hard_delete_account(account_id):
     """Permanently delete an account if it has no blocking dependents.
 
@@ -466,6 +477,7 @@ def hard_delete_account(account_id):
 @accounts_bp.route("/accounts/<int:account_id>/inline-anchor", methods=["PATCH"])
 @login_required
 @require_owner
+@fresh_login_required()
 def inline_anchor_update(account_id):
     """HTMX endpoint: update anchor balance inline from the accounts list."""
     account = db.session.get(Account, account_id)
@@ -648,6 +660,7 @@ def delete_account_type(type_id):
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
 @login_required
 @require_owner
+@fresh_login_required()
 def true_up(account_id):
     """Update the anchor balance for an account (inline edit from grid).
 

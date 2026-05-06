@@ -1,5 +1,239 @@
+# =============================================================================
+# rumdl Configuration
+# =============================================================================
+# Project-level Markdown linting and formatting configuration.
+# Documentation: https://rumdl.dev
+# Place this file in the root of your project directory.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global Settings
+# ---------------------------------------------------------------------------
+
+[global]
+
+# Maximum line length applied globally. Individual rules can override this.
+line-length = 100
+
+# GitHub Flavored Markdown enables tables, task lists, strikethrough, and
+# autolinks beyond the base CommonMark specification.
+flavor = "gfm"
+
+# Honor .gitignore patterns when scanning for files.
+respect-gitignore = true
+
+# Directories and file patterns to skip during linting.
+exclude = [
+    "node_modules",
+    "build",
+    "dist",
+    "vendor",
+    ".git",
+    "_site",
+    "site",
+]
+
+# ---------------------------------------------------------------------------
+# MD003 - Heading Style
+# ---------------------------------------------------------------------------
+# Enforce ATX-style headings (e.g., ## Heading) rather than setext-style
+# (underlined with === or ---).
+
+[MD003]
+style = "atx"
+
+# ---------------------------------------------------------------------------
+# MD004 - Unordered List Style
+# ---------------------------------------------------------------------------
+# Use dashes for all unordered list markers.
+
+[MD004]
+style = "dash"
+
+# ---------------------------------------------------------------------------
+# MD007 - Unordered List Indentation
+# ---------------------------------------------------------------------------
+# Indent nested list items by 2 spaces.
+
+[MD007]
+indent = 2
+
+# ---------------------------------------------------------------------------
+# MD009 - Trailing Spaces
+# ---------------------------------------------------------------------------
+# Disallow trailing whitespace on lines. Set br_spaces to 0 to prohibit
+# the two-trailing-spaces line break convention. Use a backslash or <br>
+# instead if you need a hard line break.
+
+[MD009]
+br_spaces = 0
+strict = true
+
+# ---------------------------------------------------------------------------
+# MD010 - Hard Tabs
+# ---------------------------------------------------------------------------
+# Disallow hard tab characters. Spaces only.
+
+[MD010]
+code_blocks = true
+
+# ---------------------------------------------------------------------------
+# MD012 - Multiple Consecutive Blank Lines
+# ---------------------------------------------------------------------------
+# Allow at most one consecutive blank line.
+
+[MD012]
+maximum = 1
+
+# ---------------------------------------------------------------------------
+# MD013 - Line Length
+# ---------------------------------------------------------------------------
+# Enforce a maximum of 100 characters per line. Reflow is enabled so that
+# rumdl fmt and rumdl check --fix will automatically re-wrap paragraphs
+# that exceed the limit.
+
 [MD013]
 line-length = 100
 code-blocks = false
 tables = false
+headings = true
+paragraphs = true
+strict = false
 reflow = true
+reflow-mode = "normalize"
+
+# ---------------------------------------------------------------------------
+# MD022 - Headings Should Be Surrounded by Blank Lines
+# ---------------------------------------------------------------------------
+# Require one blank line above and below every heading.
+
+[MD022]
+lines_above = 1
+lines_below = 1
+
+# ---------------------------------------------------------------------------
+# MD024 - No Duplicate Heading Text
+# ---------------------------------------------------------------------------
+# Allow duplicate heading text only when the headings are nested under
+# different parent sections. For example, two "## Overview" headings are
+# acceptable if they belong to different top-level sections.
+
+[MD024]
+siblings_only = true
+
+# ---------------------------------------------------------------------------
+# MD025 - Single Top-Level Heading
+# ---------------------------------------------------------------------------
+# Only one H1 heading per document. The heading level to enforce is 1.
+
+[MD025]
+level = 1
+
+# ---------------------------------------------------------------------------
+# MD026 - Trailing Punctuation in Headings
+# ---------------------------------------------------------------------------
+# Disallow punctuation at the end of heading text, except for question
+# marks which are common in FAQ-style documents.
+
+[MD026]
+punctuation = ".,;:!"
+
+# ---------------------------------------------------------------------------
+# MD029 - Ordered List Item Prefix
+# ---------------------------------------------------------------------------
+# Use sequential numbering (1, 2, 3, ...) for ordered lists.
+
+[MD029]
+style = "ordered"
+
+# ---------------------------------------------------------------------------
+# MD030 - Spaces After List Markers
+# ---------------------------------------------------------------------------
+# One space after the list marker for both single-line and multi-line items.
+
+[MD030]
+ul_single = 1
+ol_single = 1
+ul_multi = 1
+ol_multi = 1
+
+# ---------------------------------------------------------------------------
+# MD033 - Inline HTML
+# ---------------------------------------------------------------------------
+# Disallow inline HTML except for elements that have no Markdown equivalent.
+# Add elements to this list as needed for your documents.
+
+[MD033]
+allowed_elements = [
+    "br",
+    "details",
+    "summary",
+    "sub",
+    "sup",
+    "kbd",
+    "abbr",
+]
+
+# ---------------------------------------------------------------------------
+# MD035 - Horizontal Rule Style
+# ---------------------------------------------------------------------------
+# Use triple dashes for horizontal rules.
+
+[MD035]
+style = "---"
+
+# ---------------------------------------------------------------------------
+# MD036 - Emphasis Used Instead of a Heading
+# ---------------------------------------------------------------------------
+# Flag bold or italic text on its own line that should probably be a heading.
+
+[MD036]
+punctuation = ".,;:!?。，；：！？"
+
+# ---------------------------------------------------------------------------
+# MD041 - First Line Should Be a Top-Level Heading
+# ---------------------------------------------------------------------------
+# The first non-blank line in the document must be an H1 heading.
+
+[MD041]
+level = 1
+
+# ---------------------------------------------------------------------------
+# MD044 - Proper Names Should Have Correct Capitalization
+# ---------------------------------------------------------------------------
+# Enforce consistent capitalization for project-specific terms. Add your
+# own proper nouns and product names as needed.
+
+[MD044]
+names = [
+    "Markdown",
+    "GitHub",
+    "JavaScript",
+    "TypeScript",
+    "Python",
+]
+code_blocks = false
+
+# ---------------------------------------------------------------------------
+# MD048 - Code Fence Style
+# ---------------------------------------------------------------------------
+# Use backtick fences (```) rather than tilde fences (~~~).
+
+[MD048]
+code-fence-style = "backtick"
+
+# ---------------------------------------------------------------------------
+# MD049 - Emphasis Style
+# ---------------------------------------------------------------------------
+# Use asterisks for emphasis (*italic*) rather than underscores.
+
+[MD049]
+style = "asterisk"
+
+# ---------------------------------------------------------------------------
+# MD050 - Strong Style
+# ---------------------------------------------------------------------------
+# Use asterisks for strong emphasis (**bold**) rather than underscores.
+
+[MD050]
+style = "asterisk"

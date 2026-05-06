@@ -6,9 +6,10 @@ a specific month/year to adjust the annual salary for paycheck calculation.
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin
 
 
-class SalaryRaise(db.Model):
+class SalaryRaise(CreatedAtMixin, db.Model):
     """A scheduled salary raise event."""
 
     __tablename__ = "salary_raises"
@@ -42,7 +43,6 @@ class SalaryRaise(db.Model):
     flat_amount = db.Column(db.Numeric(12, 2))
     is_recurring = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="raises")

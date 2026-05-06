@@ -1,11 +1,29 @@
 """
 Shekel Budget App -- Auth Routes
 
-Handles login, registration, and logout with Flask-Login session management.
+Handles login, registration, logout, MFA setup/verify/disable, password
+change, session invalidation, and step-up re-authentication
+(``/reauth``).  All these routes share a single blueprint because they
+all mutate the same authenticated-session state and the helper
+constants (``_MFA_PENDING_KEYS``, ``_MFA_PENDING_MAX_AGE``,
+``MFA_SETUP_PENDING_TTL``) are co-owned by multiple routes; splitting
+the file along route lines would force cross-module imports of those
+constants and lose the local audit-rationale comments.
 """
+# Pylint module-size waiver: the auth blueprint legitimately spans more
+# than 1000 lines because of the dense per-route audit rationale
+# (every branch carries a F-NNN finding reference and a security-
+# relevant explanation, all of which would lose context if split into
+# separate modules).  Splitting /reauth into its own module would also
+# lose the shared imports of stamp_login_session / stamp_reauth_session
+# / stamp_session_refresh and require duplicating the
+# _verify_totp_with_replay_logging helper (which is the single point
+# of truth for replay-rejection logging across login, MFA verify, MFA
+# disable, AND reauth).  See commit C-10.
+# pylint: disable=too-many-lines
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session as flask_session, url_for
@@ -19,11 +37,224 @@ from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ConflictError, ValidationError
-from app.utils.log_events import log_event, AUTH
+from app.utils.log_events import (
+    AUTH,
+    EVT_BACKUP_CODES_REGENERATED,
+    EVT_LOGIN_FAILED,
+    EVT_LOGIN_SUCCESS,
+    EVT_LOGOUT,
+    EVT_MFA_DISABLED,
+    EVT_MFA_ENABLED,
+    EVT_MFA_LOGIN_SUCCESS,
+    EVT_PASSWORD_CHANGED,
+    EVT_REAUTH_FAILED,
+    EVT_REAUTH_SUCCESS,
+    EVT_SESSIONS_INVALIDATED,
+    EVT_TOTP_REPLAY_REJECTED,
+    EVT_USER_REGISTERED,
+    log_event,
+)
+from app.utils.security_events import (
+    SecurityEventKind,
+    acknowledge_security_event,
+    banner_visible_for,
+    record_security_event,
+)
+from app.utils.session_helpers import (
+    invalidate_other_sessions,
+    stamp_login_session,
+    stamp_reauth_session,
+    stamp_session_refresh,
+)
 
 logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
+
+# Maximum time between scanning the QR/typing the manual key on /mfa/setup
+# and submitting the verification code on /mfa/confirm.  Bounds the
+# server-side window in which an unconfirmed TOTP secret remains
+# promotable to an active credential.  Long enough to accommodate users
+# who fumble with an authenticator app and short enough that an attacker
+# who briefly compromised the account cannot revisit /mfa/confirm later
+# to silently enrol their own device.  See audit finding F-031 / commit
+# C-05 of the 2026-04-15 security remediation plan.
+MFA_SETUP_PENDING_TTL = timedelta(minutes=15)
+
+# Maximum time between the password POST that establishes pending MFA
+# state on /login and the verification POST on /mfa/verify that
+# consumes it.  Bounds the cookie-replay window for an attacker who
+# captured a session cookie immediately after the victim's password
+# step but before the MFA step.  Five minutes is long enough for a
+# real user to reach for their phone and type a code, short enough
+# that a stolen cookie is uninteresting -- the TOTP code itself
+# rotates every 30 seconds, so the only useful attack window is the
+# one this constant closes.  See audit finding F-002 / commit C-08.
+_MFA_PENDING_MAX_AGE = timedelta(minutes=5)
+
+# Session-cookie keys used to carry MFA pending state across the two
+# halves of the login flow (password POST -> /mfa/verify POST).
+# Centralised here so the login route, the verify route, and the
+# pending-state helpers below stay in sync; a typo on any one key
+# would silently break the flow.
+_MFA_PENDING_KEYS = (
+    "_mfa_pending_user_id",
+    "_mfa_pending_remember",
+    "_mfa_pending_next",
+    "_mfa_pending_at",
+)
+
+
+def _clear_mfa_pending_state():
+    """Pop every MFA pending key from the request session.
+
+    Used by every exit branch in :func:`mfa_verify` -- the timeout
+    rejection, the missing-user branch, the disabled-MFA branch, the
+    encryption-key-failure branch, and the successful-verification
+    branch.  Centralising the cleanup means a future addition to
+    ``_MFA_PENDING_KEYS`` is automatically picked up by every exit
+    path; an inline ``flask_session.pop(...)`` block at each site
+    would have to be updated in five places, with the usual
+    miss-one-and-leak-state bug.
+
+    Idempotent: safe to call when no pending state is present.
+    """
+    for key in _MFA_PENDING_KEYS:
+        flask_session.pop(key, None)
+
+
+def _verify_totp_with_replay_logging(mfa_config, code, user_id):
+    """Verify a TOTP code, log replays, and commit on success.
+
+    Wraps :func:`mfa_service.verify_totp_code` to keep the
+    replay-rejection logging and the post-success commit out of the
+    route's main flow -- :func:`mfa_verify` was over its
+    ``too-many-branches`` budget after the C-09 changes added the
+    REPLAY/ACCEPTED branches inline.  Pulling the three-way enum
+    handling into a helper restores the route to a flat sequence of
+    business steps and keeps each function within Pylint's limits.
+
+    On REPLAY, emits the structured ``totp_replay_rejected`` event
+    that F-142 requires.  The event includes ``user_id`` and
+    ``ip`` so SOC tooling can correlate replay attempts to a
+    specific account and source address.
+
+    On ACCEPTED, commits the SQLAlchemy session so
+    ``mfa_config.last_totp_timestep`` -- which the verifier mutated
+    in place -- persists across requests.  Without this commit, a
+    crash later in the route would leave the matched step
+    un-recorded and replayable on a retry.
+
+    Args:
+        mfa_config: The user's :class:`~app.models.user.MfaConfig`
+            row.  Mutated in place on ACCEPTED.
+        code: The 6-digit TOTP code submitted by the user.
+        user_id: The :attr:`User.id` whose pending login is being
+            verified.  Carried into the replay-rejected log event.
+
+    Returns:
+        bool: True if the code was ACCEPTED.  False if it was
+            REPLAY or INVALID.
+
+    Raises:
+        cryptography.fernet.InvalidToken: If the encrypted secret
+            cannot be decrypted under any current Fernet key.  Caller
+            handles via the encryption-key-failure redirect.
+        RuntimeError: If ``TOTP_ENCRYPTION_KEY`` is unset.  Same
+            handling.
+    """
+    result = mfa_service.verify_totp_code(mfa_config, code)
+    if result is mfa_service.TotpVerificationResult.REPLAY:
+        log_event(
+            logger, logging.WARNING, EVT_TOTP_REPLAY_REJECTED, AUTH,
+            "TOTP replay attempt rejected",
+            user_id=user_id, ip=request.remote_addr,
+        )
+    if result is mfa_service.TotpVerificationResult.ACCEPTED:
+        db.session.commit()
+        return True
+    return False
+
+
+def _consume_backup_code(mfa_config, plaintext):
+    """Verify a backup code against stored hashes and consume on match.
+
+    Single-use backup codes work as a one-time bypass for the TOTP
+    requirement.  This helper handles the verify-and-remove pair as
+    one operation so :func:`mfa_verify` does not have to inline the
+    list-rebuild and commit (one less branch on its R0912 budget,
+    and the consume step lives next to the verify step that
+    motivates it).
+
+    Args:
+        mfa_config: The user's :class:`~app.models.user.MfaConfig`
+            row; ``backup_codes`` is mutated in place on a match
+            and the change is committed.
+        plaintext: User-submitted backup code in plaintext.  Length-
+            agnostic: pre-C-03 codes (8 hex chars) and post-C-03
+            codes (28 hex chars) verify identically because bcrypt
+            ignores length below the 72-byte input cap.
+
+    Returns:
+        True if ``plaintext`` matched a stored hash and was consumed.
+        False if no hash matched (no DB change in that case).
+    """
+    idx = mfa_service.verify_backup_code(plaintext, mfa_config.backup_codes)
+    if idx < 0:
+        return False
+    mfa_config.backup_codes = [
+        h for i, h in enumerate(mfa_config.backup_codes) if i != idx
+    ]
+    db.session.commit()
+    return True
+
+
+def _mfa_pending_is_fresh():
+    """Return True iff the session's ``_mfa_pending_at`` is recent.
+
+    Reads ``flask_session["_mfa_pending_at"]`` (an ISO-8601 string
+    written by /login when MFA is required) and compares it against
+    ``datetime.now(timezone.utc)``.  Returns False, NEVER raising,
+    for any of the following adversarial conditions:
+
+      * No ``_mfa_pending_at`` key in the session -- pending state
+        was constructed without a timestamp (pre-C-08 cookie still
+        in flight, or a tampered/forged cookie missing the field).
+      * The value is not parseable as ISO-8601 -- malformed cookie.
+      * The parsed datetime is naive (no timezone) -- ill-formed
+        cookie that would otherwise raise on the comparison.
+      * The pending timestamp is in the future -- clock skew or
+        tampered cookie; treat as invalid rather than honouring an
+        impossible state.
+      * The age exceeds ``_MFA_PENDING_MAX_AGE`` -- the legitimate
+        case the constant exists to enforce.
+
+    Fail-closed across the board.  The cost of a false rejection is
+    one extra password retry by the user; the cost of a false
+    acceptance is the entire F-002 finding (a stolen cookie can
+    complete login weeks after the password step).
+    """
+    raw = flask_session.get("_mfa_pending_at")
+    if not raw:
+        return False
+    try:
+        pending_at = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return False
+    if pending_at.tzinfo is None:
+        # A naive datetime would raise on the timezone-aware
+        # subtraction below.  Reject explicitly so the failure mode
+        # is "expired pending state" (UX redirect to /login) rather
+        # than "500 from the auth route".
+        return False
+    elapsed = datetime.now(timezone.utc) - pending_at
+    if elapsed < timedelta(0):
+        # Future-dated pending state -- only reachable via a tampered
+        # cookie (the SECRET_KEY signature would have to be forged)
+        # or a backwards clock jump on the server.  Either way the
+        # value cannot be trusted.
+        return False
+    return elapsed <= _MFA_PENDING_MAX_AGE
 
 
 def _is_safe_redirect(target):
@@ -104,12 +335,24 @@ def login():
                 flask_session["_mfa_pending_next"] = (
                     pending_next if _is_safe_redirect(pending_next) else None
                 )
+                # Stamp the pending state with a timestamp so /mfa/verify
+                # can reject cookies older than _MFA_PENDING_MAX_AGE.
+                # Without this, a captured session cookie remains a valid
+                # MFA pending state for the entire 31-day default Flask
+                # session lifetime -- audit finding F-002.
+                flask_session["_mfa_pending_at"] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
                 return redirect(url_for("auth.mfa_verify"))
 
-            # No MFA -- complete login immediately.
+            # No MFA -- complete login immediately.  Stamp all three
+            # session lifecycle timestamps in one call so the
+            # idle-timeout check (commit C-10 / F-006) and the
+            # fresh-login check (commit C-10 / F-045) start from the
+            # same instant the session was created.
             login_user(user, remember=remember)
-            flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-            log_event(logger, logging.INFO, "login_success", AUTH,
+            stamp_login_session(datetime.now(timezone.utc))
+            log_event(logger, logging.INFO, EVT_LOGIN_SUCCESS, AUTH,
                       "User logged in", user_id=user.id, email=email)
 
             # Companions always go to companion.index (ignore next param).
@@ -125,7 +368,7 @@ def login():
             return redirect(next_page or url_for("dashboard.page"))
 
         except AuthError:
-            log_event(logger, logging.WARNING, "login_failed", AUTH,
+            log_event(logger, logging.WARNING, EVT_LOGIN_FAILED, AUTH,
                       "Login failed", email=email, ip=request.remote_addr)
             flash("Invalid email or password.", "danger")
 
@@ -174,9 +417,18 @@ def register():
         return render_template("auth/register.html")
 
     try:
-        auth_service.register_user(email, password, display_name)
+        # Capture the user so the structured ``user_registered`` event
+        # can include the assigned user_id.  ``register_user`` already
+        # returned the user (audit-finding F-085 / commit C-14
+        # required no signature change here -- the route was simply
+        # discarding the value).
+        user = auth_service.register_user(email, password, display_name)
         db.session.commit()
-        logger.info("action=user_registered email=%s", email)
+        log_event(
+            logger, logging.INFO, EVT_USER_REGISTERED, AUTH,
+            "User registered",
+            user_id=user.id, email=email,
+        )
         flash("Account created. Please sign in.", "success")
         return redirect(url_for("auth.login"))
     except ConflictError as e:
@@ -191,7 +443,7 @@ def register():
 @login_required
 def logout():
     """End the user's session and redirect to login."""
-    log_event(logger, logging.INFO, "logout", AUTH,
+    log_event(logger, logging.INFO, EVT_LOGOUT, AUTH,
               "User logged out", user_id=current_user.id)
     logout_user()
     flash("You have been logged out.", "info")
@@ -213,11 +465,30 @@ def change_password():
     try:
         auth_service.change_password(current_user, current_password, new_password)
         db.session.commit()
-        # Invalidate all other sessions after password change.
-        current_user.session_invalidated_at = datetime.now(timezone.utc)
+        # Invalidate all other sessions after password change.  A
+        # single ``now`` value flows into both the DB column and
+        # every cookie key so the strict-less-than comparison in
+        # ``load_user`` accepts this session and rejects every
+        # parallel one.  ``stamp_login_session`` ALSO refreshes
+        # ``_fresh_login_at``: the user just typed their current
+        # password, so this counts as a step-up re-auth and the
+        # five-minute fresh-login window restarts here.
+        #
+        # The same ``now`` is also written to the security-event
+        # columns (audit F-091 / C-16) so the "was this you?" banner
+        # uses the identical timestamp the audit_log row carries --
+        # an analyst correlating the two cannot see drift between
+        # the password-change moment and the banner-trigger moment.
+        # The stamp lives BEFORE the second commit so both writes
+        # land in one transaction.
+        now = datetime.now(timezone.utc)
+        current_user.session_invalidated_at = now
+        record_security_event(
+            current_user, SecurityEventKind.PASSWORD_CHANGED, now=now,
+        )
         db.session.commit()
-        flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-        log_event(logger, logging.INFO, "password_changed", AUTH,
+        stamp_login_session(now)
+        log_event(logger, logging.INFO, EVT_PASSWORD_CHANGED, AUTH,
                   "Password changed", user_id=current_user.id)
         flash("Password changed successfully.", "success")
     except AuthError as e:
@@ -234,30 +505,164 @@ def invalidate_sessions():
     """Invalidate all sessions for the current user except the current one.
 
     Sets session_invalidated_at to now, which causes load_user() to
-    reject any session created before this timestamp. The current
-    session is refreshed with a new creation timestamp.
+    reject any session created before this timestamp.  The current
+    session is refreshed via :func:`stamp_session_refresh` so that
+    ``_session_created_at`` advances past the new invalidation point
+    (and survives the loader's strict-less-than check).
+    ``_fresh_login_at`` is deliberately left untouched: the user
+    pressed a "log everyone else out" button without re-typing a
+    password, so the step-up re-auth window must NOT silently
+    extend.
     """
-    current_user.session_invalidated_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    current_user.session_invalidated_at = now
     db.session.commit()
-    # Refresh the current session so it survives the invalidation.
-    flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-    log_event(logger, logging.INFO, "sessions_invalidated", AUTH,
+    stamp_session_refresh(now)
+    log_event(logger, logging.INFO, EVT_SESSIONS_INVALIDATED, AUTH,
               "All sessions invalidated", user_id=current_user.id)
     flash("All other sessions have been logged out.", "success")
     return redirect(url_for("settings.show", section="security"))
 
 
+@auth_bp.route("/reauth", methods=["GET", "POST"])
+@login_required
+@limiter.limit("5 per 15 minutes", methods=["POST"])
+def reauth():
+    """Step-up re-authentication for high-value operations.
+
+    Users land here when ``fresh_login_required`` (commit C-10 /
+    F-045) determines that their last password verification is older
+    than ``FRESH_LOGIN_MAX_AGE_MINUTES``.  Successful POST stamps
+    ``_fresh_login_at`` to ``now`` via
+    :func:`~app.utils.session_helpers.stamp_reauth_session` and
+    redirects to the validated ``next`` URL.
+
+    Verification mirrors the /login flow:
+
+      * Password is verified through ``auth_service.verify_password``
+        -- the same bcrypt path used at primary login.
+      * If the user has MFA enabled, a TOTP code is required.  The
+        same ``_verify_totp_with_replay_logging`` helper used by
+        /mfa/verify and /mfa/disable enforces replay prevention --
+        a code captured at primary login cannot be reused here, and
+        vice versa, because the helper bumps and persists
+        ``mfa_config.last_totp_timestep`` on every ACCEPTED match.
+      * Backup codes are intentionally NOT accepted here.  They are
+        single-use and reserved for the "I lost my authenticator"
+        scenario at primary login.  Spending one on a step-up
+        prompt would burn a recovery credential for the wrong
+        purpose; the user can /logout and /login with a backup code
+        if their device is unavailable.
+      * Decryption errors (missing TOTP_ENCRYPTION_KEY, ciphertext
+        unreadable under any current Fernet) flash an
+        operator-actionable message and re-render the form, mirroring
+        /mfa/verify and /mfa/disable.
+
+    The ``next`` parameter is validated through ``_is_safe_redirect``
+    on every read (storage time and post-success redirect) so an
+    attacker cannot stage an open-redirect via the step-up flow.
+    For most decorated routes the original action URL is a POST or
+    PATCH endpoint, so the redirect-back GET will return 405 -- the
+    user is expected to re-issue their action manually.  The
+    fall-through to /dashboard handles the no-next case (direct
+    navigation to /reauth).
+    """
+    next_url = request.args.get("next")
+    safe_next = next_url if _is_safe_redirect(next_url) else None
+
+    if request.method == "GET":
+        return render_template("auth/reauth.html", next=safe_next)
+
+    password = request.form.get("password", "")
+    if not auth_service.verify_password(password, current_user.password_hash):
+        log_event(
+            logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
+            "Step-up re-auth failed: bad password",
+            user_id=current_user.id, ip=request.remote_addr,
+        )
+        flash("Invalid password.", "danger")
+        return render_template("auth/reauth.html", next=safe_next)
+
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=current_user.id, is_enabled=True)
+        .first()
+    )
+    if mfa_config:
+        totp_code = request.form.get("totp_code", "").strip()
+        try:
+            accepted = _verify_totp_with_replay_logging(
+                mfa_config, totp_code, current_user.id,
+            )
+        except (RuntimeError, InvalidToken):
+            flash(
+                "MFA could not be verified because the encryption key "
+                "has changed or been removed. Contact your "
+                "administrator.",
+                "danger",
+            )
+            return render_template("auth/reauth.html", next=safe_next)
+        if not accepted:
+            log_event(
+                logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
+                "Step-up re-auth failed: bad TOTP",
+                user_id=current_user.id, ip=request.remote_addr,
+            )
+            flash("Invalid authentication code.", "danger")
+            return render_template("auth/reauth.html", next=safe_next)
+
+    stamp_reauth_session(datetime.now(timezone.utc))
+    log_event(
+        logger, logging.INFO, EVT_REAUTH_SUCCESS, AUTH,
+        "Step-up re-auth succeeded", user_id=current_user.id,
+    )
+    if safe_next:
+        return redirect(safe_next)
+    return redirect(url_for("dashboard.page"))
+
+
 @auth_bp.route("/mfa/verify", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def mfa_verify():
+def mfa_verify():  # pylint: disable=too-many-return-statements
     """Display the MFA verification form and handle code submission.
 
     Requires a pending MFA user_id in the session (set by the login
     route after successful password verification). Completes the login
     on valid TOTP or backup code.
+
+    Pending state freshness is enforced on every entry to this view
+    (both GET and POST) via :func:`_mfa_pending_is_fresh`.  A pending
+    state older than ``_MFA_PENDING_MAX_AGE`` is cleared and the user
+    is bounced back to /login with a flash message -- the F-002
+    cookie-replay window closes at exactly this gate.
+
+    Pylint note: ``too-many-return-statements`` is suppressed because
+    each early return is a distinct semantic exit (no pending state,
+    stale state, GET render, missing user-or-config, key failure,
+    invalid code, companion success, owner success).  Consolidating
+    these into one return path would force a single flash/redirect
+    template that hides the per-mode messaging; the explicit returns
+    are the readable form.
     """
     pending_user_id = flask_session.get("_mfa_pending_user_id")
     if not pending_user_id:
+        # No pending state at all -- silently redirect.  This is the
+        # normal case for a user who navigated directly to /mfa/verify
+        # without completing the password step; no flash required.
+        return redirect(url_for("auth.login"))
+
+    if not _mfa_pending_is_fresh():
+        # Pending state exists but is stale, malformed, or future-dated
+        # (see _mfa_pending_is_fresh for the full failure list).  Clear
+        # every pending key so a fresh /login starts from a clean slate
+        # and surface a user-visible reason for the bounce -- without
+        # the flash, a user who paused on the verify page for >5 min
+        # would see only an unexplained redirect to /login.  F-002.
+        _clear_mfa_pending_state()
+        flash(
+            "Two-factor authentication timed out. Please log in again.",
+            "warning",
+        )
         return redirect(url_for("auth.login"))
 
     if request.method == "GET":
@@ -268,33 +673,50 @@ def mfa_verify():
     backup_code = request.form.get("backup_code", "").strip()
 
     user = db.session.get(User, pending_user_id)
-    if not user:
-        # User was deleted between login steps -- clear pending state.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
+    mfa_config = None
+    if user:
+        mfa_config = (
+            db.session.query(MfaConfig)
+            .filter_by(user_id=user.id, is_enabled=True)
+            .first()
+        )
+    if not user or not mfa_config:
+        # Either the user was deleted between login steps or MFA was
+        # disabled out from under the pending session.  Both are race
+        # conditions that resolve the same way: clear pending state
+        # and silently bounce to /login.  No flash because a fresh
+        # password entry will explain itself (invalid credentials if
+        # the user is gone, no MFA prompt if MFA is disabled).
+        _clear_mfa_pending_state()
         return redirect(url_for("auth.login"))
 
-    mfa_config = (
-        db.session.query(MfaConfig)
-        .filter_by(user_id=user.id, is_enabled=True)
-        .first()
-    )
-    if not mfa_config:
-        # MFA was disabled between login steps -- clear pending state.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
-        return redirect(url_for("auth.login"))
+    valid = False
+    used_backup_code = False
 
+    # Single try/except wraps both the up-front decrypt (preserving
+    # the pre-C-09 fail-fast behaviour: a missing encryption key
+    # disables BOTH the TOTP and backup-code paths) and the TOTP
+    # verifier (which decrypts again internally on the TOTP path).
+    # Any of three failure modes -- decrypt-now error, verifier
+    # decrypt error, or impossible-but-defensive key swap mid-flow --
+    # collapses into the same operator-side error message and
+    # redirect.
     try:
-        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        if totp_code:
+            valid = _verify_totp_with_replay_logging(
+                mfa_config, totp_code, user.id,
+            )
+        elif backup_code:
+            # Backup-code path delegates to _consume_backup_code so
+            # the verify+remove+commit sequence stays atomic and is
+            # not duplicated at any other call site.  Length-
+            # agnostic: pre-C-03 (8 hex) and post-C-03 (28 hex) codes
+            # verify identically through bcrypt.
+            used_backup_code = _consume_backup_code(mfa_config, backup_code)
+            valid = used_backup_code
     except (RuntimeError, InvalidToken):
-        # Key is missing or has changed since MFA was enabled.
-        # Clear pending MFA state so the user is not stuck in a loop.
-        flask_session.pop("_mfa_pending_user_id", None)
-        flask_session.pop("_mfa_pending_remember", None)
-        flask_session.pop("_mfa_pending_next", None)
+        _clear_mfa_pending_state()
         flash(
             "MFA verification failed. The encryption key may have been "
             "changed or removed. Contact your administrator.",
@@ -302,38 +724,48 @@ def mfa_verify():
         )
         return redirect(url_for("auth.login"))
 
-    valid = False
-
-    if totp_code:
-        # Verify the 6-digit TOTP code from an authenticator app.
-        valid = mfa_service.verify_totp_code(secret, totp_code)
-    elif backup_code:
-        # Verify the 8-character backup code against stored hashes.
-        idx = mfa_service.verify_backup_code(backup_code, mfa_config.backup_codes)
-        if idx >= 0:
-            # Remove the consumed backup code hash from the list.
-            mfa_config.backup_codes = [
-                h for i, h in enumerate(mfa_config.backup_codes) if i != idx
-            ]
-            db.session.commit()
-            valid = True
-
     if not valid:
         flash("Invalid verification code.", "danger")
         return render_template("auth/mfa_verify.html")
 
     # Login completion -- both password and TOTP/backup code are verified.
-    remember = flask_session.pop("_mfa_pending_remember", False)
+    # Read the values we still need from pending state before clearing.
+    remember = flask_session.get("_mfa_pending_remember", False)
     # Validate again at redirect time (defense in depth -- the value was
     # also validated at storage time in the login route).
-    next_page = flask_session.pop("_mfa_pending_next", None)
+    next_page = flask_session.get("_mfa_pending_next")
     if not _is_safe_redirect(next_page):
         next_page = None
-    flask_session.pop("_mfa_pending_user_id", None)
+
+    _clear_mfa_pending_state()
 
     login_user(user, remember=remember)
-    flask_session["_session_created_at"] = datetime.now(timezone.utc).isoformat()
-    log_event(logger, logging.INFO, "mfa_login_success", AUTH,
+    # Stamp every lifecycle key in one call so the idle-timeout check
+    # (commit C-10 / F-006) and the fresh-login check (commit C-10 /
+    # F-045) start from the same instant the MFA-protected session
+    # was completed.  The backup-code branch below ALSO calls
+    # ``invalidate_other_sessions``, which writes ``_session_created_at``
+    # again with its own internal ``now`` -- the small microsecond
+    # drift is harmless because the load_user check is strict less-
+    # than, not equality, and the cookie's later value is still > the
+    # DB's earlier session_invalidated_at.
+    stamp_login_session(datetime.now(timezone.utc))
+
+    if used_backup_code:
+        # Backup-code consumption is the canonical "I lost my
+        # authenticator" signal -- the credential the user just spent
+        # exists precisely because the original device is unavailable
+        # or compromised.  Force every other live session for this
+        # user to re-authenticate so an attacker who has the same
+        # password+device can no longer ride along.  F-003.
+        #
+        # Called after login_user / _session_created_at so the helper
+        # refreshes the cookie (with its single ``now``) AFTER
+        # Flask-Login has populated the session, ensuring the
+        # current request survives the bump.
+        invalidate_other_sessions(user, "backup_code_consumed")
+
+    log_event(logger, logging.INFO, EVT_MFA_LOGIN_SUCCESS, AUTH,
               "MFA login succeeded", user_id=user.id)
 
     # Companions always go to companion.index (ignore next_page).
@@ -349,9 +781,21 @@ def mfa_verify():
 def mfa_setup():
     """Display the MFA setup page with QR code and manual key.
 
-    Generates a new TOTP secret, stores it in the Flask session, and
-    renders the setup template.  If MFA is already enabled the user is
-    redirected back to security settings.
+    Generates a fresh TOTP secret, encrypts it under the application's
+    Fernet/MultiFernet key, and persists the ciphertext on the user's
+    ``MfaConfig`` row in ``pending_secret_encrypted`` (paired with a
+    15-minute expiry in ``pending_secret_expires_at``) instead of in
+    the user's signed-but-unencrypted Flask session cookie.  See audit
+    finding F-031 / commit C-05.
+
+    Each visit overwrites any previous pending secret -- legitimate
+    re-visits after invalid-code retries get a new QR code, and a
+    stale pending row from an abandoned setup is replaced rather than
+    accumulated.
+
+    If MFA is already enabled the user is redirected back to security
+    settings.  If the encryption key is missing the user is redirected
+    with a flash explaining the operator-side prerequisite.
     """
     mfa_config = (
         db.session.query(MfaConfig)
@@ -363,7 +807,30 @@ def mfa_setup():
         return redirect(url_for("settings.show", section="security"))
 
     secret = mfa_service.generate_totp_secret()
-    flask_session["_mfa_setup_secret"] = secret
+    # Encrypt before any DB mutation so a missing TOTP_ENCRYPTION_KEY
+    # leaves the database state untouched -- no orphan pending row, no
+    # half-initialized MfaConfig.  encrypt_secret() raises RuntimeError
+    # when the key is unset (see app/services/mfa_service.py:_build_fernet_list).
+    try:
+        encrypted_pending = mfa_service.encrypt_secret(secret)
+    except RuntimeError:
+        flash(
+            "MFA is not available. The server administrator must set "
+            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+
+    if mfa_config is None:
+        mfa_config = MfaConfig(user_id=current_user.id)
+        db.session.add(mfa_config)
+
+    mfa_config.pending_secret_encrypted = encrypted_pending
+    mfa_config.pending_secret_expires_at = (
+        datetime.now(timezone.utc) + MFA_SETUP_PENDING_TTL
+    )
+    db.session.commit()
+
     qr_data_uri = mfa_service.generate_qr_code_data_uri(
         mfa_service.get_totp_uri(secret, current_user.email)
     )
@@ -379,35 +846,108 @@ def mfa_setup():
 def mfa_confirm():
     """Verify a TOTP code and enable MFA for the current user.
 
-    Reads the secret from the Flask session (stored during /mfa/setup),
-    verifies the submitted code, then encrypts and persists the secret
-    along with freshly-generated backup codes.
+    Reads the encrypted pending secret persisted by ``/mfa/setup``
+    (commit C-05 moved this off the Flask session cookie), checks that
+    it has not expired, decrypts it, and verifies the submitted code.
+    On success the pending secret is re-encrypted under the current
+    primary key and promoted to ``totp_secret_encrypted``; the pending
+    columns are cleared in the same commit so a replay of the
+    confirmation form cannot re-enrol a now-stale device.
+
+    Failure modes handled here:
+
+      * No ``MfaConfig`` row, or one without a pending secret -- the
+        user has not started setup or the previous setup has been
+        consumed/cleared.  Redirect to /mfa/setup with a flash.
+      * Pending expiry has elapsed -- reject and clear the pending
+        columns so the next /mfa/setup call starts cleanly.
+      * Encryption key is missing or the pending ciphertext does not
+        decrypt under any configured key -- redirect with a flash that
+        names the operator-side fix.
+      * Invalid TOTP code -- flash and redirect; pending state is
+        retained until expiry so a typo does not force a re-scan.
     """
-    secret = flask_session.pop("_mfa_setup_secret", None)
-    if secret is None:
-        flash("MFA setup session expired. Please start again.", "danger")
-        return redirect(url_for("auth.mfa_setup"))
-
-    totp_code = request.form.get("totp_code", "")
-    if not mfa_service.verify_totp_code(secret, totp_code):
-        # Re-store the secret so the user can retry without re-scanning.
-        flask_session["_mfa_setup_secret"] = secret
-        flash("Invalid code. Please try again.", "danger")
-        return redirect(url_for("auth.mfa_setup"))
-
-    # Valid code -- enable MFA.
     mfa_config = (
         db.session.query(MfaConfig)
         .filter_by(user_id=current_user.id)
         .first()
     )
-    if not mfa_config:
-        mfa_config = MfaConfig(user_id=current_user.id)
-        db.session.add(mfa_config)
+    # Single guard for "no usable pending secret".  Covers three cases
+    # that share the same user-facing recovery (start over): no row, a
+    # row with no pending columns set, or a row whose expiry has
+    # elapsed.  When the row had stale data we clear it in the same
+    # commit so a request that races a fresh /mfa/setup GET does not
+    # see the same expired ciphertext twice.
+    has_pending = (
+        mfa_config is not None
+        and mfa_config.pending_secret_encrypted is not None
+        and mfa_config.pending_secret_expires_at is not None
+    )
+    if not has_pending or (
+            mfa_config.pending_secret_expires_at
+            < datetime.now(timezone.utc)
+    ):
+        if has_pending:
+            mfa_config.pending_secret_encrypted = None
+            mfa_config.pending_secret_expires_at = None
+            db.session.commit()
+        flash("MFA setup session expired. Please start again.", "danger")
+        return redirect(url_for("auth.mfa_setup"))
 
+    try:
+        secret = mfa_service.decrypt_secret(mfa_config.pending_secret_encrypted)
+    except RuntimeError:
+        # TOTP_ENCRYPTION_KEY is unset.  Sending the user back to
+        # /mfa/setup would only loop them through the same failure
+        # (encrypt_secret would raise RuntimeError too), so clear the
+        # pending state and bounce to the security settings page where
+        # the user can see the status and wait for the operator-side
+        # fix.  Mirrors the recovery path used in /mfa/disable.
+        mfa_config.pending_secret_encrypted = None
+        mfa_config.pending_secret_expires_at = None
+        db.session.commit()
+        flash(
+            "MFA is not available. The server administrator must set "
+            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "danger",
+        )
+        return redirect(url_for("settings.show", section="security"))
+    except InvalidToken:
+        # The pending ciphertext is unreadable under the current Fernet
+        # key list -- typically because the key it was written under has
+        # been pruned from TOTP_ENCRYPTION_KEY_OLD between /mfa/setup
+        # and /mfa/confirm.  /mfa/setup itself still works (the primary
+        # key is present), so direct the user there to start over.
+        mfa_config.pending_secret_encrypted = None
+        mfa_config.pending_secret_expires_at = None
+        db.session.commit()
+        flash(
+            "MFA setup could not be verified. Please start again.",
+            "danger",
+        )
+        return redirect(url_for("auth.mfa_setup"))
+
+    totp_code = request.form.get("totp_code", "")
+    matched_step = mfa_service.verify_totp_setup_code(secret, totp_code)
+    if matched_step is None:
+        # Pending state is preserved -- the user may retry until the
+        # 15-minute expiry without re-scanning the QR code.
+        flash("Invalid code. Please try again.", "danger")
+        return redirect(url_for("auth.mfa_setup"))
+
+    # Re-encrypt under the current primary key rather than copying the
+    # bytes verbatim from the pending column.  If TOTP_ENCRYPTION_KEY
+    # rotated during the setup window the pending ciphertext could
+    # decrypt under a retired key only; promoting that ciphertext as-is
+    # would leave the active credential dependent on a key the operator
+    # is about to remove from TOTP_ENCRYPTION_KEY_OLD.  Re-encrypt
+    # binds the active record to the current primary every time.
     try:
         mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
     except RuntimeError:
+        # decrypt_secret() succeeded above so MultiFernet was usable a
+        # moment ago.  This branch is only hit if TOTP_ENCRYPTION_KEY
+        # was unset between the two calls -- defensive, not expected.
         flash(
             "MFA is not available. The server administrator must set "
             "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
@@ -415,14 +955,32 @@ def mfa_confirm():
         )
         return redirect(url_for("settings.show", section="security"))
 
+    # Single ``now`` flows into both ``confirmed_at`` and the
+    # security-event timestamp so an analyst correlating the audit
+    # log row against the banner trigger sees identical microseconds
+    # rather than two near-identical clock samples.  Audit F-091 /
+    # C-16.
+    enrolled_at = datetime.now(timezone.utc)
+    mfa_config.pending_secret_encrypted = None
+    mfa_config.pending_secret_expires_at = None
     mfa_config.is_enabled = True
-    mfa_config.confirmed_at = datetime.now(timezone.utc)
+    mfa_config.confirmed_at = enrolled_at
+    record_security_event(
+        current_user, SecurityEventKind.MFA_ENABLED, now=enrolled_at,
+    )
+    # Seed replay-prevention state from the confirming code's step so
+    # the same code cannot be replayed at /mfa/verify in the seconds
+    # immediately after enrolment.  Without this seed the first
+    # ~30 seconds of an MFA-protected account would still be vulnerable
+    # to the F-005 attack against an attacker who observed the confirm
+    # POST.  See commit C-09.
+    mfa_config.last_totp_timestep = matched_step
 
     codes = mfa_service.generate_backup_codes()
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
     db.session.commit()
 
-    log_event(logger, logging.INFO, "mfa_enabled", AUTH,
+    log_event(logger, logging.INFO, EVT_MFA_ENABLED, AUTH,
               "MFA enabled", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
@@ -442,9 +1000,17 @@ def regenerate_backup_codes():
 
     codes = mfa_service.generate_backup_codes()
     mfa_config.backup_codes = mfa_service.hash_backup_codes(codes)
+    # Stamp the security-event columns in the same transaction as
+    # the backup-code rotation so a rollback rolls back both.  Audit
+    # F-091 / C-16: the banner the user sees on next page load is
+    # the legitimate "your backup codes were regenerated, was that
+    # you?" alert.
+    record_security_event(
+        current_user, SecurityEventKind.BACKUP_CODES_REGENERATED,
+    )
     db.session.commit()
 
-    log_event(logger, logging.INFO, "backup_codes_regenerated", AUTH,
+    log_event(logger, logging.INFO, EVT_BACKUP_CODES_REGENERATED, AUTH,
               "Backup codes regenerated", user_id=current_user.id)
     return render_template("auth/mfa_backup_codes.html", backup_codes=codes)
 
@@ -474,7 +1040,12 @@ def mfa_disable():
 def mfa_disable_confirm():
     """Process MFA disable after verifying password and TOTP code.
 
-    Clears the TOTP secret, backup codes, and sets is_enabled to False.
+    Clears the TOTP secret, backup codes, the recorded replay-prevention
+    step, and sets is_enabled to False.  The TOTP step is verified
+    through :func:`mfa_service.verify_totp_code` with replay prevention
+    enforced -- an attacker who has captured the user's password and a
+    recently-used TOTP code cannot use that code to disable MFA, the
+    same defence that ``/mfa/verify`` provides at login.
     """
     current_password = request.form.get("current_password", "")
     totp_code = request.form.get("totp_code", "").strip()
@@ -494,8 +1065,15 @@ def mfa_disable_confirm():
         flash("Two-factor authentication is not enabled.", "danger")
         return redirect(url_for("settings.show", section="security"))
 
+    # Same helper as /mfa/verify: emits ``totp_replay_rejected`` on
+    # REPLAY and commits ``last_totp_timestep`` on ACCEPTED so a code
+    # captured at /mfa/verify cannot be reused at /mfa/disable (and
+    # vice versa).  Re-raises decrypt errors so the operator-side
+    # message wins over the generic invalid-code flash.
     try:
-        secret = mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        accepted = _verify_totp_with_replay_logging(
+            mfa_config, totp_code, current_user.id,
+        )
     except (RuntimeError, InvalidToken):
         flash(
             "MFA could not be verified because the encryption key has "
@@ -504,18 +1082,116 @@ def mfa_disable_confirm():
         )
         return redirect(url_for("settings.show", section="security"))
 
-    if not mfa_service.verify_totp_code(secret, totp_code):
+    if not accepted:
         flash("Invalid authentication code.", "danger")
         return redirect(url_for("auth.mfa_disable"))
 
-    # Clear all MFA fields.
+    # Clear all MFA fields.  ``last_totp_timestep`` is reset to NULL
+    # so that a re-enrollment under a fresh secret does not inherit
+    # the step boundary recorded against the now-cleared secret -- the
+    # two values are unrelated and a stale boundary on the new secret
+    # would be a UX bug (every new code might be rejected as a replay
+    # of the old secret's last step).
     mfa_config.totp_secret_encrypted = None
     mfa_config.is_enabled = False
     mfa_config.backup_codes = None
     mfa_config.confirmed_at = None
+    mfa_config.last_totp_timestep = None
+    # Stamp the security-event columns in the same transaction as
+    # the MFA-clear so the banner the user sees on next page load
+    # is anchored to the same moment the mfa_configs row was
+    # updated.  Audit F-091 / C-16: an attacker who pivots into the
+    # session and disables MFA cannot prevent the legitimate user
+    # from seeing the alert -- the banner state lives on the
+    # auth.users row, not in the attacker's session cookie.
+    record_security_event(
+        current_user, SecurityEventKind.MFA_DISABLED,
+    )
     db.session.commit()
 
-    log_event(logger, logging.INFO, "mfa_disabled", AUTH,
+    # MFA disable is a security-relevant state change: a user who
+    # disables MFA because they suspect a session is compromised has
+    # done nothing about that session yet.  Force every other live
+    # session to re-authenticate so the disable cannot be silently
+    # exploited by an attacker who already holds a valid cookie.
+    # Called AFTER the MFA-clear commit so a transient DB error in
+    # the helper does not leave MFA-disabled rows tied to a
+    # non-bumped session_invalidated_at.  F-032.
+    invalidate_other_sessions(current_user, "mfa_disabled")
+
+    log_event(logger, logging.INFO, EVT_MFA_DISABLED, AUTH,
               "MFA disabled", user_id=current_user.id)
     flash("Two-factor authentication has been disabled.", "success")
     return redirect(url_for("settings.show", section="security"))
+
+
+@auth_bp.route("/security-event/dismiss", methods=["POST"])
+@login_required
+def dismiss_security_event():
+    """Acknowledge the in-app security-event banner for ``current_user``.
+
+    The banner is rendered by ``base.html`` whenever
+    :func:`~app.utils.security_events.banner_visible_for` returns True
+    for the authenticated user.  This handler clears the banner by
+    stamping ``last_security_event_acknowledged_at`` to the current
+    moment; the visibility check then returns False on the next page
+    load (and on every subsequent load, on every device, until a new
+    security event is recorded).
+
+    The route is a POST (CSRF-protected via Flask-WTF's global
+    ``csrf.init_app`` plus the ``csrf_token()`` field rendered in the
+    banner partial) because it changes server state.  ``hx-post`` from
+    the banner's dismiss button targets the same URL with the same CSRF
+    token; an HTMX request gets a 204 No Content swap directive that
+    removes the banner element from the DOM, while a non-HTMX request
+    redirects back to the referring page (or the dashboard if no
+    referer is present) so users without JavaScript still see a sane
+    response.
+
+    Acknowledgement is intentionally idempotent.  A user who clicks
+    dismiss twice (double-click, retry on a flaky network) writes a
+    second timestamp on top of the first; the visibility comparison
+    against ``last_security_event_at`` resolves the same way.
+
+    Audit reference: F-091 (Low) / commit C-16 of the 2026-04-15
+    security remediation plan.
+    """
+    # Defensive guard: if the user reaches this endpoint without a
+    # currently visible banner, the dismiss is a no-op rather than an
+    # error.  This handles the race where two browser tabs both POST
+    # the dismiss after observing the banner; the second tab's POST
+    # simply re-stamps acknowledged_at.
+    if banner_visible_for(current_user):
+        acknowledge_security_event(current_user)
+        db.session.commit()
+
+    # HTMX requests prefer an empty 204 swap; the banner partial uses
+    # ``hx-target="closest .security-event-banner"`` and
+    # ``hx-swap="outerHTML"`` so the empty body removes the element.
+    if request.headers.get("HX-Request") == "true":
+        return ("", 204)
+
+    # Non-HTMX fallback: bounce to the referring page so the user
+    # sees the banner gone on reload.  Two layers of validation guard
+    # against an open-redirect via a tampered Referer:
+    #
+    #   1. Reject any non-empty scheme that is not ``http`` / ``https``.
+    #      A ``javascript:`` Referer parses to scheme=``javascript``,
+    #      path=``alert(1)`` -- using ``parsed.path`` directly would
+    #      hand the JS source string to ``redirect()`` and trip the
+    #      same open-redirect surface the safe-redirect helper exists
+    #      to close.
+    #   2. Run the candidate path through ``_is_safe_redirect`` so a
+    #      ``\\evil.com`` or whitespace-prefixed path is rejected.
+    #
+    # Either failure mode falls back to the dashboard.
+    referer = request.headers.get("Referer", "")
+    parsed = urlparse(referer)
+    if parsed.scheme and parsed.scheme.lower() not in ("http", "https"):
+        return redirect(url_for("dashboard.page"))
+    next_target = parsed.path or url_for("dashboard.page")
+    if parsed.query:
+        next_target = f"{next_target}?{parsed.query}"
+    if not _is_safe_redirect(next_target):
+        next_target = url_for("dashboard.page")
+    return redirect(next_target)

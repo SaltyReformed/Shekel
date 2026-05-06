@@ -8,9 +8,10 @@ pay periods.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class TransactionTemplate(db.Model):
+class TransactionTemplate(TimestampMixin, db.Model):
     """Blueprint for a recurring income or expense line item."""
 
     __tablename__ = "transaction_templates"
@@ -49,12 +50,6 @@ class TransactionTemplate(db.Model):
     )
     companion_visible = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
-    )
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
     )
 
     # Relationships

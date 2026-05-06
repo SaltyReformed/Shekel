@@ -1,0 +1,44 @@
+{# Security-event "was this you?" banner (audit F-091 / commit C-16).
+
+   Rendered by base.html when ``security_event_visible`` is True (set
+   by the ``inject_security_event_banner`` context processor in
+   app/__init__.py).  Visibility logic lives in
+   app.utils.security_events.banner_visible_for; per-kind copy comes
+   from app.utils.security_events.KIND_DISPLAY which is exposed to the
+   template as ``security_event_display`` (a dict of {kind_value:
+   {title, detail}}) and ``security_event_kind`` (the bare kind
+   string).
+
+   Dismiss flow: HTMX POST to /security-event/dismiss; the route
+   returns 204 with an empty body and outerHTML swap removes this
+   element.  CSRF token comes from the global ``csrf_token()`` helper
+   the same way every other form on the site sources it. #}
+{% set copy = security_event_display.get(security_event_kind) %}
+{% if copy %}
+<div class="container-fluid mt-2 security-event-banner" role="alert">
+  <div class="alert alert-warning d-flex align-items-start mb-0" role="alert">
+    <i class="bi bi-shield-exclamation fs-4 me-2" aria-hidden="true"></i>
+    <div class="flex-grow-1">
+      <strong>{{ copy.title }}</strong>
+      <span class="ms-1">{{ copy.detail }}</span>
+      {# Settings link uses the same security section the user would
+         visit to react.  Rendered as a plain anchor (not a form button)
+         because clicking it does not change state. #}
+      <a class="alert-link ms-2" href="{{ url_for('settings.show', section='security') }}">
+        Review security settings
+      </a>
+    </div>
+    <form action="{{ url_for('auth.dismiss_security_event') }}"
+          method="post"
+          class="ms-2"
+          hx-post="{{ url_for('auth.dismiss_security_event') }}"
+          hx-target="closest .security-event-banner"
+          hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit"
+              class="btn-close"
+              aria-label="Dismiss security notification"></button>
+    </form>
+  </div>
+</div>
+{% endif %}

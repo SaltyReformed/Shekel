@@ -53,7 +53,7 @@ from app.services.loan_payment_service import (
     prepare_payments_for_engine,
 )
 from app.utils.formatting import pct_to_decimal
-from app.utils.log_events import BUSINESS, log_event
+from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ def _update_transfer_end_date(
 
     log_event(
         logger, logging.INFO,
-        "loan.recurrence_end_date_updated", BUSINESS,
+        EVT_LOAN_RECURRENCE_END_DATE_UPDATED, BUSINESS,
         "Updated recurrence rule end date to projected payoff",
         account_id=account_id,
         template_id=template.id,

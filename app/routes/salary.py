@@ -11,7 +11,7 @@ from datetime import date
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import fresh_login_required, require_owner
 from markupsafe import Markup
 
 from app.extensions import db
@@ -903,6 +903,7 @@ def tax_config():
 @salary_bp.route("/salary/tax-config", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def update_tax_config():
     """Update state tax flat rate."""
     errors = _state_tax_schema.validate(request.form)
@@ -961,6 +962,7 @@ def update_tax_config():
 @salary_bp.route("/salary/fica-config", methods=["POST"])
 @login_required
 @require_owner
+@fresh_login_required()
 def update_fica_config():
     """Update FICA configuration."""
     errors = _fica_schema.validate(request.form)

@@ -6,9 +6,10 @@ Stores interest configuration for interest-bearing account types
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class InterestParams(db.Model):
+class InterestParams(TimestampMixin, db.Model):
     """Interest parameters linked one-to-one with an Account.
 
     Serves any account type that has ``has_interest=True`` on its
@@ -35,14 +36,6 @@ class InterestParams(db.Model):
     apy = db.Column(db.Numeric(7, 5), nullable=False, server_default="0.04500")
     compounding_frequency = db.Column(
         db.String(10), nullable=False, server_default="daily"
-    )
-    created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
     )
 
     # Relationships

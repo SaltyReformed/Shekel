@@ -39,9 +39,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=shekel:shekel . .
 COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
-# Ensure writable directories exist for logs and shared static files.
-# /var/www/static is a shared volume mount point -- Nginx reads from it.
-RUN mkdir -p /home/shekel/app/logs /var/www/static \
+# Ensure the static-files mount point exists.  /var/www/static is a
+# shared volume Nginx reads from.  Logs go to stdout (captured by
+# Docker's json-file driver and shipped off-host by the Alloy
+# collector documented in observability.md) so no /home/shekel/app/logs
+# directory is created or written -- see Commit C-15 / findings F-082
+# and F-150.
+RUN mkdir -p /var/www/static \
     && chown -R shekel:shekel /home/shekel/app /var/www/static
 
 USER shekel

@@ -8,6 +8,7 @@ group-level weighted averages, and filter correctness.
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -232,17 +233,28 @@ class TestDataSufficiency:
             assert result.all_items == []
             assert result.group_trends == []
 
-    def test_preliminary_3_months(self, app, seed_user, db):
-        """3 months of paid data -> preliminary, window_months=3."""
+    @patch("app.services.spending_trend_service.date")
+    def test_preliminary_3_months(self, mock_date, app, seed_user, db):
+        """3 months of paid data -> preliminary, window_months=3.
+
+        ``date.today()`` is mocked to a value that places the test's
+        fixture data inside the 3-month sufficiency window.  Without
+        mocking, the test would silently break each month because the
+        window slides forward but the fixture data does not.
+        """
+        mock_date.today.return_value = date(2026, 2, 1)
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
         with app.app_context():
-            # 3 months ~ 7 biweekly periods, but we need distinct months.
+            # 8 biweekly periods from Oct 3, 2025 span Oct 2025 to Jan
+            # 2026 (4 distinct calendar months; 3 <= 4 < 6 -> preliminary).
             periods = _generate_periods(
                 db.session, seed_user["user"].id, date(2025, 10, 3), 8,
             )
             seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
-            # Add paid expenses in 3 distinct months.
+            # Add paid expenses in 3+ distinct months.
             for p in periods:
                 _add_paid_expense(
                     db.session, seed_user, p, "Groceries",
@@ -481,8 +493,20 @@ class TestTrendDetection:
 class TestThresholdFlagging:
     """Tests for threshold-based flagging."""
 
-    def test_threshold_boundary_flagged(self, app, seed_user, db):
-        """Category with > 10% change -> flagged (>= threshold)."""
+    @patch("app.services.spending_trend_service.date")
+    def test_threshold_boundary_flagged(self, mock_date, app, seed_user, db):
+        """Category with > 10% change -> flagged (>= threshold).
+
+        ``date.today()`` is mocked so the 6-month sufficiency window
+        contains a stable, predictable 7 of the 16 fixture periods --
+        Oct 10, 2025 through Jan 2, 2026.  Without mocking, the window
+        slides each calendar month and the windowed slope shrinks
+        below the 10% threshold within ~1 month of when the test was
+        written.
+        """
+        mock_date.today.return_value = date(2026, 4, 1)
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
         with app.app_context():
             periods = _generate_periods(
                 db.session, seed_user["user"].id, date(2025, 6, 6), 16,
@@ -491,8 +515,10 @@ class TestThresholdFlagging:
             db.session.commit()
 
             # Steep enough slope to exceed 10% in the windowed range.
-            # With 6-month window from today, ~7 periods in range.
-            # slope=30, intercept~1240, pct = 30*6/1240*100 ~14.5%.
+            # With 6-month window from mocked today (April 1, 2026),
+            # window starts Oct 1, 2025 and contains 7 periods (indices
+            # 9-15) with amounts 1270 through 1450.
+            # slope=30, intercept=1270, pct = 30*6/1270*100 ~14.17%.
             for i, p in enumerate(periods):
                 amt = 1000 + i * 30
                 _add_paid_expense(

@@ -38,6 +38,9 @@ This is the single operational reference for the Shekel budget application. It c
        v
 [Flask Application]        -- Shekel budget app, structured JSON logging
        |
+       +------> [Redis :6379]     -- Docker container, Flask-Limiter counters
+       |                              (no persistence; counters evaporate on
+       |                              restart by design)
        v
 [PostgreSQL :5432]         -- Docker container, multi-schema, audit triggers
 ```
@@ -59,9 +62,10 @@ This is the single operational reference for the Shekel budget application. It c
 
 | Container | Image | Network(s) | Health Check |
 |-----------|-------|------------|--------------|
-| `shekel-db` | `postgres:16-alpine` | backend | `pg_isready` every 10s |
-| `shekel-app` | Built from Dockerfile | backend, monitoring | `GET /health` every 30s |
-| `shekel-nginx` | `nginx:1.27-alpine` | frontend, backend | `wget /health` every 30s |
+| `shekel-prod-db` | `postgres:16-alpine` | backend | `pg_isready` every 10s |
+| `shekel-prod-redis` | `redis:7.4-alpine` | backend | `redis-cli ping` every 10s |
+| `shekel-prod-app` | Built from Dockerfile | backend, monitoring | `GET /health` every 30s |
+| `shekel-prod-nginx` | `nginx:1.27-alpine` | frontend, backend | `wget /health` every 30s |
 
 ### Script Inventory
 
@@ -72,12 +76,12 @@ This is the single operational reference for the Shekel budget application. It c
 | `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh <backup_file>` |
 | `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh <backup_file>` |
 | `scripts/backup_retention.sh` | Prune old backups | `./scripts/backup_retention.sh [--dry-run]` |
-| `scripts/integrity_check.py` | Validate database integrity | `docker exec shekel-app python scripts/integrity_check.py [--verbose] [--category CAT]` |
-| `scripts/audit_cleanup.py` | Clean old audit log entries | `docker exec shekel-app python scripts/audit_cleanup.py [--days N] [--dry-run]` |
-| `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-app python scripts/reset_mfa.py <email>` |
-| `scripts/seed_ref_tables.py` | Seed reference lookup tables | `docker exec shekel-app python scripts/seed_ref_tables.py` |
-| `scripts/seed_user.py` | Create initial seed user | `docker exec shekel-app python scripts/seed_user.py` |
-| `scripts/seed_tax_brackets.py` | Seed US tax brackets | `docker exec shekel-app python scripts/seed_tax_brackets.py` |
+| `scripts/integrity_check.py` | Validate database integrity | `docker exec shekel-prod-app python scripts/integrity_check.py [--verbose] [--category CAT]` |
+| `scripts/audit_cleanup.py` | Clean old audit log entries | `docker exec shekel-prod-app python scripts/audit_cleanup.py [--days N] [--dry-run]` |
+| `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-prod-app python scripts/reset_mfa.py <email>` |
+| `scripts/seed_ref_tables.py` | Seed reference lookup tables | `docker exec shekel-prod-app python scripts/seed_ref_tables.py` |
+| `scripts/seed_user.py` | Create initial seed user | `docker exec shekel-prod-app python scripts/seed_user.py` |
+| `scripts/seed_tax_brackets.py` | Seed US tax brackets | `docker exec shekel-prod-app python scripts/seed_tax_brackets.py` |
 
 ### Cron Schedule
 
@@ -95,9 +99,9 @@ Crontab entries (replace `/opt/shekel` with your actual path):
 # ── Shekel Backups & Maintenance ─────────────────────────────────
 0 2 * * * /opt/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 30 2 * * * /opt/shekel/scripts/backup_retention.sh >> /var/log/shekel_backup.log 2>&1
-0 3 * * * docker exec shekel-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
+0 3 * * * docker exec shekel-prod-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
 0 3 * * 0 /opt/shekel/scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) >> /var/log/shekel_backup.log 2>&1
-30 3 * * 0 docker exec shekel-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
+30 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
 ```
 
 ---
@@ -178,8 +182,13 @@ git checkout <commit-hash>
 docker compose build app
 docker compose up -d --no-deps --force-recreate app
 
-# Option B: If the previous image is still tagged:
-docker tag shekel-app:previous shekel-shekel-app:latest
+# Option B: If the previous image is still tagged.
+# deploy.sh tags the in-place image as ${APP_CONTAINER}:previous
+# (so shekel-prod-app:previous) before each deploy, then on rollback
+# re-tags it as <compose_image>:latest.  The compose image for the
+# bundled deployment is ghcr.io/saltyreformed/shekel:latest -- adjust
+# below if you build a custom image with a different name.
+docker tag shekel-prod-app:previous ghcr.io/saltyreformed/shekel:latest
 docker compose up -d --no-deps --force-recreate app
 ```
 
@@ -214,9 +223,9 @@ docker compose ps
 # All three services (db, app, nginx) should show "healthy".
 
 # 6. Seed the database (first run only).
-docker exec shekel-app python scripts/seed_ref_tables.py
-docker exec shekel-app python scripts/seed_tax_brackets.py
-docker exec shekel-app python scripts/seed_user.py
+docker exec shekel-prod-app python scripts/seed_ref_tables.py
+docker exec shekel-prod-app python scripts/seed_tax_brackets.py
+docker exec shekel-prod-app python scripts/seed_user.py
 
 # 7. Verify the application.
 curl -s http://localhost/health
@@ -274,7 +283,7 @@ The restore script will:
 **Post-restore verification:**
 ```bash
 curl -s http://localhost/health
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 ### 3.3 Restoring from NAS
@@ -319,13 +328,13 @@ RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh
 
 ```bash
 # Run all checks inside the app container.
-docker exec shekel-app python scripts/integrity_check.py
+docker exec shekel-prod-app python scripts/integrity_check.py
 
 # Verbose output (shows every check, not just failures).
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 
 # Run only one category: referential, orphan, balance, or consistency.
-docker exec shekel-app python scripts/integrity_check.py --category referential
+docker exec shekel-prod-app python scripts/integrity_check.py --category referential
 ```
 
 **Exit codes:** 0 = all passed, 1 = critical failures, 2 = warnings only, 3 = script error.
@@ -357,7 +366,7 @@ For complete secret rotation procedures, see `docs/runbook_secrets.md`.
 
 **WARNING: Changing this key makes ALL existing MFA enrollments unreadable.**
 
-1. Disable MFA for all users: `docker exec shekel-app python scripts/reset_mfa.py --all`
+1. Disable MFA for all users: `docker exec shekel-prod-app python scripts/reset_mfa.py --all`
 2. Generate a new key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 3. Update `TOTP_ENCRYPTION_KEY` in `.env`
 4. Restart the app: `docker compose restart app`
@@ -375,7 +384,7 @@ For complete secret rotation procedures, see `docs/runbook_secrets.md`.
 
 ```bash
 # SSH into the Proxmox host.
-docker exec shekel-app python scripts/reset_mfa.py admin@shekel.local
+docker exec shekel-prod-app python scripts/reset_mfa.py admin@shekel.local
 ```
 
 Output: `MFA has been disabled for admin@shekel.local.`
@@ -387,14 +396,14 @@ The user can now log in with email + password only. They should re-enable MFA vi
 **Via database (psql):**
 ```bash
 # Recent changes to transactions.
-docker exec shekel-db psql -U shekel_user -d shekel -c \
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
   "SELECT executed_at, operation, row_id, changed_fields
    FROM system.audit_log
    WHERE table_name = 'transactions'
    ORDER BY executed_at DESC LIMIT 20;"
 
 # Changes by a specific user.
-docker exec shekel-db psql -U shekel_user -d shekel -c \
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
   "SELECT executed_at, table_name, operation, row_id
    FROM system.audit_log
    WHERE user_id = 1
@@ -411,10 +420,10 @@ Old audit log rows are cleaned up automatically by cron (daily at 3:00 AM). The 
 
 ```bash
 # Preview what would be deleted.
-docker exec shekel-app python scripts/audit_cleanup.py --dry-run
+docker exec shekel-prod-app python scripts/audit_cleanup.py --dry-run
 
 # Manual cleanup with a custom retention period.
-docker exec shekel-app python scripts/audit_cleanup.py --days 90
+docker exec shekel-prod-app python scripts/audit_cleanup.py --days 90
 ```
 
 ### 4.8 Backing Up the .env File
@@ -428,24 +437,154 @@ cp /opt/shekel/.env /mnt/nas/backups/shekel/env_backup
 
 Alternatively, store the three secrets in a password manager (e.g., Bitwarden, 1Password) as a separate recovery path.
 
+### 4.9 HSTS Preload Decision
+
+The Flask after-request hook in `app/__init__.py:_register_security_headers`
+emits `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every
+response.  The `preload` directive is intentionally OFF.
+
+**Why this matters.** `preload` is an instruction to browsers to honor HSTS for
+the domain even on the very first visit -- before any HTTP response could carry
+the header.  It works by submitting the domain to a list maintained by the
+Chromium project (consumed by Chrome, Firefox, Safari, Edge).  Once a domain is
+on the list, **delisting takes 6-12 weeks AND requires removing the `preload`
+directive from the HSTS header for the duration**.  During that window, every
+subdomain MUST be HTTPS-only.
+
+**To enable preload (ONLY when you are certain you are committing for years).**
+
+1. Confirm every subdomain you operate is HTTPS-only.  Test with
+   `curl -I http://<subdomain>.<your-domain>/` and verify a 301 to https://.
+2. Edit `app/__init__.py` and add `; preload` to the
+   `Strict-Transport-Security` value.
+3. Deploy.  Run for at least one week to confirm no users hit
+   `https://<subdomain>` and get a TLS error.
+4. Submit the apex domain at <https://hstspreload.org/>.  Wait for the email
+   confirmation (typically 4-12 weeks for inclusion in browser releases).
+
+**To disable preload after submission.**
+
+Removing `preload` from the header is a precondition for delisting; it does not
+cause delisting on its own.  Submit a removal request at
+<https://hstspreload.org/removal/>.  Allow 6-12 weeks before any subdomain can
+go back to HTTP.
+
+### 4.10 CDN Vendor Refresh Procedure
+
+The application serves Bootstrap, Bootstrap Icons, htmx, Chart.js, Inter, and
+JetBrains Mono from `app/static/vendor/` rather than a CDN (audit F-037).  The
+CSP forbids external script/style/font origins so a refresh requires both
+fetching the new file and updating the manifest.
+
+**Manifest.** `app/static/vendor/VERSIONS.txt` records each upstream URL and
+its SHA-384 hash.  The hash is the source of truth for which exact bytes are
+served.
+
+**Refresh procedure.**
+
+1. **Bootstrap, Bootstrap Icons, htmx, Chart.js**
+
+   ```bash
+   cd app/static/vendor
+   # Replace the file with the desired version.
+   curl -fL <upstream URL> -o <vendor-path>
+   # Compute the new SHA-384.
+   openssl dgst -sha384 -binary <vendor-path> | openssl base64 -A
+   ```
+
+   Update the matching line in `VERSIONS.txt` with the new URL and hash.
+
+2. **Inter / JetBrains Mono fonts.**  Run the helper script:
+
+   ```bash
+   python scripts/vendor_google_fonts.py
+   ```
+
+   The script fetches the upstream Google Fonts CSS, downloads the latin and
+   latin-ext woff2 files, rewrites URLs to local paths, and emits a fresh
+   `app/static/vendor/fonts/fonts.css`.  After running, recompute the SHA-384
+   hashes for `fonts.css` and each `*.woff2` and update `VERSIONS.txt`.
+
+3. **Verify.**  Start the app and exercise every dashboard
+   (analytics, debt strategy, investment, loan, retirement) plus the budget
+   grid.  The browser DevTools Network tab should show every asset loading
+   from `/static/vendor/...` with no CSP violations in the Console.
+
+4. **Test.**  Run the security-headers and cache-control test suites:
+
+   ```bash
+   pytest tests/test_integration/test_security_headers.py \
+          tests/test_adversarial/test_cache_control.py -v
+   ```
+
+   The `test_static_asset_path_resolves` test ensures every vendored asset
+   referenced by templates exists at its expected path.
+
+5. **Commit.**  One commit per refresh; commit message names the package and
+   version (e.g. `chore(vendor): bump Chart.js 4.4.7 -> 4.5.0`).
+
 ---
 
 ## 5. Monitoring & Observability
+
+### 5.0 Architecture (Commit C-15)
+
+Shekel logs flow through a four-stage pipeline:
+
+```
+[Flask app]
+   |   structured JSON to stdout (one record per line)
+   v
+[Docker json-file driver]
+   |   short-term local rotation (10 MiB x 5 files)
+   |   readable via "docker logs shekel-prod-app"
+   v
+[Grafana Alloy]                <-- runs in /opt/docker/monitoring/
+   |   reads container logs via /var/run/docker.sock (read-only mount)
+   |   parses JSON via the loki.process.shekel stage
+   |   tags records with compose_service, level, logger, event labels
+   v
+[Loki]                          <-- runs on the "monitoring" network
+   |   filesystem-backed storage on /opt/docker/monitoring/loki/data
+   |   30-day retention (744h) configured in loki.yaml
+   v
+[Grafana]                       <-- https://grafana.saltyreformed.com
+       (LAN-only via the existing nginx + wildcard cert)
+```
+
+**Tamper-resistance property.** The Shekel app container shares no
+volume and no network with the Loki storage volume. An attacker who
+gains RCE in Gunicorn can spam new log records (which Alloy will
+faithfully ingest) but cannot delete or rewrite records already
+shipped to Loki. The local `json-file` driver buffer at
+`/var/lib/docker/containers/<id>/<id>-json.log` IS rewritable by a
+host-root attacker, but anything Alloy already scraped from it is
+immutable in Loki. This satisfies ASVS V7.3.3 / V7.3.4 to the level
+appropriate for a single-host deployment; the previous `applogs`
+Docker volume that lived in the same trust boundary as the app was
+removed in Commit C-15 (audit findings F-082, F-150). For an
+absolute tamper-evident trail (off-site, write-once), see the
+deferred S3-with-Object-Lock option in the C-15 architectural
+decision notes.
+
+The full collector and dashboard configuration is documented in
+`observability.md`. This runbook section assumes Phase 0 -- 5 of
+that plan are complete.
 
 ### 5.1 Checking Application Logs
 
 ```bash
 # View recent Flask application logs (JSON format).
-docker logs shekel-app --tail 20
+docker logs shekel-prod-app --tail 20
 
 # Follow logs in real time.
-docker logs shekel-app -f
+docker logs shekel-prod-app -f
 
 # View Nginx access logs (JSON format).
-docker logs shekel-nginx --tail 20
+docker logs shekel-prod-nginx --tail 20
 
 # View PostgreSQL logs.
-docker logs shekel-db --tail 20
+docker logs shekel-prod-db --tail 20
 
 # View cloudflared tunnel logs.
 journalctl -u cloudflared --no-pager -n 20
@@ -454,79 +593,119 @@ journalctl -u cloudflared --no-pager -n 20
 tail -50 /var/log/shekel_backup.log
 ```
 
-**Flask log format (JSON):** Each log entry contains:
-- `timestamp` -- ISO 8601 timestamp
-- `level` -- DEBUG, INFO, WARNING, ERROR
-- `logger` -- Python logger name (e.g., `app.routes.auth`)
-- `message` -- Human-readable description
-- `request_id` -- UUID for correlating all logs from a single request
-- `event` -- Structured event name (e.g., `login_success`, `slow_request`)
-- `category` -- Event category: `auth`, `business`, `error`, `performance`
-- `remote_addr` -- Client IP address
-- `user_id` -- Authenticated user ID (if applicable)
+**Flask log format (JSON, RFC3339Nano timestamps):** Each line is a
+single JSON object with these stable keys; additional structured
+fields appear when the call site supplies them via `extra={...}`.
+
+- `timestamp` -- RFC3339Nano UTC with microsecond precision and `Z` suffix, e.g. `2026-05-05T19:36:45.139287Z`.
+- `level` -- `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+- `logger` -- Python logger name (e.g. `app.routes.auth`).
+- `message` -- Human-readable description.
+- `request_id` -- UUID4 correlating every log line from a single HTTP request. Returned to the client in the `X-Request-Id` header so a user-reported issue can be looked up directly.
+- `event` -- Structured event name (e.g. `login_success`, `rate_limit_exceeded`, `slow_request`). The full registry lives in `app/utils/log_events.py:EVENT_REGISTRY`.
+- `category` -- One of `auth`, `business`, `access`, `audit`, `error`, `performance`.
+- `remote_addr` -- Client IP (forwarded by nginx via `X-Forwarded-For`).
+- `user_id` -- Authenticated user ID, omitted on anonymous requests.
+
+The Alloy `loki.process.shekel` stage promotes `level`, `logger`, and
+`event` to Loki labels so dashboards can filter on them without a
+`| json` parser stage in every query.
 
 ### 5.2 Querying Logs in Grafana
 
-1. Open Grafana: `http://<proxmox-ip>:3000`
-2. Log in (default: admin / admin; change password on first login)
-3. Navigate to **Explore** (compass icon in the left sidebar)
-4. Select **Loki** as the data source
-5. Enter a LogQL query (see below) and click **Run query**
-
-If Loki is not configured as a data source:
-
-1. Navigate to **Connections** > **Data sources** > **Add data source**
-2. Select **Loki**
-3. Set URL to `http://loki:3100`
-4. Click **Save & test**
+1. Open Grafana: `https://grafana.saltyreformed.com` (LAN-only).
+2. Log in with the admin account (password in `/opt/docker/monitoring/secrets/grafana_admin_password`).
+3. Navigate to **Explore** (compass icon in the left sidebar).
+4. Select **Loki** as the data source. (Provisioned automatically per `observability.md` Phase 4 datasources.yaml.)
+5. Enter a LogQL query (see below) and click **Run query**.
 
 ### 5.3 Key LogQL Queries
 
+The Alloy pipeline exposes both the raw Docker container labels
+(`compose_service`, `container`, `compose_project`) and the
+JSON-extracted labels (`level`, `logger`, `event`). Queries below
+prefer `compose_service` because it survives container renames.
+
 | Purpose | Query |
 |---------|-------|
-| All app logs | `{container="shekel-app"}` |
-| All auth events | `{container="shekel-app"} \| json \| category="auth"` |
-| Login failures | `{container="shekel-app"} \| json \| event="login_failed"` |
-| Login successes | `{container="shekel-app"} \| json \| event="login_success"` |
-| Password changes | `{container="shekel-app"} \| json \| event="password_changed"` |
-| MFA events | `{container="shekel-app"} \| json \| event=~"mfa_.*"` |
-| Slow requests | `{container="shekel-app"} \| json \| event="slow_request"` |
-| All errors | `{container="shekel-app"} \| json \| level="ERROR"` |
-| Business events | `{container="shekel-app"} \| json \| category="business"` |
-| By user ID | `{container="shekel-app"} \| json \| user_id="1"` |
-| Trace a request | `{container="shekel-app"} \| json \| request_id="<uuid>"` |
+| All app logs | `{compose_service="shekel-prod-app"}` |
+| All auth events | `{compose_service="shekel-prod-app"} \| json \| category="auth"` |
+| All access events (incl. rate-limit) | `{compose_service="shekel-prod-app"} \| json \| category="access"` |
+| Login failures | `{compose_service="shekel-prod-app", event="login_failed"}` |
+| Login successes | `{compose_service="shekel-prod-app", event="login_success"}` |
+| Password changes | `{compose_service="shekel-prod-app", event="password_changed"}` |
+| MFA events | `{compose_service="shekel-prod-app"} \| json \| event=~"mfa_.*"` |
+| Rate-limit hits (F-146) | `{compose_service="shekel-prod-app", event="rate_limit_exceeded"}` |
+| Rate-limit by path | `{compose_service="shekel-prod-app", event="rate_limit_exceeded"} \| json \| line_format "{{.path}} {{.remote_addr}}"` |
+| Account lockouts | `{compose_service="shekel-prod-app", event="account_locked"}` |
+| Slow requests | `{compose_service="shekel-prod-app", event="slow_request"}` |
+| All errors | `{compose_service="shekel-prod-app", level="ERROR"}` |
+| Business events | `{compose_service="shekel-prod-app"} \| json \| category="business"` |
+| By user ID | `{compose_service="shekel-prod-app"} \| json \| user_id="1"` |
+| Trace a request | `{compose_service="shekel-prod-app"} \| json \| request_id="<uuid>"` |
+
+The `request_id` derived field declared in `datasources.yaml` makes
+a UUID in any log line clickable -- it copies the value into a
+prefilled trace-a-request query so a user-reported `X-Request-Id`
+lookup is one click.
 
 ### 5.4 Monitoring Stack Management
 
-The monitoring stack (Loki, Grafana, Promtail) runs as a separate docker-compose stack on the Proxmox host. See `monitoring/README.md` for the full setup guide.
+The Loki / Grafana / Alloy stack runs from
+`/opt/docker/monitoring/` per `observability.md`. The Shekel stack
+does NOT need to share a Docker network with it -- Alloy reads
+container logs via the docker socket, which works regardless of
+the source container's network membership.
 
 ```bash
 # Check monitoring stack status.
-docker ps --filter "name=loki" --filter "name=promtail" --filter "name=grafana"
+docker ps --filter "name=alloy" --filter "name=loki" --filter "name=grafana"
 
-# Start the monitoring stack.
-cd /path/to/monitoring
+# Start / restart the monitoring stack.
+cd /opt/docker/monitoring
 docker compose up -d
+docker compose restart alloy   # e.g. after editing alloy/config/config.alloy
 
-# Restart Promtail (e.g., after config changes).
-docker restart promtail
+# Verify Alloy is scraping containers.
+docker exec alloy wget -qO- 'http://localhost:12345/api/v0/component/discovery.docker.containers/debug/info' | head -c 600
 
-# Check Promtail targets (verify it sees the shekel-app container).
-curl -s http://localhost:9080/targets
+# Confirm Shekel records are arriving in Loki.
+docker exec loki wget -qO- 'http://localhost:3100/loki/api/v1/labels'
+docker exec loki wget -qO- \
+  'http://localhost:3100/loki/api/v1/query?query=%7Bcompose_service%3D%22shekel-prod-app%22%7D' \
+  | head -c 400
 
-# Check Promtail logs for errors.
-docker logs promtail --tail 20
+# Check Alloy logs for parser failures (a JSON shape regression
+# would surface here -- "could not parse" / "skip due to error").
+docker logs alloy --tail 50
 ```
 
-**Shared network:** Both the Shekel stack and the monitoring stack must be on the `monitoring` Docker network:
+If a deploy lands and Alloy's `loki.process.shekel` stage suddenly
+shows `failed to parse` errors, the most likely cause is a
+regression in `app/utils/logging_config.py` -- the formatter must
+emit the keys `timestamp`, `level`, `logger`, `message`, `event`,
+`request_id` for the parser to map fields cleanly. Re-run
+`pytest tests/test_utils/test_logging_config.py` to catch shape
+drifts before they reach production.
 
-```bash
-# Create the network (one-time setup).
-docker network create monitoring
+### 5.5 Alerting on Rate-Limit Pressure
 
-# Verify the app container is on the network.
-docker network inspect monitoring | grep shekel-app
-```
+Rate-limit hits are emitted as `event="rate_limit_exceeded"` records
+under `category="access"` (audit Commit C-15 / finding F-146). The
+intended alert in Grafana (provision under
+`/opt/docker/monitoring/grafana/provisioning/alerting/`) is:
+
+- **Datasource:** Loki
+- **Query:** `count_over_time({compose_service="shekel-prod-app", event="rate_limit_exceeded"} [5m])`
+- **Condition:** is above 10 (tune after a week of baseline data)
+- **Evaluation:** every 1 minute, for at least 5 minutes
+
+A burst of 10+ rate-limit hits in 5 minutes is well above the
+single-user steady-state (effectively zero outside test windows)
+and is the earliest queryable signal of a credential-stuffing
+campaign that the per-route 5-per-15min ceiling is otherwise
+silently absorbing. Pair the rule with Grafana contact-point
+delivery (email or webhook) per the operator's preference.
 
 ### 5.5 Health Checks
 
@@ -685,25 +864,26 @@ curl -s https://<domain>/health
 | App unreachable externally | cloudflared service down | `sudo systemctl status cloudflared` then `sudo systemctl restart cloudflared` |
 | App unreachable externally | Docker containers down | `docker compose ps` then `docker compose up -d` |
 | "Access Denied" on all requests | Cloudflare Access misconfigured | Check Access policy in Zero Trust dashboard; verify email is in the allowed list |
-| Cloudflare 502 Bad Gateway | Nginx or app container unhealthy | `docker compose ps` to check health; `docker logs shekel-nginx` and `docker logs shekel-app` for errors |
+| Cloudflare 502 Bad Gateway | Nginx or app container unhealthy | `docker compose ps` to check health; `docker logs shekel-prod-nginx` and `docker logs shekel-prod-app` for errors |
 | Cloudflare 522 Connection Timed Out | cloudflared cannot reach Nginx | Verify Nginx is running: `docker compose ps`. Check cloudflared logs: `journalctl -u cloudflared -n 20` |
 | 429 on first login attempt | Cloudflare rate limit too aggressive | Check WAF rules in Cloudflare dashboard (Security > WAF > Rate limiting rules); increase threshold |
-| 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. Or restart app to clear in-memory state: `docker compose restart app` |
+| 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. To clear immediately: `docker exec shekel-prod-redis redis-cli FLUSHDB` -- counters are stored in Redis, not in app memory, so restarting the app does NOT reset them |
+| 500 on every login attempt | Redis container down or unreachable | App is configured fail-closed: rate-limit storage outage rejects every limited request. `docker compose ps redis` to check status; `docker logs shekel-prod-redis --tail 50` for errors; `docker compose up -d redis` to restart. Login resumes immediately once Redis answers PING |
 | Wrong IP in logs (127.0.0.1) | Nginx real IP config issue | Verify `set_real_ip_from` and `real_ip_header CF-Connecting-IP` in `nginx/nginx.conf` |
 | No logs in Grafana | Promtail not scraping | `docker logs promtail`. Verify `monitoring` network exists. Verify app is on the network: `docker network inspect monitoring` |
-| CSS/JS not loading | Static files volume issue | `docker exec shekel-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |
-| Health check returns 500 | Database connection issue | `docker exec shekel-db pg_isready -U shekel_user -d shekel`. Check `docker logs shekel-app --tail 20` |
-| Database backup failed | Container down or disk full | `docker ps` to check shekel-db. `df -h` to check disk space |
+| CSS/JS not loading | Static files volume issue | `docker exec shekel-prod-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |
+| Health check returns 500 | Database connection issue | `docker exec shekel-prod-db pg_isready -U shekel_user -d shekel`. Check `docker logs shekel-prod-app --tail 20` |
+| Database backup failed | Container down or disk full | `docker ps` to check shekel-prod-db. `df -h` to check disk space |
 | NAS backup failed | NAS not mounted | `mount \| grep nas`. Remount: `sudo mount -a` |
-| Deploy script rollback failed | No previous image tagged | Manual intervention: `docker logs shekel-app` to diagnose, then fix and redeploy |
+| Deploy script rollback failed | No previous image tagged | Manual intervention: `docker logs shekel-prod-app` to diagnose, then fix and redeploy |
 
 ### 7.2 Log Locations
 
 | Log | Command | Contents |
 |-----|---------|----------|
-| Flask app (JSON) | `docker logs shekel-app` | Request logs, auth events, business events, errors |
-| Nginx (JSON) | `docker logs shekel-nginx` | HTTP access logs, upstream errors |
-| PostgreSQL | `docker logs shekel-db` | Database server logs, connection errors |
+| Flask app (JSON) | `docker logs shekel-prod-app` | Request logs, auth events, business events, errors |
+| Nginx (JSON) | `docker logs shekel-prod-nginx` | HTTP access logs, upstream errors |
+| PostgreSQL | `docker logs shekel-prod-db` | Database server logs, connection errors |
 | Cloudflared | `journalctl -u cloudflared` | Tunnel connection logs, reconnects |
 | Backups | `cat /var/log/shekel_backup.log` | Cron job output for backup, retention, verify, integrity |
 | Grafana | `docker logs grafana` | Grafana server logs |
@@ -718,9 +898,9 @@ curl -s https://<domain>/health
 docker compose ps
 
 # 2. Check container logs for the failing service.
-docker logs shekel-app --tail 50
-docker logs shekel-nginx --tail 20
-docker logs shekel-db --tail 20
+docker logs shekel-prod-app --tail 50
+docker logs shekel-prod-nginx --tail 20
+docker logs shekel-prod-db --tail 20
 
 # 3. Restart the failing service.
 docker compose restart app    # or: nginx, db
@@ -743,7 +923,7 @@ ls -lht /var/backups/shekel/
 
 # 3. Verify the restore.
 curl -s http://localhost/health
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 If local backups are corrupted, restore from NAS:
@@ -757,7 +937,7 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz
 
 ```bash
 # SSH to the Proxmox host.
-docker exec shekel-app python scripts/reset_mfa.py your-email@example.com
+docker exec shekel-prod-app python scripts/reset_mfa.py your-email@example.com
 # Output: MFA has been disabled for your-email@example.com.
 
 # Log in with email + password (MFA is now disabled).

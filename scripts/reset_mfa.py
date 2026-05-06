@@ -43,11 +43,18 @@ def reset_mfa(email):
         print(f"MFA is not enabled for {email}.")
         return
 
-    # Clear all MFA fields.
+    # Clear all MFA fields.  ``last_totp_timestep`` is reset alongside
+    # the secret because the value records the highest step consumed
+    # against the cleared secret -- carrying it forward to a re-
+    # enrollment under a fresh secret could lock the user out if their
+    # new device is set to a clock that produces codes for an earlier
+    # step.  See commit C-09 of the 2026-04-15 security remediation
+    # plan for the column's contract.
     mfa_config.totp_secret_encrypted = None
     mfa_config.is_enabled = False
     mfa_config.backup_codes = None
     mfa_config.confirmed_at = None
+    mfa_config.last_totp_timestep = None
     db.session.commit()
 
     # Audit trail for the reset action.

@@ -6,9 +6,10 @@ future pay periods (every_period, monthly, annual, etc.).
 """
 
 from app.extensions import db
+from app.models.mixins import CreatedAtMixin
 
 
-class RecurrenceRule(db.Model):
+class RecurrenceRule(CreatedAtMixin, db.Model):
     """A recurrence pattern attached to a transaction template."""
 
     __tablename__ = "recurrence_rules"
@@ -67,7 +68,6 @@ class RecurrenceRule(db.Model):
     # Optional end date -- recurrence stops generating after this date.
     # NULL means indefinite (no end).
     end_date = db.Column(db.Date, nullable=True)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # Relationships
     pattern = db.relationship("RecurrencePattern", lazy="joined")

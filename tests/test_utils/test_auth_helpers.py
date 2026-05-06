@@ -4,12 +4,19 @@ Shekel Budget App - Auth Helpers Tests
 Tests for the reusable ownership verification helpers in
 app/utils/auth_helpers.py.  Uses test_request_context + login_user
 to set up a real Flask-Login request context for each test.
+
+The access-denied logging tests near the bottom of this file cover
+audit finding F-144 / commit C-14: the previously-silent ownership
+failure paths now emit structured ``log_event`` records so cross-user
+probing leaves a forensic trail.
 """
 
-from datetime import date
+import logging
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from flask import Blueprint, Flask
 from flask_login import login_user
 
 from app.extensions import db
@@ -17,7 +24,19 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.utils.auth_helpers import get_or_404, get_owned_via_parent
+from app.utils.auth_helpers import (
+    fresh_login_required,
+    get_or_404,
+    get_owned_via_parent,
+    require_owner,
+)
+from app.utils.log_events import (
+    ACCESS,
+    EVT_ACCESS_DENIED_CROSS_USER,
+    EVT_ACCESS_DENIED_OWNER_ONLY,
+    EVT_RESOURCE_NOT_FOUND,
+)
+from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 
 
 class TestGetOr404:
@@ -156,3 +175,513 @@ class TestGetOwnedViaParent:
                 parent_user_id_attr="nonexistent",
             )
             assert result is None
+
+
+class TestFreshLoginRequiredMisuse:
+    """``fresh_login_required`` MUST be called with parentheses.
+
+    Without the runtime guard, a developer who writes
+    ``@fresh_login_required`` (no parens) would silently bind the
+    view function as ``max_age_minutes`` -- the wrapper would then
+    call ``timedelta(minutes=<view_function>)`` on the first request,
+    surfacing as a confusing TypeError far from the actual mistake.
+    The guard catches the misuse at decoration time so the error
+    points directly at the bad source line.
+    """
+
+    def test_no_parens_misuse_raises_typeerror(self):
+        """Calling without parens (passing a function) raises TypeError."""
+        def fake_view():
+            """Fake view function used to trigger the misuse."""
+            return "fake-view-body"
+
+        with pytest.raises(TypeError, match="parentheses"):
+            fresh_login_required(fake_view)
+
+    def test_parens_with_no_args_works(self):
+        """``@fresh_login_required()`` returns a usable decorator.
+
+        Smoke test that the documented call form -- empty parens --
+        produces a decorator that wraps a view without raising.
+        """
+        decorator = fresh_login_required()
+
+        @decorator
+        def view():
+            """Fake view function."""
+            return "ok"
+
+        # Just verify the wrap succeeded and the wrapper is callable;
+        # behavior is exercised in the integration tests in
+        # ``tests/test_adversarial/test_step_up.py``.
+        assert callable(view)
+
+    def test_explicit_max_age_works(self):
+        """``@fresh_login_required(max_age_minutes=N)`` is accepted."""
+        decorator = fresh_login_required(max_age_minutes=10)
+
+        @decorator
+        def view():
+            """Fake view function."""
+            return "ok"
+
+        assert callable(view)
+
+
+class TestFreshLoginRequiredDecorator:
+    """The decorator allows or redirects based on ``_fresh_login_at``.
+
+    Tests use a tiny throwaway Flask app rather than the project's
+    full app so the decorator is exercised in isolation -- a
+    regression in any other middleware (CSRF, login_required,
+    rate-limiting) cannot mask a regression in the decorator
+    itself.
+    """
+
+    def _make_test_app(self):
+        """Build a minimal Flask app with one decorated test route.
+
+        The route is registered without ``login_required`` so the
+        test can drive ``_fresh_login_at`` manipulation directly via
+        ``session_transaction`` without first having to log in via
+        a full ``/login`` round-trip.
+        """
+        app = Flask(__name__)
+        app.config["SECRET_KEY"] = "test-key-for-fresh-login-decorator-tests"
+        app.config["FRESH_LOGIN_MAX_AGE_MINUTES"] = 5
+
+        # Register a fake auth.reauth endpoint so url_for inside the
+        # decorator can resolve it.  The decorator does not actually
+        # call the view, only generates a URL pointing at it.
+        bp = Blueprint("auth", __name__)
+
+        @bp.route("/reauth")
+        def reauth():
+            """Fake reauth view; only here so url_for resolves."""
+            return "fake-reauth"
+
+        app.register_blueprint(bp)
+
+        @app.route("/decorated", methods=["POST"])
+        @fresh_login_required()
+        def decorated():
+            """Decorated test endpoint; returns marker on success."""
+            return "decorated-body"
+
+        @app.route("/decorated-strict", methods=["POST"])
+        @fresh_login_required(max_age_minutes=1)
+        def decorated_strict():
+            """Decorated test endpoint with explicit 1-min window."""
+            return "strict-body"
+
+        return app
+
+    def test_fresh_session_passes(self):
+        """A fresh ``_fresh_login_at`` lets the request through."""
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = (
+                datetime.now(timezone.utc).isoformat()
+            )
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 200
+        assert resp.data == b"decorated-body"
+
+    def test_missing_fresh_login_redirects(self):
+        """A missing ``_fresh_login_at`` redirects to /reauth."""
+        app = self._make_test_app()
+        client = app.test_client()
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 302
+        assert "/reauth" in resp.headers.get("Location", "")
+
+    def test_stale_fresh_login_redirects(self):
+        """A stale ``_fresh_login_at`` redirects to /reauth."""
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = (
+                datetime.now(timezone.utc) - timedelta(minutes=10)
+            ).isoformat()
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 302
+        assert "/reauth" in resp.headers.get("Location", "")
+
+    def test_explicit_max_age_overrides_config(self):
+        """A view-level ``max_age_minutes`` overrides app config.
+
+        ``decorated_strict`` declares ``max_age_minutes=1``.  A
+        2-minute-old fresh-login passes the config-default 5-minute
+        window but must FAIL the explicit 1-minute window.
+        """
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat()
+
+        # Default-window endpoint: 2 min < 5 min, passes.
+        resp = client.post("/decorated")
+        assert resp.status_code == 200
+
+        # Strict endpoint: 2 min > 1 min, redirects.
+        resp = client.post("/decorated-strict")
+        assert resp.status_code == 302
+
+    def test_htmx_request_returns_204_with_hx_redirect(self):
+        """HTMX requests get ``204 + HX-Redirect``, not 302.
+
+        See the integration test in ``test_step_up.py`` for the
+        rationale: a 302 would render /reauth's HTML into whatever
+        fragment slot the original request targeted.
+        """
+        app = self._make_test_app()
+        client = app.test_client()
+
+        resp = client.post("/decorated", headers={"HX-Request": "true"})
+        assert resp.status_code == 204
+        assert "HX-Redirect" in resp.headers
+        assert "/reauth" in resp.headers["HX-Redirect"]
+        assert resp.data == b""
+
+    def test_malformed_fresh_login_treated_as_stale(self):
+        """A non-ISO-8601 ``_fresh_login_at`` is treated as stale.
+
+        Fail-closed for tampered cookies -- matches the policy of
+        ``_idle_session_is_fresh`` and ``_mfa_pending_is_fresh``.
+        Without this, a tampered cookie would 500 the request via
+        a ``ValueError`` from ``fromisoformat``.
+        """
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = "not-an-iso-timestamp"
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 302
+        assert "/reauth" in resp.headers.get("Location", "")
+
+    def test_naive_fresh_login_treated_as_stale(self):
+        """A timezone-naive ``_fresh_login_at`` is treated as stale.
+
+        Naive datetimes raise ``TypeError`` on the timezone-aware
+        subtraction.  Reject explicitly so the failure mode is
+        consistent with the malformed case.
+        """
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = (
+                datetime.now().replace(tzinfo=None).isoformat()
+            )
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 302
+
+    def test_future_dated_fresh_login_treated_as_fresh(self):
+        """A future-dated ``_fresh_login_at`` is treated as fresh.
+
+        Mirrors ``_idle_session_is_fresh``: a clock jump (NTP
+        correction, manual adjustment, VM resume) must not silently
+        force every active session through /reauth.  An attacker who
+        forged a future-dated value would already need ``SECRET_KEY``,
+        at which point the future-date check adds no defensive value
+        beyond the cookie signature itself.
+
+        This is the INVERSE of ``_mfa_pending_is_fresh`` (commit
+        C-08), which DOES reject future-dated -- that gate is
+        single-use and the strict-rejection cost is one extra
+        password retry, vs. a 30-minute window of being bumped
+        through /reauth on every request here.
+        """
+        app = self._make_test_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess[FRESH_LOGIN_AT_KEY] = (
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat()
+
+        resp = client.post("/decorated")
+        assert resp.status_code == 200, (
+            "Future-dated _fresh_login_at must be accepted; "
+            "rejecting it would log every user out after a clock "
+            "jump."
+        )
+
+    def test_redirect_includes_next_param(self):
+        """The /reauth URL carries the original request URL as ``next``."""
+        app = self._make_test_app()
+        client = app.test_client()
+
+        resp = client.post("/decorated")
+        location = resp.headers.get("Location", "")
+        assert "next=" in location, (
+            "Decorator must include the original URL as ``next`` so "
+            "/reauth can return the user there after success.  "
+            f"Got Location={location!r}."
+        )
+
+
+class _AuthHelpersLogCapture:
+    """Context manager that captures records on the auth_helpers logger.
+
+    The helpers emit on ``app.utils.auth_helpers``; capturing on that
+    specific logger keeps the assertion targeted -- a new event from
+    an unrelated module cannot accidentally satisfy the test.
+    """
+
+    def __init__(self, level=logging.DEBUG):
+        self._logger = logging.getLogger("app.utils.auth_helpers")
+        self._level = level
+        self.records: list[logging.LogRecord] = []
+        self._handler = logging.Handler()
+        self._handler.emit = lambda record: self.records.append(record)
+        self._prior_level = None
+        self._prior_propagate = None
+
+    def __enter__(self):
+        self._prior_level = self._logger.level
+        self._prior_propagate = self._logger.propagate
+        self._logger.addHandler(self._handler)
+        self._logger.setLevel(self._level)
+        # Disable propagation so the captured records do not also fire
+        # on parent loggers (the project's root JSON handler would
+        # spam stdout during the test).
+        self._logger.propagate = False
+        return self
+
+    def __exit__(self, *exc):
+        self._logger.removeHandler(self._handler)
+        self._logger.setLevel(self._prior_level)
+        self._logger.propagate = self._prior_propagate
+
+    def find(self, event_name):
+        """Return the first record whose ``event`` field matches *event_name*."""
+        for record in self.records:
+            if getattr(record, "event", None) == event_name:
+                return record
+        return None
+
+
+class TestAccessDeniedLogging:
+    """Audit finding F-144 / commit C-14.
+
+    The ownership helpers must emit structured events on every denial
+    branch.  Pre-C-14 they returned ``None`` silently, so a probing
+    companion or a cross-user attacker left no application-tier
+    trace.
+    """
+
+    def test_get_or_404_emits_resource_not_found_for_missing_pk(
+        self, app, db, seed_user,
+    ):
+        """A missing-PK denial emits ``resource_not_found`` at INFO level."""
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_or_404(Account, 999_999)
+
+        assert result is None
+        record = cap.find(EVT_RESOURCE_NOT_FOUND)
+        assert record is not None, (
+            "Missing-PK branch did not emit ``resource_not_found``; "
+            f"records observed: "
+            f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.INFO
+        assert record.category == ACCESS
+        assert record.user_id == seed_user["user"].id
+        assert record.model == "Account"
+        assert record.pk == 999_999
+        assert record.path == "/some/path"
+
+    def test_get_or_404_emits_cross_user_for_other_users_record(
+        self, app, db, seed_user, second_user,
+    ):
+        """A cross-user denial emits ``access_denied_cross_user`` at WARNING level.
+
+        This is the IDOR signal SOC tooling alerts on, so the level
+        is WARNING (not INFO like the missing-PK case).
+        """
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_or_404(Account, second_user["account"].id)
+
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None, (
+            "Cross-user branch did not emit ``access_denied_cross_user``; "
+            f"records observed: "
+            f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.category == ACCESS
+        assert record.user_id == seed_user["user"].id
+        assert record.model == "Account"
+        assert record.pk == second_user["account"].id
+        assert record.owner_id == second_user["user"].id
+        assert record.path == "/some/path"
+
+    def test_get_or_404_silent_on_success(self, app, db, seed_user):
+        """A successful load emits NO ACCESS event.
+
+        Otherwise every page load would write multiple records and
+        drown the failure signal.  Only the per-request summary in
+        logging_config covers the success path.
+        """
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_or_404(Account, seed_user["account"].id)
+
+        assert result is not None
+        access_records = [
+            r for r in cap.records if getattr(r, "category", None) == ACCESS
+        ]
+        assert not access_records, (
+            "Successful get_or_404 emitted ACCESS events; the helpers "
+            "must stay silent on the happy path.  Records: "
+            f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+
+    def test_get_owned_via_parent_emits_resource_not_found_for_missing_pk(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A missing-PK denial through the parent path emits ``resource_not_found``."""
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_owned_via_parent(Transaction, 999_999, "pay_period")
+
+        assert result is None
+        record = cap.find(EVT_RESOURCE_NOT_FOUND)
+        assert record is not None
+        assert record.levelno == logging.INFO
+        assert record.model == "Transaction"
+        assert record.pk == 999_999
+
+    def test_get_owned_via_parent_emits_cross_user_for_other_users_child(
+        self, app, db, seed_user, second_user, seed_periods,
+    ):
+        """A cross-user denial through the parent path emits ``access_denied_cross_user``."""
+        # Build a transaction owned by the second user.
+        from app.services import pay_period_service  # noqa: WPS433
+        periods2 = pay_period_service.generate_pay_periods(
+            user_id=second_user["user"].id,
+            start_date=date(2026, 3, 1),
+            num_periods=2,
+            cadence_days=14,
+        )
+        db.session.flush()
+
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense"
+        ).one()
+        txn2 = Transaction(
+            pay_period_id=periods2[0].id,
+            scenario_id=second_user["scenario"].id,
+            account_id=second_user["account"].id,
+            status_id=projected.id,
+            name="Other User Expense",
+            category_id=second_user["categories"]["Rent"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("99.00"),
+        )
+        db.session.add(txn2)
+        db.session.flush()
+
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_owned_via_parent(
+                    Transaction, txn2.id, "pay_period",
+                )
+
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None
+        assert record.levelno == logging.WARNING
+        assert record.user_id == seed_user["user"].id
+        assert record.owner_id == second_user["user"].id
+        assert record.parent_attr == "pay_period"
+
+    def test_require_owner_emits_access_denied_for_companion(
+        self, app, db, seed_user,
+    ):
+        """A non-owner hitting an owner-only route emits ``access_denied_owner_only``.
+
+        The decorator must abort(404) AFTER the log_event call so the
+        forensic event lands even though the response shape mirrors
+        a true 404.
+        """
+        from app import ref_cache  # noqa: WPS433
+        from app.enums import RoleEnum  # noqa: WPS433
+
+        # Build a companion user attached to the seed user.
+        from app.models.user import User  # noqa: WPS433
+        companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
+        companion = User(
+            email="companion-access-test@example.com",
+            password_hash="$2b$12$dummyhashfortestpurposesonlyx",
+            display_name="Test Companion",
+            role_id=companion_role_id,
+            linked_owner_id=seed_user["user"].id,
+        )
+        db.session.add(companion)
+        db.session.flush()
+
+        # Define a fake decorated view in isolation so the test does
+        # not exercise an unrelated production route.
+        @require_owner
+        def owner_only_view():
+            """Stub view that should never run for a companion."""
+            return "should-not-reach"
+
+        with app.test_request_context("/owner-only", method="POST"):
+            login_user(companion)
+            with _AuthHelpersLogCapture() as cap:
+                # require_owner aborts via abort(404) -- exercise that.
+                from werkzeug.exceptions import NotFound  # noqa: WPS433
+                with pytest.raises(NotFound):
+                    owner_only_view()
+
+        record = cap.find(EVT_ACCESS_DENIED_OWNER_ONLY)
+        assert record is not None, (
+            "Companion access did not emit ``access_denied_owner_only``; "
+            f"records observed: "
+            f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.category == ACCESS
+        assert record.user_id == companion.id
+        assert record.role_id == companion_role_id
+        assert record.path == "/owner-only"
+        assert record.method == "POST"
+
+    def test_require_owner_silent_for_owner(self, app, db, seed_user):
+        """An owner hitting an owner-only route emits NO ACCESS event."""
+        @require_owner
+        def owner_only_view():
+            """Stub view returning a sentinel string."""
+            return "owner-ok"
+
+        with app.test_request_context("/owner-only"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = owner_only_view()
+
+        assert result == "owner-ok"
+        access_records = [
+            r for r in cap.records if getattr(r, "category", None) == ACCESS
+        ]
+        assert not access_records, (
+            "Successful require_owner emitted ACCESS events; the "
+            "decorator must stay silent on the happy path."
+        )

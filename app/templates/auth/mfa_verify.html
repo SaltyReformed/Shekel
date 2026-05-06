@@ -7,7 +7,7 @@
     <div class="card shadow-sm">
       <div class="card-body">
         <div class="text-center mb-4">
-          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" style="width: auto;">
+          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" class="logo-img">
         </div>
         <h5 class="text-center mb-3">Two-Factor Verification</h5>
 
@@ -31,8 +31,9 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label for="backup_code" class="form-label">Or use a backup code</label>
-            <input type="text" class="form-control" id="backup_code" name="backup_code"
-                   maxlength="8" autocomplete="off"
+            <input type="text" class="form-control font-monospace" id="backup_code" name="backup_code"
+                   maxlength="28" autocomplete="off"
+                   autocapitalize="off" autocorrect="off" spellcheck="false"
                    placeholder="Backup code">
           </div>
           <button type="submit" class="btn btn-outline-secondary w-100">Use Backup Code</button>

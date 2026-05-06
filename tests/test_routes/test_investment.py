@@ -69,24 +69,24 @@ def _create_other_investment(second_user, db_session):
 class TestInvestmentDashboard:
     """Tests for the investment dashboard page."""
 
-    def test_dashboard_no_params(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_no_params(self, auth_client, seed_user, db, seed_periods_today):
         """GET returns 200 even without investment params."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         assert b"50,000.00" in resp.data
 
-    def test_dashboard_with_params(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_with_params(self, auth_client, seed_user, db, seed_periods_today):
         """GET returns 200 with params and projection data."""
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         assert b"50,000.00" in resp.data
 
     def test_dashboard_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """GET another user's investment dashboard is rejected
         and does not leak victim data."""
@@ -102,13 +102,13 @@ class TestInvestmentDashboard:
             "IDOR response leaked victim's account name"
         )
 
-    def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods_today):
         """Nonexistent account → redirect to savings dashboard."""
         resp = auth_client.get("/accounts/99999/investment")
         assert resp.status_code == 302
         assert "/savings" in resp.headers.get("Location", "")
 
-    def test_dashboard_brokerage(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_brokerage(self, auth_client, seed_user, db, seed_periods_today):
         """Brokerage account (no contribution limit) works."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Brokerage",
@@ -129,7 +129,7 @@ class TestInvestmentDashboard:
 class TestInvestmentParams:
     """Tests for creating/updating investment params."""
 
-    def test_create_params(self, auth_client, seed_user, db, seed_periods):
+    def test_create_params(self, auth_client, seed_user, db, seed_periods_today):
         """POST creates new investment params."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.post(
@@ -148,7 +148,7 @@ class TestInvestmentParams:
         assert params is not None
         assert params.assumed_annual_return == Decimal("0.07000")
 
-    def test_update_params(self, auth_client, seed_user, db, seed_periods):
+    def test_update_params(self, auth_client, seed_user, db, seed_periods_today):
         """POST updates existing investment params."""
         acct = _create_investment_account(seed_user, db.session)
         _create_investment_params(db.session, acct.id)
@@ -167,7 +167,7 @@ class TestInvestmentParams:
         ).first()
         assert params.assumed_annual_return == Decimal("0.08000")
 
-    def test_create_params_with_employer_match(self, auth_client, seed_user, db, seed_periods):
+    def test_create_params_with_employer_match(self, auth_client, seed_user, db, seed_periods_today):
         """POST with employer match config."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.post(
@@ -191,7 +191,7 @@ class TestInvestmentParams:
         assert params.employer_match_cap_percentage == Decimal("0.0600")
 
     def test_params_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """POST to another user's investment params is rejected
         and does not create any InvestmentParams row."""
@@ -222,7 +222,7 @@ class TestInvestmentParams:
             "IDOR attack created InvestmentParams on victim's account!"
         )
 
-    def test_validation_error(self, auth_client, seed_user, db, seed_periods):
+    def test_validation_error(self, auth_client, seed_user, db, seed_periods_today):
         """Invalid data flashes error, redirects, and creates no params."""
         acct = _create_investment_account(seed_user, db.session)
         resp = auth_client.post(
@@ -247,14 +247,14 @@ class TestInvestmentParams:
 class TestInvestmentNegativePaths:
     """Negative-path and boundary tests for investment routes."""
 
-    def test_dashboard_login_required(self, client, seed_user, db, seed_periods):
+    def test_dashboard_login_required(self, client, seed_user, db, seed_periods_today):
         """Unauthenticated GET to investment dashboard redirects to login."""
         acct = _create_investment_account(seed_user, db.session)
         resp = client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
-    def test_params_login_required(self, client, seed_user, db, seed_periods):
+    def test_params_login_required(self, client, seed_user, db, seed_periods_today):
         """Unauthenticated POST to investment params redirects to login."""
         acct = _create_investment_account(seed_user, db.session)
         resp = client.post(
@@ -268,7 +268,7 @@ class TestInvestmentNegativePaths:
         assert "/login" in resp.headers["Location"]
 
     def test_params_update_idor_db_unchanged(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """IDOR POST to investment params with existing params is rejected and DB unchanged."""
         other_acct = _create_other_investment(second_user, db.session)
@@ -300,7 +300,7 @@ class TestInvestmentNegativePaths:
         )
 
     def test_validation_error_db_unchanged(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Invalid data on existing params preserves original values."""
         acct = _create_investment_account(seed_user, db.session)
@@ -322,7 +322,7 @@ class TestInvestmentNegativePaths:
         assert after.assumed_annual_return == orig_return
 
     def test_params_update_nonexistent_account(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST to nonexistent account redirects with flash."""
         resp = auth_client.post(
@@ -338,7 +338,7 @@ class TestInvestmentNegativePaths:
         assert b"Account not found." in resp2.data
 
     def test_params_update_wrong_account_type(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST investment params to checking account redirects with flash."""
         checking_acct = seed_user["account"]
@@ -357,7 +357,7 @@ class TestInvestmentNegativePaths:
         assert resp.status_code == 302
 
     def test_params_update_negative_return_rate(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Negative return rate as percentage input: -5 converts to -0.05, within Range(-1,1)."""
         acct = _create_investment_account(seed_user, db.session)
@@ -383,7 +383,7 @@ class TestGrowthChartFragment:
     """Tests for the investment growth chart HTMX fragment (U2)."""
 
     def test_growth_chart_redirects_without_htmx(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET without HX-Request header redirects to investment dashboard."""
         acct = _create_investment_account(seed_user, db.session)
@@ -392,7 +392,7 @@ class TestGrowthChartFragment:
         assert "/investment" in resp.headers.get("Location", "")
 
     def test_growth_chart_empty_without_params(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Returns empty state when no investment params exist."""
         acct = _create_investment_account(seed_user, db.session)
@@ -404,11 +404,11 @@ class TestGrowthChartFragment:
         assert b"No projection data" in resp.data
 
     def test_growth_chart_with_data(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Returns canvas element when projection data exists."""
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
@@ -418,7 +418,7 @@ class TestGrowthChartFragment:
         assert b"growthChart" in resp.data
 
     def test_growth_chart_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """GET another user's growth chart returns 404
         and does not leak victim data."""
@@ -481,7 +481,7 @@ class TestContributionAwareDashboard:
     """
 
     def test_dashboard_with_deduction(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Dashboard renders with deduction-based contributions.
 
@@ -490,7 +490,7 @@ class TestContributionAwareDashboard:
         and the periodic contribution value appears in the response.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         profile = _create_salary_profile(
@@ -506,7 +506,7 @@ class TestContributionAwareDashboard:
         assert b"500.00" in resp.data
 
     def test_growth_chart_with_deduction(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Growth chart HTMX fragment renders with deduction contributions.
 
@@ -516,7 +516,7 @@ class TestContributionAwareDashboard:
         still call build_contribution_timeline without crashing.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         profile = _create_salary_profile(
@@ -570,14 +570,14 @@ class TestContributionPrompt:
     """
 
     def test_prompt_shown_ira_no_contribution(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """IRA with params, no transfer or deduction: transfer prompt visible."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -589,14 +589,14 @@ class TestContributionPrompt:
         assert "Create Recurring Transfer" in html
 
     def test_prompt_shown_401k_no_deduction(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """401(k) with params, no deduction: deduction linkage prompt visible."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="401(k)",
             name="My 401k", balance="50000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -605,14 +605,14 @@ class TestContributionPrompt:
         assert "Salary Profile" in html
 
     def test_prompt_hidden_transfer_exists(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """IRA with active recurring transfer: prompt hidden."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -630,14 +630,14 @@ class TestContributionPrompt:
         assert "No paycheck deduction" not in html
 
     def test_prompt_hidden_deduction_linked(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """401(k) with linked deduction: prompt hidden."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="401(k)",
             name="My 401k", balance="50000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         profile = _create_salary_profile(
             db.session, seed_user["user"].id,
@@ -652,7 +652,7 @@ class TestContributionPrompt:
         assert "No paycheck deduction linked" not in html
 
     def test_prompt_hidden_no_params(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Account without InvestmentParams: no prompt shown."""
         acct = _create_investment_account(seed_user, db.session)
@@ -663,14 +663,14 @@ class TestContributionPrompt:
         assert "No paycheck deduction" not in html
 
     def test_prompt_shown_archived_transfer(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Archived transfer template: prompt still shown."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -688,7 +688,7 @@ class TestContributionPrompt:
         assert "No recurring contribution" in html
 
     def test_create_transfer_success(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with valid source creates RecurrenceRule + TransferTemplate."""
         from app.models.recurrence_rule import RecurrenceRule as RR
@@ -698,7 +698,7 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -732,7 +732,7 @@ class TestContributionPrompt:
         assert rule is not None
 
     def test_create_transfer_generates_shadows(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """After creation: shadow transactions exist on the investment account."""
         from app.enums import TxnTypeEnum as TTE
@@ -742,7 +742,7 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -771,14 +771,14 @@ class TestContributionPrompt:
         assert len(shadows) > 0
 
     def test_create_transfer_redirect_hides_prompt(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """After creation, GET dashboard: prompt no longer visible."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -799,14 +799,14 @@ class TestContributionPrompt:
         assert "No recurring contribution" not in html
 
     def test_create_transfer_validates_source_not_self(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with investment account as source: validation error."""
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         resp = auth_client.post(
@@ -819,7 +819,7 @@ class TestContributionPrompt:
         )
 
     def test_create_transfer_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """POST to other user's investment account: 404-equivalent redirect."""
         other_acct = _create_other_investment(second_user, db.session)
@@ -832,7 +832,7 @@ class TestContributionPrompt:
         assert "/savings" in resp.headers.get("Location", "")
 
     def test_create_transfer_amount_override(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with custom amount: template uses the override amount."""
         from app.models.transfer_template import TransferTemplate as TT
@@ -841,7 +841,7 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         checking = seed_user["account"]
 
@@ -897,7 +897,7 @@ class TestWhatIfContributionCalculator:
     """
 
     def test_chart_no_what_if_single_line(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET growth-chart without what_if param: single dataset only.
 
@@ -905,7 +905,7 @@ class TestWhatIfContributionCalculator:
         no what-if parameter is provided.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
@@ -922,7 +922,7 @@ class TestWhatIfContributionCalculator:
         assert "Difference" not in html
 
     def test_chart_with_what_if_dual_lines(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with what_if_contribution=500: what-if data present.
 
@@ -930,7 +930,7 @@ class TestWhatIfContributionCalculator:
         datasets, and a comparison card.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -952,7 +952,7 @@ class TestWhatIfContributionCalculator:
         assert "500.00" in html
 
     def test_chart_what_if_zero_valid(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with what_if_contribution=0: valid growth-only scenario.
 
@@ -961,7 +961,7 @@ class TestWhatIfContributionCalculator:
         treated as "clear the what-if."
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -975,14 +975,14 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_chart_what_if_empty_string_ignored(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with what_if_contribution= (empty): no what-if, single dataset.
 
         Empty input means "no what-if" -- chart reverts to standard mode.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -993,14 +993,14 @@ class TestWhatIfContributionCalculator:
         assert "data-whatif-balances" not in resp.data.decode()
 
     def test_chart_what_if_invalid_ignored(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with what_if_contribution=abc: invalid input ignored, no error.
 
         Non-numeric input degrades gracefully to single-line chart.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1011,7 +1011,7 @@ class TestWhatIfContributionCalculator:
         assert "data-whatif-balances" not in resp.data.decode()
 
     def test_chart_what_if_negative_ignored(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """GET with what_if_contribution=-100: negative contribution ignored.
 
@@ -1019,7 +1019,7 @@ class TestWhatIfContributionCalculator:
         what-if overlay.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1030,7 +1030,7 @@ class TestWhatIfContributionCalculator:
         assert "data-whatif-balances" not in resp.data.decode()
 
     def test_what_if_respects_annual_limit(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Annual contribution limit caps what-if contributions.
 
@@ -1045,7 +1045,7 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="Roth IRA",
             name="Limited IRA", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1071,7 +1071,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_employer_match_recalculated(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Employer match is recalculated for the what-if amount.
 
@@ -1088,7 +1088,7 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="401(k)",
             name="Matched 401k", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1122,7 +1122,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_no_limit_brokerage(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Brokerage account (no annual limit): contributions uncapped.
 
@@ -1134,7 +1134,7 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="Brokerage",
             name="My Brokerage", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1157,7 +1157,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_comparison_positive(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """What-if > current contribution: comparison shows positive difference.
 
@@ -1166,7 +1166,7 @@ class TestWhatIfContributionCalculator:
         The what-if end balance exceeds committed -> positive difference.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1181,7 +1181,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_comparison_negative(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """What-if < current contribution: comparison shows negative difference.
 
@@ -1190,7 +1190,7 @@ class TestWhatIfContributionCalculator:
         The what-if end balance is lower -> negative difference.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=None,
@@ -1216,7 +1216,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_comparison_zero(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """What-if == current (both zero): comparison shows zero difference.
 
@@ -1225,7 +1225,7 @@ class TestWhatIfContributionCalculator:
         exactly $0.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1239,7 +1239,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_no_current_contributions(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """No existing contributions: committed is growth-only.
 
@@ -1248,7 +1248,7 @@ class TestWhatIfContributionCalculator:
         so it should produce a higher end balance.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1266,7 +1266,7 @@ class TestWhatIfContributionCalculator:
         )
 
     def test_what_if_idor(
-        self, auth_client, second_user, db, seed_periods,
+        self, auth_client, second_user, db, seed_periods_today,
     ):
         """Other user's account with what-if param: 404.
 
@@ -1282,7 +1282,7 @@ class TestWhatIfContributionCalculator:
         assert b"Other 401k" not in resp.data
 
     def test_what_if_preserves_horizon(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """What-if with custom horizon: both projections use same period count.
 
@@ -1290,7 +1290,7 @@ class TestWhatIfContributionCalculator:
         (same x-axis) regardless of the horizon setting.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"

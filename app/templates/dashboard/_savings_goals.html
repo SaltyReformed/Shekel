@@ -9,10 +9,10 @@
       / ${{ "{:,.2f}".format(goal.target_amount|float) }}
     </small>
   </div>
-  <div class="progress" style="height: 8px;">
+  <div class="progress progress-h-8">
     <div class="progress-bar {% if goal.pct_complete|float >= 100 %}bg-success{% else %}bg-primary{% endif %}"
          role="progressbar"
-         style="width: {{ [goal.pct_complete|float, 100]|min }}%"
+         data-progress-pct="{{ [goal.pct_complete|float, 100]|min }}"
          aria-valuenow="{{ goal.pct_complete|float }}"
          aria-valuemin="0" aria-valuemax="100">
     </div>

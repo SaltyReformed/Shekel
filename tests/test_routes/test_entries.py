@@ -9,6 +9,8 @@ entry-transaction mismatch guards, and popover integration.
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -21,6 +23,21 @@ from app.models.ref import AccountType, RecurrencePattern, Status, TransactionTy
 from app.models.user import User, UserSettings
 from app.services import pay_period_service
 from app.services.auth_service import hash_password
+
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Entry tests use hardcoded entry_date values such as
+    date(2026, 1, 5) and date(2026, 4, 12) that must fall inside the
+    calendar-anchored seed_periods range.  Freezing today inside the
+    seeded range keeps get_current_period() deterministic without
+    disturbing those calendar values.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
 
 
 def _add_entry(txn, user, amount, description,

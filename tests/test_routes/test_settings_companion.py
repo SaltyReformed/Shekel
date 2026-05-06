@@ -515,7 +515,7 @@ class TestDeactivateCompanion:
                 authenticate("companion@shekel.local", "companionpass")
 
     def test_deactivate_preserves_entries(
-        self, app, db, auth_client, seed_user, seed_companion, seed_periods,
+        self, app, db, auth_client, seed_user, seed_companion, seed_periods_today,
     ):
         """Deactivating a companion leaves their TransactionEntries intact.
 
@@ -543,7 +543,7 @@ class TestDeactivateCompanion:
         db.session.add(template)
         db.session.flush()
 
-        period = seed_periods[0]
+        period = seed_periods_today[0]
         txn = Transaction(
             account_id=seed_user["account"].id,
             template_id=template.id,

@@ -20,6 +20,22 @@ from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
 from app.services.transfer_service import create_transfer
 
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Loan tests use specific origination_date values, inline
+    ``date.today()`` calls (e.g. ``first_of_this_month =
+    date.today().replace(day=1)``), and assertions like
+    ``rule.end_date > date.today()``.  Auto-discovery patches every
+    loaded module so test, fixture, and production services all see
+    the same frozen "today" regardless of wall-clock date.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -1836,26 +1852,46 @@ class TestPaymentBreakdown:
 
 
 def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00"),
-                           rate=Decimal("0.06500"), term=360, payment_day=1):
-    """Create a mortgage with origination last month for predictable schedule length.
+                           rate=Decimal("0.06500"), term=360, payment_day=1,
+                           origination_date=None):
+    """Create a mortgage with predictable schedule length.
 
-    Origination is the first of last month so the schedule's first
-    payment month is this month.  This ensures seed_periods in the
-    current month (April 2026) match schedule month 1.
+    By default, origination is the first of last month so the
+    schedule's first payment month is this month.  Tests that need
+    the schedule to align with specific ``seed_periods`` indices must
+    pass ``origination_date`` explicitly so the alignment does not
+    drift as today's date advances.
 
     Sets original_principal = current_principal so the schedule aligns
     with the full term (no early-payoff due to a lower current balance).
+
+    Args:
+        seed_user: The seed_user fixture dict.
+        db_session: Active database session.
+        principal: Loan principal (Decimal).  Default $250,000.
+        rate: Annual interest rate (Decimal).  Default 6.5%.
+        term: Term in months.  Default 360.
+        payment_day: Payment day of month.  Default 1.
+        origination_date: Optional explicit origination date.  Default
+            is the first of last month relative to ``date.today()``.
+            Pass an explicit date for tests that depend on schedule
+            alignment with fixed-date fixtures.
     """
-    # Origination one month before today so the first payment month
-    # is the current month (schedule starts month after origination).
-    first_of_this_month = date.today().replace(day=1)
-    if first_of_this_month.month == 1:
-        origination = first_of_this_month.replace(year=first_of_this_month.year - 1, month=12)
-    else:
-        origination = first_of_this_month.replace(month=first_of_this_month.month - 1)
+    if origination_date is None:
+        # Origination one month before today so the first payment month
+        # is the current month (schedule starts month after origination).
+        first_of_this_month = date.today().replace(day=1)
+        if first_of_this_month.month == 1:
+            origination_date = first_of_this_month.replace(
+                year=first_of_this_month.year - 1, month=12,
+            )
+        else:
+            origination_date = first_of_this_month.replace(
+                month=first_of_this_month.month - 1,
+            )
     return _create_loan_account_exact(
         seed_user, db_session, "Mortgage", "Fresh Mortgage",
-        principal, principal, rate, term, origination, payment_day,
+        principal, principal, rate, term, origination_date, payment_day,
     )
 
 
@@ -1956,8 +1992,19 @@ class TestAmortizationSchedule:
         schedule's first two months (April and May 2026 via seed_periods
         7 and 9).  Asserts confirmed rows get a distinct badge and the
         rest are Projected.
+
+        Origination is pinned to March 1, 2026 so the schedule's first
+        payment month (April) aligns with seed_periods[7] regardless
+        of when the test is run.  Without the explicit origination,
+        ``_create_fresh_mortgage`` would derive it from ``date.today()``
+        and the alignment would silently break each calendar month.
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        # seed_periods[7] start_date is in April 2026; pin the schedule
+        # so its first payment month is also April (origination + 1
+        # month).
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         # seed_periods[7] start_date is in April 2026 -> schedule month 1.
         # seed_periods[9] start_date is in May 2026 -> schedule month 2.
         _create_transfer_to_loan(
@@ -2222,8 +2269,14 @@ class TestAmortizationSchedule:
         standard P&I.  The row matching that month should show a non-zero
         Extra column.  The Extra column itself is only shown when at
         least one row has a genuine extra payment.
+
+        Origination is pinned to March 1, 2026 so the schedule's first
+        payment month (April) aligns with seed_periods[7] regardless
+        of when the test is run.
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         # Standard payment is ~$1,580.17.  Overpay by $500.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("2080.17"),
@@ -2248,8 +2301,14 @@ class TestAmortizationSchedule:
         used only the original (no-payments) schedule, no rows would
         be marked Confirmed.  Presence of Confirmed badges proves the
         committed schedule is used.
+
+        Origination is pinned to March 1, 2026 so the schedule's first
+        payment month (April) aligns with seed_periods[7] regardless
+        of when the test is run.
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
@@ -2310,8 +2369,19 @@ class TestDashboardPayoffConsistency:
         Both routes render committed balance data for Chart.js.  Since
         both use _load_loan_context for payment preparation, the
         committed balance arrays must be identical.
+
+        Origination is pinned to March 1, 2026 so seed_periods[7]
+        (April 10, 2026) matches the schedule's first payment month
+        (April 2026).  Without the pin, ``_create_fresh_mortgage``
+        derives origination from ``date.today()``; once today moves
+        past April, the April transfer no longer matches any schedule
+        month, both routes produce empty committed arrays, and the
+        equality assertion passes trivially without exercising the
+        integration the test was written to verify.
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
@@ -2421,9 +2491,21 @@ class TestDashboardPayoffConsistency:
         Creates two transfers in the same calendar month (biweekly
         overlap).  Both the dashboard and payoff calculator must
         distribute them across two schedule months.
+
+        Origination is pinned to March 1, 2026 so seed_periods[7]
+        (April 10) and seed_periods[8] (April 24) BOTH fall in the
+        schedule's first payment month (April 2026), exercising the
+        biweekly redistribution code path.  Without the pin, the
+        schedule's first month would shift past April and the
+        transfers would not match any schedule month -- the
+        ``"$3,160" not in html`` assertion would then pass trivially
+        even if the biweekly fix were broken.
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
-        # seed_periods[7] and [8] are both in April 2026.
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
+        # seed_periods[7] (April 10) and [8] (April 24) are both in
+        # April 2026.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),
             status_enum=StatusEnum.PROJECTED,

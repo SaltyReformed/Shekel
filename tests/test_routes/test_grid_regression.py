@@ -56,14 +56,14 @@ class TestPaydayWorkflowRegression:
         C-0-6: Balance row HTMX refresh
         C-0-7: Full payday sequence end-to-end
 
-    All tests use the existing conftest fixtures (seed_user, seed_periods,
+    All tests use the existing conftest fixtures (seed_user, seed_periods_today,
     auth_client) and are fully independent of each other.
     """
 
     # -- C-0-1 -------------------------------------------------------
 
     def test_trueup_anchor_balance(self, app, auth_client, seed_user,
-                                   seed_periods):
+                                   seed_periods_today):
         """Anchor balance true-up updates the balance, sets the anchor
         period to the current period, and returns display HTML with the
         balanceChanged HX-Trigger.
@@ -104,7 +104,7 @@ class TestPaydayWorkflowRegression:
     # -- C-0-2 -------------------------------------------------------
 
     def test_mark_paycheck_received(self, app, auth_client, seed_user,
-                                    seed_periods):
+                                    seed_periods_today):
         """Marking an income transaction as done sets its status to
         'received' (not 'done'), returns the badge-done indicator, and
         triggers gridRefresh.
@@ -121,7 +121,7 @@ class TestPaydayWorkflowRegression:
             )
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=projected.id,
@@ -153,7 +153,7 @@ class TestPaydayWorkflowRegression:
     # -- C-0-3 -------------------------------------------------------
 
     def test_carry_forward_unpaid(self, app, auth_client, seed_user,
-                                  seed_periods):
+                                  seed_periods_today):
         """Carry forward moves projected transactions to the current
         period, flags template-linked items as overrides, and leaves
         done items in the source period.
@@ -173,7 +173,7 @@ class TestPaydayWorkflowRegression:
                 .filter_by(name="Expense").one()
             )
 
-            past_period = seed_periods[0]
+            past_period = seed_periods_today[0]
 
             # Create a template so one transaction is template-linked.
             # Carry forward sets is_override=True on template-linked items
@@ -256,7 +256,7 @@ class TestPaydayWorkflowRegression:
     # -- C-0-4 -------------------------------------------------------
 
     def test_mark_expense_done(self, app, auth_client, seed_user,
-                               seed_periods):
+                               seed_periods_today):
         """Marking an expense as done sets its status to 'done', returns
         the badge-done indicator, and triggers gridRefresh.
 
@@ -272,7 +272,7 @@ class TestPaydayWorkflowRegression:
             )
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=projected.id,
@@ -300,7 +300,7 @@ class TestPaydayWorkflowRegression:
     # -- C-0-5 -------------------------------------------------------
 
     def test_mark_credit_creates_payback(self, app, auth_client,
-                                         seed_user, seed_periods):
+                                         seed_user, seed_periods_today):
         """Marking an expense as credit sets status to 'credit' and
         auto-generates a payback transaction in the next pay period
         with matching amount and 'Credit Card: Payback' category.
@@ -317,10 +317,10 @@ class TestPaydayWorkflowRegression:
                 .filter_by(name="Expense").one()
             )
 
-            # Create expense in seed_periods[0]; the payback will go to
-            # seed_periods[1] (the next period by index).
+            # Create expense in seed_periods_today[0]; the payback will go to
+            # seed_periods_today[1] (the next period by index).
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=projected.id,
@@ -355,7 +355,7 @@ class TestPaydayWorkflowRegression:
                 .filter_by(credit_payback_for_id=txn.id)
                 .one()
             )
-            assert payback.pay_period_id == seed_periods[1].id
+            assert payback.pay_period_id == seed_periods_today[1].id
             assert payback.status.name == "Projected"
             assert payback.estimated_amount == Decimal("75.00")
             assert payback.category.group_name == "Credit Card"
@@ -365,7 +365,7 @@ class TestPaydayWorkflowRegression:
     # -- C-0-6 -------------------------------------------------------
 
     def test_balance_row_refresh(self, app, auth_client, seed_user,
-                                 seed_periods):
+                                 seed_periods_today):
         """Balance row endpoint returns a tfoot partial with correct HTMX
         attributes, calculated balances, and a single <tr> element.
 
@@ -429,7 +429,7 @@ class TestPaydayWorkflowRegression:
             assert b"Projected End Balance" in response.data
 
             # Balance calculation:
-            # Anchor = $1,000 at period 0 (set by seed_periods fixture).
+            # Anchor = $1,000 at period 0 (set by seed_periods_today fixture).
             # Periods 1-5: no transactions, balance stays $1,000.
             # Period 6 (current): +$2,000 income -$800 expense = $2,200.
             assert b"$2,200" in response.data
@@ -445,14 +445,14 @@ class TestPaydayWorkflowRegression:
     # -- C-0-7 -------------------------------------------------------
 
     def test_full_payday_sequence(self, app, auth_client, seed_user,
-                                  seed_periods):
+                                  seed_periods_today):
         """Full payday workflow executed as a sequence, verifying that all
         operations interact correctly and the final balance is correct.
 
         Setup:
           - Past period:    1 projected expense ($150)
           - Current period: 1 income ($2,000) + 2 expenses ($500, $300)
-          - Anchor:         $1,000 at period 0 (from seed_periods)
+          - Anchor:         $1,000 at period 0 (from seed_periods_today)
 
         Steps:
           1. True-up anchor to $5,000 at current period
@@ -496,12 +496,12 @@ class TestPaydayWorkflowRegression:
             )
             # Past period: immediately before current.
             past_period = next(
-                p for p in seed_periods
+                p for p in seed_periods_today
                 if p.period_index == current_period.period_index - 1
             )
             # Future period: immediately after current (payback target).
             future_period = next(
-                p for p in seed_periods
+                p for p in seed_periods_today
                 if p.period_index == current_period.period_index + 1
             )
 

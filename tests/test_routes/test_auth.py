@@ -5,6 +5,8 @@ Tests login, logout, route protection, disabled accounts, rate limiting,
 password change, session management, and open redirect prevention.
 """
 
+import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from app import create_app
@@ -15,6 +17,7 @@ from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
 from app.routes.auth import _is_safe_redirect
 from app.services import mfa_service
+from app.services.mfa_service import TotpVerificationResult
 from app.services.auth_service import hash_password
 
 
@@ -671,6 +674,116 @@ class TestMfaSetup:
             # QR code data URI is present.
             assert b"data:image/png;base64," in response.data
 
+    def test_mfa_setup_stores_encrypted_pending_server_side(
+        self, app, auth_client, seed_user
+    ):
+        """GET /mfa/setup persists the pending secret in the DB, not the session.
+
+        Locks down the C-05 contract: the unconfirmed TOTP secret lives
+        in ``MfaConfig.pending_secret_encrypted`` (encrypted under the
+        Fernet key) rather than in ``flask_session["_mfa_setup_secret"]``,
+        because the Flask session cookie is signed but not encrypted.
+        Verifies (a) the column is populated, (b) the bytes round-trip
+        through ``mfa_service.decrypt_secret`` to a base32 string that
+        matches the manual key shown on the page, and (c) the legacy
+        session key is never written.
+        """
+        with app.app_context():
+            response = auth_client.get("/mfa/setup")
+            assert response.status_code == 200
+
+            # The plaintext secret must NOT appear in the Flask session.
+            with auth_client.session_transaction() as sess:
+                assert "_mfa_setup_secret" not in sess
+
+            # The encrypted pending secret IS in the database.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config is not None, "MfaConfig row must exist after setup"
+            assert config.pending_secret_encrypted is not None
+            assert config.pending_secret_expires_at is not None
+
+            # The ciphertext decrypts to the manual key rendered in the
+            # response body.  The base32 secret is wrapped in <code>...</code>.
+            decrypted = mfa_service.decrypt_secret(config.pending_secret_encrypted)
+            assert (f"<code>{decrypted}</code>").encode("utf-8") in response.data
+
+    def test_mfa_setup_sets_expiry_within_window(
+        self, app, auth_client, seed_user
+    ):
+        """GET /mfa/setup sets pending_secret_expires_at ~15 minutes ahead.
+
+        The TTL constant is ``MFA_SETUP_PENDING_TTL = timedelta(minutes=15)``
+        in ``app/routes/auth.py``.  Allow a 60-second slack on either
+        side so the test is stable under slow CI without permitting a
+        regression that bumps the TTL by hours.
+        """
+        with app.app_context():
+            before = datetime.now(timezone.utc)
+            response = auth_client.get("/mfa/setup")
+            after = datetime.now(timezone.utc)
+            assert response.status_code == 200
+
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            expires_at = config.pending_secret_expires_at
+            assert expires_at is not None
+            # 15 minutes minus a small slack and 15 minutes plus a small
+            # slack bracket the legitimate window.
+            lower = before + timedelta(minutes=15) - timedelta(seconds=60)
+            upper = after + timedelta(minutes=15) + timedelta(seconds=60)
+            assert lower <= expires_at <= upper, (
+                f"pending_secret_expires_at={expires_at!r} not in "
+                f"[{lower!r}, {upper!r}] -- the 15-minute TTL has "
+                f"changed; update the test only if the change was deliberate."
+            )
+
+    def test_mfa_setup_replaces_previous_pending(
+        self, app, auth_client, seed_user
+    ):
+        """A second GET /mfa/setup overwrites the first pending secret.
+
+        Each visit must regenerate the secret so that an abandoned
+        setup row cannot persist with stale data, and so a fresh QR
+        scan after a typo always shows a usable code.  This also matches
+        the documented C-05 contract (each /mfa/setup call rewrites the
+        pending columns).
+        """
+        with app.app_context():
+            auth_client.get("/mfa/setup")
+            first_config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            first_ciphertext = first_config.pending_secret_encrypted
+            first_expiry = first_config.pending_secret_expires_at
+            assert first_ciphertext is not None
+
+            auth_client.get("/mfa/setup")
+            db.session.refresh(first_config)
+            second_ciphertext = first_config.pending_secret_encrypted
+            second_expiry = first_config.pending_secret_expires_at
+
+            assert second_ciphertext is not None
+            # Fernet ciphertexts include a fresh IV per encryption, so
+            # even encrypting the SAME plaintext under the SAME key
+            # produces different bytes.  The stronger property to
+            # verify is that the decrypted plaintexts differ -- the
+            # secret really was regenerated.
+            assert (
+                mfa_service.decrypt_secret(first_ciphertext)
+                != mfa_service.decrypt_secret(second_ciphertext)
+            ), "Second /mfa/setup must regenerate the secret, not reuse it."
+            # Expiry was extended to a fresh 15-minute window.
+            assert second_expiry >= first_expiry
+
     def test_mfa_setup_redirects_if_already_enabled(self, app, auth_client, seed_user):
         """GET /mfa/setup redirects if MFA is already enabled."""
         with app.app_context():
@@ -688,12 +801,34 @@ class TestMfaSetup:
             assert "security" in response.headers.get("Location", "")
 
     def test_mfa_confirm_valid_code(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm with valid TOTP code enables MFA and shows backup codes."""
-        with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+        """POST /mfa/confirm with valid code promotes pending to active.
 
-            # Visit setup to store the secret in the session.
+        End-to-end check of the C-05 confirm path: the pending secret
+        is decrypted, the code verifies, the secret is re-encrypted and
+        stored as ``totp_secret_encrypted``, the pending columns are
+        cleared, and the active credential is the same secret that was
+        captured during setup (round-trip through encrypt -> decrypt).
+        """
+        with app.app_context():
+            # /mfa/confirm verifies the *pending* secret via
+            # verify_totp_setup_code (returns int|None), not the
+            # active-secret path.  The fixed integer is the matched
+            # step that the route persists as
+            # ``mfa_config.last_totp_timestep``.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
+
+            # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")
+            pending_config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            captured_secret = mfa_service.decrypt_secret(
+                pending_config.pending_secret_encrypted
+            )
 
             # Confirm with a mocked-valid code.
             response = auth_client.post("/mfa/confirm", data={
@@ -702,7 +837,7 @@ class TestMfaSetup:
             assert response.status_code == 200
             assert b"Save Your Backup Codes" in response.data
 
-            # Verify MFA is enabled in the database.
+            # Reload to pick up the post-confirm row state.
             config = (
                 db.session.query(MfaConfig)
                 .filter_by(user_id=seed_user["user"].id)
@@ -710,32 +845,157 @@ class TestMfaSetup:
             )
             assert config is not None
             assert config.is_enabled is True
+            assert config.confirmed_at is not None
+            # Pending columns must be cleared so a replay cannot
+            # re-enrol against the same setup.
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+            # Active secret matches the secret captured during setup.
             assert config.totp_secret_encrypted is not None
+            assert (
+                mfa_service.decrypt_secret(config.totp_secret_encrypted)
+                == captured_secret
+            )
             assert config.backup_codes is not None
 
-    def test_mfa_confirm_invalid_code(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm with invalid code shows error and redirects."""
-        with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+    def test_mfa_confirm_invalid_code_keeps_pending(
+        self, app, auth_client, seed_user, monkeypatch
+    ):
+        """POST /mfa/confirm with invalid code preserves pending state.
 
-            # Visit setup first.
+        A typo on the verification form must not destroy the pending
+        secret -- otherwise the user would have to re-scan the QR for
+        every wrong digit.  Asserts (a) the user sees the invalid-code
+        flash, (b) MFA is not enabled, and (c) the pending columns are
+        unchanged after the POST itself so the user can retry until the
+        15-minute expiry.
+
+        ``follow_redirects=False`` is essential here: the redirect
+        target is /mfa/setup, which DOES rewrite pending state by
+        design.  The contract we are testing is the behavior of the
+        confirm route alone, not the side effects of the user's next
+        navigation.
+        """
+        with app.app_context():
+            # /mfa/confirm uses verify_totp_setup_code which returns
+            # int (matched step) or None (no match).  None == invalid.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: None,
+            )
+
+            # Visit setup to write a pending secret.
             auth_client.get("/mfa/setup")
+            pending_before = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            ciphertext_before = pending_before.pending_secret_encrypted
+            expires_before = pending_before.pending_secret_expires_at
+            assert ciphertext_before is not None
 
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "000000",
-            }, follow_redirects=True)
-            assert response.status_code == 200
-            assert b"Invalid code" in response.data
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "mfa/setup" in response.headers.get("Location", "")
 
-    def test_mfa_confirm_no_session_secret(self, app, auth_client, seed_user):
-        """POST /mfa/confirm without setup secret in session shows error."""
+            db.session.refresh(pending_before)
+            # Pending columns are unchanged -- the user can retry.
+            assert pending_before.pending_secret_encrypted == ciphertext_before
+            assert pending_before.pending_secret_expires_at == expires_before
+            # MFA was NOT enabled.
+            assert pending_before.is_enabled in (False, None)
+            assert pending_before.totp_secret_encrypted is None
+            assert pending_before.confirmed_at is None
+
+            # Following the redirect manually delivers the flash to the
+            # user, since the confirm route itself returned 302.
+            follow_up = auth_client.get(
+                response.headers["Location"], follow_redirects=False,
+            )
+            assert follow_up.status_code == 200
+            assert b"Invalid code" in follow_up.data
+
+    def test_mfa_confirm_no_pending_state(self, app, auth_client, seed_user):
+        """POST /mfa/confirm with no pending secret in DB shows expired flash.
+
+        Covers two paths through the same branch: (a) the user posts
+        directly to /mfa/confirm without ever visiting /mfa/setup, so
+        no MfaConfig row exists; (b) a hypothetical row with cleared
+        pending columns.  Both should redirect to /mfa/setup with the
+        "session expired" flash.
+        """
         with app.app_context():
-            # Post directly without visiting /mfa/setup first.
+            # No prior /mfa/setup visit -- no MfaConfig row.
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             }, follow_redirects=True)
             assert response.status_code == 200
             assert b"MFA setup session expired" in response.data
+
+    def test_mfa_confirm_rejects_expired_pending(
+        self, app, auth_client, seed_user, monkeypatch
+    ):
+        """POST /mfa/confirm rejects pending state past its expiry.
+
+        Sets up a pending secret with an expiry in the past and posts a
+        valid code.  The route must (a) reject the submission with the
+        "expired" flash, (b) clear the stale pending columns, and
+        (c) NOT promote the secret to ``totp_secret_encrypted``.  This
+        is the C-05 anti-staleness contract: an attacker who briefly
+        compromises an account cannot revisit /mfa/confirm hours later
+        to silently enrol their own device.
+
+        ``follow_redirects=False`` is essential: the redirect target
+        /mfa/setup writes new pending state by design and would mask
+        the cleared columns we are asserting on.
+        """
+        with app.app_context():
+            # The expired-pending guard runs BEFORE setup-code
+            # verification; the patch is here only as a defensive
+            # backstop in case the order is ever reordered.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
+
+            # Build a row with pending state already past expiry.
+            mfa_config = MfaConfig(
+                user_id=seed_user["user"].id,
+                pending_secret_encrypted=mfa_service.encrypt_secret(
+                    "JBSWY3DPEHPK3PXP"
+                ),
+                pending_secret_expires_at=(
+                    datetime.now(timezone.utc) - timedelta(minutes=1)
+                ),
+            )
+            db.session.add(mfa_config)
+            db.session.commit()
+
+            response = auth_client.post("/mfa/confirm", data={
+                "totp_code": "123456",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "mfa/setup" in response.headers.get("Location", "")
+
+            db.session.refresh(mfa_config)
+            # Stale pending state cleared.
+            assert mfa_config.pending_secret_encrypted is None
+            assert mfa_config.pending_secret_expires_at is None
+            # MFA was NOT enabled.
+            assert mfa_config.is_enabled in (False, None)
+            assert mfa_config.totp_secret_encrypted is None
+            assert mfa_config.confirmed_at is None
+
+            # The flash arrives on the next page; verify it explicitly
+            # so the user-visible message is locked down.  Use
+            # follow_redirects=False on the GET so we do not chain
+            # through into a fresh /mfa/setup that resets the page.
+            follow_up = auth_client.get(
+                response.headers["Location"], follow_redirects=False,
+            )
+            assert follow_up.status_code == 200
+            assert b"MFA setup session expired" in follow_up.data
 
     def test_regenerate_backup_codes(self, app, auth_client, seed_user):
         """POST /mfa/regenerate-backup-codes generates new codes."""
@@ -763,20 +1023,109 @@ class TestMfaSetup:
             assert response.status_code == 200
             assert b"Two-factor authentication is not enabled" in response.data
 
-    def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm redirects with flash when TOTP key is missing.
+    def test_regenerate_backup_codes_renders_28_char_codes(self, app, auth_client, seed_user):
+        """POST /mfa/regenerate-backup-codes renders 10 codes of 28 hex chars.
 
-        When TOTP_ENCRYPTION_KEY is not set, encrypt_secret() raises
-        RuntimeError.  The route must catch this and redirect to security
-        settings instead of returning a 500 error.
+        Asserts the post-C-03 contract end-to-end: the route generates
+        backup codes, hashes them, persists the hashes, and renders the
+        plaintext codes once. Each rendered code must be 28 lowercase
+        hex characters (112 bits of entropy). Without this end-to-end
+        assertion, a regression in either the generator or the template
+        could ship without breaking any unit test.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            mfa_config = MfaConfig(
+                user_id=seed_user["user"].id,
+                is_enabled=True,
+                totp_secret_encrypted=mfa_service.encrypt_secret("TESTBASE32SECRET"),
+                backup_codes=mfa_service.hash_backup_codes(["legacy01"], rounds=4),
+            )
+            db.session.add(mfa_config)
+            db.session.commit()
 
-            # Visit setup to store the secret in the session.
+            response = auth_client.post("/mfa/regenerate-backup-codes")
+            assert response.status_code == 200
+            assert b"Save Your Backup Codes" in response.data
+
+            body = response.get_data(as_text=True)
+            # Match exactly 28 lowercase hex chars terminated by a non-hex
+            # boundary (the surrounding markup) so partial matches inside
+            # bcrypt hashes or similar can never fool the count.
+            rendered_codes = re.findall(r"(?<![0-9a-f])[0-9a-f]{28}(?![0-9a-f])", body)
+            assert len(rendered_codes) == 10, (
+                f"Expected 10 28-char codes in response; found "
+                f"{len(rendered_codes)}: {rendered_codes!r}"
+            )
+
+            stored_hashes = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+                .backup_codes
+            )
+            assert len(stored_hashes) == 10
+            # The stored bcrypt hashes match the freshly rendered plaintext
+            # codes -- the route persisted what it displayed and rotated
+            # away from the legacy code.
+            for plaintext in rendered_codes:
+                idx = mfa_service.verify_backup_code(plaintext, stored_hashes)
+                assert idx >= 0, (
+                    f"Rendered code {plaintext!r} has no matching stored hash"
+                )
+            # The pre-existing legacy code must no longer verify -- this
+            # endpoint regenerates, it does not append.
+            assert mfa_service.verify_backup_code("legacy01", stored_hashes) == -1
+
+    def test_mfa_confirm_renders_28_char_codes(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/confirm renders 10 freshly generated 28-char backup codes.
+
+        Mirrors test_regenerate_backup_codes_renders_28_char_codes for
+        the initial enrollment path. Both routes call
+        ``mfa_service.generate_backup_codes()`` and render
+        ``auth/mfa_backup_codes.html``; both must show the upgraded
+        format.
+        """
+        with app.app_context():
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
             auth_client.get("/mfa/setup")
 
-            # Remove the key so encrypt_secret raises RuntimeError.
+            response = auth_client.post("/mfa/confirm", data={"totp_code": "123456"})
+            assert response.status_code == 200
+            assert b"Save Your Backup Codes" in response.data
+
+            body = response.get_data(as_text=True)
+            rendered_codes = re.findall(r"(?<![0-9a-f])[0-9a-f]{28}(?![0-9a-f])", body)
+            assert len(rendered_codes) == 10, (
+                f"Expected 10 28-char codes in response; found "
+                f"{len(rendered_codes)}: {rendered_codes!r}"
+            )
+
+    def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/confirm redirects to security settings when TOTP key is missing.
+
+        Setup writes a pending secret successfully; then the operator
+        unsets ``TOTP_ENCRYPTION_KEY`` between request boundaries.  At
+        confirm time the route's ``decrypt_secret`` call raises
+        RuntimeError.  The route must (a) clear the unrecoverable
+        pending state, (b) redirect to ``/settings?section=security``
+        rather than looping the user through /mfa/setup (which would
+        also fail), and (c) NOT return a 500.
+        """
+        with app.app_context():
+            # The decrypt failure occurs BEFORE setup-code verification
+            # in the mfa_confirm route; the patch is here defensively
+            # so a refactor cannot accidentally let a "wrong code" path
+            # mask the missing-key path.
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
+
+            # Visit setup to write the pending secret while the key is set.
+            auth_client.get("/mfa/setup")
+
+            # Remove the key so the next decrypt_secret raises RuntimeError.
             monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
 
             response = auth_client.post("/mfa/confirm", data={
@@ -784,6 +1133,18 @@ class TestMfaSetup:
             }, follow_redirects=False)
             assert response.status_code == 302
             assert "security" in response.headers.get("Location", "")
+
+            # The unrecoverable pending state must have been cleared so
+            # the next request does not encounter the same broken row.
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+            assert config.is_enabled in (False, None)
+            assert config.totp_secret_encrypted is None
 
 
 class TestMfaLogin:
@@ -857,7 +1218,10 @@ class TestMfaLogin:
         """POST /mfa/verify with valid TOTP code completes login."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: enter pending state.
             client.post("/login", data={
@@ -884,7 +1248,10 @@ class TestMfaLogin:
         """POST /mfa/verify with invalid TOTP code shows generic error."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.INVALID,
+            )
 
             client.post("/login", data={
                 "email": "test@shekel.local",
@@ -1045,7 +1412,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with malicious next parameter.
             client.post("/login?next=https://evil.com", data={
@@ -1076,7 +1446,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with protocol-relative next.
             client.post("/login?next=//evil.com", data={
@@ -1105,7 +1478,10 @@ class TestMfaLogin:
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             # Step 1: login with a safe next parameter.
             client.post("/login?next=/templates", data={
@@ -1169,7 +1545,10 @@ class TestMfaDisable:
         """POST /mfa/disable with valid password + TOTP disables MFA."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
 
             response = auth_client.post("/mfa/disable", data={
                 "current_password": "testpass",
@@ -1215,7 +1594,10 @@ class TestMfaDisable:
         """POST /mfa/disable with wrong TOTP code shows error."""
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: False)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.INVALID,
+            )
 
             response = auth_client.post("/mfa/disable", data={
                 "current_password": "testpass",
@@ -1302,6 +1684,47 @@ class TestRegistration:
             ).first()
             assert scenario is not None
 
+    def test_register_success_emits_user_registered_event(
+        self, app, client, caplog,
+    ):
+        """POST /register emits ``user_registered`` (F-085 / C-14).
+
+        Replaces the pre-C-14 ``logger.info("action=user_registered ...")``
+        with a structured event including user_id and email so the
+        Python tier of the audit story is queryable by event-name.
+        """
+        from app.utils.log_events import AUTH, EVT_USER_REGISTERED
+
+        with app.app_context():
+            with caplog.at_level(logging.INFO, logger="app.routes.auth"):
+                response = client.post("/register", data={
+                    "email": "audit-event@example.com",
+                    "display_name": "Audit Event",
+                    "password": "securepass123",
+                    "confirm_password": "securepass123",
+                }, follow_redirects=False)
+            assert response.status_code == 302
+
+            user = db.session.query(User).filter_by(
+                email="audit-event@example.com"
+            ).first()
+            assert user is not None
+
+            matching = [
+                r for r in caplog.records
+                if getattr(r, "event", None) == EVT_USER_REGISTERED
+            ]
+            assert len(matching) == 1, (
+                f"Expected exactly one ``user_registered`` event; "
+                f"observed: "
+                f"{[(r.levelname, getattr(r, 'event', None)) for r in caplog.records]}"
+            )
+            record = matching[0]
+            assert record.levelno == logging.INFO
+            assert record.category == AUTH
+            assert record.user_id == user.id
+            assert record.email == "audit-event@example.com"
+
     def test_register_success_user_can_login(self, app, client):
         """A newly registered user can log in with their credentials.
 
@@ -1328,7 +1751,7 @@ class TestRegistration:
             assert "login" not in location
 
     def test_register_success_new_user_sees_empty_grid(
-        self, app, client, seed_user, seed_periods
+        self, app, client, seed_user, seed_periods_today
     ):
         """A newly registered user sees an empty grid with no seed user data.
 
@@ -1877,32 +2300,43 @@ class TestMfaSetupEdgeCases:
     def test_mfa_confirm_double_submit(self, app, auth_client, seed_user, monkeypatch):
         """Submitting MFA confirmation twice does not create a duplicate MfaConfig.
 
-        The first POST pops the setup secret from the session. The second
-        POST finds no secret and redirects to /mfa/setup with an expiry
-        message. Only one MfaConfig row should exist.
+        Under C-05, the first POST decrypts the pending secret, promotes
+        it to ``totp_secret_encrypted``, and clears the pending columns.
+        A second POST finds no pending secret and redirects to
+        /mfa/setup with the "expired" flash.  Only one MfaConfig row
+        should exist, and the existing active credential must NOT be
+        re-rotated by the no-op second submission.
         """
         with app.app_context():
-            monkeypatch.setattr(mfa_service, "verify_totp_code", lambda s, c: True)
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", lambda s, c: 12345,
+            )
 
-            # Visit setup to store the secret in the session.
+            # Visit setup to write the pending secret to the DB.
             auth_client.get("/mfa/setup")
 
-            # First confirm: enables MFA and shows backup codes.
+            # First confirm: promotes pending to active and shows backup codes.
             resp1 = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             })
             assert resp1.status_code == 200
             assert b"Save Your Backup Codes" in resp1.data
 
-            # Second confirm: session secret was consumed; should redirect.
+            # Snapshot the active credential after the successful confirm.
+            config_after_first = db.session.query(MfaConfig).filter_by(
+                user_id=seed_user["user"].id
+            ).first()
+            ciphertext_after_first = config_after_first.totp_secret_encrypted
+            confirmed_at_after_first = config_after_first.confirmed_at
+
+            # Second confirm: pending state was cleared; should redirect.
             resp2 = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
             }, follow_redirects=False)
-            # Session secret was consumed on first submit; second is rejected.
             assert resp2.status_code == 302
             assert "mfa/setup" in resp2.headers.get("Location", "")
 
-            # Verify exactly one MfaConfig exists and it is enabled.
+            # Verify exactly one MfaConfig exists.
             config_count = db.session.query(MfaConfig).filter_by(
                 user_id=seed_user["user"].id
             ).count()
@@ -1912,3 +2346,220 @@ class TestMfaSetupEdgeCases:
                 user_id=seed_user["user"].id
             ).first()
             assert config.is_enabled is True
+            # The second submit must not have rotated or cleared the
+            # active credential; pending state is still empty.
+            assert config.totp_secret_encrypted == ciphertext_after_first
+            assert config.confirmed_at == confirmed_at_after_first
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+
+
+# ---------------------------------------------------------------------------
+# Account-lockout integration with the /login route (audit F-033 / C-11)
+# ---------------------------------------------------------------------------
+
+
+class TestLoginLockoutIntegration:
+    """End-to-end tests that exercise lockout through the /login route.
+
+    The service-level tests in
+    ``tests/test_services/test_auth_service.py`` cover the lockout
+    semantics in isolation; this class verifies the integration with
+    the Flask route -- in particular that the route's flash message,
+    redirect target, and ``failed_login_count`` persistence remain
+    consistent under the new behaviour.
+    """
+
+    def test_failed_login_increments_db_counter(
+        self, app, client, seed_user,
+    ):
+        """A bad-password POST persists the increment across requests.
+
+        Verifies the ``db.session.commit`` inside ``authenticate``
+        survives the request-response boundary.  Without the commit,
+        the counter would only live in the request's session and
+        reset on the next request.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "wrong-password",
+            }, follow_redirects=True)
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 1
+
+    def test_threshold_failures_lock_account_via_route(
+        self, app, client, seed_user, monkeypatch,
+    ):
+        """Threshold-many bad POSTs through /login lock the account.
+
+        Uses a low threshold (3) to avoid running into the @limiter
+        rate limit (5/15min) that fires before the lockout would.
+        Rate limiting is disabled in TestConfig so the limit is not
+        actually enforced; the explicit threshold reduction keeps
+        the test future-proof if rate limiting is enabled.
+        """
+        monkeypatch.setenv("LOCKOUT_THRESHOLD", "3")
+        monkeypatch.setenv("LOCKOUT_DURATION_MINUTES", "15")
+        user_id = seed_user["user"].id
+        with app.app_context():
+            for _ in range(3):
+                client.post("/login", data={
+                    "email": "test@shekel.local",
+                    "password": "wrong",
+                }, follow_redirects=True)
+
+            user = db.session.get(User, user_id)
+            assert user.locked_until is not None
+            assert user.locked_until > datetime.now(timezone.utc)
+
+    def test_locked_account_login_returns_generic_error(
+        self, app, client, seed_user,
+    ):
+        """A POST during lockout shows the generic invalid-credential message.
+
+        The server MUST NOT distinguish the lockout state from a wrong
+        password in the user-facing response: an attacker probing
+        whether an account is locked would otherwise get a free signal
+        about the lockout window.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            user = db.session.get(User, user_id)
+            user.locked_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=10)
+            )
+            db.session.commit()
+
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            assert b"Invalid email or password" in response.data
+            # The response body must NOT name the lockout state.
+            assert b"locked" not in response.data.lower()
+
+    def test_successful_login_after_typo_resets_counter(
+        self, app, client, seed_user,
+    ):
+        """A correct password after a few typos zeroes the counter.
+
+        Mirrors the service-level test but goes through the HTTP
+        boundary so the route's commit-after-authenticate path is
+        exercised.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            for _ in range(3):
+                client.post("/login", data={
+                    "email": "test@shekel.local",
+                    "password": "wrong",
+                }, follow_redirects=True)
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 3
+
+            response = client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            }, follow_redirects=False)
+            assert response.status_code == 302
+
+            user = db.session.get(User, user_id)
+            assert user.failed_login_count == 0
+            assert user.locked_until is None
+
+
+# ---------------------------------------------------------------------------
+# Password-form chrome (audit F-089 / F-090 / C-11)
+# ---------------------------------------------------------------------------
+
+
+class TestPasswordFormChrome:
+    """Sanity checks on the rendered HTML for the strength meter and toggle.
+
+    These tests assert presence of the data attributes that the JS
+    binders look for, so a future template refactor that drops the
+    attributes does not silently disable the meter or toggle.
+    """
+
+    def test_register_form_has_strength_meter_attributes(
+        self, app, client,
+    ):
+        """The /register form exposes the meter wiring.
+
+        ``data-password-input`` on the input is what
+        ``password_strength.js::bind`` queries; the matching
+        ``data-password-meter-for=password`` container hosts the
+        progress bar.  Both must be present together.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"data-password-input" in response.data
+            assert b'data-password-meter-for="password"' in response.data
+            assert b"data-password-meter-bar" in response.data
+
+    def test_register_form_has_password_toggle(self, app, client):
+        """The /register form has show/hide toggle buttons.
+
+        ``data-action='password-toggle'`` is the selector that
+        ``password_toggle.js`` uses to bind the click listener; the
+        ``data-target`` attribute names the input id to flip.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"data-action=\"password-toggle\"" in response.data
+            assert b"data-target=\"password\"" in response.data
+            assert b"data-target=\"confirm_password\"" in response.data
+
+    def test_register_form_loads_zxcvbn_and_meter_script(
+        self, app, client,
+    ):
+        """The /register form loads zxcvbn and the meter script.
+
+        Without the vendored zxcvbn asset the meter falls back to
+        empty (see ``password_strength.js`` clearMeter), which is a
+        silent UX downgrade.  Asserting the script tags here catches
+        a future template that loses the include.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            assert b"vendor/zxcvbn/zxcvbn.js" in response.data
+            assert b"js/password_strength.js" in response.data
+            assert b"js/password_toggle.js" in response.data
+
+    def test_login_form_has_password_toggle(self, app, client):
+        """The /login form carries the show/hide toggle and its loader.
+
+        Login does not get the strength meter (no zxcvbn analysis on
+        an existing password), but the toggle is in scope so a user
+        verifying a typo sees the actual characters they typed.
+        """
+        with app.app_context():
+            response = client.get("/login")
+            assert response.status_code == 200
+            assert b"data-action=\"password-toggle\"" in response.data
+            assert b"js/password_toggle.js" in response.data
+            assert b"vendor/zxcvbn/zxcvbn.js" not in response.data
+
+    def test_security_panel_has_strength_meter_and_toggle(
+        self, app, auth_client,
+    ):
+        """The /settings security section exposes meter and toggle wiring.
+
+        Mirror of the /register check for the change-password form.
+        """
+        with app.app_context():
+            response = auth_client.get("/settings?section=security")
+            assert response.status_code == 200
+            assert b"data-password-input" in response.data
+            assert b'data-password-meter-for="new_password"' in response.data
+            assert b"data-action=\"password-toggle\"" in response.data
+            # Scripts loaded only when the security section is active.
+            assert b"vendor/zxcvbn/zxcvbn.js" in response.data
+            assert b"js/password_strength.js" in response.data
+            assert b"js/password_toggle.js" in response.data

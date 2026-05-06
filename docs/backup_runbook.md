@@ -27,8 +27,8 @@ This runbook covers all backup, restore, retention, and verification procedures 
 ## 2. Prerequisites
 
 - **Host**: Arch Linux with Docker and Docker Compose installed
-- **Containers**: `shekel-db` (PostgreSQL 16) running via `docker-compose.yml`
-- **App container** (production only): `shekel-app` running via `docker-compose.yml`
+- **Containers**: `shekel-prod-db` (PostgreSQL 16) running via `docker-compose.yml`
+- **App container** (production only): `shekel-prod-app` running via `docker-compose.yml`
 - **Disk space**: sufficient local storage for 7+ days of backups
 - **NAS** (optional): network share mounted on the host
 
@@ -53,10 +53,10 @@ Add these entries to the host's crontab (`crontab -e`):
 0 3 * * 0 /path/to/shekel/scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) >> /var/log/shekel_backup.log 2>&1
 
 # Weekly integrity check on production database (Sunday 3:30 AM).
-30 3 * * 0 docker exec shekel-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
+30 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
 
 # Daily audit log retention cleanup at 3:00 AM.
-0 3 * * * docker exec shekel-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
+0 3 * * * docker exec shekel-prod-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
 ```
 
 Replace `/path/to/shekel/` with the actual path to the Shekel project directory on the host.
@@ -210,11 +210,11 @@ The restore script will:
 curl -s http://localhost:5000/login | head -5
 
 # Verify database contents.
-docker exec shekel-db psql -U shekel_user -d shekel -c "SELECT COUNT(*) FROM auth.users;"
-docker exec shekel-db psql -U shekel_user -d shekel -c "SELECT COUNT(*) FROM budget.pay_periods;"
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT COUNT(*) FROM auth.users;"
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT COUNT(*) FROM budget.pay_periods;"
 
 # Run integrity checks.
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 ### 6.4 Restoring from NAS
@@ -273,13 +273,13 @@ The integrity check script validates the database without modifying any data.
 
 ```bash
 # Run all checks (inside the app container in production).
-docker exec shekel-app python scripts/integrity_check.py
+docker exec shekel-prod-app python scripts/integrity_check.py
 
 # Run all checks with verbose output.
-docker exec shekel-app python scripts/integrity_check.py --verbose
+docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 
 # Run only referential integrity checks.
-docker exec shekel-app python scripts/integrity_check.py --category referential
+docker exec shekel-prod-app python scripts/integrity_check.py --category referential
 
 # Run locally in development.
 DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
@@ -317,21 +317,21 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Database container is not running" | `shekel-db` stopped | `docker start shekel-db` |
+| "Database container is not running" | `shekel-prod-db` stopped | `docker start shekel-prod-db` |
 | "NAS directory does not exist" | NAS not mounted | `sudo mount -a` and verify with `mount \| grep nas` |
-| "Backup file is empty" | Disk full or pg_dump failure | Check `df -h` and `docker logs shekel-db` |
+| "Backup file is empty" | Disk full or pg_dump failure | Check `df -h` and `docker logs shekel-prod-db` |
 | "Encrypted backup but no passphrase" | `BACKUP_ENCRYPTION_PASSPHRASE` not set | `export BACKUP_ENCRYPTION_PASSPHRASE="..."` |
-| "Restore failed: permission denied" | `PGUSER` lacks CREATEDB privilege | Run: `docker exec shekel-db psql -U postgres -c "ALTER USER shekel_user CREATEDB;"` |
+| "Restore failed: permission denied" | `PGUSER` lacks CREATEDB privilege | Run: `docker exec shekel-prod-db psql -U postgres -c "ALTER USER shekel_user CREATEDB;"` |
 | "Integrity CRITICAL failures after restore" | Corrupt or partial backup | Try restoring from an older backup |
-| "verify_backup.sh: shekel_verify not cleaned up" | Previous run crashed before trap | Script auto-cleans on next run; or manually: `docker exec shekel-db psql -U shekel_user -d postgres -c "DROP DATABASE IF EXISTS shekel_verify;"` |
+| "verify_backup.sh: shekel_verify not cleaned up" | Previous run crashed before trap | Script auto-cleans on next run; or manually: `docker exec shekel-prod-db psql -U shekel_user -d postgres -c "DROP DATABASE IF EXISTS shekel_verify;"` |
 
 ### Log Files
 
 | Log | Location | Contents |
 |-----|----------|----------|
 | Backup/retention/verify logs | `/var/log/shekel_backup.log` | Cron job output (if redirected) |
-| Application structured logs | `docker logs shekel-app` | JSON-formatted request and event logs |
-| PostgreSQL logs | `docker logs shekel-db` | Database server logs |
+| Application structured logs | `docker logs shekel-prod-app` | JSON-formatted request and event logs |
+| PostgreSQL logs | `docker logs shekel-prod-db` | Database server logs |
 
 ---
 
@@ -342,8 +342,8 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 | `BACKUP_LOCAL_DIR` | `/var/backups/shekel` | backup.sh, retention.sh | Local backup storage directory |
 | `BACKUP_NAS_DIR` | `/mnt/nas/backups/shekel` | backup.sh, retention.sh | NAS backup storage directory |
 | `BACKUP_ENCRYPTION_PASSPHRASE` | *(none)* | backup.sh, restore.sh, verify.sh | GPG encryption passphrase (optional) |
-| `DB_CONTAINER` | `shekel-db` | all scripts | PostgreSQL Docker container name |
-| `APP_CONTAINER` | `shekel-app` | restore.sh, verify.sh | Application Docker container name |
+| `DB_CONTAINER` | `shekel-prod-db` | all scripts | PostgreSQL Docker container name |
+| `APP_CONTAINER` | `shekel-prod-app` | restore.sh, verify.sh | Application Docker container name |
 | `PGUSER` | `shekel_user` | all scripts | PostgreSQL user |
 | `PGDATABASE` | `shekel` | all scripts | PostgreSQL database name |
 | `VERIFY_DB` | `shekel_verify` | verify.sh | Temporary database name for verification |

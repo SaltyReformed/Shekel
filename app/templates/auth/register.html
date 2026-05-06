@@ -7,7 +7,7 @@
     <div class="card shadow-sm">
       <div class="card-body">
         <div class="text-center mb-4">
-          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" style="width: auto;">
+          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" class="logo-img">
         </div>
         <form method="POST" action="{{ url_for('auth.register') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -23,16 +23,48 @@
                    required maxlength="100"
                    value="{{ request.form.get('display_name', '') }}">
           </div>
-          <div class="mb-3">
+          {# Password field with show/hide toggle (audit F-090) and a
+             strength meter container (audit F-089).  The toggle uses a
+             Bootstrap input-group so the eye icon sits flush with the
+             input.  ``data-password-input`` flags the field for the
+             strength-meter binder; ``data-password-meter-for=password``
+             names the same input-id and is the matching half of the
+             pair. #}
+          <div class="mb-3 password-strength-meter">
             <label for="password" class="form-label">Password</label>
-            <input type="password" class="form-control" id="password" name="password"
-                   required minlength="12" autocomplete="new-password">
+            <div class="input-group">
+              <input type="password" class="form-control" id="password" name="password"
+                     required minlength="12" autocomplete="new-password"
+                     data-password-input>
+              <button class="btn btn-outline-secondary password-toggle-btn"
+                      type="button" data-action="password-toggle"
+                      data-target="password" aria-label="Show password"
+                      aria-pressed="false">
+                <i class="bi bi-eye-slash"></i>
+              </button>
+            </div>
+            <div data-password-meter-for="password" class="mt-2">
+              <div class="progress" role="progressbar"
+                   aria-label="Password strength" aria-valuemin="0"
+                   aria-valuemax="100" aria-valuenow="0">
+                <div class="progress-bar" data-password-meter-bar></div>
+              </div>
+              <small data-password-meter-text class="form-text"></small>
+            </div>
             <div class="form-text">Minimum 12 characters.</div>
           </div>
           <div class="mb-3">
             <label for="confirm_password" class="form-label">Confirm Password</label>
-            <input type="password" class="form-control" id="confirm_password" name="confirm_password"
-                   required minlength="12" autocomplete="new-password">
+            <div class="input-group">
+              <input type="password" class="form-control" id="confirm_password" name="confirm_password"
+                     required minlength="12" autocomplete="new-password">
+              <button class="btn btn-outline-secondary password-toggle-btn"
+                      type="button" data-action="password-toggle"
+                      data-target="confirm_password" aria-label="Show password"
+                      aria-pressed="false">
+                <i class="bi bi-eye-slash"></i>
+              </button>
+            </div>
           </div>
           <button type="submit" class="btn btn-primary w-100">Create Account</button>
         </form>
@@ -43,4 +75,14 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{# zxcvbn drives the strength meter.  Loaded on /register only so the
+   ~400 KB asset does not download on every page.  password_toggle.js
+   handles the show/hide eye icon; small enough to load globally but
+   only the templates that include the toggle button benefit from it. #}
+<script src="{{ url_for('static', filename='vendor/zxcvbn/zxcvbn.js') }}"></script>
+<script src="{{ url_for('static', filename='js/password_strength.js') }}"></script>
+<script src="{{ url_for('static', filename='js/password_toggle.js') }}"></script>
 {% endblock %}

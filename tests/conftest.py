@@ -10,9 +10,29 @@ tables between tests.  This is reliable and avoids the complexity
 of nested-transaction rollback with SQLAlchemy 2.0.
 """
 
-import pytest
-from datetime import date
+# pylint: disable=wrong-import-position,wrong-import-order
+# Imports below are intentionally ordered so SECRET_KEY is set in the
+# environment BEFORE any ``app`` module is imported.
+
+import os
+from datetime import date, timedelta
 from decimal import Decimal
+
+# IMPORTANT: SECRET_KEY must be set in the environment BEFORE the
+# ``app`` package is imported, because ``app/config.py`` reads it at
+# class-definition time via ``os.getenv("SECRET_KEY")``.  Production
+# config has no fallback default (audit finding F-016), so without
+# this setdefault Flask sessions in the test suite would fail to
+# sign or verify.  ``setdefault`` so that a developer running pytest
+# with their own real key in the environment is not overridden.
+# The value is intentionally distinct from any placeholder rejected
+# by ProdConfig and is at least 32 characters.
+os.environ.setdefault(
+    "SECRET_KEY",
+    "test-suite-fixed-key-not-used-in-production-do-not-deploy",
+)
+
+import pytest
 
 from app import create_app
 from app.extensions import db as _db
@@ -63,6 +83,29 @@ def set_totp_key(monkeypatch):
     """Set a test TOTP encryption key for all tests."""
     from cryptography.fernet import Fernet  # pylint: disable=import-outside-toplevel
     monkeypatch.setenv("TOTP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+
+@pytest.fixture(autouse=True)
+def disable_hibp_check(monkeypatch):
+    """Disable the HIBP breached-password check by default.
+
+    ``hash_password`` is invoked from dozens of fixtures (every
+    ``seed_user`` variant, plus per-test registration helpers) and
+    making each one perform an outbound HTTP call would (a) break the
+    suite's hermeticity, (b) slow it by an order of magnitude, and
+    (c) silently mask test results during HIBP outages.
+
+    Tests that exercise HIBP behaviour explicitly flip this back on
+    via ``monkeypatch.setenv("HIBP_CHECK_ENABLED", "true")`` after
+    mocking ``requests.get``.  ``monkeypatch`` is function-scoped so
+    the override is local to a single test even when the autouse
+    fixture has already run.
+
+    See audit finding F-086 / commit C-11 for the production posture
+    (default-on) and ``app/services/auth_service.py:_check_pwned_password``
+    for the runtime read.
+    """
+    monkeypatch.setenv("HIBP_CHECK_ENABLED", "false")
 
 
 @pytest.fixture(scope="session")
@@ -331,6 +374,55 @@ def seed_periods(app, db, seed_user):
     return periods
 
 
+def _today_relative_start_date():
+    """Return start_date that places today in period 4 of a 10-period biweekly run.
+
+    Period 4 is the middle of a 10-period window, leaving 4 historical
+    periods and 5 future periods.  The start is aligned to the most
+    recent Monday so period boundaries fall on weekdays consistently.
+    Used by ``seed_periods_today``-style fixtures so that
+    ``pay_period_service.get_current_period`` always returns a real
+    period regardless of the wall-clock date.
+    """
+    today = date.today()
+    return today - timedelta(days=today.weekday() + 4 * 14)
+
+
+@pytest.fixture()
+def seed_periods_today(app, db, seed_user):
+    """Generate 10 biweekly pay periods so today falls in period 4.
+
+    Use this fixture when the test exercises a code path that calls
+    ``pay_period_service.get_current_period()`` (directly or via a
+    route handler).  Use the regular ``seed_periods`` fixture when the
+    test asserts on specific calendar dates (due_date filters,
+    year-end summaries for tax_year=2026, loan origination alignment).
+
+    A test must use one or the other, never both -- they would write
+    overlapping pay_periods rows for the same user.
+
+    Returns:
+        List of PayPeriod objects, ordered by period_index.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=seed_user["user"].id,
+        start_date=_today_relative_start_date(),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.flush()
+
+    # Set the anchor period to the first period so account-level
+    # projections start from a valid period reference.
+    account = seed_user["account"]
+    account.current_anchor_period_id = periods[0].id
+    db.session.commit()
+
+    return periods
+
+
 @pytest.fixture()
 def auth_client(app, db, client, seed_user):
     """Provide an authenticated test client.
@@ -553,13 +645,17 @@ def second_auth_client(app, db, seed_second_user):
     return second_client
 
 
-@pytest.fixture()
-def seed_full_user_data(app, db, seed_user, seed_periods):
-    """Create a rich dataset for User A (the primary test user).
+def _build_full_user_data(db, seed_user, periods):
+    """Build the rich-dataset payload shared by seed_full_user_data variants.
 
-    Includes transaction template, transaction, savings goal, savings
-    account, transfer template, and salary profile. All objects have
-    distinguishable names and amounts for use in isolation testing.
+    Extracted so both ``seed_full_user_data`` (calendar-anchored) and
+    ``seed_full_user_data_today`` (today-relative) can share a single
+    body and only differ in which ``periods`` fixture they consume.
+
+    Args:
+        db:        SQLAlchemy db extension (the test ``db`` fixture).
+        seed_user: dict from the ``seed_user`` fixture.
+        periods:   List of PayPeriod objects from a periods fixture.
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,
@@ -569,7 +665,6 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
     user = seed_user["user"]
     account = seed_user["account"]
     scenario = seed_user["scenario"]
-    periods = seed_periods
 
     # Look up reference data.
     every_period = (
@@ -676,6 +771,43 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
         "transfer_template": transfer_tpl,
         "salary_profile": salary_profile,
     }
+
+
+@pytest.fixture()
+def seed_full_user_data(app, db, seed_user, seed_periods):
+    """Create a rich dataset for User A (the primary test user).
+
+    Includes transaction template, transaction, savings goal, savings
+    account, transfer template, and salary profile. All objects have
+    distinguishable names and amounts for use in isolation testing.
+
+    Uses the calendar-anchored ``seed_periods`` fixture, so transactions
+    fall in calendar 2026.  Use ``seed_full_user_data_today`` instead
+    when the test exercises a route that calls ``get_current_period``.
+
+    Returns:
+        dict merging seed_user keys plus: periods, template, transaction,
+        savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    return _build_full_user_data(db, seed_user, seed_periods)
+
+
+@pytest.fixture()
+def seed_full_user_data_today(app, db, seed_user, seed_periods_today):
+    """Today-relative variant of seed_full_user_data.
+
+    Identical payload to ``seed_full_user_data`` except the periods
+    are anchored so today falls in period 4.  Use when the test
+    exercises a route that internally calls
+    ``pay_period_service.get_current_period`` (e.g. /dashboard).
+
+    Returns:
+        dict merging seed_user keys plus: periods, template, transaction,
+        savings_goal, recurrence_rule, savings_account,
+        transfer_template, salary_profile.
+    """
+    return _build_full_user_data(db, seed_user, seed_periods_today)
 
 
 @pytest.fixture()
@@ -928,142 +1060,27 @@ def companion_client(app, db, seed_companion):
 def _create_audit_infrastructure():
     """Create system.audit_log table, trigger function, and triggers.
 
-    Mirrors the Alembic migration for the audit system.  Called once
-    during test-session setup because ``create_all()`` only knows about
-    SQLAlchemy models and the audit infrastructure is raw SQL.
+    Delegates to ``app.audit_infrastructure.apply_audit_infrastructure``
+    so the Alembic migration, ``scripts/init_database.py`` (fresh-DB
+    bootstrap), and the test-session setup all materialise the same
+    schema.  The previous in-line copy of the SQL drifted six tables
+    behind the production migration before this consolidation; the
+    shared module is the only way to keep the three call sites in
+    lock-step.
+
+    Called once during test-session setup because ``create_all()``
+    only knows about SQLAlchemy models and the audit infrastructure
+    is raw SQL (PL/pgSQL function, row-level triggers, JSONB
+    columns) outside the model registry.
     """
-    # Table
-    _db.session.execute(_db.text("""
-        CREATE TABLE IF NOT EXISTS system.audit_log (
-            id              BIGSERIAL       PRIMARY KEY,
-            table_schema    VARCHAR(50)     NOT NULL,
-            table_name      VARCHAR(100)    NOT NULL,
-            operation       VARCHAR(10)     NOT NULL,
-            row_id          INTEGER,
-            old_data        JSONB,
-            new_data        JSONB,
-            changed_fields  TEXT[],
-            user_id         INTEGER,
-            db_user         VARCHAR(100)    DEFAULT current_user,
-            executed_at     TIMESTAMPTZ     DEFAULT now()
-        )
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_table
-            ON system.audit_log (table_schema, table_name)
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_executed
-            ON system.audit_log (executed_at)
-    """))
-    _db.session.execute(_db.text("""
-        CREATE INDEX IF NOT EXISTS idx_audit_log_row
-            ON system.audit_log (table_name, row_id)
-    """))
+    # pylint: disable=import-outside-toplevel  -- avoid pulling app
+    # imports at conftest module-load time so SECRET_KEY can be set
+    # via os.environ.setdefault() before the first ``app`` import.
+    from app.audit_infrastructure import apply_audit_infrastructure
 
-    # Trigger function
-    _db.session.execute(_db.text(r"""
-        CREATE OR REPLACE FUNCTION system.audit_trigger_func()
-        RETURNS TRIGGER AS $$
-        DECLARE
-            v_old_data  JSONB;
-            v_new_data  JSONB;
-            v_changed   TEXT[] := '{}';
-            v_user_id   INTEGER;
-            v_row_id    INTEGER;
-            v_key       TEXT;
-        BEGIN
-            BEGIN
-                v_user_id := current_setting('app.current_user_id', true)::INTEGER;
-            EXCEPTION WHEN OTHERS THEN
-                v_user_id := NULL;
-            END;
-
-            IF TG_OP = 'DELETE' THEN
-                v_old_data := to_jsonb(OLD);
-                v_row_id   := OLD.id;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     v_old_data, NULL, NULL, v_user_id);
-                RETURN OLD;
-
-            ELSIF TG_OP = 'INSERT' THEN
-                v_new_data := to_jsonb(NEW);
-                v_row_id   := NEW.id;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     NULL, v_new_data, NULL, v_user_id);
-                RETURN NEW;
-
-            ELSIF TG_OP = 'UPDATE' THEN
-                v_old_data := to_jsonb(OLD);
-                v_new_data := to_jsonb(NEW);
-                v_row_id   := NEW.id;
-                FOR v_key IN
-                    SELECT key FROM jsonb_each(v_new_data)
-                    WHERE NOT v_old_data ? key
-                       OR v_old_data -> key IS DISTINCT FROM v_new_data -> key
-                LOOP
-                    v_changed := array_append(v_changed, v_key);
-                END LOOP;
-                IF array_length(v_changed, 1) IS NULL THEN
-                    RETURN NEW;
-                END IF;
-                INSERT INTO system.audit_log
-                    (table_schema, table_name, operation, row_id,
-                     old_data, new_data, changed_fields, user_id)
-                VALUES
-                    (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, v_row_id,
-                     v_old_data, v_new_data, v_changed, v_user_id);
-                RETURN NEW;
-            END IF;
-            RETURN NULL;
-        END;
-        $$ LANGUAGE plpgsql;
-    """))
-
-    # Attach triggers to all audited tables.
-    audited_tables = [
-        ("budget", "accounts"),
-        ("budget", "transactions"),
-        ("budget", "transaction_templates"),
-        ("budget", "transfers"),
-        ("budget", "transfer_templates"),
-        ("budget", "savings_goals"),
-        ("budget", "recurrence_rules"),
-        ("budget", "pay_periods"),
-        ("budget", "account_anchor_history"),
-        ("budget", "interest_params"),
-        ("budget", "loan_params"),
-        ("budget", "rate_history"),
-        ("budget", "escrow_components"),
-        ("budget", "investment_params"),
-        ("salary", "salary_profiles"),
-        ("salary", "salary_raises"),
-        ("salary", "paycheck_deductions"),
-        ("salary", "pension_profiles"),
-        ("salary", "calibration_overrides"),
-        ("salary", "calibration_deduction_overrides"),
-        ("auth", "users"),
-        ("auth", "user_settings"),
-        ("auth", "mfa_configs"),
-    ]
-    for schema, table in audited_tables:
-        trigger_name = f"audit_{table}"
-        _db.session.execute(_db.text(f"""
-            DROP TRIGGER IF EXISTS {trigger_name} ON {schema}.{table}
-        """))
-        _db.session.execute(_db.text(f"""
-            CREATE TRIGGER {trigger_name}
-            AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table}
-            FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()
-        """))
+    apply_audit_infrastructure(
+        lambda sql: _db.session.execute(_db.text(sql))
+    )
 
 
 def _seed_ref_tables():

@@ -56,16 +56,16 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
 class TestDashboardGrouping:
     """Dashboard groups accounts by category."""
 
-    def test_dashboard_groups_by_category(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_groups_by_category(self, auth_client, seed_user, db, seed_periods_today):
         """Dashboard shows category headers."""
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
         assert b"Asset" in resp.data
 
-    def test_dashboard_hysa_shows_interest(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_hysa_shows_interest(self, auth_client, seed_user, db, seed_periods_today):
         """HYSA account card shows APY info."""
         acct = _create_hysa_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -73,14 +73,14 @@ class TestDashboardGrouping:
         assert b"HYSA" in resp.data
         assert b"APY" in resp.data
 
-    def test_dashboard_emergency_includes_hysa(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_emergency_includes_hysa(self, auth_client, seed_user, db, seed_periods_today):
         """Emergency fund total includes HYSA balances."""
         # Create a savings account so emergency fund section appears.
         savings_acct = _create_savings_account(seed_user, db.session)
-        savings_acct.current_anchor_period_id = seed_periods[0].id
+        savings_acct.current_anchor_period_id = seed_periods_today[0].id
 
         hysa_acct = _create_hysa_account(seed_user, db.session)
-        hysa_acct.current_anchor_period_id = seed_periods[0].id
+        hysa_acct.current_anchor_period_id = seed_periods_today[0].id
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -88,7 +88,7 @@ class TestDashboardGrouping:
         # Should include both savings ($5,000) and HYSA ($10,000) in total.
         assert b"Emergency Fund" in resp.data
 
-    def test_dashboard_savings_goals_unchanged(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_savings_goals_unchanged(self, auth_client, seed_user, db, seed_periods_today):
         """Goals section renders correctly (regression)."""
         savings_acct = _create_savings_account(seed_user, db.session)
 
@@ -106,7 +106,7 @@ class TestDashboardGrouping:
         assert b"Emergency Fund" in resp.data
         assert b"Savings Goals" in resp.data
 
-    def test_dashboard_mortgage_shows_rate(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_mortgage_shows_rate(self, auth_client, seed_user, db, seed_periods_today):
         """Mortgage card shows interest rate."""
         mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = Account(
@@ -117,7 +117,7 @@ class TestDashboardGrouping:
         )
         db.session.add(acct)
         db.session.flush()
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
 
         params = LoanParams(
             account_id=acct.id,
@@ -136,7 +136,7 @@ class TestDashboardGrouping:
         assert b"Mortgage" in resp.data
         assert b"6.500%" in resp.data
 
-    def test_dashboard_auto_loan_shows_payment(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_auto_loan_shows_payment(self, auth_client, seed_user, db, seed_periods_today):
         """Auto loan card shows monthly payment."""
         auto_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         acct = Account(
@@ -147,7 +147,7 @@ class TestDashboardGrouping:
         )
         db.session.add(acct)
         db.session.flush()
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
 
         params = LoanParams(
             account_id=acct.id,
@@ -166,7 +166,7 @@ class TestDashboardGrouping:
         assert b"Auto Loan" in resp.data
         assert b"Monthly Payment" in resp.data
 
-    def test_dashboard_liability_category(self, auth_client, seed_user, db, seed_periods):
+    def test_dashboard_liability_category(self, auth_client, seed_user, db, seed_periods_today):
         """Liabilities grouped under Liability header."""
         mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = Account(
@@ -177,7 +177,7 @@ class TestDashboardGrouping:
         )
         db.session.add(acct)
         db.session.flush()
-        acct.current_anchor_period_id = seed_periods[0].id
+        acct.current_anchor_period_id = seed_periods_today[0].id
 
         params = LoanParams(
             account_id=acct.id,
@@ -213,7 +213,7 @@ class TestDashboardGrouping:
         assert b"New Account" in resp.data
 
     def test_emergency_fund_uses_is_liquid(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods_today,
     ):
         """Emergency fund total includes all is_liquid=True accounts.
 
@@ -223,7 +223,7 @@ class TestDashboardGrouping:
         """
         # seed_user["account"] is a Checking account (is_liquid=True).
         seed_user["account"].current_anchor_balance = Decimal("1000.00")
-        seed_user["account"].current_anchor_period_id = seed_periods[0].id
+        seed_user["account"].current_anchor_period_id = seed_periods_today[0].id
 
         # Add a Money Market account (is_liquid=True by seed).
         mm_type = db.session.query(AccountType).filter_by(
@@ -234,7 +234,7 @@ class TestDashboardGrouping:
             account_type_id=mm_type.id,
             name="My Money Market",
             current_anchor_balance=Decimal("2000.00"),
-            current_anchor_period_id=seed_periods[0].id,
+            current_anchor_period_id=seed_periods_today[0].id,
         )
         db.session.add(mm_acct)
 
@@ -245,7 +245,7 @@ class TestDashboardGrouping:
             account_type_id=cd_type.id,
             name="My CD",
             current_anchor_balance=Decimal("5000.00"),
-            current_anchor_period_id=seed_periods[0].id,
+            current_anchor_period_id=seed_periods_today[0].id,
         )
         db.session.add(cd_acct)
         db.session.commit()
@@ -256,7 +256,7 @@ class TestDashboardGrouping:
         assert b"Emergency Fund" in resp.data
 
     def test_user_created_liquid_type_in_emergency_fund(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """A user-created type with is_liquid=True contributes to emergency fund."""
         from app import ref_cache
@@ -276,7 +276,7 @@ class TestDashboardGrouping:
                 account_type_id=custom_type.id,
                 name="Custom Liquid",
                 current_anchor_balance=Decimal("3000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                current_anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -311,7 +311,7 @@ class TestAccountHardDelete:
             assert db.session.get(Account, acct_id) is None
 
     def test_hard_delete_account_with_history(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """C-5A.5-23: Account with transactions is blocked and archived instead."""
         with app.app_context():
@@ -321,7 +321,7 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,
                 category_id=seed_user["categories"]["Rent"].id,
@@ -346,7 +346,7 @@ class TestAccountHardDelete:
             assert reloaded.is_active is False
 
     def test_hard_delete_account_with_params(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """C-5A.5-24: Account with LoanParams but no history is permanently deleted with params."""
         with app.app_context():
@@ -506,7 +506,7 @@ class TestAccountHardDelete:
             assert "Archived Savings" in html
 
     def test_hard_delete_account_with_history_already_archived(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """Already-archived account with transactions stays archived without re-archiving."""
         with app.app_context():
@@ -516,7 +516,7 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,
                 category_id=seed_user["categories"]["Rent"].id,
@@ -542,7 +542,7 @@ class TestAccountHardDelete:
             assert reloaded.is_active is False
 
     def test_hard_delete_account_with_anchor_history(
-        self, app, auth_client, seed_user, db, seed_periods,
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
         """Account with anchor history records but no txns is permanently deleted."""
         with app.app_context():
@@ -551,7 +551,7 @@ class TestAccountHardDelete:
             )
             history = AccountAnchorHistory(
                 account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 anchor_balance=Decimal("5000.00"),
             )
             db.session.add(history)

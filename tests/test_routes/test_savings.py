@@ -9,8 +9,10 @@ Tests for the savings dashboard and goal CRUD endpoints:
   - Double-submit (unique constraint on user+account+name)
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+
+import pytest
 
 from app import ref_cache
 from app.enums import (
@@ -28,6 +30,23 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    Savings tests use seed_periods[7] (loan-related), an
+    origination_date=date(2026, 1, 1) that aligns specific seed_periods
+    indices to specific amortization months, and inline ``date.today()``
+    calls (e.g. ``start = date.today() - timedelta(days=14)``).
+    Auto-discovery patches every loaded module so test, fixture, and
+    production services all see the same frozen "today" regardless of
+    wall-clock date.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import savings_goal_service
@@ -337,11 +356,20 @@ class TestDashboard:
         from app.services import pay_period_service
 
         with app.app_context():
-            # Need enough periods so milestone offsets (6, 13, 26) are reachable
-            # from the current period. Generate 40 periods starting well before today.
+            # Start periods 14 days before today so today falls inside
+            # period 0 or 1.  The savings dashboard renders milestone
+            # projections at offsets +6, +13, +26 from the current
+            # period; with a low current_period.period_index, all three
+            # land within the 40 generated periods regardless of when
+            # the test is run.  A fixed start_date instead would silently
+            # drift current_period forward each calendar week and break
+            # the 1-year milestone (offset 26) once today moved past
+            # ~August 2026 (only 2 milestones would be displayed and
+            # the assertion below would fail).
+            start = date.today() - timedelta(days=14)
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                start_date=start,
                 num_periods=40,
                 cadence_days=14,
             )
@@ -382,9 +410,12 @@ class TestDashboard:
         from app.services import pay_period_service
 
         with app.app_context():
+            # See test_dashboard_investment_account_shows_growth_projections
+            # for why ``start`` is computed relative to today.
+            start = date.today() - timedelta(days=14)
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                start_date=start,
                 num_periods=40,
                 cadence_days=14,
             )
@@ -425,9 +456,12 @@ class TestDashboard:
         from app.services import pay_period_service
 
         with app.app_context():
+            # See test_dashboard_investment_account_shows_growth_projections
+            # for why ``start`` is computed relative to today.
+            start = date.today() - timedelta(days=14)
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                start_date=start,
                 num_periods=40,
                 cadence_days=14,
             )

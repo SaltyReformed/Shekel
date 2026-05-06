@@ -203,7 +203,7 @@ class TestCategoryDelete:
             # Category should still exist.
             assert db.session.get(Category, category.id) is not None
 
-    def test_delete_category_in_use_by_transaction(self, app, auth_client, seed_user, seed_periods):
+    def test_delete_category_in_use_by_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /categories/<id>/delete for a category used by a transaction is rejected."""
         with app.app_context():
             category = seed_user["categories"]["Groceries"]
@@ -212,7 +212,7 @@ class TestCategoryDelete:
 
             txn = Transaction(
                 template_id=None,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=category.id,
@@ -299,7 +299,7 @@ class TestCategoryDelete:
             assert db.session.get(Category, cat_a.id) is None
 
     def test_delete_blocked_by_soft_deleted_transaction(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Category cannot be deleted when even soft-deleted transactions reference it.
 
@@ -323,7 +323,7 @@ class TestCategoryDelete:
                 name="Projected"
             ).one()
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=category.id,
@@ -345,7 +345,7 @@ class TestCategoryDelete:
             assert db.session.get(Category, category.id) is not None
 
     def test_delete_blocked_by_active_transaction(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Category cannot be deleted when active transactions reference it."""
         with app.app_context():
@@ -364,7 +364,7 @@ class TestCategoryDelete:
                 name="Projected"
             ).one()
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=category.id,
@@ -640,7 +640,7 @@ class TestCategoryEdit:
             assert cat.item_name == "Fuel"
 
     def test_edit_category_preserves_transaction_association(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Renaming a category does not break transaction FK references.
 
@@ -664,7 +664,7 @@ class TestCategoryEdit:
                 name="Projected"
             ).one()
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=cat.id,
@@ -1073,7 +1073,7 @@ class TestArchiveHelpers:
                     f"Category '{cat.display_name}' should default to is_active=True"
                 )
 
-    def test_template_has_paid_history_true(self, app, db, seed_user, seed_periods):
+    def test_template_has_paid_history_true(self, app, db, seed_user, seed_periods_today):
         """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1092,7 +1092,7 @@ class TestArchiveHelpers:
 
             txn = Transaction(
                 template_id=template.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
@@ -1107,7 +1107,7 @@ class TestArchiveHelpers:
             result = template_has_paid_history(template.id)
             assert result is True
 
-    def test_template_has_paid_history_false(self, app, db, seed_user, seed_periods):
+    def test_template_has_paid_history_false(self, app, db, seed_user, seed_periods_today):
         """C-5A.5-3: template_has_paid_history returns False when only Projected txns exist."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -1126,7 +1126,7 @@ class TestArchiveHelpers:
 
             txn = Transaction(
                 template_id=template.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
@@ -1142,7 +1142,7 @@ class TestArchiveHelpers:
             assert result is False
 
     def test_transfer_template_has_paid_history_true(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods_today,
     ):
         """C-5A.5-4: transfer_template_has_paid_history returns True when Paid transfer exists."""
         with app.app_context():
@@ -1172,7 +1172,7 @@ class TestArchiveHelpers:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings_account.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=paid_status.id,
                 transfer_template_id=xfer_template.id,
@@ -1186,7 +1186,7 @@ class TestArchiveHelpers:
             assert result is True
 
     def test_transfer_template_has_paid_history_false(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods_today,
     ):
         """C-5A.5-5: transfer_template_has_paid_history returns False when only Projected."""
         with app.app_context():
@@ -1216,7 +1216,7 @@ class TestArchiveHelpers:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings_account.id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected_status.id,
                 transfer_template_id=xfer_template.id,
@@ -1229,14 +1229,14 @@ class TestArchiveHelpers:
             result = transfer_template_has_paid_history(xfer_template.id)
             assert result is False
 
-    def test_account_has_history_true(self, app, db, seed_user, seed_periods):
+    def test_account_has_history_true(self, app, db, seed_user, seed_periods_today):
         """C-5A.5-6: account_has_history returns True when account has any non-deleted txn."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected_status = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
@@ -1446,7 +1446,7 @@ class TestCategoryArchiveDelete:
             assert "Rent" in html
 
     def test_archived_categories_hidden_from_grid_dropdown(
-        self, app, auth_client, seed_user, seed_periods, db,
+        self, app, auth_client, seed_user, seed_periods_today, db,
     ):
         """C-5A.5-34: Archived categories do not appear in grid Add Transaction dropdown."""
         with app.app_context():
@@ -1467,7 +1467,7 @@ class TestCategoryArchiveDelete:
             assert f'value="{rent.id}"' not in html
 
     def test_archived_category_transactions_still_render(
-        self, app, auth_client, seed_user, seed_periods, db,
+        self, app, auth_client, seed_user, seed_periods_today, db,
     ):
         """C-5A.5-35: Transactions with archived categories still render in the grid."""
         with app.app_context():
@@ -1480,12 +1480,12 @@ class TestCategoryArchiveDelete:
             # The txn must live inside the grid's default visible window so
             # the assertion targets the archived-category rendering path
             # rather than the period-scoping filter added in 8b67128.  Use
-            # the period that contains today -- ``seed_periods`` is 10
+            # the period that contains today -- ``seed_periods_today`` is 10
             # biweekly periods starting 2026-01-02, so today's period is
             # always one of them.
             current_period = get_current_period(seed_user["user"].id)
             assert current_period is not None, (
-                "seed_periods must cover today so the txn lands in the "
+                "seed_periods_today must cover today so the txn lands in the "
                 "default visible grid window"
             )
 
@@ -1598,7 +1598,7 @@ class TestCategoryArchiveDelete:
             assert db.session.get(Category, cat_id) is None
 
     def test_archived_categories_hidden_from_template_dropdown(
-        self, app, auth_client, seed_user, seed_periods, db,
+        self, app, auth_client, seed_user, seed_periods_today, db,
     ):
         """Template creation form only shows active categories in dropdown."""
         with app.app_context():

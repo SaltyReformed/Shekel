@@ -28,6 +28,15 @@ from app import ref_cache
 from app.enums import RoleEnum, StatusEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
+    EVT_ENTRY_CLEARED_TOGGLED,
+    EVT_ENTRY_CREATED,
+    EVT_ENTRY_DELETED,
+    EVT_ENTRY_UPDATED,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +191,15 @@ def create_entry(
     db.session.add(entry)
     db.session.flush()
 
-    logger.info(
-        "Created entry %d on transaction %d (amount=%s, credit=%s)",
-        entry.id, transaction_id, amount, is_credit,
+    log_event(
+        logger, logging.INFO, EVT_ENTRY_CREATED, BUSINESS,
+        "Transaction entry created",
+        user_id=user_id,
+        owner_id=owner_id,
+        transaction_id=transaction_id,
+        entry_id=entry.id,
+        amount=str(amount),
+        is_credit=is_credit,
     )
 
     sync_entry_payback(transaction_id, owner_id)
@@ -236,7 +251,17 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         setattr(entry, field, value)
     db.session.flush()
 
-    logger.info("Updated entry %d: %s", entry_id, valid_updates)
+    log_event(
+        logger, logging.INFO, EVT_ENTRY_UPDATED, BUSINESS,
+        "Transaction entry updated",
+        user_id=user_id,
+        owner_id=owner_id,
+        transaction_id=entry.transaction_id,
+        entry_id=entry_id,
+        # Sorting fields_changed keeps the structured log deterministic
+        # so dashboards can group by it without ordering noise.
+        fields_changed=sorted(valid_updates.keys()),
+    )
 
     sync_entry_payback(entry.transaction_id, owner_id)
     _update_actual_if_paid(entry.transaction)
@@ -275,8 +300,13 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     db.session.delete(entry)
     db.session.flush()
 
-    logger.info(
-        "Deleted entry %d from transaction %d", entry_id, transaction_id,
+    log_event(
+        logger, logging.INFO, EVT_ENTRY_DELETED, BUSINESS,
+        "Transaction entry deleted",
+        user_id=user_id,
+        owner_id=owner_id,
+        transaction_id=transaction_id,
+        entry_id=entry_id,
     )
 
     sync_entry_payback(transaction_id, owner_id)
@@ -502,9 +532,12 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
     )
 
     if updated:
-        logger.info(
-            "Cleared %d transaction entries on anchor true-up for user %d",
-            updated, owner_id,
+        log_event(
+            logger, logging.INFO,
+            EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP, BUSINESS,
+            "Transaction entries cleared on anchor true-up",
+            user_id=owner_id,
+            cleared_count=updated,
         )
 
     return updated
@@ -543,8 +576,14 @@ def toggle_cleared(entry_id: int, user_id: int) -> TransactionEntry:
     entry.is_cleared = not entry.is_cleared
     db.session.flush()
 
-    logger.info(
-        "Toggled entry %d is_cleared to %s", entry_id, entry.is_cleared,
+    log_event(
+        logger, logging.INFO, EVT_ENTRY_CLEARED_TOGGLED, BUSINESS,
+        "Transaction entry is_cleared toggled",
+        user_id=user_id,
+        owner_id=owner_id,
+        transaction_id=entry.transaction_id,
+        entry_id=entry_id,
+        is_cleared=entry.is_cleared,
     )
 
     return entry

@@ -31,7 +31,7 @@
     </span>
   {# Show crossed-out estimate + actual when they differ #}
   {% elif t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
-    <span class="text-decoration-line-through small" style="color: var(--shekel-text-muted);">
+    <span class="text-decoration-line-through small text-muted-shekel">
       {{ "{:,.0f}".format(t.estimated_amount) }}
     </span>
     <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
@@ -67,7 +67,7 @@
 
   {# Due date indicator -- shown only when due_date differs from period start #}
   {% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
-    <small class="text-muted d-block" style="font-size: 0.65rem;">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+    <small class="text-muted d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
   {% endif %}
 </div>
 {% if wrap_div is defined and wrap_div %}</div>{% endif %}

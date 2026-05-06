@@ -84,10 +84,20 @@ def seed_user():
         )
         sys.exit(1)
 
-    # Check if user already exists.
+    # Check if user already exists.  Audit finding F-114 / C-16:
+    # the script's stdout is captured by the container log driver
+    # and shipped off-host for retention.  Logging the seed user's
+    # email on every container start would surface a real PII value
+    # in the long-term log store with no operational benefit -- the
+    # operator already knows which account they seeded.  Use the
+    # synthetic primary key instead so the line stays useful for
+    # idempotency debugging without being a PII source.
     existing = db.session.query(User).filter_by(email=email).first()
     if existing:
-        print(f"User '{email}' already exists (id={existing.id}).  Skipping.")
+        print(
+            f"User id={existing.id} already exists (email redacted).  "
+            "Skipping."
+        )
         return existing
 
     # Create the user.
@@ -98,7 +108,7 @@ def seed_user():
     )
     db.session.add(user)
     db.session.flush()  # Get user.id
-    print(f"Created user: {email} (id={user.id})")
+    print(f"Created user id={user.id} (email redacted from log).")
 
     # Create user settings.
     settings = UserSettings(user_id=user.id)
@@ -137,8 +147,12 @@ def seed_user():
     print(f"  + {len(DEFAULT_CATEGORIES)} default categories created.")
 
     db.session.commit()
+    # Final summary stays on user_id only -- the email is the same
+    # value the operator passed in via SEED_USER_EMAIL (or the
+    # documented default), so re-emitting it here would only add a
+    # PII surface to the captured container log.
     print("\nSeed complete.  You can now log in with:")
-    print(f"  Email:    {email}")
+    print(f"  User ID:  {user.id} (email passed via SEED_USER_EMAIL)")
     print("  Password: [set via SEED_USER_PASSWORD env var or default]")
     return user
 

@@ -16,6 +16,7 @@ Architecture:
     operations (e.g. the carry-forward batch in Phase 4).
 """
 
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -25,6 +26,13 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.entry_service import compute_actual_from_entries
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
+    log_event,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def settle_from_entries(
@@ -143,3 +151,18 @@ def settle_from_entries(
     # ``compute_actual_from_entries`` returns Decimal("0") on an empty
     # list, which is the carry-forward "no spend, full rollover" case.
     txn.actual_amount = compute_actual_from_entries(txn.entries)
+
+    log_event(
+        logger, logging.INFO,
+        EVT_TRANSACTION_SETTLED_FROM_ENTRIES, BUSINESS,
+        "Envelope transaction settled at sum(entries)",
+        # PayPeriod owner is the canonical user_id source for Transaction
+        # rows (Transaction has no direct user_id column).  pay_period
+        # is already loaded by the caller so this read does not trigger
+        # an autoflush.
+        user_id=txn.pay_period.user_id,
+        transaction_id=txn.id,
+        new_status_id=new_status_id,
+        actual_amount=str(txn.actual_amount),
+        explicit_paid_at=paid_at is not None,
+    )

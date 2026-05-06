@@ -6,9 +6,10 @@ profile's gross pay to arrive at net pay.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class PaycheckDeduction(db.Model):
+class PaycheckDeduction(TimestampMixin, db.Model):
     """A payroll deduction (e.g., 401k, health insurance, Roth IRA)."""
 
     __tablename__ = "paycheck_deductions"
@@ -48,12 +49,6 @@ class PaycheckDeduction(db.Model):
     )
     sort_order = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="deductions")

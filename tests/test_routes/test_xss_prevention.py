@@ -121,7 +121,7 @@ def _create_mortgage_account_with_params(seed_user):
     return acct, params
 
 
-def _create_salary_profile(seed_user, seed_periods):
+def _create_salary_profile(seed_user, seed_periods_today):
     """Create a salary profile for deduction tests."""
     filing_single = (
         db.session.query(FilingStatus).filter_by(name="single").one()
@@ -139,7 +139,7 @@ def _create_salary_profile(seed_user, seed_periods):
     return profile
 
 
-def _create_transaction(seed_user, seed_periods):
+def _create_transaction(seed_user, seed_periods_today):
     """Create a transaction for update tests."""
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -148,7 +148,7 @@ def _create_transaction(seed_user, seed_periods):
         db.session.query(Status).filter_by(name="Projected").one()
     )
     txn = Transaction(
-        pay_period_id=seed_periods[0].id,
+        pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
         status_id=projected.id,
@@ -162,7 +162,7 @@ def _create_transaction(seed_user, seed_periods):
     return txn
 
 
-def _create_transfer(seed_user, seed_periods, savings_acct):
+def _create_transfer(seed_user, seed_periods_today, savings_acct):
     """Create a transfer with shadow transactions via the service."""
     projected = (
         db.session.query(Status).filter_by(name="Projected").one()
@@ -171,7 +171,7 @@ def _create_transfer(seed_user, seed_periods, savings_acct):
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        pay_period_id=seed_periods[0].id,
+        pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         amount=Decimal("100.00"),
         status_id=projected.id,
@@ -210,7 +210,7 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_template_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in template name is escaped on the template list page."""
@@ -327,7 +327,7 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_salary_profile_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in salary profile name is escaped on the salary list."""
@@ -354,7 +354,7 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_transfer_template_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in transfer template name is escaped on the list page."""
@@ -383,7 +383,7 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_savings_goal_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in savings goal name is escaped on the savings dashboard."""
@@ -446,7 +446,7 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_transaction_create_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in ad-hoc transaction name is escaped in cell partial."""
@@ -461,7 +461,7 @@ class TestXSSPrevention:
             resp = auth_client.post("/transactions", data={
                 "name": payload,
                 "estimated_amount": "50.00",
-                "pay_period_id": seed_periods[0].id,
+                "pay_period_id": seed_periods_today[0].id,
                 "scenario_id": seed_user["scenario"].id,
                 "category_id": category.id,
                 "transaction_type_id": expense_type.id,
@@ -475,12 +475,12 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_transaction_update_notes(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in transaction notes is escaped in the cell partial."""
         with app.app_context():
-            txn = _create_transaction(seed_user, seed_periods)
+            txn = _create_transaction(seed_user, seed_periods_today)
 
             # PATCH returns updated cell HTML.
             resp = auth_client.patch(
@@ -496,14 +496,14 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_transfer_update_notes(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in transfer notes is escaped in the cell partial."""
         with app.app_context():
             savings_acct = _create_savings_account(seed_user)
             xfer = _create_transfer(
-                seed_user, seed_periods, savings_acct,
+                seed_user, seed_periods_today, savings_acct,
             )
 
             # PATCH returns updated transfer cell HTML.
@@ -519,12 +519,12 @@ class TestXSSPrevention:
 
     @pytest.mark.parametrize("payload,escaped_fragment", XSS_PAYLOADS)
     def test_deduction_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
         payload, escaped_fragment,
     ):
         """XSS in paycheck deduction name is escaped on the edit page."""
         with app.app_context():
-            profile = _create_salary_profile(seed_user, seed_periods)
+            profile = _create_salary_profile(seed_user, seed_periods_today)
             pre_tax = (
                 db.session.query(DeductionTiming)
                 .filter_by(name="pre_tax").one()
@@ -622,7 +622,7 @@ class TestXSSPrevention:
             )
 
     def test_javascript_url_not_in_href_template_name(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
         """javascript: URL payload in template name is not in any href."""
         with app.app_context():

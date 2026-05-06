@@ -6,9 +6,10 @@ Used for retirement income gap analysis.
 """
 
 from app.extensions import db
+from app.models.mixins import TimestampMixin
 
 
-class PensionProfile(db.Model):
+class PensionProfile(TimestampMixin, db.Model):
     """A defined-benefit pension plan linked to a salary profile."""
 
     __tablename__ = "pension_profiles"
@@ -42,14 +43,6 @@ class PensionProfile(db.Model):
     earliest_retirement_date = db.Column(db.Date, nullable=True)
     planned_retirement_date = db.Column(db.Date, nullable=True)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True), server_default=db.func.now()
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        server_default=db.func.now(),
-        onupdate=db.func.now(),
-    )
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", lazy="joined")

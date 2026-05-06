@@ -14,9 +14,27 @@ Tests for the analytics page shell and HTMX tab endpoints:
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
+
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_inside_seed_range(monkeypatch):
+    """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
+
+    This module relies on calendar-anchored seed_periods (Jan-May 2026)
+    and asserts on tax_year=2026, calendar 2026 due_dates, and other
+    calendar-anchored values.  Auto-discovery patches every loaded
+    module's ``date``/``datetime`` symbols so production services
+    (e.g. spending_trend_service) consuming ``date.today()`` agree
+    with the test's view of "today" regardless of wall-clock date.
+    """
+    freeze_today(monkeypatch, date(2026, 3, 20))
 
 
 def _create_paid_expense_for_route_test(db, seed_user, seed_periods,

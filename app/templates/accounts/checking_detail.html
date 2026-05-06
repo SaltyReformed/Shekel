@@ -38,7 +38,7 @@
         {% endif %}
         <div class="d-flex justify-content-between">
           <span class="text-muted">Current Balance</span>
-          <span class="fs-5 fw-bold font-mono" style="color: var(--shekel-accent);">
+          <span class="fs-5 fw-bold font-mono text-accent">
             {% if current_balance is not none %}
               ${{ "{:,.2f}".format(current_balance|float) }}
             {% else %}

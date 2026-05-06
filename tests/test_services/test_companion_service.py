@@ -110,7 +110,7 @@ class TestVisibilityFiltering:
     """Verify companion only sees transactions from visible templates."""
 
     def test_companion_sees_visible_transactions(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.1: 3 templates (2 visible, 1 not) -- only 2 returned.
 
@@ -121,14 +121,14 @@ class TestVisibilityFiltering:
         t_vis2 = _make_template(seed_user, companion_visible=True, name="Gas")
         t_hidden = _make_template(seed_user, companion_visible=False, name="Mortgage")
 
-        _make_txn(seed_user, seed_periods[0], t_vis1, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], t_vis2, name="Gas")
-        _make_txn(seed_user, seed_periods[0], t_hidden, name="Mortgage")
+        _make_txn(seed_user, seed_periods_today[0], t_vis1, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], t_vis2, name="Gas")
+        _make_txn(seed_user, seed_periods_today[0], t_hidden, name="Mortgage")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, period = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         names = [t.name for t in txns]
         assert len(txns) == 2
@@ -137,7 +137,7 @@ class TestVisibilityFiltering:
         assert "Mortgage" not in names
 
     def test_companion_sees_no_non_visible(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.2: All templates non-visible -- empty list, not error.
 
@@ -145,19 +145,19 @@ class TestVisibilityFiltering:
         """
         t1 = _make_template(seed_user, companion_visible=False, name="Rent")
         t2 = _make_template(seed_user, companion_visible=False, name="Electric")
-        _make_txn(seed_user, seed_periods[0], t1, name="Rent")
-        _make_txn(seed_user, seed_periods[0], t2, name="Electric")
+        _make_txn(seed_user, seed_periods_today[0], t1, name="Rent")
+        _make_txn(seed_user, seed_periods_today[0], t2, name="Electric")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, period = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert txns == []
         assert period is not None
 
     def test_mix_tracked_and_untracked_visible(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Both tracked and non-tracked visible templates are returned.
 
@@ -170,18 +170,18 @@ class TestVisibilityFiltering:
         t_simple = _make_template(
             seed_user, companion_visible=True, track=False, name="Gas",
         )
-        _make_txn(seed_user, seed_periods[0], t_tracked, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], t_simple, name="Gas")
+        _make_txn(seed_user, seed_periods_today[0], t_tracked, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], t_simple, name="Gas")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 2
 
     def test_visible_template_no_transactions_in_period(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Visible template exists but no transactions in the requested period.
 
@@ -194,12 +194,12 @@ class TestVisibilityFiltering:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert txns == []
 
     def test_soft_deleted_transactions_excluded(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Soft-deleted transactions are filtered out even if template is visible.
 
@@ -207,18 +207,18 @@ class TestVisibilityFiltering:
         appearing in the companion view.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        txn = _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         txn.is_deleted = True
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 0
 
     def test_ad_hoc_transactions_excluded(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Ad-hoc transactions (no template) are excluded from companion view.
 
@@ -235,7 +235,7 @@ class TestVisibilityFiltering:
             estimated_amount=Decimal("100.00"),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
             category_id=category.id,
             scenario_id=seed_user["scenario"].id,
@@ -245,29 +245,29 @@ class TestVisibilityFiltering:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 0
 
     def test_transactions_ordered_by_name(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Visible transactions are returned in alphabetical order by name."""
         t_z = _make_template(seed_user, companion_visible=True, name="Zucchini Fund")
         t_a = _make_template(seed_user, companion_visible=True, name="Apples Budget")
-        _make_txn(seed_user, seed_periods[0], t_z, name="Zucchini Fund")
-        _make_txn(seed_user, seed_periods[0], t_a, name="Apples Budget")
+        _make_txn(seed_user, seed_periods_today[0], t_z, name="Zucchini Fund")
+        _make_txn(seed_user, seed_periods_today[0], t_a, name="Apples Budget")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert txns[0].name == "Apples Budget"
         assert txns[1].name == "Zucchini Fund"
 
     def test_companion_sees_override_sibling_alongside_rule_generated(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Carry-forward override siblings stay visible to the companion.
 
@@ -285,7 +285,7 @@ class TestVisibilityFiltering:
             seed_user, companion_visible=True, name="Groceries",
         )
         rule_generated = _make_txn(
-            seed_user, seed_periods[0], template, name="Groceries",
+            seed_user, seed_periods_today[0], template, name="Groceries",
         )
 
         # Build the carried row with is_override=True from the start --
@@ -302,7 +302,7 @@ class TestVisibilityFiltering:
             estimated_amount=template.default_amount,
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            pay_period_id=seed_periods[0].id,
+            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
             category_id=category.id,
             scenario_id=seed_user["scenario"].id,
@@ -314,7 +314,7 @@ class TestVisibilityFiltering:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
 
         # Both rows are returned -- the override sibling stays visible.
@@ -334,7 +334,7 @@ class TestPeriodIsolation:
     """Verify transactions from other periods are not included."""
 
     def test_transactions_from_other_periods_excluded(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Only the requested period's transactions are returned.
 
@@ -342,20 +342,20 @@ class TestPeriodIsolation:
         verifies only period 0's transaction appears.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], template, name="Groceries P0")
-        _make_txn(seed_user, seed_periods[1], template, name="Groceries P1")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries P0")
+        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries P1")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, period = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 1
         assert txns[0].name == "Groceries P0"
-        assert period.id == seed_periods[0].id
+        assert period.id == seed_periods_today[0].id
 
     def test_period_id_belonging_to_different_owner_raises(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.13: Companion with period from a different owner raises NotFoundError.
 
@@ -389,7 +389,7 @@ class TestPeriodIsolation:
             )
 
     def test_period_id_none_returns_current_period(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """period_id=None returns the current period's transactions.
 
@@ -400,17 +400,17 @@ class TestPeriodIsolation:
         Either way, a valid (transactions, period) tuple is returned.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         companion = seed_companion["user"]
-        # This may return a different period than seed_periods[0]
+        # This may return a different period than seed_periods_today[0]
         # depending on the current date, but it should not raise.
         txns, period = companion_service.get_visible_transactions(companion.id)
         assert period is not None
 
     def test_nonexistent_period_id_raises(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Requesting a non-existent period_id raises NotFoundError."""
         companion = seed_companion["user"]
@@ -427,7 +427,7 @@ class TestUserValidation:
     """Verify companion service rejects invalid user configurations."""
 
     def test_owner_user_rejected(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods_today,
     ):
         """Plan 10.12: Owner user passed to get_visible_transactions raises NotFoundError.
 
@@ -468,16 +468,16 @@ class TestUserValidation:
             companion_service.get_visible_transactions(orphan.id)
 
     def test_valid_companion_succeeds(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Properly configured companion user passes all validation."""
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods[0], template, name="Groceries")
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         companion = seed_companion["user"]
         txns, period = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert period is not None
 
@@ -489,7 +489,7 @@ class TestEntryEagerLoading:
     """Verify entries are eager-loaded on returned transactions."""
 
     def test_entries_accessible_without_lazy_load(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Entries are eagerly loaded via selectinload.
 
@@ -502,7 +502,7 @@ class TestEntryEagerLoading:
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Groceries", amount=Decimal("500.00"),
         )
         entry = TransactionEntry(
@@ -517,7 +517,7 @@ class TestEntryEagerLoading:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 1
         # Access entries -- they should be loaded already.
@@ -537,7 +537,7 @@ class TestEntryDataComputation:
     """
 
     def test_entry_sums_computed_correctly(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.4: Entry data (total, remaining, count) is correct.
 
@@ -548,7 +548,7 @@ class TestEntryDataComputation:
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
@@ -565,7 +565,7 @@ class TestEntryDataComputation:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         assert len(txns) == 1
         assert len(txns[0].entries) == 2
@@ -580,7 +580,7 @@ class TestEntryDataComputation:
         assert remaining == Decimal("350.00")
 
     def test_over_budget_remaining_negative(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Over-budget scenario: remaining is negative.
 
@@ -591,7 +591,7 @@ class TestEntryDataComputation:
             seed_user, companion_visible=True, track=True, name="Gas",
         )
         txn = _make_txn(
-            seed_user, seed_periods[0], template,
+            seed_user, seed_periods_today[0], template,
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
@@ -608,7 +608,7 @@ class TestEntryDataComputation:
 
         companion = seed_companion["user"]
         txns, _ = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods[0].id,
+            companion.id, period_id=seed_periods_today[0].id,
         )
         from app.services.entry_service import compute_remaining
         remaining = compute_remaining(txns[0].estimated_amount, txns[0].entries)
@@ -622,12 +622,12 @@ class TestGetCompanionPeriods:
     """Verify period navigation helper."""
 
     def test_returns_all_owner_periods(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Returns all periods belonging to the linked owner."""
         companion = seed_companion["user"]
         periods = companion_service.get_companion_periods(companion.id)
-        assert len(periods) == len(seed_periods)
+        assert len(periods) == len(seed_periods_today)
 
     def test_misconfigured_companion_returns_empty(self, app, db, seed_user):
         """Companion with no linked_owner_id returns empty list (not error)."""
@@ -659,15 +659,15 @@ class TestGetCompanionPeriods:
 class TestGetPreviousPeriod:
     """Verify previous period navigation."""
 
-    def test_returns_previous_period(self, app, db, seed_user, seed_periods):
+    def test_returns_previous_period(self, app, db, seed_user, seed_periods_today):
         """Returns the period with period_index - 1."""
-        prev = companion_service.get_previous_period(seed_periods[1])
+        prev = companion_service.get_previous_period(seed_periods_today[1])
         assert prev is not None
-        assert prev.id == seed_periods[0].id
+        assert prev.id == seed_periods_today[0].id
 
     def test_returns_none_for_first_period(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods_today,
     ):
         """Returns None for the first period (no previous)."""
-        prev = companion_service.get_previous_period(seed_periods[0])
+        prev = companion_service.get_previous_period(seed_periods_today[0])
         assert prev is None

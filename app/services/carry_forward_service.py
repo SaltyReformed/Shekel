@@ -51,7 +51,7 @@ from app.enums import StatusEnum
 from app.services import transfer_service
 from app.services.entry_service import compute_actual_from_entries
 from app.exceptions import NotFoundError, ValidationError
-from app.utils.log_events import log_event, BUSINESS
+from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -400,8 +400,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
             count += 1
 
     db.session.flush()
-    log_event(logger, logging.INFO, "carry_forward", BUSINESS,
+    log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
               "Carried forward unpaid items",
+              user_id=user_id,
               count=count, from_period_id=source_period_id,
               to_period_id=target_period_id,
               envelope_count=len(ctx.envelope_txns),

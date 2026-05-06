@@ -278,7 +278,7 @@ lives in the same database the attacker would be tampering with.
   S7 (`reports/18-asvs-l2.md` V2.6.2). S7 rerates the same issue as
   High for a money app because the offline-brute-force attack becomes
   trivial on a GPU if bcrypt hashes leak.
-- **Location:** `app/services/mfa_service.py:112-123`
+- **Location:** `app/services/mfa_service.py:112-137`
 - **Description:** `generate_backup_codes()` uses
   `secrets.token_hex(4)` which emits 4 random bytes = 32 bits of
   entropy per code. ASVS L2 V2.6.2 requires >= 112 bits. The code
@@ -306,7 +306,23 @@ lives in the same database the attacker would be tampering with.
   `secrets.token_urlsafe(16)` (128 bits, 22 URL-safe chars). Existing
   enrolled codes remain valid; next regeneration uses the new width.
   The UI template showing the codes may need to widen its column.
-- **Status:** Open
+- **Status:** Fixed in C-03 (2026-05-02). `generate_backup_codes()` now
+  uses `secrets.token_hex(14)` for 112-bit entropy (28 lowercase hex
+  characters), satisfying ASVS L2 V2.6.2. The display template
+  (`app/templates/auth/mfa_backup_codes.html`) widens the rendering
+  column and adds a length hint. The verify form
+  (`app/templates/auth/mfa_verify.html`) raises its `maxlength` to 28
+  so users with the new codes can submit them; the previous `maxlength="8"`
+  would otherwise have silently truncated input. Pre-upgrade 8-char codes
+  remain valid until the user regenerates because bcrypt is
+  length-agnostic; in-app regeneration prompt is delivered separately
+  in C-16. Regression tests:
+  `tests/test_services/test_mfa_service.py::TestBackupCodes` (length,
+  format, 1000-sample uniqueness, `secrets.token_hex(14)` pinning,
+  legacy 8-char acceptance) and
+  `tests/test_routes/test_auth.py::TestMfaSetup::test_regenerate_backup_codes_renders_28_char_codes`
+  /
+  `test_mfa_confirm_renders_28_char_codes`.
 
 ### F-005: TOTP codes can be replayed within the valid window
 
@@ -1581,7 +1597,27 @@ lives in the same database the attacker would be tampering with.
   `default_limits=["200 per hour", "30 per minute"]` at the
   Limiter constructor so every route has a ceiling. Addresses
   F-033 residual and many authenticated-endpoint DoS paths.
-- **Status:** Open
+- **Status:** Fixed in C-06 (2026-05-03). Implemented option (a) +
+  option (c).  Production now resolves rate-limit storage from
+  ``app.config["RATELIMIT_STORAGE_URI"]`` (ProdConfig defaults to
+  ``redis://redis:6379/0`` and rejects ``memory://`` at startup),
+  pointing at a hardened ``redis:7.4-alpine`` sibling container on
+  the backend Docker network (read-only fs, cap_drop ALL,
+  no-new-privileges, mem_limit 96M, no persistence -- counters
+  evaporate on Redis restart by design).  ``BaseConfig.RATELIMIT_DEFAULT
+  = "200 per hour;30 per minute"`` puts a per-IP ceiling on every
+  un-decorated route (closes the "4 of 93 mutating routes" gap).  The
+  developer chose fail-closed (Phase D-12):
+  ``RATELIMIT_IN_MEMORY_FALLBACK_ENABLED = False`` and
+  ``RATELIMIT_SWALLOW_ERRORS = False`` so a Redis outage surfaces as
+  500 (via the existing Flask error handler) rather than silently
+  falling back to per-worker memory.  ``moving-window`` strategy
+  closes the fixed-window straddling gap.  ``/health`` exempted via
+  ``@limiter.exempt`` so Docker / Nginx healthcheck loops do not
+  consume the per-IP budget.  Tests:
+  ``tests/test_config.py::TestRateLimitConfig`` (12 assertions) and
+  ``tests/test_integration/test_rate_limiter.py`` (8 behaviors
+  including the fail-closed storage-outage simulation).
 
 ### F-035: PERMANENT_SESSION_LIFETIME unset -- default 31 days
 
@@ -1713,7 +1749,28 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add
   `login_manager.session_protection = "strong"` at
   `app/extensions.py:22-25`. One line.
-- **Status:** Open
+- **Status:** Fixed in C-07 (2026-05-04).
+  ``app/extensions.py`` now sets
+  ``login_manager.session_protection = "strong"`` immediately after
+  the ``LoginManager`` instantiation.  Under strong mode,
+  Flask-Login's ``_session_protection_failed`` (see
+  ``flask_login/login_manager.py``) pops every key in
+  ``flask_login.config.SESSION_KEYS`` from the session AND sets
+  ``session["_remember"] = "clear"`` whenever the per-request
+  identifier (``sha512(remote_addr || "|" || user_agent)``) drifts
+  from the value stored at ``login_user()`` time -- forcing a
+  complete re-authentication and clearing the remember-me cookie via
+  the after-request hook.  The default ``"basic"`` mode only flipped
+  ``session["_fresh"]`` to False and left the rest of the session
+  populated, which is the gap ASVS L2 V3.2.1 marked Partial.
+  Regression tests:
+  ``tests/test_config.py::TestLoginManagerConfig::test_login_manager_session_protection_is_strong``
+  (static inspection) and
+  ``tests/test_adversarial/test_session_protection.py``
+  (behavioural -- six end-to-end tests covering REMOTE_ADDR drift,
+  User-Agent drift, X-Forwarded-For drift on the proxy-aware code
+  path, the unchanged-fingerprint control case, full session-key
+  pop on drift, and remember-me cookie clearing on drift).
 
 ### F-039: analytics.calendar_tab passes raw account_id to service without ownership check
 
@@ -3524,7 +3581,26 @@ lives in the same database the attacker would be tampering with.
   enrolled within N days), or (b) prompt-nag the owner on
   every login until MFA is enabled. Easier and
   comparable effect.
-- **Status:** Open
+- **Status:** Fixed in C-12 (2026-05-05). Implemented
+  option (b): a Bootstrap dismissible alert
+  (`app/templates/dashboard/_mfa_nag.html`) is rendered
+  globally from `app/templates/base.html` whenever the
+  authenticated user is owner-role and has no
+  `MfaConfig.is_enabled=True` row. Visibility is computed
+  by the `inject_mfa_nag_visible` context processor in
+  `app/__init__.py`, which queries `auth.mfa_configs` per
+  request and short-circuits for anonymous visitors,
+  companion-role users, and `auth.mfa_*` endpoints (so
+  the banner does not stack on the page that fulfils the
+  nag). Per-page-load dismissal only -- the banner
+  reappears on the next navigation until the owner
+  enrolls and confirms TOTP. Regression tests:
+  `tests/test_routes/test_mfa_nag.py` -- ten cases covering
+  visibility for owner-without-MFA / pending-only / fully
+  enabled, role scoping (companion + anonymous), endpoint
+  suppression on `/mfa/setup`, cross-page consistency
+  (settings / savings / grid), and the dismissibility
+  markup contract.
 
 ### F-096: SESSION_COOKIE_NAME -- no `__Host-` prefix
 

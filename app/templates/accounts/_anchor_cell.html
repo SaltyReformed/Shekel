@@ -7,13 +7,14 @@
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
       class="d-inline-flex align-items-center gap-1">
-  <div class="input-group input-group-sm" style="max-width: 160px;">
+  <div class="input-group input-group-sm mw-px-160">
     <span class="input-group-text">$</span>
     <input type="number" step="0.01" name="anchor_balance"
            value="{{ acct.current_anchor_balance or 0 }}"
            class="form-control" autofocus
            aria-label="Current balance for {{ acct.name }}"
-           onkeydown="if(event.key==='Escape'){event.preventDefault();htmx.ajax('GET','{{ url_for('accounts.inline_anchor_display', account_id=acct.id) }}',{target:this.closest('form'),swap:'outerHTML'})}">
+           data-action="anchor-cancel-on-escape"
+           data-revert-url="{{ url_for('accounts.inline_anchor_display', account_id=acct.id) }}">
   </div>
   <button type="submit" class="btn btn-sm btn-primary" aria-label="Save">
     <i class="bi bi-check"></i>
@@ -31,8 +32,7 @@
       hx-swap="outerHTML"
       role="button"
       tabindex="0"
-      class="font-mono"
-      style="cursor: pointer;"
+      class="font-mono cursor-pointer"
       aria-label="Current balance: ${{ '{:,.2f}'.format(acct.current_anchor_balance|float) if acct.current_anchor_balance is not none else '0.00' }}. Click to edit."
       title="Click to edit">
   ${{ "%.2f"|format(acct.current_anchor_balance|float) if acct.current_anchor_balance is not none else '0.00' }}

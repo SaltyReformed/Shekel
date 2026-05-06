@@ -213,7 +213,7 @@ class TestCarryForwardPreviewSuccess:
     """Happy-path response: 200 + rendered modal partial."""
 
     def test_returns_200_with_modal_html_for_owned_period(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """GET preview returns 200 and a renderable modal partial.
 
@@ -225,14 +225,14 @@ class TestCarryForwardPreviewSuccess:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
-            _make_envelope_txn(seed_user, seed_periods[1], template)
+            _make_envelope_txn(seed_user, seed_periods_today[1], template)
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -243,12 +243,12 @@ class TestCarryForwardPreviewSuccess:
             assert template.name in html
             # Confirm button posts to the existing carry_forward route.
             assert (
-                f'/pay-periods/{seed_periods[0].id}/carry-forward'
+                f'/pay-periods/{seed_periods_today[0].id}/carry-forward'
                 in html
             )
 
     def test_envelope_row_labeled_as_envelope(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Envelope source row gets the 'Envelope' badge in the modal.
 
@@ -259,14 +259,14 @@ class TestCarryForwardPreviewSuccess:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
-            _make_envelope_txn(seed_user, seed_periods[1], template)
+            _make_envelope_txn(seed_user, seed_periods_today[1], template)
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert ">Envelope<" in html, (
@@ -274,36 +274,36 @@ class TestCarryForwardPreviewSuccess:
             )
 
     def test_discrete_row_labeled_as_discrete(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Discrete source row gets the 'Discrete' badge."""
         with app.app_context():
             template = _make_discrete_template(seed_user)
-            _make_discrete_txn(seed_user, seed_periods[0], template)
+            _make_discrete_txn(seed_user, seed_periods_today[0], template)
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert ">Discrete<" in html
 
     def test_transfer_row_labeled_as_transfer(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Transfer source row gets the 'Transfer' badge."""
         with app.app_context():
-            _make_transfer(seed_user, seed_periods[0])
+            _make_transfer(seed_user, seed_periods_today[0])
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert ">Transfer<" in html
 
     def test_summary_line_includes_counts(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Modal summary line names the per-kind action counts.
 
@@ -316,19 +316,19 @@ class TestCarryForwardPreviewSuccess:
                 seed_user, category_key="Groceries",
             )
             envelope_source = _make_envelope_txn(
-                seed_user, seed_periods[0], envelope_t,
+                seed_user, seed_periods_today[0], envelope_t,
             )
-            _make_envelope_txn(seed_user, seed_periods[1], envelope_t)
+            _make_envelope_txn(seed_user, seed_periods_today[1], envelope_t)
             _add_entry(envelope_source, seed_user, "20.00")
 
             discrete_t = _make_discrete_template(seed_user)
-            _make_discrete_txn(seed_user, seed_periods[0], discrete_t)
+            _make_discrete_txn(seed_user, seed_periods_today[0], discrete_t)
 
-            _make_transfer(seed_user, seed_periods[0])
+            _make_transfer(seed_user, seed_periods_today[0])
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             # Counts text appears in the summary.
@@ -344,7 +344,7 @@ class TestCarryForwardPreviewConfirmGating:
     """Confirm button enabled vs disabled by preview state."""
 
     def test_confirm_enabled_when_all_actionable(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """All-actionable preview: Confirm button is NOT disabled.
 
@@ -358,14 +358,14 @@ class TestCarryForwardPreviewConfirmGating:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
-            _make_envelope_txn(seed_user, seed_periods[1], template)
+            _make_envelope_txn(seed_user, seed_periods_today[1], template)
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert "data-carry-forward-confirm" in html
@@ -374,7 +374,7 @@ class TestCarryForwardPreviewConfirmGating:
             )
 
     def test_confirm_disabled_when_any_envelope_blocked(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Settled envelope target -> Confirm is disabled.
 
@@ -393,7 +393,7 @@ class TestCarryForwardPreviewConfirmGating:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
             current_period = pay_period_service.get_current_period(
                 seed_user["user"].id,
@@ -408,7 +408,7 @@ class TestCarryForwardPreviewConfirmGating:
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert "data-carry-forward-confirm" in html
@@ -419,7 +419,7 @@ class TestCarryForwardPreviewConfirmGating:
             assert "blocked" in html.lower()
 
     def test_confirm_disabled_when_period_is_empty(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Empty source period: Confirm has nothing to do, disabled.
 
@@ -428,7 +428,7 @@ class TestCarryForwardPreviewConfirmGating:
         """
         with app.app_context():
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             html = resp.data.decode()
             assert "data-carry-forward-confirm" in html
@@ -442,7 +442,7 @@ class TestCarryForwardPreviewSecurity:
     """404 for unowned/missing periods; companion blocked."""
 
     def test_returns_404_for_unowned_period(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
         """Cross-user period -> 404 (security response rule).
@@ -459,7 +459,7 @@ class TestCarryForwardPreviewSecurity:
             assert resp.status_code == 404
 
     def test_returns_404_for_missing_period(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Unknown period_id -> 404."""
         with app.app_context():
@@ -469,7 +469,7 @@ class TestCarryForwardPreviewSecurity:
             assert resp.status_code == 404
 
     def test_companion_blocked(
-        self, app, db, seed_user, seed_periods, seed_companion,
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Companion gets 404 from @require_owner.
 
@@ -481,7 +481,7 @@ class TestCarryForwardPreviewSecurity:
         """
         comp = _login_companion(app)
         resp = comp.get(
-            f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+            f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
         )
         assert resp.status_code == 404
 
@@ -493,7 +493,7 @@ class TestCarryForwardPreviewConfiguration:
     """Mirrors the POST route's configuration checks."""
 
     def test_returns_400_when_no_baseline_scenario(
-        self, app, db, seed_user, seed_periods, auth_client,
+        self, app, db, seed_user, seed_periods_today, auth_client,
     ):
         """No baseline scenario -> 400 (matches POST route's check).
 
@@ -515,13 +515,13 @@ class TestCarryForwardPreviewConfiguration:
             db.session.commit()
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             assert resp.status_code == 400
             assert b"baseline scenario" in resp.data.lower()
 
     def test_returns_400_when_no_current_period(
-        self, app, db, seed_user, monkeypatch, auth_client, seed_periods,
+        self, app, db, seed_user, monkeypatch, auth_client, seed_periods_today,
     ):
         """No current period -> 400 (matches POST route's check).
 
@@ -536,7 +536,7 @@ class TestCarryForwardPreviewConfiguration:
             )
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             assert resp.status_code == 400
             assert b"current period" in resp.data.lower()
@@ -549,7 +549,7 @@ class TestCarryForwardPreviewReadOnly:
     """Repeated GETs do not mutate any state."""
 
     def test_repeated_preview_does_not_change_database(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Calling the preview twice produces identical state -- proof of read-only.
 
@@ -562,10 +562,10 @@ class TestCarryForwardPreviewReadOnly:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
             target = _make_envelope_txn(
-                seed_user, seed_periods[1], template,
+                seed_user, seed_periods_today[1], template,
             )
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
@@ -585,7 +585,7 @@ class TestCarryForwardPreviewReadOnly:
             before = _snapshot()
             for _ in range(3):
                 resp = auth_client.get(
-                    f"/pay-periods/{seed_periods[0].id}"
+                    f"/pay-periods/{seed_periods_today[0].id}"
                     f"/carry-forward-preview"
                 )
                 assert resp.status_code == 200
@@ -597,7 +597,7 @@ class TestCarryForwardPreviewReadOnly:
             )
 
     def test_preview_does_not_generate_canonical_for_missing_target(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """Engine-would-generate case must not actually generate.
 
@@ -610,7 +610,7 @@ class TestCarryForwardPreviewReadOnly:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -619,13 +619,13 @@ class TestCarryForwardPreviewReadOnly:
                 db.session.query(Transaction)
                 .filter_by(
                     template_id=template.id,
-                    pay_period_id=seed_periods[1].id,
+                    pay_period_id=seed_periods_today[1].id,
                 ).count()
                 == 0
             )
 
             resp = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             assert resp.status_code == 200
 
@@ -633,7 +633,7 @@ class TestCarryForwardPreviewReadOnly:
                 db.session.query(Transaction)
                 .filter_by(
                     template_id=template.id,
-                    pay_period_id=seed_periods[1].id,
+                    pay_period_id=seed_periods_today[1].id,
                 ).count()
                 == 0
             ), (
@@ -649,7 +649,7 @@ class TestCarryForwardPreviewEndToEnd:
     """Preview -> Confirm POST flow produces the predicted state."""
 
     def test_preview_then_confirm_runs_carry_forward(
-        self, app, auth_client, db, seed_user, seed_periods,
+        self, app, auth_client, db, seed_user, seed_periods_today,
     ):
         """GET preview, then POST carry_forward, sees expected state.
 
@@ -670,7 +670,7 @@ class TestCarryForwardPreviewEndToEnd:
         with app.app_context():
             template = _make_envelope_template(seed_user)
             source = _make_envelope_txn(
-                seed_user, seed_periods[0], template,
+                seed_user, seed_periods_today[0], template,
             )
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
@@ -685,14 +685,14 @@ class TestCarryForwardPreviewEndToEnd:
 
             # Step 1: preview.
             resp_preview = auth_client.get(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward-preview"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward-preview"
             )
             assert resp_preview.status_code == 200
 
             # Step 2: confirm POST -- the route the modal's button
             # would hit when the user clicks Confirm.
             resp_confirm = auth_client.post(
-                f"/pay-periods/{seed_periods[0].id}/carry-forward"
+                f"/pay-periods/{seed_periods_today[0].id}/carry-forward"
             )
             assert resp_confirm.status_code == 200
             assert resp_confirm.headers.get("HX-Trigger") == "gridRefresh"
