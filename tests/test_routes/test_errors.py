@@ -1,10 +1,13 @@
 """Tests for custom error pages and production configuration."""
 
+import logging
+
 import pytest
 from flask import abort
 
 from app import create_app
 from app.config import BaseConfig, ProdConfig
+from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED
 
 
 class TestErrorPages:
@@ -86,6 +89,91 @@ class TestErrorPages:
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
             limiter.enabled = False
+
+    def test_429_emits_rate_limit_exceeded_event(self, app, seed_user):
+        """429 handler emits a structured ``rate_limit_exceeded`` event.
+
+        Audit Commit C-15 / finding F-146.  Without this event, a slow
+        credential-stuffing campaign that gets rate-limited but does
+        not propagate to any human-visible signal would proceed
+        silently.  The Loki-side alerting rule fires on count of this
+        event over a window, so its presence is the load-bearing
+        signal -- not the 429 status code (which only the rate-limited
+        client sees).
+        """
+        rate_app = create_app("testing")
+        rate_app.config["RATELIMIT_ENABLED"] = True
+
+        from app.extensions import limiter  # pylint: disable=import-outside-toplevel
+        limiter.enabled = True
+        limiter.init_app(rate_app)
+
+        rate_client = rate_app.test_client()
+
+        captured = []
+
+        class _Capture(logging.Handler):
+            """Append every record we see -- captures the rate_limit one."""
+            def emit(self, record):
+                captured.append(record)
+
+        capture_handler = _Capture(level=logging.WARNING)
+        # The 429 handler logs to ``app`` (the package logger; see
+        # ``app/__init__.py`` ``_RATE_LIMIT_LOGGER``).  Hook the same
+        # logger so the captured records include the emitted event.
+        target_logger = logging.getLogger("app")
+        target_logger.addHandler(capture_handler)
+        try:
+            with rate_app.app_context():
+                # Five attempts succeed under the per-route 5/15min
+                # ceiling; the sixth trips the rate limit.  We make
+                # exactly one extra request after the ceiling so the
+                # captured list contains exactly one ``rate_limit_exceeded``
+                # record for an unambiguous assertion.
+                for _ in range(6):
+                    response = rate_client.post("/login", data={
+                        "email": "test@shekel.local",
+                        "password": "wrongpassword",
+                    })
+
+                assert response.status_code == 429
+        finally:
+            target_logger.removeHandler(capture_handler)
+            with rate_app.app_context():
+                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                _db.engine.dispose()
+            limiter.enabled = False
+
+        # Filter to the rate-limit events.  ``log_event`` annotates
+        # the record with ``event`` and ``category`` extras so we can
+        # match without scanning message strings.
+        rate_records = [
+            r for r in captured
+            if getattr(r, "event", None) == EVT_RATE_LIMIT_EXCEEDED
+        ]
+        assert len(rate_records) == 1, (
+            f"Expected exactly one rate_limit_exceeded record; got "
+            f"{len(rate_records)}.  All captured events: "
+            f"{[getattr(r, 'event', None) for r in captured]!r}"
+        )
+
+        record = rate_records[0]
+        assert record.category == ACCESS, (
+            f"rate_limit_exceeded should be ACCESS; got {record.category!r}"
+        )
+        assert record.levelno == logging.WARNING, (
+            f"rate_limit_exceeded should be WARNING; got {record.levelno}"
+        )
+        assert record.path == "/login", (
+            f"Expected path='/login' on the captured record, got {record.path!r}"
+        )
+        assert record.method == "POST", (
+            f"Expected method='POST' on the captured record, got {record.method!r}"
+        )
+        assert record.remote_addr == "127.0.0.1", (
+            f"Expected remote_addr='127.0.0.1' (Werkzeug test client), "
+            f"got {record.remote_addr!r}"
+        )
 
     def test_400_renders_custom_page(self):
         """400 error returns the custom error template, not Werkzeug default.

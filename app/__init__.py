@@ -6,6 +6,7 @@ with an optional config_name ('development', 'testing', 'production')
 to get a fully wired Flask instance.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -14,11 +15,15 @@ from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
+from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED, log_event
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
 )
+
+
+_RATE_LIMIT_LOGGER = logging.getLogger(__name__)
 
 
 def create_app(config_name=None):
@@ -482,7 +487,39 @@ def _register_error_handlers(app):
 
     @app.errorhandler(429)
     def rate_limit_exceeded(e):
-        """Return the 429 error page with a Retry-After header."""
+        """Return the 429 error page with a Retry-After header.
+
+        Also emits a structured ``rate_limit_exceeded`` log event
+        (audit Commit C-15 / finding F-146) so an operator can alert
+        on sustained rate-limit pressure from the observability
+        stack.  Without this event, a slow credential-stuffing
+        campaign that stays under each individual route's per-window
+        ceiling would still trigger the global default ceiling
+        (``200 per hour;30 per minute``) repeatedly with no signal
+        for incident response -- the rate limit successfully blocks
+        the attack from succeeding, but no human ever sees the
+        spike.
+
+        The event runs under WARNING level (not ERROR -- a single
+        rate-limit hit is not in itself an outage), under the
+        ACCESS category so it groups with the other access-control
+        events the SOC dashboard already filters on.  ``path`` and
+        ``remote_addr`` go into the structured payload so a Loki
+        query can pivot on either; the IP comes from
+        ``request.remote_addr`` which already reflects the
+        ``ProxyFix``-resolved client address (see ``gunicorn.conf.py``
+        ``forwarded_allow_ips``).
+        """
+        log_event(
+            _RATE_LIMIT_LOGGER,
+            logging.WARNING,
+            EVT_RATE_LIMIT_EXCEEDED,
+            ACCESS,
+            "Rate limit exceeded",
+            path=request.path,
+            method=request.method,
+            remote_addr=request.remote_addr,
+        )
         response = app.make_response(
             (render_template("errors/429.html"), 429)
         )

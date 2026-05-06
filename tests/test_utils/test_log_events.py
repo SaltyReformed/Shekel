@@ -51,6 +51,7 @@ from app.utils.log_events import (
     EVT_OTHER_SESSIONS_INVALIDATED,
     EVT_PASSWORD_CHANGED,
     EVT_PAY_PERIODS_GENERATED,
+    EVT_RATE_LIMIT_EXCEEDED,
     EVT_REAUTH_FAILED,
     EVT_REAUTH_SUCCESS,
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
@@ -284,6 +285,8 @@ class TestExpectedEventsRegistered:
         (EVT_ACCESS_DENIED_OWNER_ONLY, ACCESS),
         (EVT_ACCESS_DENIED_CROSS_USER, ACCESS),
         (EVT_RESOURCE_NOT_FOUND, ACCESS),
+        # Access (C-15 / F-146 new -- rate-limit alerting)
+        (EVT_RATE_LIMIT_EXCEEDED, ACCESS),
         # Business (existing pre-C-14)
         (EVT_RECURRENCE_GENERATED, BUSINESS),
         (EVT_CROSS_USER_BLOCKED, BUSINESS),

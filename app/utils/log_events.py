@@ -236,6 +236,10 @@ EVT_RESOURCE_NOT_FOUND = _register(
     "resource_not_found", ACCESS,
     "Ownership check ran against a primary key that has no row.",
 )
+EVT_RATE_LIMIT_EXCEEDED = _register(
+    "rate_limit_exceeded", ACCESS,
+    "Flask-Limiter rejected a request that exceeded its per-IP quota.",
+)
 
 
 # ── Business events: existing call sites ───────────────────────────

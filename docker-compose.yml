@@ -178,11 +178,24 @@ services:
       # F-034 and remediation Commit C-06.
       RATELIMIT_STORAGE_URI: ${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
     volumes:
-      - applogs:/home/shekel/app/logs
       # Shared volume: app copies static files here for Nginx to serve.
       - static_files:/var/www/static
     networks:
       - backend
+    # Container logs rotate locally so the host disk cannot fill from
+    # an unbounded log stream while still keeping a recent window
+    # accessible via ``docker logs shekel-prod-app``.  The
+    # authoritative long-term forensic record lives off-host in Loki
+    # (Grafana Alloy reads this stream over the docker socket and
+    # ships it to Loki on a separate container/network).  See audit
+    # finding F-082 / F-150 / Commit C-15 for the architecture
+    # decision; the matching collector lives in
+    # ``/opt/docker/monitoring/`` per ``observability.md``.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -224,8 +237,6 @@ volumes:
   # External volumes are NEVER deleted by "docker compose down -v".
   shekel-prod-pgdata:
     external: true
-  # Application log files.
-  applogs:
   # Static files shared between app and Nginx containers.
   static_files:
 

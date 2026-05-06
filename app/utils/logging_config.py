@@ -5,8 +5,29 @@ Configures JSON-formatted logging with per-request tracking via
 ``python-json-logger``.  Call ``setup_logging(app)`` once from the
 application factory -- every module that uses
 ``logging.getLogger(__name__)`` automatically inherits the config.
+
+Architecture (audit Commit C-15 / findings F-082, F-150).  Logs are
+emitted as JSON to stdout only.  The runtime container's stdout is
+captured by Docker's ``json-file`` driver; an off-host Grafana Alloy
+collector reads the container log stream via the Docker socket,
+parses each JSON record (using the ``timestamp``, ``level``,
+``logger``, ``request_id``, and ``event`` fields produced here), and
+ships the records to a Loki instance running on a separate Docker
+network with its own storage volume.  Tamper-resistance comes from
+that network/volume isolation: a runtime-app compromise can write
+new log lines but cannot edit lines already shipped to Loki.
+
+There is intentionally NO local file handler.  An earlier revision
+of this module wrote a rotating file under ``/home/shekel/app/logs``
+(volume ``applogs``); that volume was rewritable by the same
+container and so could not satisfy ASVS V7.3.3 / V7.3.4.  Removing
+the file handler eliminates the tamper-window without losing
+short-term local logs -- Docker's ``json-file`` driver still keeps
+one rotation window of stdout on the host's filesystem so an
+operator without Loki access can still ``docker logs <container>``.
 """
 
+import datetime as _dt
 import logging
 import logging.config
 import os
@@ -16,7 +37,68 @@ import uuid
 from flask import Flask, g, request
 from sqlalchemy.exc import SQLAlchemyError
 
-from pythonjsonlogger.json import JsonFormatter  # noqa: F401 -- used in dictConfig
+from pythonjsonlogger.json import JsonFormatter
+
+
+class RFC3339JsonFormatter(JsonFormatter):
+    """JSON formatter whose ``asctime`` field is RFC3339Nano with Z.
+
+    The structured log pipeline assumes ``timestamp`` values are
+    RFC3339Nano (Go's ``2006-01-02T15:04:05.999999999Z07:00``
+    layout).  Grafana Alloy's ``stage.timestamp`` step is configured
+    with ``format = "RFC3339Nano"`` and refuses records whose
+    timestamp it cannot parse, so the format is load-bearing for log
+    ingestion -- not cosmetic.
+
+    Two upstream constraints push the implementation here.
+
+    First, ``logging.Formatter.formatTime`` ultimately calls
+    ``time.strftime``, which under glibc does not implement ``%f``
+    for sub-second precision.  Without an override, the best we get
+    is ``%Y-%m-%d %H:%M:%S,%03d`` (millisecond precision, comma
+    separator, no timezone) -- not RFC3339 at all.  Overriding
+    ``formatTime`` with ``datetime.fromtimestamp(record.created,
+    tz=timezone.utc).isoformat(timespec="microseconds")`` produces
+    microsecond precision and a real ``+00:00`` offset that the
+    rename-to-Z step below can normalise.
+
+    Second, ``datetime.isoformat`` writes ``+00:00`` for UTC, but
+    Loki's parser is strict about RFC3339Nano which accepts ``Z`` or
+    ``+HH:MM`` interchangeably; the Z form is the canonical one in
+    most modern observability tooling and is what the operator sees
+    in Grafana's autocomplete.  Replacing ``+00:00`` with ``Z`` once
+    here avoids per-query ``date(... fmt=...)`` rewrites everywhere
+    the timestamp is referenced.
+
+    The ``rename_fields`` dict in ``setup_logging`` then maps
+    ``asctime -> timestamp`` so the rendered key matches what the
+    Alloy ``stage.json`` config expects.
+    """
+
+    def formatTime(self, record, datefmt=None):
+        """Return the record's creation time as an RFC3339Nano string.
+
+        ``datefmt`` is intentionally ignored.  The pipeline depends on a
+        single canonical timestamp format; allowing per-formatter
+        overrides would create silent drift between handlers.
+
+        Args:
+            record: The ``LogRecord`` whose ``created`` attribute (a
+                Unix timestamp produced by ``time.time()``) we format.
+            datefmt: Accepted for compatibility with the
+                ``logging.Formatter`` signature; not consulted.
+
+        Returns:
+            ISO-8601 RFC3339Nano string with microsecond precision
+            and a ``Z`` suffix for UTC, e.g.
+            ``"2026-05-05T19:36:45.139287Z"``.
+        """
+        del datefmt  # see docstring -- intentionally unused.
+        return (
+            _dt.datetime.fromtimestamp(record.created, tz=_dt.timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
 
 
 class RequestIdFilter(logging.Filter):
@@ -41,10 +123,18 @@ def _resolve_log_level(app: Flask) -> str:
 
 
 def setup_logging(app: Flask) -> None:
-    """Configure structured JSON logging for the application."""
+    """Configure structured JSON logging for the application.
+
+    Emits every log record as a single JSON object on stdout with a
+    fixed key set: ``timestamp`` (RFC3339Nano UTC), ``level``,
+    ``logger``, ``message``, ``request_id``, plus any structured
+    ``extra={...}`` fields supplied by the caller (typically
+    ``event``, ``category``, ``user_id``, ``path``, etc.).  See the
+    module docstring for the off-host shipping architecture and the
+    motivation for the stdout-only sink.
+    """
 
     level = _resolve_log_level(app)
-    testing = app.config.get("TESTING", False)
 
     handlers = {
         "console": {
@@ -56,18 +146,14 @@ def setup_logging(app: Flask) -> None:
         },
     }
 
-    if not testing:
-        os.makedirs("logs", exist_ok=True)
-        handlers["file"] = {
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": "logs/budget_app.log",
-            "maxBytes": 10_485_760,  # 10 MB
-            "backupCount": 5,
-            "formatter": "json",
-            "filters": ["request_id"],
-            "level": level,
-        }
-
+    # The dictConfig ``()`` form constructs the formatter via
+    # ``RFC3339JsonFormatter(**kwargs)``.  The earlier ``class:`` form
+    # routes through Python's logging.Formatter constructor, which
+    # silently drops the ``rename_fields`` and ``timestamp`` kwargs --
+    # the JSON output then carries ``levelname``/``name`` instead of
+    # the renamed ``level``/``logger`` keys the Alloy parser expects.
+    # This is the actual bug behind observability.md's "structured
+    # fields are missing" symptom.
     config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -78,13 +164,21 @@ def setup_logging(app: Flask) -> None:
         },
         "formatters": {
             "json": {
-                "class": "pythonjsonlogger.json.JsonFormatter",
-                "format": "%(levelname)s %(name)s %(message)s",
+                "()": "app.utils.logging_config.RFC3339JsonFormatter",
+                # ``%(asctime)s`` makes asctime a "required field"
+                # in the formatter, which triggers the
+                # ``RFC3339JsonFormatter.formatTime`` override above.
+                # The rename below maps it to ``timestamp`` in the
+                # serialised JSON so the Alloy parser's
+                # ``ts = "timestamp"`` mapping resolves cleanly.
+                "format": (
+                    "%(asctime)s %(levelname)s %(name)s %(message)s"
+                ),
                 "rename_fields": {
+                    "asctime": "timestamp",
                     "levelname": "level",
                     "name": "logger",
                 },
-                "timestamp": True,
             },
         },
         "handlers": handlers,
