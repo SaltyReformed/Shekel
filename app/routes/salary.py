@@ -10,6 +10,7 @@ from datetime import date
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, require_owner
@@ -61,8 +62,19 @@ from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
 from app.services.calibration_service import derive_effective_rates
 from app.services.tax_config_service import load_tax_configs
+from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
+
+# Names of the composite unique constraints that backstop the
+# raise / deduction double-submit fixes (F-051 + F-052 / C-23).
+# Each literal mirrors the model declaration in
+# ``app/models/salary_raise.py`` and
+# ``app/models/paycheck_deduction.py`` and the migration revision
+# ``a3b9c2d40e15``; renaming a constraint requires a coordinated
+# edit across all three sites.
+_SALARY_RAISES_UNIQUE_CONSTRAINT = "uq_salary_raises_profile_type_year_month"
+_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT = "uq_paycheck_deductions_profile_name"
 
 salary_bp = Blueprint("salary", __name__)
 
@@ -445,6 +457,37 @@ def add_raise(profile_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except IntegrityError as exc:
+        # Duplicate-raise double-submit (F-051 / C-23): the composite
+        # unique ``uq_salary_raises_profile_type_year_month`` rejects
+        # the second INSERT when the user clicks Save twice in a row,
+        # the browser retries on a flaky network, or the back button
+        # is used to re-submit the form.  Roll back and treat as
+        # idempotent success: the user lands on the edit page with
+        # the raise they intended to create regardless of which
+        # request reached the database first, so neither path
+        # surfaces the constraint name as a 500.
+        db.session.rollback()
+        if not is_unique_violation(exc, _SALARY_RAISES_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to add raise to profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, profile_id,
+            )
+            flash("Failed to add raise. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        logger.info(
+            "Duplicate salary raise prevented on profile %d "
+            "(idempotent success)", profile_id,
+        )
+        flash(
+            "A raise with that type and effective date already "
+            "exists on this profile.",
+            "info",
+        )
+        if request.headers.get("HX-Request"):
+            return _render_raises_partial(profile)
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
@@ -575,6 +618,36 @@ def update_raise(raise_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    except IntegrityError as exc:
+        # Duplicate-key collision on update (F-051 / C-23): the user
+        # edited this raise's (type, year, month) tuple to one
+        # another active raise on the same salary profile already
+        # holds.  Roll back the stale session, surface the
+        # field-level error as a flash, and redirect to the edit
+        # page so the user can revise their input -- crashing the
+        # request with a 500 would expose the constraint name and
+        # leave the user without context to recover.
+        db.session.rollback()
+        if not is_unique_violation(exc, _SALARY_RAISES_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to update raise %d on profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, raise_id, profile.id,
+            )
+            flash("Failed to update raise. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+        logger.info(
+            "Duplicate-key conflict on update_raise id=%d "
+            "(another raise already covers this profile/type/date)",
+            raise_id,
+        )
+        flash(
+            "Another raise on this profile already covers that "
+            "type and effective date.  Edit or remove it before "
+            "applying these changes.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception(
@@ -626,6 +699,40 @@ def add_deduction(profile_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except IntegrityError as exc:
+        # Duplicate-deduction double-submit (F-052 / C-23): the
+        # composite unique ``uq_paycheck_deductions_profile_name``
+        # rejects the second INSERT when the user clicks Save
+        # twice in a row, the browser retries on a flaky network,
+        # or a deactivated deduction with the same name still
+        # exists on the profile.  Roll back and treat as
+        # idempotent success: the user lands on the edit page with
+        # the deduction they intended to create regardless of
+        # which request reached the database first.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to add deduction to profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, profile_id,
+            )
+            flash("Failed to add deduction. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        attempted_name = data.get("name", "")
+        logger.info(
+            "Duplicate paycheck deduction prevented on profile %d "
+            "(name=%r, idempotent success)",
+            profile_id, attempted_name,
+        )
+        flash(
+            f"A deduction named '{attempted_name}' already exists "
+            f"on this profile.  Edit or reactivate it instead of "
+            f"creating a duplicate.",
+            "info",
+        )
+        if request.headers.get("HX-Request"):
+            return _render_deductions_partial(profile)
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
@@ -756,6 +863,35 @@ def update_deduction(ded_id):
         flash(
             "This deduction was changed by another action while you "
             "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    except IntegrityError as exc:
+        # Name-collision rename (F-052 / C-23): the user renamed
+        # this deduction to one another active or inactive
+        # deduction on the same profile already holds.  Roll back
+        # the stale session and surface the field-level error as a
+        # flash.  Crashing the request with a 500 would leak the
+        # constraint name and leave the user without context to
+        # recover.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to update deduction %d on profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, ded_id, profile.id,
+            )
+            flash("Failed to update deduction. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+        logger.info(
+            "Duplicate-name conflict on update_deduction id=%d "
+            "(another deduction with this name exists on the profile)",
+            ded_id,
+        )
+        flash(
+            "Another deduction on this profile already uses that "
+            "name.  Choose a different name or remove the existing "
+            "deduction first.",
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))

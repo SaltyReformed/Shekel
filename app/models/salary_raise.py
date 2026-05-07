@@ -17,6 +17,30 @@ class SalaryRaise(CreatedAtMixin, db.Model):
     the bump; the loser raises ``StaleDataError`` and the route
     surfaces a flash + redirect.  See commit C-18 of the 2026-04-15
     security remediation plan.
+
+    Duplicate prevention (F-051 / C-23): the composite unique
+    constraint ``uq_salary_raises_profile_type_year_month`` on
+    ``(salary_profile_id, raise_type_id, effective_year,
+    effective_month)`` rejects a second raise with the same shape
+    on the same salary profile.  Without it a double-submit of the
+    raise form -- network retry, double-click, browser back-and-
+    resubmit -- creates two rows with identical effective dates;
+    the paycheck calculator then applies the raise twice
+    (``salary * 1.03 * 1.03`` instead of ``salary * 1.03``),
+    silently overstating projected gross pay until the user notices
+    the drift.  The constraint is declared with PostgreSQL
+    ``NULLS NOT DISTINCT`` semantics: ``effective_year`` is
+    nullable for recurring raises that fire each year on a given
+    month with no anchored start year, and two such recurring
+    rows on the same ``(profile, type, month)`` are still
+    duplicates that would compound erroneously, so NULLs must
+    collide rather than the SQL-standard "every NULL is distinct"
+    default.  ``is_recurring`` is intentionally NOT part of the
+    key: a recurring raise on (profile, type, year, month) already
+    covers that exact period, so adding a one-time raise with the
+    same key compounds the recurring effect on the targeted year
+    and is the same class of double-application bug F-051
+    documents.
     """
 
     __tablename__ = "salary_raises"
@@ -35,6 +59,12 @@ class SalaryRaise(CreatedAtMixin, db.Model):
         db.CheckConstraint(
             "version_id > 0",
             name="ck_salary_raises_version_id_positive",
+        ),
+        db.UniqueConstraint(
+            "salary_profile_id", "raise_type_id",
+            "effective_year", "effective_month",
+            name="uq_salary_raises_profile_type_year_month",
+            postgresql_nulls_not_distinct=True,
         ),
         {"schema": "salary"},
     )

@@ -4,8 +4,8 @@ Shekel Budget App -- Idempotency / Double-Submit Tests
 Tests that every POST endpoint handles double-submission safely:
   - Login double-submit refreshes session
   - Templates allow duplicates (no unique constraint)
-  - Raises allow duplicates (no unique constraint)
-  - Deductions allow duplicates (no unique constraint)
+  - Raises reject duplicates (F-051 / C-23 -- composite unique)
+  - Deductions reject duplicates (F-052 / C-23 -- composite unique)
 
 NOTE: Several idempotency tests already exist in their respective
 route test files: accounts, salary profiles, transfers, savings goals,
@@ -144,10 +144,17 @@ class TestTemplateDoubleSubmit:
 
 
 class TestRaiseDoubleSubmit:
-    """Raises have no unique constraint -- duplicates are created."""
+    """F-051 / C-23: composite unique rejects duplicate raises.
 
-    def test_duplicate_raise_creates_second(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/<id>/raises twice creates two raise entries."""
+    Before C-23, a double-submit on the raise form created two
+    rows with identical effective dates and the paycheck calculator
+    compounded the raise twice.  After C-23, the unique constraint
+    ``uq_salary_raises_profile_type_year_month`` rejects the second
+    INSERT and the route surfaces idempotent success.
+    """
+
+    def test_duplicate_raise_rejected(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/<id>/raises twice creates exactly one raise."""
         with app.app_context():
             profile = _create_profile(seed_user)
             raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
@@ -159,32 +166,44 @@ class TestRaiseDoubleSubmit:
                 "percentage": "3",
             }
 
-            # First submit.
+            # First submit -- success.
             resp1 = auth_client.post(
                 f"/salary/{profile.id}/raises",
                 data=data, follow_redirects=True,
             )
             assert b"Raise added." in resp1.data
 
-            # Second submit with same data.
+            # Second submit with same data -- idempotent rejection.
             resp2 = auth_client.post(
                 f"/salary/{profile.id}/raises",
                 data=data, follow_redirects=True,
             )
-            assert b"Raise added." in resp2.data
+            assert resp2.status_code == 200
+            assert b"already exists" in resp2.data
 
-            # Verify two raises exist.
+            # Verify exactly one raise exists.
+            db.session.expire_all()
             count = db.session.query(SalaryRaise).filter_by(
                 salary_profile_id=profile.id,
             ).count()
-            assert count == 2
+            assert count == 1, (
+                f"Expected 1 raise after double-submit, found {count}; "
+                f"F-051 dedupe failed."
+            )
 
 
 class TestDeductionDoubleSubmit:
-    """Deductions have no unique constraint -- duplicates are created."""
+    """F-052 / C-23: composite unique rejects duplicate deductions.
 
-    def test_duplicate_deduction_creates_second(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/<id>/deductions twice creates two deduction entries."""
+    Before C-23, a double-submit on the deduction form created two
+    rows with the same name and amount and the paycheck calculator
+    subtracted the deduction twice.  After C-23, the unique
+    constraint ``uq_paycheck_deductions_profile_name`` rejects the
+    second INSERT and the route surfaces idempotent success.
+    """
+
+    def test_duplicate_deduction_rejected(self, app, auth_client, seed_user, seed_periods):
+        """POST /salary/<id>/deductions twice creates exactly one deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
             pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
@@ -197,26 +216,31 @@ class TestDeductionDoubleSubmit:
                 "amount": "250.0000",
             }
 
-            # First submit.
+            # First submit -- success.
             resp1 = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data=data, follow_redirects=True,
             )
             assert b"401k" in resp1.data
 
-            # Second submit with same data.
+            # Second submit with same data -- idempotent rejection.
             resp2 = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data=data, follow_redirects=True,
             )
-            assert b"401k" in resp2.data
+            assert resp2.status_code == 200
+            assert b"already exists" in resp2.data
 
-            # Verify two deductions exist.
+            # Verify exactly one deduction with this name exists.
+            db.session.expire_all()
             count = db.session.query(PaycheckDeduction).filter_by(
                 salary_profile_id=profile.id,
                 name="401k",
             ).count()
-            assert count == 2
+            assert count == 1, (
+                f"Expected 1 deduction after double-submit, found "
+                f"{count}; F-052 dedupe failed."
+            )
 
 
 # ── Transaction Double-Submit Tests ──────────────────────────────────

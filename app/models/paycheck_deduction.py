@@ -17,6 +17,22 @@ class PaycheckDeduction(TimestampMixin, db.Model):
     for the bump; the loser raises ``StaleDataError`` and the route
     surfaces a flash + redirect.  See commit C-18 of the 2026-04-15
     security remediation plan.
+
+    Duplicate prevention (F-052 / C-23): the composite unique
+    constraint ``uq_paycheck_deductions_profile_name`` on
+    ``(salary_profile_id, name)`` rejects a second deduction with
+    the same name on the same salary profile.  Without it a
+    double-submit of the deduction form -- network retry,
+    double-click, browser back-and-resubmit -- creates two rows
+    with identical names and amounts; the paycheck calculator then
+    subtracts the deduction twice (``$500 - $500 - $500`` per
+    paycheck instead of ``$500 - $500``), silently understating
+    projected net pay until the user notices the drift.  Each
+    deduction has exactly one canonical name per salary profile,
+    so the constraint matches the domain: a name change is
+    expressed by editing the existing row rather than creating a
+    duplicate, and a previously-disabled deduction (``is_active =
+    False``) is reactivated rather than re-created.
     """
 
     __tablename__ = "paycheck_deductions"
@@ -30,6 +46,10 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.CheckConstraint(
             "version_id > 0",
             name="ck_paycheck_deductions_version_id_positive",
+        ),
+        db.UniqueConstraint(
+            "salary_profile_id", "name",
+            name="uq_paycheck_deductions_profile_name",
         ),
         {"schema": "salary"},
     )
