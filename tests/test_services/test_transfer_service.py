@@ -1073,6 +1073,159 @@ class TestRestoreTransfer:
             with pytest.raises(ValidationError, match="integrity"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
 
+    def test_rejects_when_source_account_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore a transfer onto an archived
+        source account.
+
+        Soft-delete a transfer, then archive the source account.  The
+        next ``restore_transfer`` must raise ``ValidationError`` and
+        leave the transfer + shadows soft-deleted (rollback the
+        ``is_deleted`` flip applied at the top of the function).  This
+        prevents the user from silently resurrecting balance entries
+        against an account they have withdrawn from active projections.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            from_account_id = td["account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            # Archive the source account post-soft-delete.
+            from_account = db.session.get(Account, from_account_id)
+            from_account.is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Rollback to clear the dirty session state from the failed
+            # restore, then re-fetch and confirm soft-delete persisted.
+            db.session.rollback()
+            xfer_after = db.session.get(Transfer, xfer_id)
+            assert xfer_after.is_deleted is True
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is True
+
+    def test_rejects_when_destination_account_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore a transfer onto an archived
+        destination account.
+
+        Symmetric counterpart to
+        ``test_rejects_when_source_account_archived``: archives the
+        ``to_account`` instead of the ``from_account`` and verifies the
+        same refusal-with-rollback behaviour.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            to_account_id = td["savings_account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            # Archive the destination account post-soft-delete.
+            to_account = db.session.get(Account, to_account_id)
+            to_account.is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            db.session.rollback()
+            xfer_after = db.session.get(Transfer, xfer_id)
+            assert xfer_after.is_deleted is True
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is True
+
+    def test_rejects_when_both_accounts_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore when both accounts are archived.
+
+        Defense-in-depth case: if the user has archived both ends of
+        the transfer, the refusal must still trigger and the error
+        message must remain the same generic ``archived`` text (no
+        information about which account is at fault, since both are).
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            from_id = td["account"].id
+            to_id = td["savings_account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            db.session.get(Account, from_id).is_active = False
+            db.session.get(Account, to_id).is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+    def test_succeeds_when_accounts_active(self, app, db, transfer_data):
+        """F-164 / C-20 sanity check: the active-account guard does
+        not regress the happy path.
+
+        With both accounts active (the default), ``restore_transfer``
+        must continue to undo the soft-delete and return the live
+        transfer.  Companion to
+        ``test_restores_transfer_and_shadows`` -- this one exists
+        explicitly to verify the new guard does not break the baseline.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.flush()
+
+            result = transfer_service.restore_transfer(
+                xfer_id, td["user"].id,
+            )
+            assert result.is_deleted is False
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is False
+
 
 class TestDueDateAndPaidAtShadows:
     """Tests for due_date and paid_at propagation to shadow transactions."""

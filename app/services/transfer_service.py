@@ -41,6 +41,7 @@ from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
+    EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
     EVT_TRANSFER_RESTORED,
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
@@ -666,7 +667,10 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
             belong to user_id.
         ValidationError: If shadow transactions are missing or have
             an invalid type pairing, indicating data corruption that
-            cannot be automatically repaired.
+            cannot be automatically repaired; or if either the source
+            or destination account has been archived
+            (``is_active = False``) since the transfer was soft-deleted
+            (F-164).  Reactivate the account before restoring.
     """
     # Must allow deleted transfers since that is the expected input.
     xfer = _get_transfer_or_raise(transfer_id, user_id, allow_deleted=True)
@@ -722,6 +726,41 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
             f"Transfer {transfer_id} shadows do not have the expected "
             f"expense/income type pairing.  Cannot restore -- data "
             f"integrity issue requiring manual intervention."
+        )
+
+    # ── Refuse restore onto archived accounts (F-164) ───────────────
+    # Account FK is RESTRICT (see ``models/transfer.py``) so the rows
+    # cannot be hard-deleted while the transfer references them; the
+    # only way they go away semantically is via ``is_active = False``.
+    # Reactivating a transfer pointed at an archived account would
+    # silently resurrect entries against an account the user has
+    # withdrawn from active projections, producing balance drift the
+    # user has no UI affordance to investigate.  Hard-fail instead and
+    # require the user to reactivate the account first.
+    from_account = db.session.get(Account, xfer.from_account_id)
+    to_account = db.session.get(Account, xfer.to_account_id)
+    from_active = bool(from_account is not None and from_account.is_active)
+    to_active = bool(to_account is not None and to_account.is_active)
+    if not (from_active and to_active):
+        log_event(
+            logger, logging.WARNING,
+            EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT, BUSINESS,
+            "Refused to restore transfer with archived account",
+            user_id=user_id,
+            transfer_id=transfer_id,
+            from_account_id=xfer.from_account_id,
+            to_account_id=xfer.to_account_id,
+            from_account_active=from_active,
+            to_account_active=to_active,
+        )
+        # Roll back the is_deleted flip applied at the top of the
+        # function so the transfer stays soft-deleted on the caller's
+        # rollback path.  Matches the rollback pattern used in the
+        # shadow-count and shadow-type validation branches above.
+        xfer.is_deleted = True
+        raise ValidationError(
+            "Cannot restore transfer: source or destination account "
+            "is archived.  Reactivate the account before restoring."
         )
 
     # ── Restore shadows and verify invariants ───────────────────────
