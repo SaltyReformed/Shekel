@@ -36,6 +36,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.entry_service import build_entry_sums_dict
+from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
 from app.utils.db_errors import is_unique_violation
@@ -349,6 +350,19 @@ def update_transaction(txn_id):
     # triggering an FK violation when the session is dirtied.
     revert_paid_at = False
     if "status_id" in data:
+        # Verify the transition BEFORE any other status-dependent work
+        # (envelope guard, paid_at revert).  An illegal transition --
+        # for example settled -> projected -- short-circuits the
+        # request with a 400 and leaves the row untouched.  Audit
+        # reference: F-161 / commit C-21 of the 2026-04-15 security
+        # remediation plan.
+        try:
+            verify_transition(
+                txn.status_id, data["status_id"], context="transaction",
+            )
+        except ValidationError as exc:
+            return str(exc), 400
+
         # Block Credit status on entry-capable transactions -- credit
         # handling is per-entry, not per-transaction (scope doc section 5.2).
         credit_id = ref_cache.status_id(StatusEnum.CREDIT)

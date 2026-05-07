@@ -324,29 +324,44 @@ class TestStateMachineViolations:
     def test_cancelled_to_done_direct(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Cancelled → done via direct PATCH (bypassing mark_done).
+        """Cancelled -> done via direct PATCH is rejected (C-21).
 
-        PATCHing status_id to done bypasses the mark_done endpoint,
-        resulting in a 'done' transaction without actual_amount.
-        effective_amount falls through to estimated_amount.
+        After commit C-21 the PATCH endpoint runs every status change
+        through ``app.services.state_machine.verify_transition``.
+        ``Cancelled`` may only revert to ``Projected``; a direct jump
+        to ``Paid`` skips the projected step the audit log relies on
+        and is refused with a 400.  The user is expected to revert to
+        Projected first and then mark the row as Paid via the
+        mark-done endpoint -- which writes ``paid_at`` and (on
+        envelope rows) settles entries -- preserving the workflow
+        guarantees the dashboard depends on.
+
+        Was: documented as "current behavior allows it; ideal would
+        reject."  Commit C-21 is the implementation of that ideal,
+        addressing audit finding F-161.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
             db.session.commit()
+            cancelled_status_id = txn.status_id
 
             done_status = db.session.query(Status).filter_by(name="Paid").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(done_status.id)},
             )
-            # Current behavior: no transition guard, direct status change is allowed.
-            # Ideal: cancelled → done should be rejected; use mark_done instead.
-            assert resp.status_code == 200
+            # State machine refuses cancelled -> done.  The body names
+            # both endpoints so the user understands why.
+            assert resp.status_code == 400
+            body = resp.data.decode()
+            assert "transaction" in body
+            assert str(cancelled_status_id) in body
+            assert str(done_status.id) in body
 
+            # The row stays Cancelled -- no partial mutation.
             db.session.refresh(txn)
-            assert txn.status.name == "Paid"
-            # effective_amount for done without actual_amount uses estimated_amount.
-            assert txn.effective_amount == txn.estimated_amount
+            assert txn.status.name == "Cancelled"
+            assert txn.effective_amount == Decimal("0")
 
     def test_cancel_already_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,

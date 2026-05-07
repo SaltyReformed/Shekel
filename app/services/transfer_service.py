@@ -37,6 +37,7 @@ from app.models.transfer_template import TransferTemplate
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services.state_machine import verify_transition
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
@@ -486,8 +487,15 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.estimated_amount = new_amount
 
     # ── status_id ──────────────────────────────────────────────────
+    # Verify the transition BEFORE any propagation so an illegal
+    # request (for example settled -> projected) leaves both the
+    # parent transfer and the two shadow transactions untouched.
+    # The state machine raises ``ValidationError`` -- the route
+    # layer surfaces it as a 400.  Audit reference: F-047 / commit
+    # C-21 of the 2026-04-15 security remediation plan.
     if "status_id" in kwargs:
         new_status_id = kwargs["status_id"]
+        verify_transition(xfer.status_id, new_status_id, context="transfer")
         xfer.status_id = new_status_id
         expense_shadow.status_id = new_status_id
         income_shadow.status_id = new_status_id

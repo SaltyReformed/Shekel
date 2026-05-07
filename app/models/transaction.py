@@ -63,6 +63,28 @@ class Transaction(TimestampMixin, db.Model):
             "transfer_id",
             postgresql_where=db.text("transfer_id IS NOT NULL"),
         ),
+        # At most one *active* expense shadow and one *active* income
+        # shadow per transfer.  Database-level backstop for the
+        # service-layer invariant (CLAUDE.md "Transfer Invariants" #1)
+        # that every transfer has exactly two linked shadow
+        # transactions.  Without this index a defective caller -- or
+        # a hypothetical script that bypasses ``transfer_service`` --
+        # could insert a third shadow row and silently double-charge
+        # the user's projection.  ``is_deleted = FALSE`` keeps soft-
+        # deleted shadows out of the index so the soft-delete +
+        # restore round trip remains legal, mirroring the predicate
+        # on ``uq_transactions_credit_payback_unique``.  Audit
+        # reference: F-046 / commit C-21 of the 2026-04-15 security
+        # remediation plan.
+        db.Index(
+            "uq_transactions_transfer_type_active",
+            "transfer_id", "transaction_type_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_id IS NOT NULL "
+                "AND is_deleted = FALSE"
+            ),
+        ),
         db.Index(
             "idx_transactions_due_date",
             "due_date",
