@@ -38,6 +38,25 @@ class Transaction(TimestampMixin, db.Model):
         ),
         db.Index("idx_transactions_template", "template_id"),
         db.Index("idx_transactions_credit_payback", "credit_payback_for_id"),
+        # At most one *active* CC Payback row per source transaction.
+        # Backstops the SELECT-FOR-UPDATE serialisation in
+        # ``credit_workflow.mark_as_credit`` and
+        # ``entry_credit_workflow.sync_entry_payback`` so any future
+        # caller that bypasses the service layer fails loudly with an
+        # IntegrityError on this index instead of silently doubling the
+        # user's projected debt.  ``is_deleted = FALSE`` keeps soft-
+        # deleted paybacks out of the index so a re-mark of the same
+        # source row after a soft-delete remains legal.  See commit C-19
+        # of the 2026-04-15 security remediation plan.
+        db.Index(
+            "uq_transactions_credit_payback_unique",
+            "credit_payback_for_id",
+            unique=True,
+            postgresql_where=db.text(
+                "credit_payback_for_id IS NOT NULL "
+                "AND is_deleted = FALSE"
+            ),
+        ),
         db.Index("idx_transactions_account", "account_id"),
         db.Index(
             "idx_transactions_transfer",

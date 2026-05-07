@@ -23,7 +23,10 @@ from app.models.transaction_entry import TransactionEntry
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
-from app.services.credit_workflow import get_or_create_cc_category
+from app.services.credit_workflow import (
+    get_or_create_cc_category,
+    lock_source_transaction_for_payback,
+)
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.log_events import (
     BUSINESS,
@@ -61,24 +64,47 @@ def sync_entry_payback(
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
 
+    Concurrency model: the parent transaction row is locked with
+    ``SELECT ... FOR NO KEY UPDATE`` before the read-then-insert
+    below so two concurrent entry mutations on the same parent
+    serialise instead of both falling through the existing-payback
+    check and inserting two payback rows.  ``FOR NO KEY UPDATE``
+    (rather than the stricter ``FOR UPDATE``) is required because
+    the entry INSERT triggered by ``entry_service.create_entry`` /
+    ``update_entry`` / ``delete_entry`` upstream of this call
+    already holds ``FOR KEY SHARE`` on this row to validate the
+    inbound foreign key, and ``FOR UPDATE`` would deadlock with
+    that lock.  The lock is released at the next session
+    ``commit()`` / ``rollback()`` (the caller's route handler
+    always performs one).  ``budget.transactions`` carries
+    ``uq_transactions_credit_payback_unique`` as a database-level
+    backstop -- if any future caller reaches the INSERT without
+    this lock, the unique-index violation surfaces as an
+    ``IntegrityError`` that the route layer converts to idempotent
+    success.  Audit reference: F-008 (High) / commit C-19.
+
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
             belong to owner_id.
         ValidationError: If a payback needs to be created but no next
             pay period exists.
     """
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-
-    # Defense-in-depth: verify ownership via pay period.
-    if txn.pay_period.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # See ``credit_workflow.lock_source_transaction_for_payback`` for
+    # the full rationale behind FOR NO KEY UPDATE + populate_existing.
+    # Note that FOR NO KEY UPDATE is non-negotiable here:
+    # ``entry_service.create_entry`` / ``update_entry`` /
+    # ``delete_entry`` already mutated a TransactionEntry referencing
+    # this row before delegating, taking FOR KEY SHARE for the FK
+    # validation; the stricter FOR UPDATE would deadlock.
+    txn = lock_source_transaction_for_payback(transaction_id, owner_id)
 
     # Expire the entries relationship so we read fresh data from the
     # database.  Without this, a prior load of txn.entries in the same
     # session could be stale after an entry was added or deleted via
-    # FK assignment rather than collection mutation.
+    # FK assignment rather than collection mutation.  The
+    # ``with_for_update()`` query above refreshes the txn columns
+    # themselves but does not touch the related ``entries``
+    # collection.
     db.session.expire(txn, ["entries"])
 
     # Sum credit entries with explicit Decimal("0") start to avoid

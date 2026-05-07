@@ -11,6 +11,7 @@ from datetime import date
 
 from flask import Blueprint, render_template, request
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
@@ -21,6 +22,7 @@ from app.enums import RoleEnum
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,19 @@ entries_bp = Blueprint("entries", __name__)
 # Marshmallow schema instances -- reused across requests.
 _create_schema = EntryCreateSchema()
 _update_schema = EntryUpdateSchema()
+
+# Name of the partial unique index that backstops the duplicate CC
+# Payback bug closed in commit C-19.  ``entry_service.create_entry``,
+# ``update_entry``, and ``delete_entry`` all funnel through
+# ``entry_credit_workflow.sync_entry_payback`` which acquires
+# ``SELECT ... FOR NO KEY UPDATE`` on the parent transaction; if any
+# future caller bypasses that lock, the partial index rejects the
+# duplicate INSERT and the matching catch below converts the
+# ``IntegrityError`` to idempotent success.  Mirrors the literal in
+# the matching Alembic migration (b3d8f4a01c92) and the
+# ``__table_args__`` declaration on
+# ``app.models.transaction.Transaction``.
+_CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
 
 
 def _get_accessible_transaction(txn_id):
@@ -105,6 +120,56 @@ def _render_entry_list(txn, editing_id=None, conflict=False):
     )
 
 
+def _credit_payback_idempotent_response(exc, txn_id, log_context):
+    """Translate a credit-payback unique-index violation into a 200.
+
+    Shared between :func:`create_entry`, :func:`update_entry`, and
+    :func:`delete_entry`.  All three routes funnel through
+    ``entry_credit_workflow.sync_entry_payback`` (commit C-19) where
+    a SELECT FOR NO KEY UPDATE on the parent transaction prevents
+    the duplicate-payback race in normal flow.  This helper is the
+    backstop for any future caller that bypasses the lock: the
+    partial unique index ``uq_transactions_credit_payback_unique``
+    rejects the duplicate INSERT, the calling route catches the
+    resulting :class:`IntegrityError`, and this helper either returns
+    the user the refreshed entry list at HTTP 200 (matching what a
+    serialised request would have produced) or returns the standard
+    400 response when the IntegrityError is for some other
+    constraint we should not silently swallow.
+
+    Args:
+        exc: The caught :class:`IntegrityError`.
+        txn_id: Parent transaction ID for re-fetching after rollback.
+        log_context: Short human-readable string describing the route
+            (e.g. ``"create_entry txn_id=42"``) for the structured
+            log line emitted on the idempotent-success path.
+
+    Returns:
+        Flask response tuple suitable for direct return from the
+        calling route.
+
+    Side effects:
+        Calls ``db.session.rollback()`` -- the caller has already
+        seen the flush fail, so leaving pending changes in the
+        session would block subsequent commits.
+    """
+    db.session.rollback()
+    if not is_unique_violation(exc, _CREDIT_PAYBACK_UNIQUE_INDEX):
+        return "Invalid reference. Check that all referenced records exist.", 400
+    logger.info(
+        "Duplicate CC payback prevented on %s (idempotent success)",
+        log_context,
+    )
+    refreshed = _get_accessible_transaction(txn_id)
+    if refreshed is None:
+        return "Not found", 404
+    return (
+        _render_entry_list(refreshed),
+        200,
+        {"HX-Trigger": "balanceChanged"},
+    )
+
+
 def _stale_entry_response(txn):
     """Roll back the session and render the entry list in conflict mode.
 
@@ -173,6 +238,12 @@ def create_entry(txn_id):
             **data,
         )
         db.session.commit()
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19: see
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(
+            exc, txn.id, f"create_entry txn_id={txn.id}",
+        )
     except (NotFoundError, ValidationError) as exc:
         db.session.rollback()
         return str(exc), 400
@@ -235,6 +306,12 @@ def update_entry(txn_id, entry_id):
             "Stale-data conflict on update_entry id=%d", entry_id,
         )
         return _stale_entry_response(txn)
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19 -- see
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(
+            exc, txn.id, f"update_entry id={entry_id}",
+        )
     except (NotFoundError, ValidationError) as exc:
         db.session.rollback()
         return str(exc), 400
@@ -321,6 +398,14 @@ def delete_entry(txn_id, entry_id):
             "Stale-data conflict on delete_entry id=%d", entry_id,
         )
         return _stale_entry_response(txn)
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19 -- ``delete_entry``
+        # also calls ``sync_entry_payback``, so the same race window
+        # exists if a future caller bypasses the row lock.  See
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(
+            exc, txn.id, f"delete_entry id={entry_id}",
+        )
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404

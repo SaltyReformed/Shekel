@@ -29,15 +29,117 @@ CC_PAYBACK_GROUP = "Credit Card"
 CC_PAYBACK_ITEM = "Payback"
 
 
+def lock_source_transaction_for_payback(
+    transaction_id: int, owner_id: int,
+) -> Transaction:
+    """Acquire ``SELECT ... FOR NO KEY UPDATE`` on a source transaction.
+
+    Shared by :func:`mark_as_credit` and
+    :func:`entry_credit_workflow.sync_entry_payback` to bracket each
+    one's read-then-insert sequence with a row-level write lock.
+    PostgreSQL serialises any concurrent ``FOR NO KEY UPDATE`` /
+    ``FOR UPDATE`` request on the same row, so two concurrent
+    payback-creating callers serialise instead of both falling
+    through their idempotency check and double-inserting.
+
+    Three SQLAlchemy options are load-bearing:
+
+      * ``of=Transaction`` -- ``Transaction.account``, ``.status``,
+        ``.category``, and ``.transaction_type`` are
+        ``lazy="joined"`` so the default query emits LEFT OUTER
+        JOINs.  PostgreSQL rejects ``FOR UPDATE`` whose target
+        spans the nullable side of an outer join
+        (``FeatureNotSupported``).  Restricting the lock to the
+        transactions table with ``OF`` keeps the syntax legal
+        while still locking the row we care about.
+
+      * ``key_share=True`` -- selects ``FOR NO KEY UPDATE`` rather
+        than the stricter ``FOR UPDATE``.  Both lock modes
+        serialise concurrent FOR-NO-KEY-UPDATE / FOR-UPDATE
+        requests on the same row, but FOR-NO-KEY-UPDATE does NOT
+        conflict with the FOR-KEY-SHARE locks PostgreSQL takes
+        automatically while validating an inbound foreign key
+        (e.g. the payback INSERT downstream of this call, or a
+        concurrent transaction_entries INSERT against the same
+        parent).  The stricter FOR UPDATE would deadlock with
+        those FK-validation locks under load.
+
+      * ``populate_existing()`` -- forces the locking SELECT to
+        overwrite any cached attributes already in the session's
+        identity map.  Without it a serialised second request
+        would observe its own pre-lock cached attributes
+        (``status_id`` in particular) and skip the post-lock
+        idempotency short-circuit, falling through to a duplicate
+        INSERT that the partial unique index would only catch as
+        an ``IntegrityError``.
+
+    The lock is released at the next session ``commit()`` /
+    ``rollback()`` -- the caller's route handler always performs
+    one.  Audit reference: F-008 (High) / commit C-19.
+
+    Args:
+        transaction_id: Primary key of the row to lock.
+        owner_id: Resolved owner user ID; the loaded txn's
+            pay-period user must match this so an attacker probing
+            for valid IDs cannot tell "row exists but belongs to
+            someone else" from "row does not exist."
+
+    Returns:
+        The locked Transaction with refreshed column attributes.
+
+    Raises:
+        NotFoundError: If the row does not exist or its pay-period
+            does not belong to ``owner_id``.
+    """
+    txn = (
+        db.session.query(Transaction)
+        .filter_by(id=transaction_id)
+        .populate_existing()
+        .with_for_update(of=Transaction, key_share=True)
+        .one_or_none()
+    )
+    if txn is None:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # Defense-in-depth: verify ownership via pay period.  Performed
+    # after the lock is acquired so an attacker probing for valid
+    # IDs cannot race the lock window to confirm existence.
+    if txn.pay_period.user_id != owner_id:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    return txn
+
+
 def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
     Steps:
-      1. Verify ownership via the transaction's pay period.
-      2. Set the transaction's status to 'credit'.
-      3. Find or create the CC payback category.
-      4. Find the next pay period.
-      5. Create a payback expense in the next period linked to the original.
+      1. Acquire a row-level write lock on the source transaction
+         with ``SELECT ... FOR NO KEY UPDATE`` so two concurrent
+         POSTs serialise instead of both falling through the
+         idempotency check.
+      2. Verify ownership via the transaction's pay period.
+      3. Set the transaction's status to 'credit'.
+      4. Find or create the CC payback category.
+      5. Find the next pay period.
+      6. Create a payback expense in the next period linked to the original.
+
+    Concurrency model: the row lock acquired in step 1 (``SELECT
+    ... FOR NO KEY UPDATE``) is held until the caller commits or
+    rolls back the SQLAlchemy session.  When a second request races
+    with the first, the second's locking SELECT blocks until the
+    first commits; PostgreSQL then returns the post-commit row to
+    the second request, whose idempotency check (status already
+    ``credit``, payback already exists) returns the existing
+    payback without inserting a duplicate.  ``FOR NO KEY UPDATE``
+    rather than the stricter ``FOR UPDATE`` is required so the
+    payback INSERT later in this function (which takes
+    ``FOR KEY SHARE`` on the source row to validate its FK) does
+    not deadlock with the lock acquired here -- see PostgreSQL's
+    row-lock conflict matrix.  ``budget.transactions`` carries
+    ``uq_transactions_credit_payback_unique`` as a database-level
+    backstop -- if any future caller reaches the INSERT without
+    this lock, the unique-index violation surfaces as an
+    ``IntegrityError`` that the route layer converts to idempotent
+    success.  Audit reference: F-008 (High) / commit C-19.
 
     Args:
         transaction_id: The ID of the transaction to mark as credit.
@@ -47,19 +149,19 @@ def mark_as_credit(transaction_id, user_id):
             checked at the route level.
 
     Returns:
-        The newly created payback Transaction.
+        The newly created payback Transaction, or the existing
+        payback if the transaction is already in ``credit`` status.
 
     Raises:
         NotFoundError:  If the transaction doesn't exist or doesn't
             belong to *user_id*.
-        ValidationError: If the transaction is income (can't credit income).
+        ValidationError: If the transaction is income (can't credit income),
+            is a transfer shadow, uses entry tracking, has a status
+            other than projected, or has no following pay period.
     """
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership via pay period.
-    if txn.pay_period.user_id != user_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # See ``lock_source_transaction_for_payback`` for the full
+    # rationale behind FOR NO KEY UPDATE + populate_existing().
+    txn = lock_source_transaction_for_payback(transaction_id, user_id)
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
     if txn.transfer_id is not None:
@@ -96,6 +198,18 @@ def mark_as_credit(transaction_id, user_id):
 
     # Update the original transaction's status.
     txn.status_id = credit_id
+    # ``Transaction.status`` is loaded eagerly via ``lazy="joined"``
+    # so the locking SELECT at the top of this function (and
+    # ``_get_owned_transaction`` in the route) populated the cached
+    # relationship with the *pre-update* Status row.  SQLAlchemy
+    # does not auto-refresh many-to-one relationships when only the
+    # FK column is rewritten -- without this expire, downstream code
+    # (test assertions, the post-flush cell render in routes that
+    # do not use ``expire_on_commit``) would observe the stale
+    # ``Projected`` Status object even though ``status_id`` already
+    # points to ``Credit``.  Expiring the single attribute is cheap:
+    # the next access lazy-loads the matching ref row.
+    db.session.expire(txn, ["status"])
 
     # Find or create the CC Payback category for this user.
     from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel

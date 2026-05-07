@@ -38,6 +38,14 @@ from app.services import (
 from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
+from app.utils.db_errors import is_unique_violation
+
+# Name of the partial unique index that backstops commit C-19's
+# duplicate CC Payback fix.  Mirrors the literal in
+# ``migrations/versions/b3d8f4a01c92_*.py`` and
+# ``app.models.transaction.Transaction.__table_args__``; renaming
+# the index requires a coordinated edit across all three sites.
+_CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +77,35 @@ def _render_cell(txn, **extra):
         txn=txn,
         entry_sums=build_entry_sums_dict([txn]),
         **extra,
+    )
+
+
+def _credit_payback_idempotent_response(exc, txn_id):
+    """Translate a credit-payback unique-index violation into a 200.
+
+    Backstop for commit C-19 (audit finding F-008): if a future
+    caller bypasses ``credit_workflow.mark_as_credit``'s row lock
+    and a duplicate payback INSERT reaches PostgreSQL,
+    ``uq_transactions_credit_payback_unique`` rejects it and this
+    helper rolls back, re-fetches the source row, and renders the
+    cell at HTTP 200 -- matching what a serialised request would
+    have produced.  Other ``IntegrityError`` constraint hits return
+    the standard 400 so unrelated FK / check failures stay visible.
+    """
+    db.session.rollback()
+    if not is_unique_violation(exc, _CREDIT_PAYBACK_UNIQUE_INDEX):
+        return "Invalid reference. Check that all referenced records exist.", 400
+    logger.info(
+        "Duplicate CC payback prevented on mark_credit id=%d "
+        "(idempotent success)", txn_id,
+    )
+    refreshed = _get_owned_transaction(txn_id)
+    if refreshed is None:
+        return "Not found", 404
+    return (
+        _render_cell(refreshed),
+        200,
+        {"HX-Trigger": "gridRefresh"},
     )
 
 
@@ -476,11 +513,16 @@ def mark_done(txn_id):
 def mark_credit(txn_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
-    Optimistic locking (commit C-18 / F-010): no form-side
-    ``version_id`` is shipped with the button click; the SQLAlchemy
-    ``version_id_col`` lock catches concurrent races at flush time
-    and the handler converts ``StaleDataError`` into a 409 +
-    conflict cell.
+    Optimistic locking (commit C-18 / F-010):
+    ``StaleDataError`` -> 409 conflict cell.
+
+    TOCTOU duplicate-payback prevention (commit C-19 / F-008):
+    ``credit_workflow.mark_as_credit`` acquires
+    ``SELECT ... FOR NO KEY UPDATE`` on the source row to serialise
+    concurrent requests; the partial unique index
+    ``uq_transactions_credit_payback_unique`` backstops any future
+    caller that bypasses the lock, and the IntegrityError catch
+    below converts the violation into idempotent success.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -498,6 +540,10 @@ def mark_credit(txn_id):
             "Stale-data conflict on mark_credit id=%d", txn_id,
         )
         return _stale_transaction_response(txn_id)
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19 -- see
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(exc, txn_id)
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
     response = _render_cell(txn)
