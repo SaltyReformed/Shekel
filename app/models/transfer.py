@@ -56,6 +56,35 @@ class Transfer(TimestampMixin, db.Model):
                 "AND is_override = FALSE"
             ),
         ),
+        # Ad-hoc duplicate prevention (F-050 / C-22).  Without this index
+        # a double-submit of the ad-hoc transfer form -- network retry,
+        # double-click, browser back-and-resubmit -- creates two parent
+        # transfers in the same period.  Each duplicate transfer also
+        # produces two shadow transactions, so a single accidental
+        # double-click silently doubles the user's projected debit and
+        # credit by 4 rows total; balance projections drift by
+        # ``2 * amount`` until the user notices and manually reconciles.
+        # The composite key (user_id, from_account_id, to_account_id,
+        # amount, pay_period_id, scenario_id) plus the
+        # ``transfer_template_id IS NULL`` predicate scopes the
+        # constraint to ad-hoc transfers only -- recurring transfers
+        # are protected by the index above and may legitimately repeat
+        # across periods.  ``is_deleted = FALSE`` keeps soft-deleted
+        # rows out of the index so a delete-and-recreate workflow
+        # remains legal, mirroring the predicate on
+        # ``uq_transactions_transfer_type_active``.  scenario_id is
+        # included so an ad-hoc transfer in the baseline scenario
+        # does not block the same transfer in a what-if scenario.
+        db.Index(
+            "uq_transfers_adhoc_dedupe",
+            "user_id", "from_account_id", "to_account_id",
+            "amount", "pay_period_id", "scenario_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_template_id IS NULL "
+                "AND is_deleted = FALSE"
+            ),
+        ),
         {"schema": "budget"},
     )
 

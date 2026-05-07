@@ -85,7 +85,34 @@ class Account(TimestampMixin, db.Model):
 
 
 class AccountAnchorHistory(CreatedAtMixin, db.Model):
-    """Audit trail of anchor balance true-ups for an account."""
+    """Audit trail of anchor balance true-ups for an account.
+
+    Same-day duplicate prevention (F-103 / C-22): the partial unique
+    expression index ``uq_anchor_history_account_period_balance_day``
+    on ``(account_id, pay_period_id, anchor_balance,
+    ((created_at AT TIME ZONE 'UTC')::date))`` rejects a second row
+    with identical values inserted on the same calendar day.  This
+    is the database-level backstop for ``true_up`` and
+    ``inline_anchor_update`` double-submits: a network retry, a
+    double-click on the Save button, or the back-and-resubmit
+    pattern would otherwise create two consecutive history rows with
+    the same anchor_balance, polluting the audit trail with entries
+    that record nothing the prior row did not already record.
+
+    The index intentionally includes ``anchor_balance`` so two
+    legitimate true-ups on the same day -- the user noticed an
+    arithmetic error and corrected the balance twice -- are still
+    allowed; only literal duplicate rows (same balance, same
+    period, same day, same account) are rejected.  Truncating
+    ``created_at`` (a ``timestamptz``) to a civil date requires
+    pinning the timezone via ``AT TIME ZONE 'UTC'`` -- PostgreSQL
+    refuses to use the bare ``::date`` cast in an index because the
+    cast depends on the session's TimeZone and is therefore not
+    IMMUTABLE.  UTC is the application's storage timezone (every
+    ``timestamptz`` in this database is stored in UTC by
+    ``CreatedAtMixin``), so anchoring the truncation to UTC matches
+    the row's logical day-of-record exactly.
+    """
 
     __tablename__ = "account_anchor_history"
     __table_args__ = (
@@ -93,6 +120,17 @@ class AccountAnchorHistory(CreatedAtMixin, db.Model):
             "idx_anchor_history_account",
             "account_id",
             "created_at",
+        ),
+        # Functional unique index on a UTC-day-truncated timestamp; the
+        # raw text expression matches the migration's DDL exactly so
+        # Alembic autogenerate produces no spurious diff against the
+        # post-migration database state.  See class docstring for the
+        # business rationale and the IMMUTABLE-cast requirement.
+        db.Index(
+            "uq_anchor_history_account_period_balance_day",
+            "account_id", "pay_period_id", "anchor_balance",
+            db.text("((created_at AT TIME ZONE 'UTC')::date)"),
+            unique=True,
         ),
         {"schema": "budget"},
     )

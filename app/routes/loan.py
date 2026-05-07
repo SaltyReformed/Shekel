@@ -52,10 +52,18 @@ from app.services.loan_payment_service import (
     load_loan_context,
     prepare_payments_for_engine,
 )
+from app.utils.db_errors import is_unique_violation
 from app.utils.formatting import pct_to_decimal
 from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
 
 logger = logging.getLogger(__name__)
+
+# Name of the composite unique constraint that backstops the
+# loan rate-history double-submit fix (F-104 / C-22).  Mirrors the
+# literal in ``app/models/loan_features.py:RateHistory.__table_args__``
+# and ``migrations/versions/<C-22 revision>.py``; renaming the
+# constraint requires a coordinated edit across all three sites.
+_RATE_HISTORY_UNIQUE_CONSTRAINT = "uq_rate_history_account_effective_date"
 
 loan_bp = Blueprint("loan", __name__)
 
@@ -698,7 +706,40 @@ def add_rate_change(account_id):
 
     # Also update the current rate on params.
     params.interest_rate = data["interest_rate"]
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        # Same-effective-date double-submit (F-104 / C-22): the
+        # composite unique ``uq_rate_history_account_effective_date``
+        # rejects the second INSERT when the user clicks Save twice
+        # in a row.  Roll back, flash a clear message, and re-render
+        # the rate history without the proposed duplicate.  A
+        # legitimate same-day correction is expressed by editing the
+        # existing row, not by appending another.
+        db.session.rollback()
+        if not is_unique_violation(exc, _RATE_HISTORY_UNIQUE_CONSTRAINT):
+            raise
+        logger.info(
+            "Duplicate rate-history entry prevented for account %d on %s",
+            account.id, data["effective_date"],
+        )
+        flash(
+            "A rate change with that effective date already exists. "
+            "Edit the existing entry to correct it.",
+            "warning",
+        )
+        rate_history = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=account.id)
+            .order_by(RateHistory.effective_date.desc())
+            .all()
+        )
+        return render_template(
+            "loan/_rate_history.html",
+            account=account,
+            params=params,
+            rate_history=rate_history,
+        )
 
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
 

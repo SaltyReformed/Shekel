@@ -10,9 +10,11 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.db_errors import is_unique_violation
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
@@ -44,6 +46,13 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Name of the partial unique expression index that backstops the
+# anchor-history double-submit fix (F-103 / C-22).  Mirrors the
+# literal in ``app/models/account.py:AccountAnchorHistory.__table_args__``
+# and ``migrations/versions/<C-22 revision>.py``; renaming the index
+# requires a coordinated edit across all three sites.
+_ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
 
 accounts_bp = Blueprint("accounts", __name__)
 
@@ -674,6 +683,25 @@ def inline_anchor_update(account_id):
             ),
             409,
         )
+    except IntegrityError as exc:
+        # Same-day, same-balance double-submit (F-103 / C-22): the
+        # partial unique index ``uq_anchor_history_account_period_balance_day``
+        # rejects the second history INSERT when the user clicks
+        # Save twice in a row.  Roll back, treat as idempotent
+        # success, and re-render the (already-current) balance --
+        # the first request committed the same value the second
+        # request was trying to submit.
+        db.session.rollback()
+        if not is_unique_violation(exc, _ANCHOR_HISTORY_UNIQUE_INDEX):
+            raise
+        account = db.session.get(Account, account_id)
+        logger.info(
+            "Duplicate same-day anchor history prevented for account %d "
+            "(idempotent success)", account_id,
+        )
+        return render_template(
+            "accounts/_anchor_cell.html", acct=account, editing=False,
+        )
 
     db.session.refresh(account)
 
@@ -922,6 +950,30 @@ def true_up(account_id):
             ),
             409,
         )
+    except IntegrityError as exc:
+        # Same-day, same-balance double-submit (F-103 / C-22): the
+        # partial unique index ``uq_anchor_history_account_period_balance_day``
+        # rejects the second history INSERT when the user clicks
+        # Save twice in a row.  Roll back and treat as idempotent
+        # success.  See the matching handler in
+        # ``inline_anchor_update`` for the rationale.
+        db.session.rollback()
+        if not is_unique_violation(exc, _ANCHOR_HISTORY_UNIQUE_INDEX):
+            raise
+        account = db.session.get(Account, account_id)
+        logger.info(
+            "Duplicate same-day anchor history prevented for account %d "
+            "(idempotent success)", account_id,
+        )
+        html = render_template(
+            "grid/_anchor_edit.html", account=account, editing=False,
+        )
+        as_of_html = (
+            f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
+            f'as of {account.updated_at.strftime("%b %-d, %Y")}'
+            f'</small>'
+        )
+        return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
     db.session.refresh(account)
 

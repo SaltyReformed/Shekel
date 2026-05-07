@@ -11,8 +11,10 @@ from decimal import Decimal
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import require_owner
+from app.utils.db_errors import is_unique_violation
 
 from app.extensions import db
 from app.models.pension_profile import PensionProfile
@@ -26,6 +28,13 @@ from app.schemas.validation import (
 from app.services import retirement_dashboard_service
 
 logger = logging.getLogger(__name__)
+
+# Name of the composite unique constraint that backstops the
+# pension-profile double-submit fix (F-105 / C-22).  Mirrors the
+# literal in ``app/models/pension_profile.py:PensionProfile.__table_args__``
+# and ``migrations/versions/<C-22 revision>.py``; renaming the
+# constraint requires a coordinated edit across all three sites.
+_PENSION_PROFILE_UNIQUE_CONSTRAINT = "uq_pension_profiles_user_name"
 
 retirement_bp = Blueprint("retirement", __name__)
 
@@ -110,7 +119,39 @@ def create_pension():
 
     pension = PensionProfile(user_id=current_user.id, **data)
     db.session.add(pension)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        # Duplicate-name double-submit (F-105 / C-22): the composite
+        # unique ``uq_pension_profiles_user_name`` rejects the second
+        # INSERT when the user clicks Save twice in a row.  Roll back
+        # and treat as idempotent success: re-fetch the winning row
+        # so the user lands on the retirement dashboard with the
+        # pension they intended to create, regardless of which
+        # request reached the database first.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PENSION_PROFILE_UNIQUE_CONSTRAINT):
+            raise
+        existing = (
+            db.session.query(PensionProfile)
+            .filter_by(user_id=current_user.id, name=data["name"])
+            .first()
+        )
+        if existing is None:
+            # The winning row was deleted between the IntegrityError
+            # and this lookup -- vanishingly unlikely.  Surface as a
+            # warning and let the user retry.
+            flash(
+                "A pension profile with that name already exists.",
+                "warning",
+            )
+            return redirect(url_for("retirement.dashboard"))
+        logger.info(
+            "Duplicate pension profile prevented; existing id=%d "
+            "(idempotent success)", existing.id,
+        )
+        flash(f"Pension profile '{existing.name}' already exists.", "info")
+        return redirect(url_for("retirement.dashboard"))
 
     logger.info("user_id=%d created pension profile %d", current_user.id, pension.id)
     flash(f"Pension profile '{pension.name}' created.", "success")
@@ -216,7 +257,25 @@ def update_pension(pension_id):
         if field_name in _PENSION_FIELDS:
             setattr(pension, field_name, value)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        # Name-collision rename (F-105 / C-22): renaming this profile
+        # to a name another active pension already holds violates
+        # ``uq_pension_profiles_user_name``.  Surface as a 422 with
+        # the field-level error rather than crashing the request --
+        # the user expects a form-level message, not a 500.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PENSION_PROFILE_UNIQUE_CONSTRAINT):
+            raise
+        return render_template(
+            "retirement/pension_form.html",
+            pension=pension,
+            pensions=[],
+            salary_profiles=salary_profiles,
+            form_data=dict(request.form),
+            errors={"name": ["You already have a pension profile with this name."]},
+        ), 422
     logger.info("user_id=%d updated pension profile %d", current_user.id, pension_id)
     flash(f"Pension profile '{pension.name}' updated.", "success")
     return redirect(url_for("retirement.dashboard"))

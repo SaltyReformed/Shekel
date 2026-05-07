@@ -11,10 +11,31 @@ from app.models.mixins import CreatedAtMixin, TimestampMixin
 
 
 class RateHistory(CreatedAtMixin, db.Model):
-    """Historical record of rate changes for a variable-rate loan account."""
+    """Historical record of rate changes for a variable-rate loan account.
+
+    Duplicate prevention (F-104 / C-22): the composite unique
+    constraint ``uq_rate_history_account_effective_date`` on
+    ``(account_id, effective_date)`` rejects a second rate-change
+    row with the same effective date.  Without it a double-submit
+    of the loan rate form -- network retry, double-click, browser
+    back-and-resubmit -- would create two history rows the
+    amortisation engine cannot disambiguate (which rate applies on
+    that date?), and the UI's "Most recent rate" rendering would
+    flip non-deterministically depending on insertion order.  Each
+    rate change has exactly one effective date by definition, so
+    the constraint matches the domain model: a same-day correction
+    is expressed by editing the existing row rather than appending
+    a duplicate.
+    """
 
     __tablename__ = "rate_history"
-    __table_args__ = {"schema": "budget"}
+    __table_args__ = (
+        db.UniqueConstraint(
+            "account_id", "effective_date",
+            name="uq_rate_history_account_effective_date",
+        ),
+        {"schema": "budget"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(

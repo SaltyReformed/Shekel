@@ -832,6 +832,26 @@ def create_inline():
     Auto-derives the name from the category.  Returns the new
     transaction cell wrapped in a div with a unique ID for HTMX
     targeting.
+
+    Double-submit handling (F-102 / C-22): unlike the ad-hoc
+    transfer create path (F-050), no database-level uniqueness
+    constraint is enforced here.  Two transactions with identical
+    (account_id, category_id, amount, pay_period_id) are a
+    legitimate use case -- two $4 coffees on the same day, two
+    identical fast-food charges, the user genuinely buying the
+    same thing twice -- and rejecting them at the database layer
+    would force the user to artificially differentiate amounts
+    that match real-world receipts.  The mitigation is the
+    client-side ``hx-disabled-elt`` HTMX directive on every
+    transaction-create form (``_transaction_quick_create.html``,
+    ``_transaction_full_create.html``,
+    ``grid.html#addTransactionModal``): the submit control is
+    disabled while the request is in flight, preventing accidental
+    re-submits from a double-click or network retry.  The residual
+    risk -- a user clicks rapidly enough to bypass the disable
+    state, or replays the request via the back button -- is
+    accepted as operator UX rather than a financial-correctness
+    concern.
     """
     errors = _inline_create_schema.validate(request.form)
     if errors:

@@ -503,6 +503,90 @@ class TestTrueUp:
             assert other["account"].current_anchor_balance == orig_balance
 
 
+class TestTrueUpSameDayDuplicate:
+    """F-103 / C-22: same-day same-balance double-submit dedupe."""
+
+    def test_double_submit_creates_one_history_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Two identical true-ups same day produce exactly one history row.
+
+        F-103 / C-22: the partial unique expression index
+        ``uq_anchor_history_account_period_balance_day`` rejects the
+        second INSERT when the user clicks Save twice in a row.
+        The route catches the IntegrityError and returns the
+        already-current balance so the user sees idempotent success
+        instead of a 500.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+            r1 = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1234.56"},
+            )
+            assert r1.status_code == 200
+
+            r2 = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1234.56"},
+            )
+            # Idempotent success: both requests return 200.
+            assert r2.status_code == 200
+
+            # Exactly one audit row was added.
+            db.session.expire_all()
+            history = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=account_id)
+                .all()
+            )
+            assert len(history) == 1, (
+                f"Expected 1 anchor history row after double-submit, "
+                f"found {len(history)}; F-103 dedupe failed."
+            )
+            assert history[0].anchor_balance == Decimal("1234.56")
+
+    def test_same_day_different_balance_creates_two_rows(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Same-day true-ups with different balances both succeed.
+
+        F-103 / C-22: the unique constraint includes
+        ``anchor_balance``, so a legitimate same-day correction (the
+        user noticed an error and re-trued at a different amount)
+        must NOT be blocked.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+            r1 = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1000.00"},
+            )
+            r2 = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1100.00"},
+            )
+            assert r1.status_code == 200
+            assert r2.status_code == 200
+
+            db.session.expire_all()
+            history = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=account_id)
+                .order_by(AccountAnchorHistory.id)
+                .all()
+            )
+            assert len(history) == 2, (
+                f"Expected 2 anchor history rows after distinct "
+                f"same-day true-ups, found {len(history)}"
+            )
+            assert {h.anchor_balance for h in history} == {
+                Decimal("1000.00"), Decimal("1100.00"),
+            }
+
+
 class TestTrueUpClearsEntries:
     """Tests for the auto-clear behavior on checking anchor true-up.
 

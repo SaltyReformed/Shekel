@@ -587,6 +587,71 @@ class TestRateHistory:
         count = db.session.query(RateHistory).filter_by(account_id=other.id).count()
         assert count == 0
 
+    def test_rate_change_same_date_double_submit(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """F-104 / C-22: same effective_date double-submit produces one row.
+
+        The composite unique ``uq_rate_history_account_effective_date``
+        rejects the second INSERT.  The route flashes a clear
+        message and re-renders the rate history without the
+        proposed duplicate; total row count is exactly 1.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        data = {
+            "effective_date": "2026-04-01",
+            "interest_rate": "7.000",
+        }
+        r1 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        assert r1.status_code == 200
+
+        r2 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        # Idempotent path: route returns the partial; total rows == 1.
+        assert r2.status_code == 200
+
+        db.session.expire_all()
+        count = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert count == 1, (
+            f"Expected 1 rate history row after duplicate submit, "
+            f"found {count}; F-104 dedupe failed."
+        )
+
+    def test_rate_change_different_date_allowed(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """F-104 / C-22: different effective dates both succeed."""
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        r1 = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-04-01", "interest_rate": "7.000"},
+        )
+        r2 = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-05-01", "interest_rate": "7.500"},
+        )
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+
+        db.session.expire_all()
+        count = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert count == 2
+
 
 # ── Payoff Calculator Tests ──────────────────────────────────────────
 

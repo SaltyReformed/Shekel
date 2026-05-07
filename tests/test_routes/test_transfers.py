@@ -60,8 +60,18 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     return template
 
 
-def _create_transfer(seed_user, seed_periods_today, savings_acct, template=None):
-    """Helper: create a transfer with shadow transactions via the service."""
+def _create_transfer(
+    seed_user, seed_periods_today, savings_acct,
+    template=None, amount=Decimal("200.00"), name="Monthly Savings",
+):
+    """Helper: create a transfer with shadow transactions via the service.
+
+    ``amount`` and ``name`` are parameterised so callers that need
+    multiple ad-hoc transfers in the same period can distinguish
+    them and avoid the F-050 / C-22 partial unique index
+    ``uq_transfers_adhoc_dedupe`` (which legitimately rejects two
+    active ad-hoc rows with identical parameters).
+    """
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         user_id=seed_user["user"].id,
@@ -69,11 +79,11 @@ def _create_transfer(seed_user, seed_periods_today, savings_acct, template=None)
         to_account_id=savings_acct.id,
         pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
-        amount=Decimal("200.00"),
+        amount=amount,
         status_id=projected.id,
         category_id=seed_user["categories"]["Rent"].id,
         transfer_template_id=template.id if template else None,
-        name="Monthly Savings",
+        name=name,
     )
     db.session.commit()
     return xfer
@@ -763,10 +773,18 @@ class TestAdHoc:
     def test_create_ad_hoc_double_submit(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transfers/ad-hoc twice succeeds both times (no unique constraint on ad-hoc).
+        """POST /transfers/ad-hoc twice with identical params returns idempotent success.
 
-        Both submissions should create a transfer, resulting in exactly 2
-        transfers named 'Double Transfer' in the period.
+        F-050 / C-22: the partial unique index
+        ``uq_transfers_adhoc_dedupe`` on (user_id, from_account_id,
+        to_account_id, amount, pay_period_id, scenario_id) rejects the
+        second active ad-hoc transfer with identical parameters.  The
+        route translates the IntegrityError into idempotent 201 +
+        cell HTML so the user sees the transfer they intended to
+        create regardless of which request reached the database
+        first.  After two identical submissions the period must
+        contain exactly one active ad-hoc transfer (and exactly two
+        active shadow transactions, not four).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -784,17 +802,121 @@ class TestAdHoc:
             assert response1.status_code == 201
 
             response2 = auth_client.post("/transfers/ad-hoc", data=data)
+            # Idempotent success: the second request returns 201 too,
+            # but the body references the SAME transfer the first one
+            # produced (no new row was inserted).
             assert response2.status_code == 201
+            assert response2.headers.get("HX-Trigger") == "balanceChanged"
 
-            # Verify exactly 2 transfers were created.
+            # Verify exactly 1 active ad-hoc transfer exists.
             db.session.expire_all()
-            count = db.session.query(Transfer).filter_by(
-                pay_period_id=seed_periods_today[0].id,
-                name="Double Transfer",
-            ).count()
-            assert count == 2, (
-                f"Expected exactly 2 ad-hoc transfers, found {count}"
+            transfers = (
+                db.session.query(Transfer)
+                .filter_by(
+                    pay_period_id=seed_periods_today[0].id,
+                    user_id=seed_user["user"].id,
+                    is_deleted=False,
+                )
+                .filter(Transfer.transfer_template_id.is_(None))
+                .filter_by(amount=Decimal("50.00"))
+                .all()
             )
+            assert len(transfers) == 1, (
+                f"Expected exactly 1 active ad-hoc transfer after "
+                f"double-submit, found {len(transfers)}"
+            )
+            # Verify exactly 2 active shadow transactions (not 4 --
+            # invariant 1 still holds with the new constraint).
+            shadow_count = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfers[0].id, is_deleted=False)
+                .count()
+            )
+            assert shadow_count == 2, (
+                f"Expected exactly 2 active shadows for the deduped "
+                f"transfer, found {shadow_count}"
+            )
+
+    def test_create_ad_hoc_different_amount_allowed(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Two ad-hoc transfers with different amounts both succeed.
+
+        F-050 / C-22: the unique constraint includes ``amount`` so
+        a $50 transfer and a $100 transfer between the same accounts
+        in the same period are treated as different ad-hoc rows --
+        the user legitimately split a payment, the constraint must
+        not block it.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            base = {
+                "pay_period_id": seed_periods_today[0].id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }
+
+            r1 = auth_client.post(
+                "/transfers/ad-hoc", data={**base, "amount": "50.00"},
+            )
+            r2 = auth_client.post(
+                "/transfers/ad-hoc", data={**base, "amount": "100.00"},
+            )
+
+            assert r1.status_code == 201
+            assert r2.status_code == 201
+
+            db.session.expire_all()
+            count = (
+                db.session.query(Transfer)
+                .filter_by(
+                    pay_period_id=seed_periods_today[0].id,
+                    user_id=seed_user["user"].id,
+                    is_deleted=False,
+                )
+                .filter(Transfer.transfer_template_id.is_(None))
+                .count()
+            )
+            assert count == 2, (
+                f"Expected 2 distinct ad-hoc transfers, found {count}"
+            )
+
+    def test_mark_done_transfer_sets_paid_at_on_shadows(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """POST /transfers/instance/<id>/mark-done sets paid_at on both shadows.
+
+        F-048 / C-22: parity with ``transactions.mark_done`` and
+        ``dashboard.mark_paid``.  Settling a transfer must record
+        when it was settled so ``Transaction.days_paid_before_due``
+        analytics, the dashboard's "paid on time" indicator, and any
+        downstream report that joins on ``paid_at`` work.  Both
+        shadow transactions are checked because the parent transfer
+        has no ``paid_at`` column of its own.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            response = auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done"
+            )
+            assert response.status_code == 200
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.status.name == "Paid"
+                assert shadow.paid_at is not None, (
+                    f"Shadow {shadow.id} has NULL paid_at after mark-done; "
+                    f"the F-048 parity gap is back."
+                )
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────
@@ -1241,8 +1363,18 @@ class TestShadowContextResponse:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer_a = _create_transfer(seed_user, seed_periods_today, savings)
-            xfer_b = _create_transfer(seed_user, seed_periods_today, savings)
+            # Distinct amounts/names so the F-050 partial unique
+            # index ``uq_transfers_adhoc_dedupe`` does not collapse
+            # the two ad-hoc transfers into one (they share user,
+            # accounts, period, and scenario).
+            xfer_a = _create_transfer(
+                seed_user, seed_periods_today, savings,
+                amount=Decimal("200.00"), name="Transfer A",
+            )
+            xfer_b = _create_transfer(
+                seed_user, seed_periods_today, savings,
+                amount=Decimal("250.00"), name="Transfer B",
+            )
 
             # Get a shadow from transfer B.
             shadow_b = _get_expense_shadow(xfer_b)

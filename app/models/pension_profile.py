@@ -10,7 +10,22 @@ from app.models.mixins import TimestampMixin
 
 
 class PensionProfile(TimestampMixin, db.Model):
-    """A defined-benefit pension plan linked to a salary profile."""
+    """A defined-benefit pension plan linked to a salary profile.
+
+    Duplicate prevention (F-105 / C-22): the composite unique
+    constraint ``uq_pension_profiles_user_name`` on
+    ``(user_id, name)`` rejects a second pension profile with the
+    same name for the same user.  Without it a double-submit of the
+    pension form -- network retry, double-click, browser back-and-
+    resubmit -- creates two rows with identical names; the
+    retirement dashboard then displays the same plan twice and the
+    gap-analysis service double-counts the projected benefit,
+    overstating retirement income by the pension amount.  Each
+    pension plan has exactly one canonical name per user, so the
+    constraint matches the domain model: a name change is
+    expressed by editing the existing row rather than creating a
+    duplicate.
+    """
 
     __tablename__ = "pension_profiles"
     __table_args__ = (
@@ -21,6 +36,10 @@ class PensionProfile(TimestampMixin, db.Model):
         db.CheckConstraint(
             "consecutive_high_years > 0",
             name="ck_pension_profiles_positive_high_years",
+        ),
+        db.UniqueConstraint(
+            "user_id", "name",
+            name="uq_pension_profiles_user_name",
         ),
         {"schema": "salary"},
     )

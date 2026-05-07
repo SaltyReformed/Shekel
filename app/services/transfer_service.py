@@ -30,6 +30,7 @@ from decimal import Decimal, InvalidOperation
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.ref import Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -499,6 +500,37 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         xfer.status_id = new_status_id
         expense_shadow.status_id = new_status_id
         income_shadow.status_id = new_status_id
+
+        # Defense-in-depth ``paid_at`` synchronization (F-048 / C-22):
+        # the route layer (``transfers.mark_done``,
+        # ``transactions.mark_done`` shadow path,
+        # ``dashboard.mark_paid``) is expected to pass an explicit
+        # ``paid_at`` whenever it sets a settled status, but a future
+        # caller that forgets is still forced into a coherent state
+        # here.  Two cases:
+        #
+        # * Transitioning to a settled status (``is_settled = TRUE``)
+        #   without an explicit ``paid_at`` -> default to ``now()`` so
+        #   ``Transaction.days_paid_before_due`` and the dashboard's
+        #   "paid on time" indicator work.
+        # * Transitioning to a non-settled status without an explicit
+        #   ``paid_at`` -> clear the existing timestamp so a Paid
+        #   transfer reverted to Projected does not retain a stale
+        #   payment time.
+        #
+        # Both branches no-op when the caller passed ``paid_at``
+        # explicitly (including ``paid_at=None``); the explicit
+        # downstream assignment in this function then takes effect.
+        if "paid_at" not in kwargs:
+            new_status = db.session.get(Status, new_status_id)
+            if new_status is not None:
+                if new_status.is_settled:
+                    settled_ts = db.func.now()
+                    expense_shadow.paid_at = settled_ts
+                    income_shadow.paid_at = settled_ts
+                else:
+                    expense_shadow.paid_at = None
+                    income_shadow.paid_at = None
 
     # ── pay_period_id ──────────────────────────────────────────────
     if "pay_period_id" in kwargs:

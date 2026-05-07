@@ -321,6 +321,244 @@ class TestCarryForwardUnpaid:
             assert alt_txn.pay_period_id == seed_periods[0].id
 
 
+# ── F-049 / C-22: Conditional UPDATE Race Tests ───────────────────
+
+
+class TestCarryForwardStatusRecheck:
+    """F-049 / C-22: bulk UPDATE re-checks status_id at the SQL tier.
+
+    Closes the race window between
+    ``_build_carry_forward_context``'s SELECT and the bulk UPDATE
+    that moves discrete rows: a concurrent ``mark_done`` /
+    ``mark_credit`` / ``cancel`` request can transition a row out of
+    Projected after the SELECT but before our flush, and a per-row
+    ``setattr(...)`` would carry a now-settled row into the target
+    period -- silently erasing the user's prior status decision.
+
+    The fix replaces the per-row mutation with a conditional bulk
+    UPDATE whose WHERE clause includes ``status_id == projected``.
+    Race-loser rows are silently left in place and the count
+    reflects only the rows that actually moved.
+    """
+
+    def test_concurrent_mark_done_excludes_row_from_move(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row settled mid-batch must NOT move to the target period.
+
+        Simulates the race by raw-SQL UPDATE'ing a Projected row to
+        Paid AFTER the carry-forward context has been built but
+        BEFORE the bulk UPDATE applies.  The bulk UPDATE's
+        ``status_id == projected`` WHERE clause should reject the
+        change for that row, leaving it Paid in the source period
+        with a coherent paid_at audit.
+        """
+        from unittest.mock import patch  # pylint: disable=import-outside-toplevel
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Two projected ad-hoc rows in source.  txn_loser will
+            # transition to Paid mid-batch (race-loser); txn_winner
+            # remains Projected and must move normally.
+            txn_loser = _create_transaction(
+                seed_user, seed_periods, name="Race-Loser",
+            )
+            txn_winner = _create_transaction(
+                seed_user, seed_periods, name="Race-Winner",
+            )
+            db.session.commit()
+            loser_id = txn_loser.id
+            winner_id = txn_winner.id
+
+            paid_status_id = ref_cache.status_id(StatusEnum.DONE)
+
+            real_build = (
+                carry_forward_service._build_carry_forward_context  # pylint: disable=protected-access
+            )
+
+            def racing_build(*args, **kwargs):
+                """Build the context, then simulate a concurrent mark_done."""
+                ctx = real_build(*args, **kwargs)
+                # Direct SQL UPDATE bypasses the ORM's session-level
+                # bookkeeping so the in-memory ``ctx.discrete_txns``
+                # entries remain "Projected" -- exactly the state
+                # the race produces in production.  Bumping
+                # version_id mirrors the optimistic-lock contract a
+                # real concurrent commit would honor.
+                db.session.execute(
+                    text(
+                        "UPDATE budget.transactions "
+                        "SET status_id = :paid, "
+                        "    paid_at = NOW(), "
+                        "    version_id = version_id + 1 "
+                        "WHERE id = :tid"
+                    ),
+                    {"paid": paid_status_id, "tid": loser_id},
+                )
+                db.session.commit()
+                return ctx
+
+            with patch.object(
+                carry_forward_service, "_build_carry_forward_context",
+                side_effect=racing_build,
+            ):
+                count = carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["user"].id, seed_user["scenario"].id,
+                )
+                db.session.commit()
+
+            db.session.expire_all()
+            loser = db.session.get(Transaction, loser_id)
+            winner = db.session.get(Transaction, winner_id)
+
+            # Race-loser stayed at source period AND remained Paid
+            # -- the bulk UPDATE skipped it because its status was
+            # no longer Projected at SQL execution time.
+            assert loser.pay_period_id == seed_periods[0].id, (
+                "Race-loser was carried forward despite being Paid; "
+                "the F-049 status precondition is not effective."
+            )
+            assert loser.status.name == "Paid"
+            assert loser.paid_at is not None
+
+            # Race-winner moved normally.
+            assert winner.pay_period_id == seed_periods[1].id
+            assert winner.status.name == "Projected"
+
+            # Count reflects only the moved row.
+            assert count == 1, (
+                f"Expected 1 row moved (winner only); got {count}"
+            )
+
+    def test_concurrent_soft_delete_excludes_row_from_move(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row soft-deleted mid-batch must NOT move to the target.
+
+        Mirrors the mark_done test but for soft-delete: the bulk
+        UPDATE's ``is_deleted = FALSE`` WHERE clause closes the
+        same race for the soft-delete path.
+        """
+        from unittest.mock import patch  # pylint: disable=import-outside-toplevel
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            txn = _create_transaction(seed_user, seed_periods, name="Race-Deleted")
+            db.session.commit()
+            tid = txn.id
+
+            real_build = (
+                carry_forward_service._build_carry_forward_context  # pylint: disable=protected-access
+            )
+
+            def racing_build(*args, **kwargs):
+                ctx = real_build(*args, **kwargs)
+                db.session.execute(
+                    text(
+                        "UPDATE budget.transactions "
+                        "SET is_deleted = TRUE, "
+                        "    version_id = version_id + 1 "
+                        "WHERE id = :tid"
+                    ),
+                    {"tid": tid},
+                )
+                db.session.commit()
+                return ctx
+
+            with patch.object(
+                carry_forward_service, "_build_carry_forward_context",
+                side_effect=racing_build,
+            ):
+                count = carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["user"].id, seed_user["scenario"].id,
+                )
+                db.session.commit()
+
+            db.session.expire_all()
+            row = db.session.get(Transaction, tid)
+            assert row.is_deleted is True
+            assert row.pay_period_id == seed_periods[0].id, (
+                "Soft-deleted row was carried forward; F-049 "
+                "is_deleted precondition is not effective."
+            )
+            assert count == 0
+
+    def test_template_linked_row_gets_is_override_in_same_update(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Template-linked rows flip is_override=True in the same SQL UPDATE.
+
+        Regression for the F-049 fix: collapsing the loop into a
+        bulk UPDATE must still set ``is_override = TRUE`` on
+        template-linked rows so the partial unique index
+        ``idx_transactions_template_period_scenario`` does not
+        collide with a rule-generated row in the target period.
+        """
+        with app.app_context():
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                account_id=seed_user["account"].id,
+                transaction_type_id=db.session.query(TransactionType)
+                    .filter_by(name="Expense").one().id,
+                name="Recurring Tpl",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            txn = _create_transaction(
+                seed_user, seed_periods,
+                name="Linked", template_id=template.id,
+            )
+            assert txn.is_override is False
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(txn)
+            assert count == 1
+            assert txn.pay_period_id == seed_periods[1].id
+            assert txn.is_override is True
+
+    def test_version_id_bumped_by_bulk_update(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The bulk UPDATE bumps version_id to honor the optimistic-lock contract.
+
+        Regression: replacing per-row ORM mutation with a bulk
+        UPDATE must keep the version_id_col contract intact.  An
+        UPDATE that does NOT bump version_id would let a concurrent
+        ORM-level flush at the old version succeed, silently
+        overwriting our batch.
+        """
+            # noqa: pylint: disable=protected-access
+        with app.app_context():
+            txn = _create_transaction(seed_user, seed_periods, name="Version Bump")
+            db.session.commit()
+            db.session.refresh(txn)
+            initial_version = txn.version_id
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(txn)
+            assert txn.version_id == initial_version + 1, (
+                f"Expected version_id {initial_version + 1}, got "
+                f"{txn.version_id}; bulk UPDATE failed to bump."
+            )
+
+
 # ── Shadow Transaction Carry Forward Tests ─────────────────────────
 
 

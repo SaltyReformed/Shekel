@@ -39,8 +39,16 @@ from app.services import transfer_recurrence, transfer_service, pay_period_servi
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
+from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
+
+# Name of the partial unique index that backstops the ad-hoc transfer
+# double-submit fix (F-050 / C-22).  Mirrors the literal in
+# ``app/models/transfer.py:Transfer.__table_args__`` and
+# ``migrations/versions/<C-22 revision>.py``; renaming the index
+# requires a coordinated edit across all three sites.
+_TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
 
 transfers_bp = Blueprint("transfers", __name__)
 
@@ -798,7 +806,22 @@ def update_transfer(xfer_id):
 @login_required
 @require_owner
 def create_ad_hoc():
-    """Create an ad-hoc (one-time) transfer with shadow transactions."""
+    """Create an ad-hoc (one-time) transfer with shadow transactions.
+
+    Double-submit handling (F-050 / C-22): the partial unique index
+    ``uq_transfers_adhoc_dedupe`` on
+    ``(user_id, from_account_id, to_account_id, amount, pay_period_id,
+    scenario_id)`` rejects a second active ad-hoc transfer with
+    identical parameters.  When two requests race past the form (a
+    network retry, a double-click, the back-and-resubmit pattern), the
+    first commits the transfer and the second's INSERT fires the index
+    constraint.  Rather than surface the database error as a generic
+    400, this handler treats the second request as idempotent success:
+    rolls back the failed INSERT, re-fetches the winning transfer,
+    and returns the same 201 + cell HTML the first request produced.
+    The user sees the transfer they intended to create regardless of
+    which request reached the database first.
+    """
     errors = _xfer_create_schema.validate(request.form)
     if errors:
         return jsonify(errors=errors), 400
@@ -807,6 +830,13 @@ def create_ad_hoc():
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
+    # ``transfer_service.create_transfer`` calls ``db.session.flush()``
+    # internally to obtain the transfer's primary key for the shadow
+    # rows.  The IntegrityError on ``uq_transfers_adhoc_dedupe`` therefore
+    # fires *during* the service call, not at the subsequent
+    # ``db.session.commit()``.  Both code paths must catch the
+    # constraint hit and translate it into idempotent success or the
+    # caller sees a 500.
     try:
         xfer = transfer_service.create_transfer(
             user_id=current_user.id,
@@ -824,17 +854,86 @@ def create_ad_hoc():
         return "Not found", 404
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
+    except IntegrityError as exc:
+        db.session.rollback()
+        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
+            return _adhoc_dedupe_idempotent_response(data)
+        return "Invalid reference. Check that all referenced records exist.", 400
 
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
+            return _adhoc_dedupe_idempotent_response(data)
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
+    )
+    return response, 201, {"HX-Trigger": "balanceChanged"}
+
+
+def _adhoc_dedupe_idempotent_response(data):
+    """Return the winning ad-hoc transfer's cell as idempotent success.
+
+    Called from ``create_ad_hoc`` when ``uq_transfers_adhoc_dedupe``
+    rejects a second concurrent INSERT.  Re-fetches the active
+    transfer matching the submitted parameters and returns the same
+    201 + ``_transfer_cell.html`` payload the first request produced
+    so the user's view matches the database state regardless of which
+    request reached PostgreSQL first.
+
+    The lookup uses the same predicate as the index (matching
+    ``transfer_template_id IS NULL`` and ``is_deleted = FALSE``) so it
+    only ever matches the row that triggered the violation.  A
+    missing match indicates the row was deleted between the
+    IntegrityError and this lookup -- vanishingly unlikely under
+    normal use, but treated as a 409 with a clear message rather than
+    a 500.
+
+    Args:
+        data: The deserialised ``TransferCreateSchema`` output for
+            the failed request.
+
+    Returns:
+        Flask response tuple: ``(html, 201, {"HX-Trigger": ...})`` on
+        success, or a 409 string on the unrecoverable race.
+    """
+    existing = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.user_id == current_user.id,
+            Transfer.from_account_id == data["from_account_id"],
+            Transfer.to_account_id == data["to_account_id"],
+            Transfer.amount == data["amount"],
+            Transfer.pay_period_id == data["pay_period_id"],
+            Transfer.scenario_id == data["scenario_id"],
+            Transfer.transfer_template_id.is_(None),
+            Transfer.is_deleted.is_(False),
+        )
+        .first()
+    )
+    if existing is None:
+        # Vanishingly rare: the winning row was soft-deleted or hard-
+        # deleted between the IntegrityError and this lookup.  Surface
+        # a 409 so the operator retries against the post-delete state
+        # instead of seeing a 500 from the missing record.
+        return (
+            "Duplicate ad-hoc transfer detected but the winning row "
+            "is no longer active.  Reload and try again.",
+            409,
+        )
+    logger.info(
+        "Duplicate ad-hoc transfer prevented; returning existing id=%d "
+        "(idempotent success)", existing.id,
+    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
+    response = render_template(
+        "transfers/_transfer_cell.html",
+        xfer=existing, account=account, wrap_div=True,
     )
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
@@ -892,7 +991,21 @@ def mark_done(xfer_id):
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
     try:
-        transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
+        # ``paid_at`` parity with ``transactions.mark_done`` and
+        # ``dashboard.mark_paid``: settling a transfer must record
+        # *when* it was settled.  Without this kwarg the shadow
+        # transactions reach Paid with NULL ``paid_at``, breaking
+        # ``Transaction.days_paid_before_due`` analytics, the
+        # dashboard's "paid on time" indicator, and any downstream
+        # report that joins on the timestamp.  The transfer service
+        # mirrors the same default (see ``update_transfer``) so any
+        # future caller that forgets the kwarg still produces a
+        # well-formed settled transfer.  Audit reference: F-048 /
+        # commit C-22 of the 2026-04-15 security remediation plan.
+        transfer_service.update_transfer(
+            xfer.id, current_user.id,
+            status_id=done_id, paid_at=db.func.now(),
+        )
         db.session.commit()
     except StaleDataError:
         logger.info(
