@@ -18,9 +18,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatusEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import dashboard_service, transfer_service
+from app.services.state_machine import verify_transition
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +81,28 @@ def mark_paid(txn_id):
         if actual_amount is not None:
             svc_kwargs["actual_amount"] = actual_amount
 
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs,
-        )
+        try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id, **svc_kwargs,
+            )
+        except ValidationError as exc:
+            # transfer_service.update_transfer runs every status
+            # change through ``verify_transition`` (commit C-21).
+            # A mark-paid request against a Cancelled or Settled
+            # transfer surfaces here as 400 instead of crashing.
+            db.session.rollback()
+            return str(exc), 400
     else:
+        # State-machine guard: only Projected (or the identity edge
+        # from Paid/Received) can transition into Paid/Received via
+        # mark-paid.  Closes the parity gap with the grid's
+        # mark_done endpoint -- the dashboard now enforces the same
+        # workflow contract.  Audit reference: F-047 / F-161
+        # follow-up to commit C-21.
+        try:
+            verify_transition(txn.status_id, status_id, context="transaction")
+        except ValidationError as exc:
+            return str(exc), 400
         txn.status_id = status_id
         txn.paid_at = db.func.now()
         if actual_amount is not None:

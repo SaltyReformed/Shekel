@@ -467,6 +467,13 @@ def mark_done(txn_id):
         except IntegrityError:
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
+        except ValidationError as exc:
+            # transfer_service.update_transfer runs the transition
+            # through the state machine (commit C-21).  A mark-done
+            # request against a Cancelled or Settled transfer shadow
+            # surfaces here as 400 instead of crashing the request.
+            db.session.rollback()
+            return str(exc), 400
         db.session.refresh(txn)
         response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -495,6 +502,16 @@ def mark_done(txn_id):
         except ValidationError as exc:
             return str(exc), 400
     else:
+        # State-machine guard: only Projected (or the identity edge from
+        # Paid/Received) can transition into Paid/Received via mark_done.
+        # The envelope branch above already enforces the same rule via
+        # ``settle_from_entries``'s stricter ``is_immutable`` precondition,
+        # so the guard sits on the direct branch where the gap was.
+        # Audit reference: F-047 / F-161 follow-up to commit C-21.
+        try:
+            verify_transition(txn.status_id, status_id, context="transaction")
+        except ValidationError as exc:
+            return str(exc), 400
         txn.status_id = status_id
         txn.paid_at = db.func.now()
         # Accept an optional manual actual amount from the form.
@@ -590,6 +607,14 @@ def unmark_credit(txn_id):
         return _stale_transaction_response(txn_id)
     except NotFoundError as exc:
         return str(exc), 404
+    except ValidationError as exc:
+        # Raised when the bespoke source-state guard or the
+        # state-machine verification in
+        # ``credit_workflow.unmark_credit`` rejects the request --
+        # e.g. attempting to unmark a Paid row.  The body names the
+        # offending status so the user understands why.
+        db.session.rollback()
+        return str(exc), 400
     response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -609,12 +634,14 @@ def cancel_transaction(txn_id):
     if txn is None:
         return "Not found", 404
 
+    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
         try:
             transfer_service.update_transfer(
                 txn.transfer_id, current_user.id,
-                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
+                status_id=cancelled_id,
             )
             db.session.commit()
         except StaleDataError:
@@ -623,12 +650,31 @@ def cancel_transaction(txn_id):
                 txn_id,
             )
             return _stale_transaction_response(txn_id)
+        except ValidationError as exc:
+            # transfer_service runs the transition through the state
+            # machine.  An attempt to cancel a Paid/Received/Settled
+            # transfer surfaces here as 400 instead of crashing the
+            # request -- the transfer-service path was already wired
+            # by commit C-21; this except clause is the route's
+            # corresponding translation.
+            db.session.rollback()
+            return str(exc), 400
         db.session.refresh(txn)
         response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
+    # State-machine guard: Cancelled is reachable only from Projected
+    # (or the Cancelled identity edge for idempotent re-submits).  A
+    # direct done -> cancelled or settled -> cancelled would erase the
+    # paid/archived audit trail and is rejected with 400.  Audit
+    # reference: F-047 / F-161 follow-up to commit C-21.
+    try:
+        verify_transition(txn.status_id, cancelled_id, context="transaction")
+    except ValidationError as exc:
+        return str(exc), 400
+
+    txn.status_id = cancelled_id
 
     try:
         db.session.commit()

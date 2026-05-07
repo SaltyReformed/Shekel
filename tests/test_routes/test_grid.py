@@ -810,7 +810,16 @@ class TestTransactionNegativePaths:
             assert txn.status.name == "Cancelled"
 
     def test_mark_done_cancelled_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/<id>/mark-done on a cancelled transaction succeeds."""
+        """POST /transactions/<id>/mark-done on a cancelled transaction is rejected.
+
+        After the C-21 follow-up the mark_done endpoint runs every
+        status change through ``verify_transition``.  Cancelled may
+        only revert to Projected; a direct jump to Paid would
+        resurrect the row without the explicit revert audit step.
+        Was previously a 200 with a comment noting "UI hides the Done
+        button for non-projected statuses, but the API endpoint does
+        not enforce this"; the API now enforces it.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
@@ -819,18 +828,23 @@ class TestTransactionNegativePaths:
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
 
-            # NOTE: No state machine guard -- cancelled transactions can be marked
-            # done. This is a potential behavioral issue: the UI hides the "Done"
-            # button for non-projected statuses, but the API endpoint does not
-            # enforce this.
             resp = auth_client.post(f"/transactions/{txn.id}/mark-done")
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Paid"
+            assert txn.status.name == "Cancelled"
 
     def test_cancel_done_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/<id>/cancel on a done transaction succeeds."""
+        """POST /transactions/<id>/cancel on a done transaction is now rejected.
+
+        After the C-21 follow-up the cancel endpoint runs every status
+        change through ``app.services.state_machine.verify_transition``.
+        Done -> Cancelled is illegal -- the user must revert to
+        Projected first so the audit trail records both the revert
+        and the subsequent cancellation.  Was previously a 200 with a
+        comment noting "UI hides the Cancel button for done status";
+        the API now enforces the same contract the UI was relying on.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
@@ -839,13 +853,11 @@ class TestTransactionNegativePaths:
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
 
-            # NOTE: No state machine guard -- done transactions can be cancelled
-            # via direct API call. UI hides the Cancel button for done status.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Cancelled"
+            assert txn.status.name == "Paid"
 
     def test_mark_done_with_invalid_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today

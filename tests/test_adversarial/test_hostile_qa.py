@@ -206,11 +206,14 @@ class TestStateMachineViolations:
     def test_done_to_cancelled_transition(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Done → cancelled transition.
+        """Done -> cancelled transition is now rejected (C-21 follow-up).
 
-        A done transaction (with actual_amount set) is cancelled.
-        Verifies that actual_amount is preserved in the DB but
-        effective_amount drops to zero (excluded from balance calcs).
+        After the C-21 follow-up the cancel endpoint runs every
+        status change through ``verify_transition``.  Done -> Cancelled
+        is illegal -- the user must revert to Projected first so the
+        audit trail records both the revert and the subsequent
+        cancellation.  The actual_amount stays untouched on the
+        rejected request.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
@@ -220,17 +223,15 @@ class TestStateMachineViolations:
             # Verify initial effective_amount uses actual_amount.
             assert txn.effective_amount == Decimal("85.00")
 
-            # Cancel the transaction.
+            # Cancel the transaction -- now refused.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
-
-            # Current behavior: actual_amount is preserved in the DB.
-            # The cancel endpoint only changes status_id, does not clear actual_amount.
+            # Row stays Paid; actual_amount preserved.
+            assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("85.00")
+            assert txn.effective_amount == Decimal("85.00")
 
     def test_received_to_projected_reversion(
         self, app, auth_client, seed_user, seed_periods,
@@ -386,11 +387,14 @@ class TestStateMachineViolations:
     def test_mark_done_on_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """POST mark_done on a cancelled transaction.
+        """POST mark_done on a cancelled transaction is now rejected (C-21 follow-up).
 
-        A cancelled transaction is excluded from balance calculations.
-        mark_done re-includes it as 'done', which could corrupt balance
-        projections if the cancellation was intentional.
+        After the C-21 follow-up the mark_done endpoint runs every
+        status change through ``verify_transition``.  Cancelled may
+        only revert to Projected; a direct jump to Paid would
+        resurrect a cancelled row and corrupt balance projections
+        (the original concern this test documented).  The row stays
+        Cancelled and no actual_amount is recorded.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
@@ -400,14 +404,14 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "95.00"},
             )
-            # Current behavior: mark_done has no guard against cancelled transactions.
-            # Ideal: should reject with "cannot mark cancelled as done".
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Paid"
-            assert txn.actual_amount == Decimal("95.00")
-            assert txn.effective_amount == Decimal("95.00")
+            assert txn.status.name == "Cancelled"
+            # No actual_amount recorded -- the rejected request did
+            # not commit any partial state.
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("0")
 
     def test_mark_credit_on_done_transaction(
         self, app, auth_client, seed_user, seed_periods,

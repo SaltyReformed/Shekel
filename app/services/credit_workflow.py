@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.exceptions import NotFoundError, ValidationError
+from app.services.state_machine import verify_transition
 from app.utils.log_events import (
     BUSINESS,
     EVT_CREDIT_MARKED,
@@ -258,6 +259,26 @@ def mark_as_credit(transaction_id, user_id):
 def unmark_credit(transaction_id, user_id):
     """Revert a transaction from 'credit' back to 'projected' and delete its payback.
 
+    Two precondition checks layered for clarity and defense-in-depth:
+
+      1. **Bespoke source-state guard.** The action only makes sense
+         on a row that is currently in ``Credit`` status -- that is
+         the row that has an auto-generated payback to clean up.
+         Calling on any other status would silently rewrite
+         ``status_id`` to ``Projected`` (dropping a Paid row back to
+         Projected, for example) and attempt to delete a non-existent
+         payback.  The previous implementation had no such guard;
+         this fixes that latent bug.
+
+      2. **State-machine verification.** ``verify_transition`` is
+         called as a final policy choke point so any future caller
+         that adds a new ``Status`` row -- or any code path that
+         skips the bespoke guard -- still cannot push a row through
+         an illegal transition.  ``Settled -> Projected`` is the
+         transition the state machine refuses; the bespoke guard
+         above already excludes that case but the redundancy makes
+         the policy explicit at the database boundary.
+
     Args:
         transaction_id: The ID of the credited transaction.
         user_id: The ID of the user who owns the transaction.
@@ -267,6 +288,10 @@ def unmark_credit(transaction_id, user_id):
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
             belong to *user_id*.
+        ValidationError: If the transaction is not currently in
+            ``Credit`` status, or if the transition (in the unlikely
+            case the bespoke guard is bypassed) is not allowed by
+            the state machine.
     """
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
@@ -275,7 +300,23 @@ def unmark_credit(transaction_id, user_id):
     if txn.pay_period.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
+    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    # Bespoke source-state guard.  Friendly user-facing message that
+    # names the offending status.  The route layer surfaces this as
+    # the response body on a 400.
+    if txn.status_id != credit_id:
+        current_name = txn.status.name if txn.status is not None else "<unset>"
+        raise ValidationError(
+            f"Cannot unmark credit on a '{current_name}' transaction.  "
+            "Only Credit transactions can be unmarked."
+        )
+
+    # State-machine verification (defense-in-depth, redundant with
+    # the bespoke guard above except when a future StatusEnum addition
+    # makes the bespoke guard incomplete).
+    verify_transition(txn.status_id, projected_id, context="transaction")
 
     # Revert the original transaction's status.
     txn.status_id = projected_id
