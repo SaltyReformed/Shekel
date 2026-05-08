@@ -114,8 +114,16 @@ def show():
             .all()
         )
     elif section == "account-types":
+        # The account_types listing is scoped to seeded built-ins
+        # (``user_id IS NULL``) plus the current user's own custom
+        # types (commit C-28 / F-044).  Other owners' custom types
+        # are intentionally invisible.
         account_types = (
             db.session.query(AccountType)
+            .filter(db.or_(
+                AccountType.user_id.is_(None),
+                AccountType.user_id == current_user.id,
+            ))
             .order_by(AccountType.name)
             .all()
         )

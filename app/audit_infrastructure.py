@@ -47,10 +47,19 @@ from typing import Callable, Iterable
 #   * Tables in the ``budget``, ``salary``, or ``auth`` schema that
 #     hold user-controlled financial state, salary configuration,
 #     calibration overrides, tax-config admin data, or auth state.
-#   * The ``ref`` schema is intentionally excluded -- those tables are
-#     read-only seed data managed by ``scripts/seed_ref_tables.py``;
-#     auditing them every time the seed script touches a row would
-#     drown the trail in noise.
+#   * The ``ref`` schema is intentionally excluded with one exception
+#     (``ref.account_types``).  Read-only seed catalogues like
+#     ``ref.statuses`` or ``ref.transaction_types`` would drown the
+#     trail in seed-script noise without any forensic value, so they
+#     stay out.  ``ref.account_types`` is special because commit C-28
+#     converted it into a multi-tenant table -- owners can create,
+#     rename, and delete their own custom rows through
+#     ``app/routes/accounts.py``, and those mutations need a
+#     tamper-resistant forensic record for the same reasons every
+#     other user-mutable financial table does.  The seed script's
+#     idempotent upsert pattern still touches the seeded built-ins
+#     occasionally, but those writes carry ``user_id IS NULL`` in the
+#     audit row and are easy to filter out of operator queries.
 #   * The ``system`` schema (``audit_log`` itself) is excluded to
 #     avoid recursive trigger fires.
 AUDITED_TABLES: tuple[tuple[str, str], ...] = (
@@ -76,6 +85,13 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "transactions"),
     ("budget", "transfer_templates"),
     ("budget", "transfers"),
+    # ── ref schema (multi-tenant tables only) ────────────────────────
+    # Per the inclusion criteria above: ``ref.account_types`` carries
+    # owner-scoped rows after C-28 / F-044 and is the only ref table
+    # in the audited set.  Other ref tables remain read-only seed
+    # catalogues and must NOT be added without a corresponding shift
+    # in the seed script's write semantics.
+    ("ref", "account_types"),
     # ── salary schema ────────────────────────────────────────────────
     ("salary", "calibration_deduction_overrides"),
     ("salary", "calibration_overrides"),

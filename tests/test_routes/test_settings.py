@@ -281,7 +281,14 @@ class TestSettingsDashboard:
             assert acct_type.icon_class == "bi-house"
 
     def test_settings_edit_type_metadata(self, app, auth_client, seed_user):
-        """POST update with metadata fields persists changes."""
+        """POST update with metadata fields persists changes.
+
+        ``user_id`` is set explicitly so the C-28 ownership guard
+        (``ref.account_types.user_id == current_user.id``) accepts
+        the update; a row left with ``user_id IS NULL`` would be
+        treated as a seeded built-in and the route would reject the
+        mutation with a 404-equivalent flash.
+        """
         from app import ref_cache
         from app.enums import AcctCategoryEnum
         from app.models.ref import AccountType
@@ -290,6 +297,7 @@ class TestSettingsDashboard:
             custom_type = AccountType(
                 name="EditMetaTest",
                 category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+                user_id=seed_user["user"].id,
             )
             db.session.add(custom_type)
             db.session.commit()

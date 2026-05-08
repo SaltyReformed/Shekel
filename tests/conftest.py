@@ -149,54 +149,7 @@ def setup_database(app):
         # not exist yet at that point (the broad except in create_app
         # silently swallows the failure).  Re-init here so that
         # services using ref_cache work correctly in tests.
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import (  # pylint: disable=import-outside-toplevel
-            AcctCategoryEnum, AcctTypeEnum, RecurrencePatternEnum,
-            StatusEnum, TxnTypeEnum,
-        )
-        ref_cache.init(_db.session)
-
-        # Re-register ALL Jinja globals that depend on ref_cache.
-        # The initial registration in create_app() was skipped because
-        # the cache wasn't available yet (tables didn't exist).
-        # Must mirror the full list in app/__init__.py.
-        app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
-        app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
-        app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
-        app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
-        app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
-        app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
-        app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-        app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-        app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
-        app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
-        app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
-        app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
-        app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
-        app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
-        app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
-        app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
-        app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
-        app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
-        app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
-        app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
-        app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
-        app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
-        app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
-        app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-        app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
-        app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
-        app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
-        app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
-        app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-        app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
-        app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-        app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-        app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+        _refresh_ref_cache_and_jinja_globals(app)
 
     yield
 
@@ -217,7 +170,20 @@ def db(app, setup_database):
     """Provide a clean database for each test.
 
     Truncates all non-ref tables before each test so tests don't
-    interfere with each other.  Reference tables are preserved.
+    interfere with each other.  Reference tables are preserved
+    EXCEPT for ``ref.account_types``, which carries an
+    ``ON DELETE RESTRICT`` foreign key to ``auth.users`` after
+    commit C-28 / F-044 (the column scopes per-user custom types).
+    PostgreSQL ``TRUNCATE ... CASCADE`` follows every FK reference
+    regardless of ondelete, so truncating ``auth.users`` wipes
+    ``ref.account_types`` too -- including the seeded built-ins
+    every test relies on.  After the truncate the helper
+    ``_seed_ref_tables`` runs again to restore the built-ins
+    (idempotent: existing rows are updated in place, missing rows
+    inserted; no duplicates because the seed contains 18 unique
+    names).  The same problem will affect any future ref-schema
+    table that gains a per-user FK; see
+    ``app/audit_infrastructure.py`` for the registry side.
     """
     with app.app_context():
         # Clear any stale transaction state from a prior test that
@@ -225,6 +191,8 @@ def db(app, setup_database):
         _db.session.rollback()
 
         # Truncate budget and auth tables (order matters for FK constraints).
+        # CASCADE through ``ref.account_types`` is intentional and
+        # is repaired below by the ref re-seed.
         _db.session.execute(_db.text(
             "TRUNCATE TABLE "
             "salary.calibration_deduction_overrides, "
@@ -259,9 +227,34 @@ def db(app, setup_database):
             "auth.users "
             "CASCADE"
         ))
-        # System schema -- clean audit log between tests.
+        # Restore the seeded built-ins that the CASCADE wiped from
+        # ``ref.account_types``.  ``_seed_ref_tables`` is idempotent
+        # so the call is also a no-op for the other ref tables that
+        # the truncate did not touch (the helper short-circuits on
+        # rows that already exist).
+        _seed_ref_tables()
+        _db.session.commit()
+
+        # System schema -- clean audit log AFTER the ref re-seed so
+        # the 18 INSERTs the seed fires through the new
+        # ``ref.account_types`` audit trigger (commit C-28 / F-044)
+        # do not bleed into per-test audit-log assertions.  Order
+        # matters: truncating before the seed would leave the seed
+        # rows in audit_log, which broke
+        # ``tests/test_scripts/test_audit_cleanup.py`` until this
+        # ordering was fixed.
         _db.session.execute(_db.text("TRUNCATE system.audit_log"))
         _db.session.commit()
+
+        # The ref_cache is keyed by name -> id but the IDs are stable
+        # only for the rows that survived; after a CASCADE-truncate
+        # of account_types the seed re-inserts assign fresh IDs.
+        # Re-init so cached enum-to-id resolution matches the new
+        # row IDs and refresh the Jinja globals that mirror them
+        # (the templates read these at render time -- a stale value
+        # would point at a deleted ID and break every page that
+        # references one).
+        _refresh_ref_cache_and_jinja_globals(app)
 
         yield _db
 
@@ -1055,6 +1048,79 @@ def companion_client(app, db, seed_companion):
 
 
 # --- Helpers --------------------------------------------------------------
+
+
+def _refresh_ref_cache_and_jinja_globals(app):
+    """Re-init ``ref_cache`` and rewrite all ID-derived Jinja globals.
+
+    Called from two places:
+
+      1. ``setup_database`` at session start, once the ref tables
+         have been seeded for the first time.
+      2. The ``db`` fixture, after the per-test TRUNCATE has wiped
+         ``ref.account_types`` (via the new C-28 / F-044 FK to
+         ``auth.users``) and the seed has been re-run.  The new
+         seed assigns fresh IDs from the sequence; the
+         pre-existing Jinja globals would otherwise point at IDs
+         that no longer exist and every template that references
+         one would break.
+
+    Mirrors the ID exposure list in ``app/__init__.py``; missing
+    a member here would render a Jinja Undefined at request time
+    and fail tests in confusing ways.  The list is duplicated
+    (rather than imported) on purpose -- ``app/__init__.py`` runs
+    inside ``create_app()`` which is called once per test session,
+    while this helper runs once per test, so a single source of
+    truth would require restructuring the registration into a
+    standalone function the factory calls.  That refactor is
+    out of scope for C-28.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import (
+        AcctCategoryEnum, AcctTypeEnum, RecurrencePatternEnum,
+        StatusEnum, TxnTypeEnum,
+    )
+
+    ref_cache.init(_db.session)
+
+    app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
+    app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
+    app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
+    app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
+    app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
+    app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
+    app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
+    app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
+    app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
+    app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
+    app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
+    app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
+    app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
+    app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
+    app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
+    app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
+    app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
+    app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
+    app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
+    app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
+    app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
+    app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
+    app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
+    app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
+    app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
+    app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
+    app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
+    app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
+    app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
+    app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
+    app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+    app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+    app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+    app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
 
 
 def _create_audit_infrastructure():

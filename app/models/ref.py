@@ -5,6 +5,8 @@ Lookup / enum tables that are rarely written and frequently joined.
 New values are added via INSERT, never via schema migration.
 """
 
+from sqlalchemy import text
+
 from app.extensions import db
 
 
@@ -58,13 +60,60 @@ class AccountType(db.Model):
         max_term_months   -- Maximum loan term in months for
                              type-specific validation.  NULL means
                              no type-specific limit.
+
+    Multi-tenant ownership (commit C-28 / F-044):
+
+        user_id           -- Owning user (nullable).  ``NULL`` denotes
+                             a seeded built-in type managed by
+                             ``scripts/seed_ref_tables.py`` and is
+                             read-only to every owner.  A non-NULL
+                             value means the row was created by that
+                             user via the ``/accounts/types`` route;
+                             only that owner may rename or delete it.
+                             ``ondelete='RESTRICT'`` -- deleting a
+                             user with custom types refuses the user
+                             delete until those rows are pruned, so
+                             we never orphan ``budget.accounts`` rows
+                             whose ``account_type_id`` would dangle.
+
+    Uniqueness invariant.  The legacy ``UNIQUE(name)`` constraint
+    becomes incompatible with per-user copies of seed names ("Owner A
+    can call her custom type 'HYSA' even when a built-in 'HYSA' exists";
+    see C-28 acceptance criteria).  It is replaced by two partial
+    unique indexes evaluated together:
+
+      ``uq_account_types_seeded_name``   -- ``(name) WHERE user_id IS NULL``,
+          guaranteeing one built-in per name (preserves the ref_cache
+          enum-to-id contract that maps each ``AcctTypeEnum`` member
+          to a single seeded row).
+      ``uq_account_types_user_name``     -- ``(user_id, name) WHERE user_id IS NOT NULL``,
+          guaranteeing each owner has at most one custom type per
+          name.  A user-owned row may share a name with the seeded
+          built-in (the WHERE clauses keep the two index domains
+          disjoint), and two different owners may both have a custom
+          "Crypto" without conflict.
     """
 
     __tablename__ = "account_types"
-    __table_args__ = {"schema": "ref"}
+    __table_args__ = (
+        db.Index(
+            "uq_account_types_seeded_name",
+            "name",
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
+        db.Index(
+            "uq_account_types_user_name",
+            "user_id", "name",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+        ),
+        db.Index("ix_account_types_user_id", "user_id"),
+        {"schema": "ref"},
+    )
 
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(30), unique=True, nullable=False)
+    name = db.Column(db.String(30), nullable=False)
     category_id = db.Column(
         db.Integer,
         db.ForeignKey("ref.account_type_categories.id"),
@@ -77,6 +126,15 @@ class AccountType(db.Model):
     is_liquid = db.Column(db.Boolean, nullable=False, default=False)
     icon_class = db.Column(db.String(30), nullable=True)
     max_term_months = db.Column(db.Integer, nullable=True)
+    # NULL -> seeded built-in row, read-only to every owner.  Non-NULL
+    # -> owned by that user; only they may rename or delete it.  See
+    # the class docstring for the per-user copy contract and the
+    # paired partial unique indexes that enforce it.
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("auth.users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     category = db.relationship("AccountTypeCategory")
 

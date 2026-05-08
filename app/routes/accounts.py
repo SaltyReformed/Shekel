@@ -64,6 +64,166 @@ _type_update_schema = AccountTypeUpdateSchema()
 _interest_params_schema = InterestParamsUpdateSchema()
 
 
+def _visible_account_types(user_id):
+    """Return the account types this user is allowed to see.
+
+    Built-in types (``user_id IS NULL``) are visible to every owner;
+    a user's own custom types are visible only to them.  Other
+    owners' custom types are excluded so the settings page and the
+    account-form dropdown cannot leak the existence of one user's
+    custom catalogue to another user (commit C-28 / F-044).
+
+    Args:
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        list[AccountType] -- ordered by ``name`` for stable rendering.
+        Includes the seeded built-ins (each ``AcctTypeEnum`` member)
+        plus every row whose ``user_id`` matches the caller.
+    """
+    return (
+        db.session.query(AccountType)
+        .filter(db.or_(
+            AccountType.user_id.is_(None),
+            AccountType.user_id == user_id,
+        ))
+        .order_by(AccountType.name)
+        .all()
+    )
+
+
+def _owned_account_type(type_id, user_id):
+    """Return the account type if owned by this user, else ``None``.
+
+    Used by the per-type mutation routes (``update``, ``delete``) to
+    enforce the C-28 ownership guard.  A ``None`` return collapses
+    the three "type does not exist", "type belongs to another owner",
+    and "type is a seeded built-in" cases into a single
+    indistinguishable response, matching the project's
+    "404 for both 'not found' and 'not yours'" security rule.
+
+    Args:
+        type_id: Primary key of the candidate ``ref.account_types`` row.
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        AccountType when the row exists and ``user_id`` matches;
+        ``None`` otherwise.
+    """
+    account_type = db.session.get(AccountType, type_id)
+    if account_type is None or account_type.user_id != user_id:
+        return None
+    return account_type
+
+
+def _validate_update_account(account, form, user_id):
+    """Run every non-mutating gate for ``update_account`` in one place.
+
+    The route grew enough early-return guards (schema validation,
+    C-28 multi-tenant ``account_type_id`` check, stale-form
+    ``version_id`` check, duplicate-name check) to trip Pylint's
+    ``too-many-return-statements`` after C-28 added one more.
+    Consolidating the gates into a single helper that returns a
+    ``(data, failure)`` tuple lets the route have one validation
+    early return instead of four, without losing the per-condition
+    flash distinctions.
+
+    Args:
+        account: The ``Account`` row about to be mutated.
+        form: The submitted ``request.form`` mapping.
+        user_id: ``auth.users.id`` of the current owner (passed
+            explicitly so this helper does not depend on Flask
+            request globals -- matches the project's Routes-pass-
+            primitives-into-services style).
+
+    Returns:
+        A two-tuple ``(data, failure)``.  When validation passes,
+        ``data`` is the schema-loaded payload (with ``version_id``
+        already popped) and ``failure`` is ``None``.  When any gate
+        rejects, ``data`` is an empty dict and ``failure`` is a
+        ``(message, category)`` tuple ready to feed to
+        :func:`flask.flash`.  The two-tuple form keeps the helper
+        a pure function -- it never touches the response layer.
+    """
+    if _update_schema.validate(form):
+        return {}, (
+            "Please correct the highlighted errors and try again.",
+            "danger",
+        )
+
+    data = _update_schema.load(form)
+
+    # Multi-tenant guard (commit C-28 / F-044): when the form
+    # re-parents the account to a different account_type_id, the
+    # new value must be a seeded built-in or one of this owner's
+    # custom types.  Identical to the create path -- see
+    # ``_account_type_is_visible`` for the rationale.  Skip when
+    # the field was not submitted (partial update).
+    if (
+        "account_type_id" in data
+        and not _account_type_is_visible(data["account_type_id"], user_id)
+    ):
+        return {}, ("Invalid account type.", "danger")
+
+    # Stale-form check.  Performed before any mutation so the audit
+    # trail (AccountAnchorHistory, audit_log triggers) records only
+    # successful edits.  The check is conditional on the form having
+    # submitted a version (clients that omit it fall through to the
+    # SQLAlchemy-tier check at flush time).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != account.version_id:
+        return {}, (
+            "This account was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+
+    # Duplicate-name guard (if name is changing).
+    if "name" in data and data["name"] != account.name:
+        existing = (
+            db.session.query(Account)
+            .filter_by(user_id=user_id, name=data["name"])
+            .first()
+        )
+        if existing:
+            return {}, (
+                "An account with that name already exists.",
+                "warning",
+            )
+
+    return data, None
+
+
+def _account_type_is_visible(type_id, user_id):
+    """Return True iff ``type_id`` references a seeded or owned type.
+
+    Account create/update accept ``account_type_id`` from the form.
+    Before C-28 every type was global, so the FK constraint alone
+    sufficed; afterwards an owner forging a POST could attach their
+    new account to another owner's custom type, leaking that type's
+    existence and producing a cross-user FK reference that C-29's
+    re-parenting guard does not cover for the account row itself.
+    This helper is the route-layer guard that pairs with the new
+    multi-tenant ownership rule on ``ref.account_types``: the
+    ``account_type_id`` must point at a seeded built-in
+    (``user_id IS NULL``) or at one of the caller's own types.
+
+    Args:
+        type_id: Submitted ``ref.account_types.id`` value.
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        bool -- True when the type exists and is either seeded or
+        owned by *user_id*; False otherwise.  Identical False for
+        "does not exist" and "owned by another user" so the
+        response cannot be used to enumerate other owners' types.
+    """
+    account_type = db.session.get(AccountType, type_id)
+    if account_type is None:
+        return False
+    return account_type.user_id is None or account_type.user_id == user_id
+
+
 # ── Account CRUD ───────────────────────────────────────────────────
 
 
@@ -75,6 +235,10 @@ def list_accounts():
 
     Separates accounts into active and archived lists for the UI.
     Both lists inherit the same ordering (sort_order, name).
+
+    The ``account_types`` listing is scoped to the seeded built-ins
+    plus the current user's own custom types (commit C-28 / F-044).
+    Other owners' custom types are invisible.
     """
     accounts = (
         db.session.query(Account)
@@ -85,11 +249,7 @@ def list_accounts():
     active_accounts = [a for a in accounts if a.is_active]
     archived_accounts = [a for a in accounts if not a.is_active]
 
-    account_types = (
-        db.session.query(AccountType)
-        .order_by(AccountType.name)
-        .all()
-    )
+    account_types = _visible_account_types(current_user.id)
 
     # Build a set of account type IDs that are in use (for delete guard).
     types_in_use = set(
@@ -113,16 +273,15 @@ def list_accounts():
 @login_required
 @require_owner
 def new_account():
-    """Display the account creation form."""
-    account_types = (
-        db.session.query(AccountType)
-        .order_by(AccountType.name)
-        .all()
-    )
+    """Display the account creation form.
+
+    The type dropdown is scoped to seeded built-ins plus the current
+    owner's custom types (commit C-28 / F-044).
+    """
     return render_template(
         "accounts/form.html",
         account=None,
-        account_types=account_types,
+        account_types=_visible_account_types(current_user.id),
     )
 
 
@@ -137,6 +296,17 @@ def create_account():
         return redirect(url_for("accounts.new_account"))
 
     data = _create_schema.load(request.form)
+
+    # Multi-tenant guard (commit C-28 / F-044): the submitted
+    # account_type_id must reference a seeded built-in or one of
+    # this owner's own custom types.  A forged post that points at
+    # another owner's custom type is collapsed into the same
+    # "Invalid account type." response as a non-existent FK so the
+    # response cannot be used to probe for the existence of other
+    # owners' catalogues.
+    if not _account_type_is_visible(data["account_type_id"], current_user.id):
+        flash("Invalid account type.", "danger")
+        return redirect(url_for("accounts.new_account"))
 
     # Check for duplicate name.
     existing = (
@@ -185,24 +355,28 @@ def create_account():
     flash(f"Account '{account.name}' created.", "success")
 
     # Redirect parameterized accounts to their configuration page.
+    # Resolve the next URL through a single ladder so the function
+    # has one terminal return (keeps Pylint's R0911 limit happy as
+    # the validation path grew from C-28's multi-tenant guard).
     if account_type and account_type.has_interest:
-        return redirect(url_for(
+        next_url = url_for(
             "accounts.interest_detail", account_id=account.id, setup=1,
-        ))
-    # Amortizing loan types: redirect to the unified loan dashboard.
-    if account_type and account_type.has_amortization:
-        return redirect(url_for(
+        )
+    elif account_type and account_type.has_amortization:
+        next_url = url_for(
             "loan.dashboard", account_id=account.id, setup=1,
-        ))
-    if (account_type
+        )
+    elif (account_type
             and account_type.has_parameters
             and not account_type.has_interest
             and not account_type.has_amortization):
-        return redirect(url_for(
+        next_url = url_for(
             "investment.dashboard", account_id=account.id, setup=1,
-        ))
+        )
+    else:
+        next_url = url_for("accounts.list_accounts")
 
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(next_url)
 
 
 @accounts_bp.route("/accounts/<int:account_id>/edit", methods=["GET"])
@@ -215,15 +389,10 @@ def edit_account(account_id):
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
-    account_types = (
-        db.session.query(AccountType)
-        .order_by(AccountType.name)
-        .all()
-    )
     return render_template(
         "accounts/form.html",
         account=account,
-        account_types=account_types,
+        account_types=_visible_account_types(current_user.id),
     )
 
 
@@ -265,37 +434,15 @@ def update_account(account_id):
         flash("Account not found.", "danger")
         return redirect(url_for("accounts.list_accounts"))
 
-    errors = _update_schema.validate(request.form)
-    if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
+    # Validation phase.  Delegates to a helper that returns either
+    # ``(data, None)`` (proceed) or ``({}, (message, category))``
+    # (reject).  Folding every non-mutating check into a single
+    # gateway keeps the route's return count below Pylint's R0911
+    # limit after the C-28 multi-tenant guard was added.
+    data, failure = _validate_update_account(account, request.form, current_user.id)
+    if failure is not None:
+        flash(failure[0], failure[1])
         return redirect(url_for("accounts.edit_account", account_id=account_id))
-
-    data = _update_schema.load(request.form)
-
-    # Stale-form check.  Performed before any mutation so the audit
-    # trail (AccountAnchorHistory, audit_log triggers) records only
-    # successful edits.  The check is conditional on the form
-    # having submitted a version (clients that omit it fall through
-    # to the SQLAlchemy-tier check at flush time).
-    submitted_version = data.pop("version_id", None)
-    if submitted_version is not None and submitted_version != account.version_id:
-        flash(
-            "This account was changed by another action while you were "
-            "editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.edit_account", account_id=account_id))
-
-    # Check for duplicate name (if name is changing).
-    if "name" in data and data["name"] != account.name:
-        existing = (
-            db.session.query(Account)
-            .filter_by(user_id=current_user.id, name=data["name"])
-            .first()
-        )
-        if existing:
-            flash("An account with that name already exists.", "warning")
-            return redirect(url_for("accounts.edit_account", account_id=account_id))
 
     # Handle anchor balance update with audit trail.  Tracking
     # ``anchor_changed`` separately from ``new_anchor`` is necessary
@@ -750,7 +897,21 @@ def inline_anchor_display(account_id):
 @login_required
 @require_owner
 def create_account_type():
-    """Create a new account type."""
+    """Create a new account type owned by the current user.
+
+    The new row carries ``user_id = current_user.id`` (commit C-28 /
+    F-044).  Seeded built-ins (``user_id IS NULL``) are only created
+    by ``scripts/seed_ref_tables.py`` and are read-only to every
+    owner; this route never inserts a built-in.
+
+    The duplicate-name check is scoped to the caller's own types so
+    that an owner may legitimately create a custom type with the
+    same name as a seeded built-in (per the C-28 acceptance
+    criteria) and so that two different owners can both have a
+    custom "Crypto" without conflict.  The matching partial unique
+    index ``uq_account_types_user_name`` is the storage-tier
+    backstop if a concurrent request slips past this check.
+    """
     errors = _type_create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
@@ -758,21 +919,29 @@ def create_account_type():
 
     data = _type_create_schema.load(request.form)
 
-    # Check for duplicate name.
+    # Per-user duplicate name guard.  Only conflicts with the
+    # caller's own custom types should reject the create -- a name
+    # that exists only as a seeded built-in is allowed (the user is
+    # making a per-user copy) and a name that exists only as a
+    # different owner's custom type is invisible from here, so it
+    # cannot collide.
     existing = (
         db.session.query(AccountType)
-        .filter_by(name=data["name"])
+        .filter_by(name=data["name"], user_id=current_user.id)
         .first()
     )
     if existing:
         flash("An account type with that name already exists.", "warning")
         return redirect(url_for("settings.show", section="account-types"))
 
-    account_type = AccountType(**data)
+    account_type = AccountType(user_id=current_user.id, **data)
     db.session.add(account_type)
     db.session.commit()
 
-    logger.info("Created account type: %s (id=%d)", account_type.name, account_type.id)
+    logger.info(
+        "Created account type: %s (id=%d, user_id=%d)",
+        account_type.name, account_type.id, current_user.id,
+    )
     flash(f"Account type '{account_type.name}' created.", "success")
     return redirect(url_for("settings.show", section="account-types"))
 
@@ -781,8 +950,17 @@ def create_account_type():
 @login_required
 @require_owner
 def update_account_type(type_id):
-    """Update an account type's name and/or metadata fields."""
-    account_type = db.session.get(AccountType, type_id)
+    """Update one of the current user's own account types.
+
+    Ownership guard (commit C-28 / F-044): the row must exist and
+    its ``user_id`` must match the caller.  Seeded built-ins
+    (``user_id IS NULL``) and other owners' custom types are
+    indistinguishable from a non-existent row in the response, per
+    the project's "404 for both 'not found' and 'not yours'" rule.
+    The flash + redirect behaviour matches the rest of the form-POST
+    handlers in this file (this route is not HTMX-driven).
+    """
+    account_type = _owned_account_type(type_id, current_user.id)
     if account_type is None:
         flash("Account type not found.", "danger")
         return redirect(url_for("settings.show", section="account-types"))
@@ -794,11 +972,18 @@ def update_account_type(type_id):
 
     data = _type_update_schema.load(request.form)
 
-    # Check for duplicate name (only if name is being changed).
+    # Per-user duplicate-name guard on rename.  Identical scoping to
+    # ``create_account_type`` -- the conflict universe is the
+    # caller's own custom types only.  ``id != type_id`` excludes
+    # the row being renamed (a no-op rename must not flag itself).
     if "name" in data:
         existing = (
             db.session.query(AccountType)
-            .filter(AccountType.name == data["name"], AccountType.id != type_id)
+            .filter(
+                AccountType.name == data["name"],
+                AccountType.id != type_id,
+                AccountType.user_id == current_user.id,
+            )
             .first()
         )
         if existing:
@@ -813,7 +998,10 @@ def update_account_type(type_id):
 
     db.session.commit()
 
-    logger.info("Updated account type: %s (id=%d)", account_type.name, account_type.id)
+    logger.info(
+        "Updated account type: %s (id=%d, user_id=%d)",
+        account_type.name, account_type.id, current_user.id,
+    )
     flash(f"Account type '{account_type.name}' updated.", "success")
     return redirect(url_for("settings.show", section="account-types"))
 
@@ -822,15 +1010,30 @@ def update_account_type(type_id):
 @login_required
 @require_owner
 def delete_account_type(type_id):
-    """Delete an account type (only if no accounts reference it)."""
-    account_type = db.session.get(AccountType, type_id)
+    """Delete one of the current user's own account types.
+
+    Two guards apply, in order:
+
+      1. Ownership (commit C-28 / F-044) -- only the row's owner may
+         delete it.  Seeded built-ins are read-only; cross-owner
+         deletes return the same response as a non-existent row.
+      2. In-use check -- a custom type referenced by any of this
+         owner's accounts blocks the delete because the
+         ``budget.accounts.account_type_id`` FK would otherwise
+         dangle.  The check is scoped to ``user_id = current_user.id``
+         for clarity; after C-28 only the owner can have accounts
+         referencing their custom type, so the unscoped query would
+         return the same set, but the scoped form makes the intent
+         explicit.
+    """
+    account_type = _owned_account_type(type_id, current_user.id)
     if account_type is None:
         flash("Account type not found.", "danger")
         return redirect(url_for("settings.show", section="account-types"))
 
     in_use = (
         db.session.query(Account)
-        .filter_by(account_type_id=type_id)
+        .filter_by(account_type_id=type_id, user_id=current_user.id)
         .first()
     )
     if in_use:
@@ -843,7 +1046,10 @@ def delete_account_type(type_id):
     db.session.delete(account_type)
     db.session.commit()
 
-    logger.info("Deleted account type: %s (id=%d)", account_type.name, type_id)
+    logger.info(
+        "Deleted account type: %s (id=%d, user_id=%d)",
+        account_type.name, type_id, current_user.id,
+    )
     flash(f"Account type '{account_type.name}' deleted.", "info")
     return redirect(url_for("settings.show", section="account-types"))
 

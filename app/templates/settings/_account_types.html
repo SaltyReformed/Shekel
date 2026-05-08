@@ -4,12 +4,21 @@
   <div class="card-header fw-semibold">Account Types</div>
   <ul class="list-group list-group-flush">
     {% for at in account_types %}
+    {# Seeded built-ins (commit C-28 / F-044) carry user_id = NULL and
+       are read-only to every owner.  Owner-scoped types render the
+       inline edit form and the delete button; built-ins render only
+       the display row plus a "Built-in" badge. #}
+    {% set is_owned = at.user_id == current_user.id %}
     <li class="list-group-item">
       <div class="d-flex justify-content-between align-items-start">
         {# ── Inline edit form ──────────────────────────────────── #}
+        {% if is_owned %}
         <form method="POST" action="{{ url_for('accounts.update_account_type', type_id=at.id) }}"
               class="flex-grow-1 me-2 account-type-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% else %}
+        <div class="flex-grow-1 me-2 account-type-form">
+        {% endif %}
 
           {# Display mode: name + badge summary #}
           <div class="account-type-display">
@@ -21,10 +30,15 @@
               {% if at.has_interest %}<span class="badge bg-success ms-1">interest</span>{% endif %}
               {% if at.is_pretax %}<span class="badge bg-secondary ms-1">pre-tax</span>{% endif %}
               {% if at.is_liquid %}<span class="badge bg-primary ms-1">liquid</span>{% endif %}
+              {% if not is_owned %}<span class="badge bg-light text-dark ms-1">Built-in</span>{% endif %}
             </small>
           </div>
 
-          {# Edit mode: full metadata fields (hidden until edit clicked) #}
+          {# Edit mode: full metadata fields (hidden until edit clicked).
+             Only rendered for owner-scoped rows because seeded built-ins
+             have no edit form to begin with -- the surrounding {% if
+             is_owned %} block leaves built-in rows on the display path. #}
+          {% if is_owned %}
           <div class="account-type-edit d-none mt-2">
             <div class="row g-2">
               <div class="col-md-4">
@@ -115,9 +129,15 @@
               </button>
             </div>
           </div>
+          {% endif %}
+        {% if is_owned %}
         </form>
+        {% else %}
+        </div>
+        {% endif %}
 
         <div class="d-flex align-items-center">
+          {% if is_owned %}
           <button type="button" class="btn btn-sm btn-outline-secondary me-1 edit-type-btn"
                   aria-label="Edit {{ at.name }}">
             <i class="bi bi-pencil"></i>
@@ -136,6 +156,7 @@
               <i class="bi bi-trash"></i>
             </button>
           </form>
+          {% endif %}
           {% endif %}
         </div>
       </div>
