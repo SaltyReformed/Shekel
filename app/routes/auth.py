@@ -30,11 +30,21 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 from flask_login import current_user, login_required, login_user, logout_user
 
 from cryptography.fernet import InvalidToken
+from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
+from app.schemas.validation import (
+    ChangePasswordSchema,
+    LoginSchema,
+    MfaConfirmSchema,
+    MfaDisableSchema,
+    MfaVerifySchema,
+    ReauthSchema,
+    RegisterSchema,
+)
 from app.services import auth_service, mfa_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.log_events import (
@@ -257,6 +267,47 @@ def _mfa_pending_is_fresh():
     return elapsed <= _MFA_PENDING_MAX_AGE
 
 
+def _first_validation_message(exc):
+    """Return the first user-facing message from a Marshmallow ValidationError.
+
+    Marshmallow accumulates errors in a nested dict keyed by field
+    name (or ``_schema`` for cross-field validators).  The auth blueprint's
+    user-facing flow surfaces a single message at a time -- the user
+    fixes the first problem, resubmits, and sees the next one if any
+    remain -- so this helper flattens the dict to one string and falls
+    back to a generic message if the structure cannot be parsed (which
+    should be impossible for the schemas in this module but is
+    defended against to keep the route from raising 500 on a future
+    schema change).
+
+    The traversal is depth-first and prefers the first leaf string it
+    finds, mirroring Marshmallow's own iteration order.  Field-level
+    errors win over ``_schema`` cross-field errors only when both are
+    present at the top level; otherwise whichever is encountered first
+    is used.
+    """
+    messages = exc.messages
+    if isinstance(messages, str):
+        return messages
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        return first if isinstance(first, str) else "Invalid input."
+    if isinstance(messages, dict):
+        for value in messages.values():
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list) and value:
+                first = value[0]
+                if isinstance(first, str):
+                    return first
+            if isinstance(value, dict):
+                # Nested dict -- recurse with a synthetic exception so the
+                # same flattening logic applies all the way down.
+                inner = MarshmallowValidationError(value)
+                return _first_validation_message(inner)
+    return "Invalid input."
+
+
 def _is_safe_redirect(target):
     """Check that a redirect target is a safe, relative URL.
 
@@ -303,8 +354,17 @@ def _is_safe_redirect(target):
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def login():
-    """Display the login form and handle authentication."""
+def login():  # pylint: disable=too-many-return-statements
+    """Display the login form and handle authentication.
+
+    Pylint note: ``too-many-return-statements`` is suppressed because
+    each early return is a distinct semantic exit (companion-already-
+    logged-in, owner-already-logged-in, MFA-pending redirect,
+    companion-success redirect, owner-success redirect, generic
+    failure render).  Consolidating these into one return path would
+    force a state-machine in the function body that hides per-mode
+    behaviour; the explicit returns are the readable form.
+    """
     # Already logged in -- redirect to the appropriate landing page.
     if current_user.is_authenticated:
         companion_id = ref_cache.role_id(RoleEnum.COMPANION)
@@ -313,11 +373,19 @@ def login():
         return redirect(url_for("dashboard.page"))
 
     if request.method == "POST":
-        email = request.form.get("email", "").strip()
-        password = request.form.get("password", "")
-        remember = request.form.get("remember") == "on"
-
+        # Schema-level validation runs before bcrypt is invoked so a
+        # malformed or DoS-sized payload (F-163: megabyte-sized
+        # password) is rejected at the route boundary.
+        # ``MarshmallowValidationError`` and ``AuthError`` collapse to
+        # the same generic "Invalid email or password." flash so an
+        # attacker cannot distinguish schema-rejection from auth-
+        # rejection by response wording.  See commit C-26.
+        email = ""
         try:
+            login_data = LoginSchema().load(request.form)
+            email = login_data["email"]
+            password = login_data["password"]
+            remember = login_data["remember"]
             user = auth_service.authenticate(email, password)
 
             # Check if MFA is enabled for this user.
@@ -367,6 +435,16 @@ def login():
                 next_page = None
             return redirect(next_page or url_for("dashboard.page"))
 
+        except MarshmallowValidationError:
+            # F-163 / F-041: schema layer rejected payload shape or
+            # length; treated as a failed login attempt for forensic
+            # logging purposes (rate-limited like any other failure).
+            log_event(
+                logger, logging.WARNING, EVT_LOGIN_FAILED, AUTH,
+                "Login failed: schema validation",
+                ip=request.remote_addr,
+            )
+            flash("Invalid email or password.", "danger")
         except AuthError:
             log_event(logger, logging.WARNING, EVT_LOGIN_FAILED, AUTH,
                       "Login failed", email=email, ip=request.remote_addr)
@@ -407,14 +485,27 @@ def register():
             return redirect(url_for("companion.index"))
         return redirect(url_for("dashboard.page"))
 
-    email = request.form.get("email", "")
-    display_name = request.form.get("display_name", "")
-    password = request.form.get("password", "")
-    confirm_password = request.form.get("confirm_password", "")
-
-    if password != confirm_password:
-        flash("Password and confirmation do not match.", "danger")
+    # Schema-level validation enforces email shape, display-name
+    # presence, password length (12-72 chars), bcrypt's 72-byte UTF-8
+    # cap, and the password/confirm-match rule.  ``auth_service.
+    # register_user`` re-validates email/length/byte rules so the
+    # service remains correct even when called outside the route
+    # layer (e.g. companion creation).  See commit C-26.
+    try:
+        register_data = RegisterSchema().load(request.form)
+    except MarshmallowValidationError as exc:
+        # Surface the first message for the first error field so the
+        # existing user-facing error strings ("Invalid email format.",
+        # "Display name is required.", "Password must be at least 12
+        # characters.", "Password and confirmation do not match.")
+        # remain stable.  ``_first_validation_message`` flattens
+        # Marshmallow's nested dict to a single human-readable line.
+        flash(_first_validation_message(exc), "danger")
         return render_template("auth/register.html")
+
+    email = register_data["email"]
+    display_name = register_data["display_name"]
+    password = register_data["password"]
 
     try:
         # Capture the user so the structured ``user_registered`` event
@@ -454,13 +545,19 @@ def logout():
 @login_required
 def change_password():
     """Process a password change request from the Security settings section."""
-    current_password = request.form.get("current_password", "")
-    new_password = request.form.get("new_password", "")
-    confirm_password = request.form.get("confirm_password", "")
-
-    if new_password != confirm_password:
-        flash("New password and confirmation do not match.", "danger")
+    # Schema-level validation enforces shape (current_password
+    # presence, new_password length and byte cap, confirm match)
+    # before bcrypt is invoked.  ``auth_service.change_password``
+    # re-validates the new-password length so the service remains
+    # correct outside the route boundary.  See commit C-26.
+    try:
+        change_data = ChangePasswordSchema().load(request.form)
+    except MarshmallowValidationError as exc:
+        flash(_first_validation_message(exc), "danger")
         return redirect(url_for("settings.show", section="security"))
+
+    current_password = change_data["current_password"]
+    new_password = change_data["new_password"]
 
     try:
         auth_service.change_password(current_user, current_password, new_password)
@@ -527,7 +624,7 @@ def invalidate_sessions():
 @auth_bp.route("/reauth", methods=["GET", "POST"])
 @login_required
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def reauth():
+def reauth():  # pylint: disable=too-many-return-statements
     """Step-up re-authentication for high-value operations.
 
     Users land here when ``fresh_login_required`` (commit C-10 /
@@ -573,7 +670,22 @@ def reauth():
     if request.method == "GET":
         return render_template("auth/reauth.html", next=safe_next)
 
-    password = request.form.get("password", "")
+    # Schema validation rejects oversized/missing fields before bcrypt
+    # is invoked.  Failures are reported as the same "Invalid password."
+    # flash the wrong-password branch uses below so the response cannot
+    # be used as a side-channel oracle.  See commit C-26.
+    try:
+        reauth_data = ReauthSchema().load(request.form)
+    except MarshmallowValidationError:
+        log_event(
+            logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
+            "Step-up re-auth failed: schema validation",
+            user_id=current_user.id, ip=request.remote_addr,
+        )
+        flash("Invalid password.", "danger")
+        return render_template("auth/reauth.html", next=safe_next)
+
+    password = reauth_data["password"]
     if not auth_service.verify_password(password, current_user.password_hash):
         log_event(
             logger, logging.WARNING, EVT_REAUTH_FAILED, AUTH,
@@ -589,7 +701,7 @@ def reauth():
         .first()
     )
     if mfa_config:
-        totp_code = request.form.get("totp_code", "").strip()
+        totp_code = reauth_data["totp_code"]
         try:
             accepted = _verify_totp_with_replay_logging(
                 mfa_config, totp_code, current_user.id,
@@ -623,7 +735,7 @@ def reauth():
 
 @auth_bp.route("/mfa/verify", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def mfa_verify():  # pylint: disable=too-many-return-statements
+def mfa_verify():  # pylint: disable=too-many-return-statements,too-many-branches
     """Display the MFA verification form and handle code submission.
 
     Requires a pending MFA user_id in the session (set by the login
@@ -668,9 +780,20 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
     if request.method == "GET":
         return render_template("auth/mfa_verify.html")
 
-    # POST -- verify the submitted code.
-    totp_code = request.form.get("totp_code", "").strip()
-    backup_code = request.form.get("backup_code", "").strip()
+    # POST -- validate shape, then verify the submitted code.  F-163:
+    # MfaVerifySchema caps backup_code at 32 characters so a
+    # megabyte-sized string cannot reach bcrypt verification.  Both
+    # fields default to "" so the "neither code typed" UX stays the
+    # same -- the route below treats both empty as "Invalid
+    # verification code." rather than as missing-field validation
+    # error.  See commit C-26.
+    try:
+        verify_data = MfaVerifySchema().load(request.form)
+    except MarshmallowValidationError:
+        flash("Invalid verification code.", "danger")
+        return render_template("auth/mfa_verify.html")
+    totp_code = verify_data["totp_code"]
+    backup_code = verify_data["backup_code"]
 
     user = db.session.get(User, pending_user_id)
     mfa_config = None
@@ -843,7 +966,7 @@ def mfa_setup():
 
 @auth_bp.route("/mfa/confirm", methods=["POST"])
 @login_required
-def mfa_confirm():
+def mfa_confirm():  # pylint: disable=too-many-return-statements
     """Verify a TOTP code and enable MFA for the current user.
 
     Reads the encrypted pending secret persisted by ``/mfa/setup``
@@ -927,7 +1050,16 @@ def mfa_confirm():
         )
         return redirect(url_for("auth.mfa_setup"))
 
-    totp_code = request.form.get("totp_code", "")
+    # Schema-level validation caps the totp_code length to prevent
+    # an oversized payload reaching ``verify_totp_setup_code`` (which
+    # would still reject it, but at the cost of pyotp processing).
+    # See commit C-26.
+    try:
+        confirm_data = MfaConfirmSchema().load(request.form)
+    except MarshmallowValidationError:
+        flash("Invalid code. Please try again.", "danger")
+        return redirect(url_for("auth.mfa_setup"))
+    totp_code = confirm_data["totp_code"]
     matched_step = mfa_service.verify_totp_setup_code(secret, totp_code)
     if matched_step is None:
         # Pending state is preserved -- the user may retry until the
@@ -1047,8 +1179,18 @@ def mfa_disable_confirm():
     recently-used TOTP code cannot use that code to disable MFA, the
     same defence that ``/mfa/verify`` provides at login.
     """
-    current_password = request.form.get("current_password", "")
-    totp_code = request.form.get("totp_code", "").strip()
+    # Schema validates shape before bcrypt is invoked.  current_password
+    # accepts any historical length (legacy short passwords still work
+    # for verification); totp_code is capped at 6 characters so a
+    # DoS-sized string cannot reach verify_totp_code.  See commit C-26.
+    try:
+        disable_data = MfaDisableSchema().load(request.form)
+    except MarshmallowValidationError:
+        flash("Invalid password.", "danger")
+        return redirect(url_for("auth.mfa_disable"))
+
+    current_password = disable_data["current_password"]
+    totp_code = disable_data["totp_code"]
 
     # Verify the user's current password first.
     if not auth_service.verify_password(current_password, current_user.password_hash):
