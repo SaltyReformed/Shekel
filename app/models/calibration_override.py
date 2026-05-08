@@ -44,6 +44,28 @@ class CalibrationOverride(TimestampMixin, db.Model):
             "actual_medicare >= 0",
             name="ck_calibration_overrides_nonneg_medicare",
         ),
+        # F-077 / C-24: Effective rates derived from a real pay
+        # stub; persisted as decimal fractions in
+        # ``Numeric(12, 10)`` columns and fed straight into the
+        # paycheck calculator's tax computation.  CHECK pins each
+        # to ``[0, 1]``; a value outside that window would corrupt
+        # the calibrated paycheck projection silently.
+        db.CheckConstraint(
+            "effective_federal_rate >= 0 AND effective_federal_rate <= 1",
+            name="ck_calibration_overrides_valid_federal_rate",
+        ),
+        db.CheckConstraint(
+            "effective_state_rate >= 0 AND effective_state_rate <= 1",
+            name="ck_calibration_overrides_valid_state_rate",
+        ),
+        db.CheckConstraint(
+            "effective_ss_rate >= 0 AND effective_ss_rate <= 1",
+            name="ck_calibration_overrides_valid_ss_rate",
+        ),
+        db.CheckConstraint(
+            "effective_medicare_rate >= 0 AND effective_medicare_rate <= 1",
+            name="ck_calibration_overrides_valid_medicare_rate",
+        ),
         {"schema": "salary"},
     )
 

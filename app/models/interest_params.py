@@ -23,6 +23,17 @@ class InterestParams(TimestampMixin, db.Model):
             "compounding_frequency IN ('daily', 'monthly', 'quarterly')",
             name="ck_interest_params_frequency",
         ),
+        # F-077 / C-24: ``apy`` is persisted as a decimal fraction
+        # (e.g. ``0.04500`` for 4.5%) by ``app/routes/accounts.py``
+        # which divides the user-entered percent by 100 before
+        # INSERT.  CHECK pins storage to ``[0, 1]`` so a future
+        # writer that forgets the conversion is rejected at the
+        # database tier; the column itself is ``Numeric(7, 5)`` and
+        # could otherwise hold up to 999.99 (=99,999% APY).
+        db.CheckConstraint(
+            "apy >= 0 AND apy <= 1",
+            name="ck_interest_params_valid_apy",
+        ),
         {"schema": "budget"},
     )
 

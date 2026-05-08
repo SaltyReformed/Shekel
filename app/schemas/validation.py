@@ -3,11 +3,83 @@ Shekel Budget App -- Marshmallow Validation Schemas
 
 Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
+
+Percent / decimal-rate convention
+---------------------------------
+
+Percentage rate fields (FICA, state flat rates, inflation, APY,
+trend alert threshold, etc.) are stored as decimal fractions in the
+database -- a 6.2% rate is persisted as ``Decimal("0.0620")`` in a
+``Numeric(5, 4)`` or ``Numeric(7, 5)`` column with a database
+CHECK constraint pinning the value to ``[0, 1]`` (and similar
+ranges for the few "match-multiplier" cases).  The forms that
+collect these values render the user-facing percent
+(``0.0620 * 100 == 6.20``) and the routes divide by 100 (or call
+``app.utils.formatting.pct_to_decimal``) before persistence.
+
+The schemas in this module therefore validate the user-input
+representation:
+
+  - Schemas that run BEFORE the route's ``/100`` conversion accept
+    the percent (e.g. ``Range(min=0, max=100)`` for a 0-100% rate).
+  - Schemas that run AFTER the route's ``/100`` conversion (such as
+    ``InvestmentParamsCreateSchema``, where the route's
+    ``_convert_percentage_inputs`` helper rewrites the form payload
+    in place before ``schema.load``) accept the decimal fraction
+    (e.g. ``Range(min=0, max=1)`` for a 0-100% rate, or wider for
+    multiplier semantics like 401(k) employer match).
+
+The DB CHECK constraints added by commit C-24 of the 2026-04-15
+security remediation plan are the storage-tier counterpart to these
+validators; they are deliberately not redundant because they catch
+raw-SQL bypasses of the route layer.  See
+``migrations/versions/<C-24>_marshmallow_range_check_sweep.py`` for
+the storage-tier bounds and keep both sides in sync when adding a
+new column.
+
+Monetary range validators
+-------------------------
+
+Pure monetary fields (deduction amount, SalaryProfile W-4 fields,
+TaxBracketSet credits, etc.) get ``Range(min=...)`` validators per
+commit C-24.  The minimum mirrors the database CHECK (``>= 0`` or
+``> 0`` per column); the maximum is set well below the column's
+storage limit but above any plausible real-world value, so a typo
+that injects an extra digit is rejected with a clean field-level
+400 instead of being silently committed.
 """
 
 from decimal import Decimal
 
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
+
+
+# ── Shared range validators (commit C-24) ─────────────────────────
+#
+# These constants centralise the percent-format and monetary range
+# rules used across more than one schema below.  Validator instances
+# are immutable for the parameter set they were constructed with, so
+# a single shared instance per pattern is safe; if two fields need
+# different bounds (e.g. raise percentage vs FICA rate), declare a
+# second constant rather than mutating an existing one.
+
+# Percent input that maps to a decimal fraction in storage: 0..100
+# percent inclusive (e.g. user-entered "6.2" for a 6.2% rate, route
+# divides by 100 before persistence).  Used by FICA, state flat-rate,
+# loan interest, escrow inflation, default inflation, etc.
+_PERCENT_INPUT_RANGE = validate.Range(
+    min=Decimal("0"), max=Decimal("100"),
+)
+
+# Monetary range for W-4 / tax credit fields where the DB CHECK is
+# ``>= 0``.  10,000,000 is generous: it accommodates very large W-4
+# adjustments while still rejecting an obvious typo (extra digit) on
+# a routine entry.  Columns are ``Numeric(12, 2)`` so the database
+# can hold up to ~10B; this validator caps the schema layer well
+# below that.
+_NON_NEGATIVE_MONETARY = validate.Range(
+    min=Decimal("0"), max=Decimal("10000000"),
+)
 
 
 class BaseSchema(Schema):
@@ -279,19 +351,30 @@ class SalaryProfileCreateSchema(BaseSchema):
 
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
-        load_default=0, validate=validate.Range(min=0)
+        load_default=0, validate=validate.Range(min=0, max=99),
     )
     other_dependents = fields.Integer(
-        load_default=0, validate=validate.Range(min=0)
+        load_default=0, validate=validate.Range(min=0, max=99),
     )
+    # F-074 / C-24: Added explicit Range(>= 0) to backstop the DB
+    # CHECK (``additional_income >= 0``); the column is
+    # ``Numeric(12, 2)`` and the upper bound is a generous form-
+    # layer ceiling (see ``_NON_NEGATIVE_MONETARY``).
     additional_income = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
+    # F-074 / C-24: Same as additional_income.  DB CHECK
+    # ``additional_deductions >= 0``.
     additional_deductions = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
+    # F-074 / C-24: Per-period extra withholding.  DB CHECK
+    # ``extra_withholding >= 0``.
     extra_withholding = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
 
 
@@ -318,11 +401,26 @@ class SalaryProfileUpdateSchema(BaseSchema):
     )
 
     # W-4 fields (IRS Pub 15-T)
-    qualifying_children = fields.Integer(validate=validate.Range(min=0))
-    other_dependents = fields.Integer(validate=validate.Range(min=0))
-    additional_income = fields.Decimal(places=2, as_string=True)
-    additional_deductions = fields.Decimal(places=2, as_string=True)
-    extra_withholding = fields.Decimal(places=2, as_string=True)
+    qualifying_children = fields.Integer(
+        validate=validate.Range(min=0, max=99),
+    )
+    other_dependents = fields.Integer(
+        validate=validate.Range(min=0, max=99),
+    )
+    # F-074 / C-24: See :class:`SalaryProfileCreateSchema` for the
+    # bound rationale; the same Range applies on update.
+    additional_income = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    additional_deductions = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    extra_withholding = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
 
     # Optimistic-locking pin (commit C-18).
     version_id = fields.Integer(validate=validate.Range(min=1))
@@ -342,13 +440,36 @@ class RaiseCreateSchema(BaseSchema):
     effective_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
     )
+    # F-011 / C-24: Tightened from Range(-100, 1000) to a positive,
+    # column-fitting bound.  The user enters percent (e.g. "3" for a
+    # 3% raise); the route divides by 100 before persistence into
+    # ``salary.salary_raises.percentage`` (``Numeric(5, 4)`` -- max
+    # storable 9.9999 == 999.99% raise).  A zero or negative raise is
+    # not a raise at all (the audit's "no pay cuts" policy -- pay
+    # cuts are not modelled today; revisit if that changes).  200% is
+    # the realistic upper: a single-event 3x salary jump is already
+    # extraordinary, and any larger entry is a typo we want rejected
+    # at the form rather than silently amplified by recurring-raise
+    # compounding.  The DB CHECK ``percentage > 0`` is the storage-
+    # tier counterpart.
     percentage = fields.Decimal(
         places=2, as_string=True,
-        validate=validate.Range(min=-100, max=1000),
+        validate=validate.Range(
+            min=Decimal("0.01"), max=Decimal("200"),
+        ),
     )
+    # F-011 / C-24: Tightened from Range(-1e7, 1e7) to a positive,
+    # column-fitting bound on a flat-dollar raise per period.
+    # ``salary.salary_raises.flat_amount`` is ``Numeric(12, 2)``; the
+    # DB CHECK ``flat_amount > 0`` rejects zero/negative.  $10M is
+    # the schema-layer ceiling -- well above any realistic raise but
+    # below the column limit, so an order-of-magnitude typo is
+    # rejected with a clean 400 rather than being committed.
     flat_amount = fields.Decimal(
         places=2, as_string=True,
-        validate=validate.Range(min=-10000000, max=10000000),
+        validate=validate.Range(
+            min=Decimal("0.01"), max=Decimal("10000000"),
+        ),
     )
     is_recurring = fields.Boolean(load_default=False)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
@@ -378,7 +499,24 @@ class RaiseUpdateSchema(RaiseCreateSchema):
 
 
 class DeductionCreateSchema(BaseSchema):
-    """Validates POST data for adding a paycheck deduction."""
+    """Validates POST data for adding a paycheck deduction.
+
+    The ``amount`` field carries dual semantics keyed off
+    ``calc_method_id``:
+
+      - ``CalcMethodEnum.FLAT`` -- the user enters a per-paycheck
+        dollar amount (e.g. "500.00") that is persisted as-is in
+        ``salary.paycheck_deductions.amount`` (``Numeric(12, 4)``).
+      - ``CalcMethodEnum.PERCENTAGE`` -- the user enters a percent
+        of gross pay (e.g. "6" for 6%); the route divides by 100
+        before persistence so the storage value is the decimal
+        fraction.
+
+    The wide field-level ``Range`` accommodates the dollar case;
+    the cross-field validator ``validate_amount_against_calc_method``
+    additionally rejects implausibly large percent inputs (a 500%
+    deduction is a typo, not a deduction) per F-012 / C-24.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -387,23 +525,97 @@ class DeductionCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     deduction_timing_id = fields.Integer(required=True)
     calc_method_id = fields.Integer(required=True)
-    amount = fields.Decimal(required=True, places=4, as_string=True)
+    # F-012 / C-24: Added explicit positive Range to backstop the DB
+    # CHECK (``amount > 0``).  Column is ``Numeric(12, 4)``; min
+    # 0.0001 is the smallest representable positive value.  $1M cap
+    # is generous (a single deduction line of $1M per paycheck is
+    # already nonsense) but rejects the obvious "extra digit" typo
+    # at the form rather than letting an IntegrityError come back as
+    # a 500.  The percent-input ceiling (calc_method = PERCENTAGE)
+    # is enforced separately by
+    # ``validate_amount_against_calc_method`` because the
+    # field-level Range cannot see ``calc_method_id``.
+    amount = fields.Decimal(
+        required=True, places=4, as_string=True,
+        validate=validate.Range(
+            min=Decimal("0.0001"), max=Decimal("1000000"),
+        ),
+    )
     deductions_per_year = fields.Integer(
         load_default=26, validate=validate.OneOf([12, 24, 26])
     )
-    annual_cap = fields.Decimal(places=2, as_string=True, allow_none=True)
+    # F-012 / C-24: ``annual_cap`` is nullable in the model (NULL =
+    # uncapped); when present, must be positive (DB CHECK
+    # ``annual_cap IS NULL OR annual_cap > 0``).  Column is
+    # ``Numeric(12, 2)``; $100M cap is far above the largest
+    # realistic annual cap (HSA family limit ~$8K, 401(k) elective
+    # ~$23K, 401(k) including employer ~$70K).
+    annual_cap = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(
+            min=Decimal("0.01"), max=Decimal("100000000"),
+        ),
+    )
     inflation_enabled = fields.Boolean(load_default=False)
-    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True)
+    # F-077 / C-24: Schema validates the user-input percent (e.g.
+    # ``3`` for a 3% annual escalation); the route divides by 100
+    # before persistence into ``Numeric(5, 4)``.  DB CHECK pins
+    # storage to ``[0, 1]``.
+    inflation_rate = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=_PERCENT_INPUT_RANGE,
+    )
     inflation_effective_month = fields.Integer(
         validate=validate.Range(min=1, max=12), allow_none=True
     )
     target_account_id = fields.Integer(allow_none=True)
 
+    @validates_schema
+    def validate_amount_against_calc_method(self, data, **kwargs):
+        """Cap ``amount`` to a sane percent range when the calc method is PERCENTAGE.
+
+        The field-level Range is wide enough to admit any plausible
+        flat-dollar deduction; without this cross-field rule the
+        same wide bound silently accepts a "500" entered against
+        ``calc_method = PERCENTAGE`` (read as "500% of gross") and
+        produces a deduction that drains every paycheck to zero.
+        Cap percent inputs at 100% -- the realistic ceiling for a
+        single deduction line -- and let
+        ``CalcMethodEnum.FLAT`` keep the wider field-level bound.
+        F-012 / C-24 of the 2026-04-15 security remediation plan.
+
+        Raises:
+            ValidationError: When ``calc_method_id`` resolves to
+                ``PERCENTAGE`` and ``amount`` is greater than 100.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
+
+        calc_method_id = data.get("calc_method_id")
+        amount = data.get("amount")
+        if calc_method_id is None or amount is None:
+            return
+        try:
+            percentage_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+        except KeyError:
+            # ref_cache not initialised -- the route layer will
+            # surface the missing reference data; no extra check we
+            # can do here.
+            return
+        if calc_method_id != percentage_id:
+            return
+        if amount > Decimal("100"):
+            raise ValidationError(
+                "Percentage deductions must be at most 100%.",
+                field_name="amount",
+            )
+
 
 class DeductionUpdateSchema(DeductionCreateSchema):
     """Validates POST data for updating an existing paycheck deduction.
 
-    Inherits the required-field rules from
+    Inherits the required-field rules and the
+    ``validate_amount_against_calc_method`` cross-field rule from
     :class:`DeductionCreateSchema` (the salary edit form submits the
     full record on every save), and adds the optimistic-locking
     ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
@@ -415,31 +627,64 @@ class DeductionUpdateSchema(DeductionCreateSchema):
 
 
 class TaxBracketSetSchema(BaseSchema):
-    """Validates POST data for updating a tax bracket set."""
+    """Validates POST data for updating a tax bracket set.
+
+    F-075 / C-24: monetary fields gain ``Range(min=0)`` validators
+    so the schema layer rejects negative entries before the DB
+    CHECK (``standard_deduction >= 0`` etc.) raises an opaque
+    IntegrityError.  ``tax_year`` is bounded to ``[2000, 2100]`` to
+    match the storage CHECK introduced by C-24's migration.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         return {k: v for k, v in data.items() if v != ""}
 
     filing_status_id = fields.Integer(required=True)
-    tax_year = fields.Integer(required=True)
-    standard_deduction = fields.Decimal(required=True, places=2, as_string=True)
-    child_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True
+    tax_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
     )
+    # F-075 / C-24: Added explicit ``Range(>= 0)`` to backstop DB
+    # CHECK ``standard_deduction >= 0``.  The 2026 federal standard
+    # deduction tops out around $32,200 (married jointly); $10M is
+    # a wildly generous form-layer ceiling that still rejects an
+    # extra-zero typo.
+    standard_deduction = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    # F-075 / C-24: DB CHECK ``child_credit_amount >= 0``.  The CTC
+    # is $2,000 per child today; cap matches the form-layer
+    # ceiling.
+    child_credit_amount = fields.Decimal(
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    # F-075 / C-24: DB CHECK ``other_dependent_credit_amount >= 0``.
     other_dependent_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
 
 
 class FicaConfigSchema(BaseSchema):
-    """Validates POST data for updating FICA configuration."""
+    """Validates POST data for updating FICA configuration.
+
+    F-076 / C-24: ``tax_year`` bounded to ``[2000, 2100]`` to match
+    the same-named bound on
+    :class:`StateTaxConfigSchema`/:class:`TaxBracketSetSchema`; the
+    rate fields keep their percent-input ``Range`` (the route
+    divides by 100 before persistence into ``Numeric(5, 4)`` columns
+    with DB CHECK ``rate >= 0 AND rate <= 1``).
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         return {k: v for k, v in data.items() if v != ""}
 
-    tax_year = fields.Integer(required=True)
+    tax_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
+    )
     ss_rate = fields.Decimal(
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, max=100),
@@ -476,9 +721,11 @@ class StateTaxConfigSchema(BaseSchema):
         places=2, as_string=True,
         validate=validate.Range(min=0, max=100),
     )
+    # F-077 / C-24: Backstop new DB CHECK
+    # ``standard_deduction IS NULL OR standard_deduction >= 0``.
     standard_deduction = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=_NON_NEGATIVE_MONETARY,
     )
     tax_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
@@ -1189,11 +1436,20 @@ class InvestmentParamsCreateSchema(BaseSchema):
         required=True, places=5, as_string=True,
         validate=validate.Range(min=-1, max=1),
     )
+    # F-077 / C-24: Backstop the new DB CHECK
+    # ``annual_contribution_limit IS NULL OR annual_contribution_limit >= 0``
+    # with a wide form-layer ceiling.  Real limits top out at the
+    # employer-plus-employee 401(k) cap (~$70K in 2026); $100M is a
+    # generous typo guard.
     annual_contribution_limit = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000000"),
+        ),
     )
-    contribution_limit_year = fields.Integer(allow_none=True)
+    contribution_limit_year = fields.Integer(
+        allow_none=True, validate=validate.Range(min=2000, max=2100),
+    )
     employer_contribution_type = fields.String(
         load_default="none",
         validate=validate.OneOf(["none", "flat_percentage", "match"]),
@@ -1223,11 +1479,17 @@ class InvestmentParamsUpdateSchema(BaseSchema):
         places=5, as_string=True,
         validate=validate.Range(min=-1, max=1),
     )
+    # F-077 / C-24: see :class:`InvestmentParamsCreateSchema` for
+    # the bound rationale; the same Range applies on update.
     annual_contribution_limit = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000000"),
+        ),
     )
-    contribution_limit_year = fields.Integer(allow_none=True)
+    contribution_limit_year = fields.Integer(
+        allow_none=True, validate=validate.Range(min=2000, max=2100),
+    )
     employer_contribution_type = fields.String(
         validate=validate.OneOf(["none", "flat_percentage", "match"]),
     )

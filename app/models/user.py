@@ -195,6 +195,27 @@ class UserSettings(TimestampMixin, db.Model):
             "trend_alert_threshold >= 0 AND trend_alert_threshold <= 1",
             name="ck_user_settings_valid_trend_threshold",
         ),
+        # F-077 / C-24: SWR is the percentage of portfolio drawn
+        # each year in retirement (4% rule -> ``Decimal("0.0400")``).
+        # The retirement-settings route divides percent input by
+        # 100 before persistence; CHECK pins storage to ``[0, 1]``.
+        # The column carries a Python-side default but is nominally
+        # nullable, so the CHECK admits NULL.
+        db.CheckConstraint(
+            "safe_withdrawal_rate IS NULL OR "
+            "(safe_withdrawal_rate >= 0 AND safe_withdrawal_rate <= 1)",
+            name="ck_user_settings_valid_safe_withdrawal",
+        ),
+        # F-077 / C-24: Estimated effective tax rate during
+        # retirement (NULL = unset, fall back to current bracket-
+        # based estimate).  Same percent-to-decimal convention as
+        # ``safe_withdrawal_rate``.
+        db.CheckConstraint(
+            "estimated_retirement_tax_rate IS NULL OR "
+            "(estimated_retirement_tax_rate >= 0 AND "
+            "estimated_retirement_tax_rate <= 1)",
+            name="ck_user_settings_valid_estimated_tax_rate",
+        ),
         db.CheckConstraint(
             "anchor_staleness_days > 0",
             name="ck_user_settings_positive_staleness_days",

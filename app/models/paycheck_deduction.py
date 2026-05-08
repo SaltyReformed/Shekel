@@ -43,6 +43,25 @@ class PaycheckDeduction(TimestampMixin, db.Model):
             "annual_cap IS NULL OR annual_cap > 0",
             name="ck_paycheck_deductions_positive_cap",
         ),
+        # F-077 / C-24: ``inflation_rate`` is the per-year
+        # escalation applied to the deduction amount; the salary
+        # route divides the percent input by 100 before
+        # persistence.  CHECK pins storage to ``[0, 1]`` when
+        # present.
+        db.CheckConstraint(
+            "inflation_rate IS NULL OR "
+            "(inflation_rate >= 0 AND inflation_rate <= 1)",
+            name="ck_paycheck_deductions_valid_inflation_rate",
+        ),
+        # F-077 / C-24: ``inflation_effective_month`` is the
+        # 1-indexed month in which the annual escalation takes
+        # effect.  CHECK matches the schema bound.
+        db.CheckConstraint(
+            "inflation_effective_month IS NULL OR "
+            "(inflation_effective_month >= 1 AND "
+            "inflation_effective_month <= 12)",
+            name="ck_paycheck_deductions_valid_inflation_month",
+        ),
         db.CheckConstraint(
             "version_id > 0",
             name="ck_paycheck_deductions_version_id_positive",

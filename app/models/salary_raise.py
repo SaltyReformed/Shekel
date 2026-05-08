@@ -54,6 +54,15 @@ class SalaryRaise(CreatedAtMixin, db.Model):
             "effective_month >= 1 AND effective_month <= 12",
             name="ck_salary_raises_valid_month",
         ),
+        # F-077 / C-24: ``effective_year`` is nullable -- recurring
+        # raises that fire every year on a given month carry NULL
+        # year, so the CHECK admits NULL.  When present, bound to
+        # the same 2000-2100 window the raise create schema enforces.
+        db.CheckConstraint(
+            "effective_year IS NULL OR "
+            "(effective_year >= 2000 AND effective_year <= 2100)",
+            name="ck_salary_raises_valid_effective_year",
+        ),
         db.CheckConstraint("percentage IS NULL OR percentage > 0", name="ck_salary_raises_positive_pct"),
         db.CheckConstraint("flat_amount IS NULL OR flat_amount > 0", name="ck_salary_raises_positive_flat"),
         db.CheckConstraint(
