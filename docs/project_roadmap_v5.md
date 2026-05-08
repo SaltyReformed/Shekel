@@ -125,135 +125,100 @@ merge conflicts on the same routes and services.
 
 ## 2. Financial Calculation Consistency
 
-**Status:** Stage A pending start (after Section 1 Phase 3 lands). Stages B and C are
-decision-pending and not yet committed work.
+**Status:** Stage A is committed but not yet started. Stages B and C are decision-pending
+and require a separate design document plus developer approval before work begins. A
+detailed implementation plan will be written for each stage before implementation starts.
 
-### 2.1 Context
+**Goal:** The app produces identical monetary values regardless of which view, route, or
+service computes or displays them. Structural rules prevent new parallel computation paths
+from being introduced.
 
-The shadow-transaction model is single-entry with derived balances. Multiple derived-balance
-paths can drift:
+This section has three sequenced stages: Stage A removes immediate inconsistency between
+existing computation paths; Stages B and C are architectural changes that build on Stage A
+and are recorded for visibility, not yet approved.
 
-- `app/services/balance_calculator.py` -- canonical period-by-period from anchor.
-- `app/routes/grid.py` -- inline subtotal recomputation that mirrors balance_calculator
-  logic but is a separate code path.
-- `app/services/dashboard_service.py`, `app/services/calendar_service.py`, and
-  `app/services/year_end_summary_service.py` -- balance retrieval from the anchor and the
-  calculator output.
+### 2.1 Stage A -- Single source of truth for balances
 
-`Transaction.effective_amount` (`app/models/transaction.py:141`) is the single
-amount-source authority (priority: deleted -> excluded statuses -> actual_amount ->
-estimated_amount), but it is not used uniformly. Documented divergences:
+**Problem:** Some views and services compute the same logical balance through different
+code paths. The paths can drift, producing visible inconsistencies. Documented symptoms have
+included cells that did not match the subtotal containing them and the historic
+salary-profile vs. grid net biweekly mismatch (Appendix A.1, task 3.3).
 
-- **Net biweekly mismatch** (Appendix A.1, task 3.3): the salary profile page once showed
-  one net amount while the grid showed a different one. Fixed in March 2026, but the
-  underlying multi-path architecture remains.
-- **Cell-vs-subtotal drift after envelope carry-forward** (`docs/carry-forward-aftermath-design.md`):
-  documented and accepted as a tradeoff, but symptomatic of the larger issue.
-- **Direct `estimated_amount` references** in code that should use `effective_amount` for
-  status-aware semantics. The list cited in `docs/implementation_plan_section5a.md` is the
-  starting inventory (multiple call sites in balance_calculator and downstream consumers).
+**Outcome after Stage A:**
 
-The transfer rework (Appendix A.2) gave us strong invariants for the transfer subsystem
-(see CLAUDE.md "Transfer Invariants" -- 5 invariants enforced in
-`app/services/transfer_service.py`), but the broader balance computation is not protected by
-the same level of structural enforcement.
+- A single canonical computation produces every balance, subtotal, and aggregate the app
+  shows in the grid, dashboards, calendar views, year-end summary, and account detail pages.
+- A single status-aware "effective amount" rule is the only way to read a transaction's
+  contribution to a balance. The rule covers projected, paid, settled, credit, and
+  cancelled statuses and resolves correctly for both estimated and actual values.
+- A path-equivalence regression test suite asserts that every consumer of balance data
+  produces the same result for the same inputs. A new code path that diverges fails the
+  suite.
+- The coding standards record the rule so future contributors do not introduce a parallel
+  path.
 
-### 2.2 Stage A -- Unify existing paths (committed)
+### 2.2 Stage B -- Double-entry ledger (decision pending)
 
-**Goal:** eliminate divergence between the multiple paths that derive monetary totals,
-without changing the underlying single-entry model.
+**Problem:** Even after Stage A, balances are derived from transaction records rather than
+recorded directly. Future architectural changes to transactions or transfers risk
+re-introducing the consistency problem because the table being read is the same table that
+holds the application's primary records.
 
-**Scope:**
+**Outcome after Stage B:**
 
-- Extract a single shared subtotal/balance helper used by both `balance_calculator.py` and
-  `grid.py`. The helper consumes the existing `Transaction.effective_amount` property as
-  the single amount-source authority.
-- Audit and replace direct `estimated_amount` references with `effective_amount` wherever
-  status semantics matter. Use the inventory in `docs/implementation_plan_section5a.md` as
-  the starting list; expand by `grep -rn "estimated_amount" app/`.
-- Add a path-equivalence regression test suite. For each scenario fixture in
-  `tests/conftest.py`, assert that the values produced by `balance_calculator`, the grid
-  route's subtotal computation, the dashboard balance retrieval, and the calendar service's
-  month-end balance are all equal for the same inputs. Tests must use exact Decimal
-  equality, not tolerances.
-- Document the canonical balance-computation path in `docs/coding-standards.md` so future
-  features cannot reintroduce a parallel path without explicit review. Add a CLAUDE.md note
-  if the rule belongs there.
+- Every financial operation produces matched debit and credit entries in a dedicated
+  journal table.
+- The journal is the authoritative source of account balances. Balance display becomes an
+  aggregation over the journal.
+- Transactions and transfers continue to exist as drivers that emit journal entries. The
+  existing transfer invariants (matched expense and income shadows for every transfer)
+  extend naturally: each shadow becomes a matched debit/credit pair in the journal.
 
-**Deliverable:** every monetary aggregation in the app derives from one helper that calls
-`effective_amount`. New regression tests fail loudly if any future change reintroduces a
-parallel path.
+The data model might look something like:
 
-**Dependencies:** Section 1 Phase 3 (Financial Invariants, C-17..C-23) should land first.
-Phase 3 introduces optimistic locking and state-machine guards on transactions and
-transfers; Stage A's regression suite needs that machinery in place to assert behaviour
-under contention.
+```
+budget.journal_entries
+- account_id, amount, dr_cr flag
+- transaction_id (nullable; FK to transactions)
+- transfer_id (nullable; FK to transfers)
+- pay_period_id, status_id
+- standard audit columns
+```
 
-### 2.3 Stage B -- Double-entry ledger refactor (decision pending)
+**Decision criterion:** Revisit after Stage A lands and the residual divergence is
+measurable. If Stage A closes enough of the gap, Stage B may not be necessary. If divergence
+persists or future architectural work risks re-introducing it, Stage B becomes the
+structural fix.
 
-**Status:** decision pending. Documented for visibility; do not start without explicit
-developer approval and a separate design document.
+### 2.3 Stage C -- Envelope budgeting (decision pending, requires Stage B)
 
-**Concept:** add a true double-entry journal alongside the existing transactions table. Every
-financial operation produces matched debit and credit journal entries. The balance calculator
-ultimately becomes a journal aggregator; transactions and transfers become drivers that emit
-journal entries.
+**Problem:** Budget categories do not have first-class per-period spending allocations.
+Per-template entry tracking from the Spending Tracker (Appendix A.10) addresses the most
+common variable-amount budgets (groceries, fuel, and similar single-template envelopes) but
+does not extend to category-level limits that aggregate across multiple templates.
 
-**Sketched scope (subject to design doc):**
+**Outcome after Stage C:**
 
-- Add `budget.journal_entries` table: `account_id`, `amount NUMERIC(12,2)`, `dr_cr` flag,
-  `transaction_id` FK (nullable, for transaction-driven entries), `transfer_id` FK
-  (nullable, for transfer-driven entries), `pay_period_id`, `status_id`, standard audit
-  columns. Add to `app/audit_infrastructure.py:AUDITED_TABLES` per CLAUDE.md SQL standards.
-- Populate from existing transaction and transfer writes. The transfer service's existing
-  shadow-transaction generation extends naturally: each shadow now also emits a debit and a
-  credit journal entry. The CLAUDE.md transfer invariants extend to journal entries.
-- Run shadow alongside the current calculator. Use Stage A's regression suite to prove
-  parity between the journal aggregator and the existing balance_calculator output.
-- Make `journal_entries` authoritative only after parity holds across the full test suite
-  for a sustained period.
-- Backfill from existing `budget.transactions` rows in the migration. The migration is
-  destructive in the sense that switching authority is not trivially reversible; standard
-  destructive-migration approval applies.
+- Each budget category has a per-period allocation amount (the envelope).
+- Per-envelope remaining balance is visible at a glance, computed from authoritative journal
+  entries.
+- Optional hard-cap mode prevents spending past the allocation; soft-warning mode flags
+  envelopes at risk.
+- Existing per-template entry tracking continues to work; envelopes aggregate spending
+  across templates within a category.
 
-**Why decision-pending:** this is a substantial architectural change. The current model
-works. The case for double-entry is mostly defensive (eliminates a class of consistency
-bugs) and forward-looking (enables Stage C). The case against is implementation cost,
-migration risk, and the fact that Stage A may close enough of the gap to make B
-unnecessary.
+The data model might look something like:
 
-**Decision input needed:** does the cost/benefit favour the refactor after Stage A is
-complete and the actual residual divergence is measurable? Decide after Stage A lands.
+```
+budget.category_budget_allocations
+- category_id, pay_period_id, allocated_amount
+- user_id, audit columns
+```
 
-### 2.4 Stage C -- Envelope budgeting layer (decision pending, requires Stage B)
-
-**Status:** decision pending; depends on Stage B.
-
-**Concept:** layer category-level envelope budgeting on top of the double-entry ledger. Each
-budget category gets a per-period allocation (the envelope); spending consumes the
-envelope; remaining balance is visible per-envelope.
-
-**Sketched scope (subject to design doc):**
-
-- Add `budget.category_budget_allocations`: `category_id`, `pay_period_id`,
-  `allocated_amount`, `user_id`, audit columns.
-- Build on the existing `TransactionTemplate.is_envelope` flag and the `TransactionEntry`
-  model from Appendix A.10 (Spending Tracker). Those features track per-purchase remaining
-  balance; Stage C extends that model to category-level envelopes that aggregate across
-  templates.
-- Enforcement service consults journal entries from Stage B for actual spend per envelope.
-- UI: per-envelope progress bars, category-level remaining balance, optional hard-cap mode
-  vs. soft-warning mode.
-
-**Why decision-pending:** envelope budgeting changes the user's mental model of the app
-substantially. The Spending Tracker (Appendix A.10) already provides per-template entry
-tracking, which addresses the most common envelope use case (groceries, fuel, etc.). Stage C
-generalises that to category-level allocation, which is a different feature with a different
-audience. Confirm the user need is real before committing.
-
-**Dependency:** requires Stage B's journal entries as the authoritative spend source; building
-Stage C on top of the multi-path single-entry model would re-introduce the consistency
-problem Stage A and B aim to eliminate.
+**Decision criterion:** Confirm the user need before committing. Per-template entry tracking
+already addresses the most common envelope use cases; Stage C generalises to category-level
+allocation. The case for is mental-model alignment for users who plan in envelopes; the case
+against is added setup complexity.
 
 ---
 
