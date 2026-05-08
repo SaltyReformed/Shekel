@@ -84,7 +84,9 @@ class TaxBracket(db.Model):
     min_income = db.Column(db.Numeric(12, 2), nullable=False)
     max_income = db.Column(db.Numeric(12, 2))
     rate = db.Column(db.Numeric(5, 4), nullable=False)
-    sort_order = db.Column(db.Integer, default=0)
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
 
     # Relationships
     bracket_set = db.relationship("TaxBracketSet", back_populates="brackets")
@@ -174,12 +176,25 @@ class FicaConfig(CreatedAtMixin, db.Model):
         nullable=False,
     )
     tax_year = db.Column(db.Integer, nullable=False)
-    ss_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0620)
-    ss_wage_base = db.Column(db.Numeric(12, 2), nullable=False, default=176100)
-    medicare_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0145)
-    medicare_surtax_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0090)
+    ss_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0620,
+        server_default=db.text("0.0620"),
+    )
+    ss_wage_base = db.Column(
+        db.Numeric(12, 2), nullable=False, default=176100,
+        server_default=db.text("176100"),
+    )
+    medicare_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0145,
+        server_default=db.text("0.0145"),
+    )
+    medicare_surtax_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0090,
+        server_default=db.text("0.0090"),
+    )
     medicare_surtax_threshold = db.Column(
-        db.Numeric(12, 2), nullable=False, default=200000
+        db.Numeric(12, 2), nullable=False, default=200000,
+        server_default=db.text("200000"),
     )
 
     def __repr__(self):

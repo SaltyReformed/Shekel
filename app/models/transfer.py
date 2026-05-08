@@ -120,8 +120,14 @@ class Transfer(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200))
     amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_override = db.Column(db.Boolean, default=False, nullable=False)
-    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
+    is_override = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_deleted = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )

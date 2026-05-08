@@ -58,8 +58,13 @@ class TransferTemplate(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
-    sort_order = db.Column(db.Integer, default=0)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )

@@ -157,8 +157,14 @@ class Transaction(TimestampMixin, db.Model):
     )
     estimated_amount = db.Column(db.Numeric(12, 2), nullable=False)
     actual_amount = db.Column(db.Numeric(12, 2))
-    is_override = db.Column(db.Boolean, default=False)
-    is_deleted = db.Column(db.Boolean, default=False)
+    is_override = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_deleted = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     transfer_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transfers.id", ondelete="CASCADE"),

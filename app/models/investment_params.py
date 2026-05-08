@@ -78,12 +78,14 @@ class InvestmentParams(TimestampMixin, db.Model):
         unique=True,
     )
     assumed_annual_return = db.Column(
-        db.Numeric(7, 5), nullable=False, default=0.07000
+        db.Numeric(7, 5), nullable=False, default=0.07000,
+        server_default=db.text("0.07000"),
     )
     annual_contribution_limit = db.Column(db.Numeric(12, 2), nullable=True)
     contribution_limit_year = db.Column(db.Integer, nullable=True)
     employer_contribution_type = db.Column(
-        db.String(20), nullable=False, default="none"
+        db.String(20), nullable=False, default="none",
+        server_default=db.text("'none'"),
     )
     employer_flat_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_percentage = db.Column(db.Numeric(5, 4), nullable=True)

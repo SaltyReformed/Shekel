@@ -57,24 +57,41 @@ class SalaryProfile(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200), nullable=False)
     annual_salary = db.Column(db.Numeric(12, 2), nullable=False)
-    state_code = db.Column(db.String(2), nullable=False, default="NC")
-    pay_periods_per_year = db.Column(db.Integer, default=26, nullable=False)
+    state_code = db.Column(
+        db.String(2), nullable=False, default="NC",
+        server_default=db.text("'NC'"),
+    )
+    pay_periods_per_year = db.Column(
+        db.Integer, nullable=False, default=26, server_default=db.text("26"),
+    )
 
     # W-4 fields (IRS Pub 15-T Percentage Method inputs)
-    qualifying_children = db.Column(db.Integer, default=0, nullable=False)
-    other_dependents = db.Column(db.Integer, default=0, nullable=False)
+    qualifying_children = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
+    other_dependents = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
     additional_income = db.Column(
-        db.Numeric(12, 2), default=0, nullable=False
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default=db.text("0"),
     )  # W-4 Step 4(a): other income
     additional_deductions = db.Column(
-        db.Numeric(12, 2), default=0, nullable=False
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default=db.text("0"),
     )  # W-4 Step 4(b): extra deductions
     extra_withholding = db.Column(
-        db.Numeric(12, 2), default=0, nullable=False
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default=db.text("0"),
     )  # W-4 Step 4(c): extra withholding per period
 
-    is_active = db.Column(db.Boolean, default=True)
-    sort_order = db.Column(db.Integer, default=0)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.
     version_id = db.Column(

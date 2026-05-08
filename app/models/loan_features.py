@@ -108,7 +108,10 @@ class EscrowComponent(TimestampMixin, db.Model):
     name = db.Column(db.String(100), nullable=False)
     annual_amount = db.Column(db.Numeric(12, 2), nullable=False)
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
-    is_active = db.Column(db.Boolean, server_default=db.text("true"))
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
 
     # Relationships
     account = db.relationship(

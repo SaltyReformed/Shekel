@@ -91,7 +91,10 @@ class SalaryRaise(CreatedAtMixin, db.Model):
     effective_year = db.Column(db.Integer, nullable=True)
     percentage = db.Column(db.Numeric(5, 4))
     flat_amount = db.Column(db.Numeric(12, 2))
-    is_recurring = db.Column(db.Boolean, default=False)
+    is_recurring = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     notes = db.Column(db.Text)
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.

@@ -93,7 +93,10 @@ class CalibrationOverride(TimestampMixin, db.Model):
 
     # Metadata.
     pay_stub_date = db.Column(db.Date, nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
     notes = db.Column(db.Text)
 
     # Relationships.

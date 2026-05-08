@@ -89,7 +89,10 @@ class PaycheckDeduction(TimestampMixin, db.Model):
     amount = db.Column(db.Numeric(12, 4), nullable=False)
     deductions_per_year = db.Column(db.Integer, default=26, nullable=False)
     annual_cap = db.Column(db.Numeric(12, 2))
-    inflation_enabled = db.Column(db.Boolean, default=False)
+    inflation_enabled = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     inflation_rate = db.Column(db.Numeric(5, 4))
     inflation_effective_month = db.Column(db.Integer)
     target_account_id = db.Column(
@@ -97,8 +100,13 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
-    sort_order = db.Column(db.Integer, default=0)
-    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.
     version_id = db.Column(

@@ -24,7 +24,10 @@ class Scenario(TimestampMixin, db.Model):
         nullable=False,
     )
     name = db.Column(db.String(100), nullable=False)
-    is_baseline = db.Column(db.Boolean, default=False)
+    is_baseline = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     cloned_from_id = db.Column(
         db.Integer, db.ForeignKey("budget.scenarios.id", ondelete="SET NULL")
     )

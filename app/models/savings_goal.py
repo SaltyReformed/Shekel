@@ -75,7 +75,10 @@ class SavingsGoal(TimestampMixin, db.Model):
     target_amount = db.Column(db.Numeric(12, 2), nullable=True)
     target_date = db.Column(db.Date)
     contribution_per_period = db.Column(db.Numeric(12, 2))
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
 
     # Income-relative goal columns (5.4-2).
     # goal_mode_id defaults to Fixed (ID 1) so existing goals are unaffected.

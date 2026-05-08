@@ -95,7 +95,10 @@ class User(UserMixin, TimestampMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(100))
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
     # Timestamp of most recent "log out all sessions" or password change event.
     # The user loader compares this against the session creation time to reject stale sessions.
     session_invalidated_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -314,7 +317,10 @@ class MfaConfig(TimestampMixin, db.Model):
     pending_secret_expires_at = db.Column(
         db.DateTime(timezone=True), nullable=True,
     )
-    is_enabled = db.Column(db.Boolean, default=False)
+    is_enabled = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     backup_codes = db.Column(db.JSON)
     confirmed_at = db.Column(db.DateTime(timezone=True))
     # Highest TOTP time-step (Unix-seconds // 30) that the user has

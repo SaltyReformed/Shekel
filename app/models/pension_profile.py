@@ -55,13 +55,21 @@ class PensionProfile(TimestampMixin, db.Model):
         db.ForeignKey("salary.salary_profiles.id", ondelete="SET NULL"),
         nullable=True,
     )
-    name = db.Column(db.String(100), nullable=False, default="Pension")
+    name = db.Column(
+        db.String(100), nullable=False, default="Pension",
+        server_default=db.text("'Pension'"),
+    )
     benefit_multiplier = db.Column(db.Numeric(7, 5), nullable=False)
-    consecutive_high_years = db.Column(db.Integer, nullable=False, default=4)
+    consecutive_high_years = db.Column(
+        db.Integer, nullable=False, default=4, server_default=db.text("4"),
+    )
     hire_date = db.Column(db.Date, nullable=False)
     earliest_retirement_date = db.Column(db.Date, nullable=True)
     planned_retirement_date = db.Column(db.Date, nullable=True)
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", lazy="joined")

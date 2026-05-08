@@ -52,8 +52,13 @@ class Account(TimestampMixin, db.Model):
     current_anchor_period_id = db.Column(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
     )
-    sort_order = db.Column(db.Integer, default=0)
-    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
     # Optimistic-locking version counter.  See the class docstring
     # for the contract.  NOT NULL with server_default="1" so existing
     # production rows are filled at ALTER TABLE time and new rows

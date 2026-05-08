@@ -29,8 +29,13 @@ class Category(CreatedAtMixin, db.Model):
     )
     group_name = db.Column(db.String(100), nullable=False)
     item_name = db.Column(db.String(100), nullable=False)
-    sort_order = db.Column(db.Integer, default=0)
-    is_active = db.Column(db.Boolean, nullable=False, default=True, server_default='true')
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
 
     @property
     def display_name(self):

@@ -553,7 +553,8 @@ class DeductionCreateSchema(BaseSchema):
     annual_cap = fields.Decimal(
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(
-            min=Decimal("0.01"), max=Decimal("100000000"),
+            min=Decimal("0"), min_inclusive=False,
+            max=Decimal("100000000"),
         ),
     )
     inflation_enabled = fields.Boolean(load_default=False)
@@ -870,9 +871,18 @@ class SavingsGoalCreateSchema(BaseSchema):
         validate=validate.Range(min=0, min_inclusive=False),
     )
     target_date = fields.Date()
+    # F-106 / C-25: DB CHECK enforces ``contribution_per_period IS NULL
+    # OR contribution_per_period > 0``.  Schema must reject 0 too (the
+    # previous ``min=0`` inclusive bound would defer the rejection to
+    # the database, surfacing as a 500 IntegrityError instead of a
+    # field-level 400).  ``allow_none=True`` matches the column's
+    # nullability so JSON callers can clear the contribution
+    # explicitly; the form path is already covered by
+    # ``strip_empty_strings`` above.
     contribution_per_period = fields.Decimal(
+        load_default=None, allow_none=True,
         places=2, as_string=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     goal_mode_id = fields.Integer(load_default=1)
     income_unit_id = fields.Integer(load_default=None, allow_none=True)
@@ -967,9 +977,12 @@ class SavingsGoalUpdateSchema(BaseSchema):
         validate=validate.Range(min=0, min_inclusive=False),
     )
     target_date = fields.Date(allow_none=True)
+    # F-106 / C-25: see :class:`SavingsGoalCreateSchema` for the
+    # boundary-inclusivity rationale.  Update path also accepts
+    # ``None`` to clear the contribution.
     contribution_per_period = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     is_active = fields.Boolean()
     goal_mode_id = fields.Integer()
@@ -1291,7 +1304,12 @@ class LoanParamsCreateSchema(BaseSchema):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
-    original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    # F-107 / C-25: DB CHECK enforces ``original_principal > 0``;
+    # schema must reject 0 too so the gap surfaces as a 400 not a 500.
+    original_principal = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
+    )
     current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
     term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=600))
