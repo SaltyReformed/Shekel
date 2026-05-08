@@ -18,9 +18,9 @@ This version is a structural reorganisation of the roadmap; almost no content wa
    had drifted (Priority 4 mapped to Section 8, Priority 5 mapped to Section 6, Section 9
    claimed Priority 8 while the priority table also assigned Priority 8 to Multi-user). v5
    drops the Priority column and uses a single sequential top-level numbering scheme
-   ordered by execution priority. Subsection labels inside carried-forward sections preserve
-   their historical numbers (6.x, 7.x, 8A.x) for continuity with prior commits, design docs,
-   and tests; a "Numbering note" at the top of each such section calls this out.
+   ordered by execution priority. Subsection numbers follow their new parent section
+   (former 6.x is now 3.x, former 7.x is now 4.x, former 8A.x is now 5.x), so internal
+   cross-references stay aligned with the sections they point to.
 2. **Completed work moved to Appendix A.** All sections marked complete in v4-6 plus the
    newly completed Visualization and Reporting Overhaul and Spending Tracker and Companion
    View are summarised in Appendix A under their original section labels. Full historical
@@ -224,32 +224,27 @@ against is added setup complexity.
 
 ## 3. Smart Features
 
-> **Numbering note:** This section was Section 6 / Phase 9 in v4-6. Subsection labels (6.1
-> through 6.12) are preserved as historical tags for continuity with prior commits, design
-> docs, and tests. Cross-references inside this section use the historical labels;
-> cross-references to other top-level sections use the new v5 numbering.
-
 **Goal:** Make the app smarter about projecting future expenses based on historical patterns
 and detecting anomalies. The core additions are seasonal expense forecasting, rolling average
 estimates for non-seasonal variable expenses, inflation adjustments, and expense anomaly
 detection at the point of data entry. This section also includes third paycheck actionable
 suggestions, estimate confidence indicators, bill due date optimization analysis, and
-year-over-year seasonal comparisons. Budget variance analysis (6.5), annual expense calendar
-(6.6), and spending trend detection (6.7) computation engines and display layers were built
+year-over-year seasonal comparisons. Budget variance analysis (3.5), annual expense calendar
+(3.6), and spending trend detection (3.7) computation engines and display layers were built
 as part of Visualization and Reporting Overhaul (Appendix A.9), not in this section.
 
-### 6.1 Seasonal Expense Forecasting
+### 3.1 Seasonal Expense Forecasting
 
 This is the primary feature of Phase 9.
 
-#### 6.1.1 Concept
+#### 3.1.1 Concept
 
 For a handful of expenses with predictable seasonal variation (electricity, gas, water, and
 possibly 1-2 others), the user enters historical monthly amounts. The app uses this history to
 forecast future amounts, weighting recent years more heavily and detecting year-over-year
 trends.
 
-#### 6.1.2 Data Model
+#### 3.1.2 Data Model
 
 New table for historical expense data:
 
@@ -288,7 +283,7 @@ New columns on `budget.transaction_templates`:
     CHECK (seasonal_method IN ('weighted_trend', 'weighted_average'))
 ```
 
-#### 6.1.3 Historical Data Entry
+#### 3.1.3 Historical Data Entry
 
 - A "Seasonal History" tab or section on the transaction template edit page, visible only when
   `is_seasonal` is checked.
@@ -300,7 +295,7 @@ New columns on `budget.transaction_templates`:
   that will use this feature (approximately 3-5).
 - The form should support entering partial years (e.g., only the months you have data for).
 
-#### 6.1.4 Forecasting Engine
+#### 3.1.4 Forecasting Engine
 
 New service: `services/seasonal_forecast.py`
 
@@ -324,7 +319,7 @@ New service: `services/seasonal_forecast.py`
   amount), the actual is automatically added to the seasonal history table for that month/year.
   Future forecasts for the same month in subsequent years will incorporate this new data point.
 
-#### 6.1.5 Integration with Recurrence Engine
+#### 3.1.5 Integration with Recurrence Engine
 
 - When the recurrence engine generates a transaction for a seasonal template, it calls the
   forecasting engine to get the projected amount for that transaction's target month.
@@ -333,18 +328,18 @@ New service: `services/seasonal_forecast.py`
 - The generated transaction should display an indicator (icon or label) showing that the amount
   is a seasonal forecast, not a flat recurring amount.
 
-#### 6.1.6 Applicable Templates
+#### 3.1.6 Applicable Templates
 
 Expected to apply to approximately 3-5 expense templates: electricity, gas, water, and
 possibly 1-2 others (e.g., lawn care, heating oil). The feature is opt-in per template via the
 `is_seasonal` flag.
 
-### 6.2 Smart Estimates (Rolling Average)
+### 3.2 Smart Estimates (Rolling Average)
 
 For non-seasonal variable expenses (groceries, fuel, dining out), suggest a future estimate
 based on a rolling average of recent actuals.
 
-#### 6.2.1 Concept
+#### 3.2.1 Concept
 
 - When the user views a future transaction for a variable expense template, the app calculates
   the average of the last N actuals (suggested default: N = 6, configurable).
@@ -353,7 +348,7 @@ based on a rolling average of recent actuals.
 - This feature becomes useful only after enough actuals have been recorded. Display the
   suggestion only when at least 3 actuals exist for the template.
 
-#### 6.2.2 Implementation
+#### 3.2.2 Implementation
 
 - New service: `services/smart_estimate.py`
 - Pure function: given a template_id and a count N, query the last N transactions for that
@@ -361,7 +356,7 @@ based on a rolling average of recent actuals.
 - UI: A small "suggested: $X.XX" label next to the amount field on future transactions for
   eligible templates. Clicking it populates the amount field.
 
-### 6.3 Expense Inflation
+### 3.3 Expense Inflation
 
 - Per-template inflation settings: opt-in per expense template with a global default rate
   (stored in `auth.user_settings.default_inflation_rate`, already exists) and per-template
@@ -377,7 +372,7 @@ based on a rolling average of recent actuals.
   warned about double-counting. Recommended: seasonal templates should not also use explicit
   inflation. The trend component of the seasonal forecast serves this purpose.
 
-### 6.4 Deduction Inflation
+### 3.4 Deduction Inflation
 
 - Applied at open enrollment time (user-specified month, likely November or December for a
   January effective date).
@@ -387,22 +382,22 @@ based on a rolling average of recent actuals.
 - The user is prompted to review and confirm adjusted amounts rather than having them
   auto-applied.
 
-### 6.5 Budget Variance Analysis -- COMPLETE
+### 3.5 Budget Variance Analysis -- COMPLETE
 
 The computation engine and display layer were built as part of Visualization and Reporting
-Overhaul (Appendix A.9). See v4-6 Section 6.5 for the original spec.
+Overhaul (Appendix A.9). See v4-6 Section 3.5 for the original spec.
 
-### 6.6 Annual Expense Calendar -- COMPLETE
+### 3.6 Annual Expense Calendar -- COMPLETE
 
-Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 6.6
+Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 3.6
 for the original spec.
 
-### 6.7 Spending Trend Detection -- COMPLETE
+### 3.7 Spending Trend Detection -- COMPLETE
 
-Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 6.7
+Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 3.7
 for the original spec.
 
-### 6.8 Third Paycheck Suggestions
+### 3.8 Third Paycheck Suggestions
 
 - **Problem:** Biweekly pay results in two months per year containing a third paycheck. The
   calendar service detects these months (`is_third_paycheck_month` flag on the year overview,
@@ -437,7 +432,7 @@ for the original spec.
   Benefits from the debt summary (Appendix A.7 task 5.12) and savings goal trajectory
   (Appendix A.7 task 5.15) features already implemented.
 
-### 6.9 Estimate Confidence Indicator
+### 3.9 Estimate Confidence Indicator
 
 - **Problem:** Every future transaction in the grid displays an estimated amount, but the
   reliability of that estimate varies dramatically depending on its source. A seasonal
@@ -447,10 +442,10 @@ for the original spec.
 - **Feature:** A three-tier confidence indicator displayed on future transactions in the grid
   and transaction detail views.
 - **Confidence tiers:**
-  1. **High confidence (green):** Seasonal forecast (6.1) with 3+ years of data for the
-     target month, OR rolling average (6.2) with 6+ actuals.
+  1. **High confidence (green):** Seasonal forecast (3.1) with 3+ years of data for the
+     target month, OR rolling average (3.2) with 6+ actuals.
   2. **Medium confidence (yellow):** Seasonal forecast with 1-2 years of data, OR rolling
-     average with 3-5 actuals, OR inflation adjustment (6.3) applied.
+     average with 3-5 actuals, OR inflation adjustment (3.3) applied.
   3. **Low confidence (gray):** Template's static base amount with no supporting actuals, no
      seasonal history, and no inflation adjustment.
   If multiple sources apply, the highest-confidence source wins.
@@ -465,13 +460,13 @@ for the original spec.
   actuals? Count paid transactions. Does the template have inflation enabled? Apply tier
   rules. Supports a batch mode (list of template_id/year/month tuples, two bulk queries,
   evaluate in memory) to avoid N+1 queries during grid rendering.
-- **No new data model.** Computed from existing data: `seasonal_history` rows (6.1), paid
+- **No new data model.** Computed from existing data: `seasonal_history` rows (3.1), paid
   transaction counts, and template flags.
-- **Dependency:** Requires 6.1 (seasonal history table, `is_seasonal` flag) and 6.2 (rolling
-  average service for actual count lookup). Benefits from 6.3 (inflation flag adds a
+- **Dependency:** Requires 3.1 (seasonal history table, `is_seasonal` flag) and 3.2 (rolling
+  average service for actual count lookup). Benefits from 3.3 (inflation flag adds a
   medium-confidence signal).
 
-### 6.10 Bill Due Date Optimization
+### 3.10 Bill Due Date Optimization
 
 - **Problem:** When expenses cluster unevenly across pay periods, one period may have a
   dangerously low projected end balance while the adjacent period has comfortable surplus.
@@ -481,7 +476,7 @@ for the original spec.
   The app advises but does not automate -- the user decides how to act (change the due date,
   use the Credit/Credit Payback feature, or transfer from savings).
 
-#### 6.10.1 Data Model
+#### 3.10.1 Data Model
 
 New column on `budget.transaction_templates`:
 
@@ -494,7 +489,7 @@ obligations (mortgage, loan payments, rent) are `FALSE`. Discretionary or provid
 expenses (groceries, subscriptions, some utilities) can be marked `TRUE` by the user on the
 template edit form.
 
-#### 6.10.2 Analysis Engine
+#### 3.10.2 Analysis Engine
 
 New service: `services/due_date_optimizer.py`
 
@@ -524,7 +519,7 @@ New service: `services/due_date_optimizer.py`
 - **Pure function:** Receives pre-loaded period and transaction data. Does not query the
   database.
 
-#### 6.10.3 Display
+#### 3.10.3 Display
 
 - **Dashboard integration:** When the optimizer detects an actionable imbalance in the next 2
   pay periods, show a brief alert in the dashboard's "Alerts / Needs Attention" section:
@@ -535,40 +530,40 @@ New service: `services/due_date_optimizer.py`
   recommended action. All suggestions are informational -- no action buttons that automate
   the move.
 
-#### 6.10.4 Dependency
+#### 3.10.4 Dependency
 
 - **Requires:** Dashboard service (Appendix A.9) for alert integration; existing balance
   calculator for projected end balances.
-- **No dependency on 6.1-6.4.** Works with whatever amounts are in the generated
+- **No dependency on 3.1-3.4.** Works with whatever amounts are in the generated
   transactions.
 - **Benefits from:** Section 4 (notifications) for delivering imbalance alerts.
 
-### 6.11 Year-over-Year Seasonal Comparison
+### 3.11 Year-over-Year Seasonal Comparison
 
 - **Problem:** Seasonal forecasts are opaque. The user sees a forecasted amount for a future
   seasonal bill but has no easy way to verify whether it feels right without manually looking
   up last year's actual.
 - **Feature:** When viewing a future transaction for a seasonal template, show the prior
-  year's actual alongside this year's forecast. Example: "Jul 2025 actual: $187.32 --
+  year's actual alongside this year's forecast. Example: "Jul 2025 actual: $184.32 --
   Forecast: $195.00 (+4.1%)." If no prior year actual exists, show: "No prior year data for
   [month]."
 - **Display locations:**
   - **Grid transaction cell:** Tooltip or expanded detail view shows the comparison.
   - **Transaction quick edit / detail:** Small info line below the amount field.
-  - **Seasonal history entry form (6.1.3):** Highlight cells that already have prior year data
+  - **Seasonal history entry form (3.1.3):** Highlight cells that already have prior year data
     and show the year-over-year change as the user enters new values. Catches data entry
     errors (e.g., $1,870 instead of $187).
-- **Implementation:** Add a function to `services/seasonal_forecast.py` (created in 6.1.4):
+- **Implementation:** Add a function to `services/seasonal_forecast.py` (created in 3.1.4):
   `get_prior_year_comparison(template_id, target_year, target_month)`. Returns a dict:
   `{prior_year, prior_amount, forecast_amount, change_pct}` or `None` if no prior year data.
   Supports batch lookup (list of template_id/year/month tuples, one bulk query) for grid
   rendering.
-- **No new data model.** Reads from the `seasonal_history` table created by 6.1.
-- **Dependency:** Requires 6.1 (seasonal history table and forecasting engine). Should be
-  implemented after 6.1 is complete and the user has entered at least one year of seasonal
+- **No new data model.** Reads from the `seasonal_history` table created by 3.1.
+- **Dependency:** Requires 3.1 (seasonal history table and forecasting engine). Should be
+  implemented after 3.1 is complete and the user has entered at least one year of seasonal
   history.
 
-### 6.12 Expense Anomaly Detection
+### 3.12 Expense Anomaly Detection
 
 - **Problem:** When a recurring bill comes in significantly different from its expected amount,
   the user may not notice until they've already confirmed the transaction. Billing errors,
@@ -577,16 +572,16 @@ New service: `services/due_date_optimizer.py`
   mark-as-paid), the app compares the actual to the expected amount and flags significant
   deviations inline before the transaction is confirmed.
 
-#### 6.12.1 Expected Amount Resolution
+#### 3.12.1 Expected Amount Resolution
 
 The comparison uses the most specific estimate source available, checked in priority order:
 
-1. **Seasonal forecast (6.1):** If the template has `is_seasonal=True` and a forecast is
+1. **Seasonal forecast (3.1):** If the template has `is_seasonal=True` and a forecast is
    available for the transaction's target month.
-2. **Rolling average (6.2):** If the template has 3+ paid actuals.
+2. **Rolling average (3.2):** If the template has 3+ paid actuals.
 3. **Template base amount:** The template's static `amount` field.
 
-#### 6.12.2 Anomaly Threshold
+#### 3.12.2 Anomaly Threshold
 
 An actual amount is flagged as anomalous when it deviates from the expected amount by more
 than a configurable percentage threshold.
@@ -595,7 +590,7 @@ than a configurable percentage threshold.
 - Global threshold (all templates). Per-template override deferred to a future enhancement.
 - Both over and under deviations are flagged.
 
-#### 6.12.3 Detection Timing and Display
+#### 3.12.3 Detection Timing and Display
 
 - **Primary trigger -- mark-as-paid flow:** When the user enters an actual amount during
   mark-as-paid (grid or dashboard), the anomaly check runs before the transaction is
@@ -610,50 +605,47 @@ than a configurable percentage threshold.
 - **Dashboard mark-as-paid:** Same anomaly check and two-step confirmation applies to the
   dashboard's mark-as-paid flow (built in Appendix A.9).
 
-#### 6.12.4 Implementation
+#### 3.12.4 Implementation
 
 - **New service:** `services/anomaly_detection.py`
 - **Primary function:** `check_anomaly(template_id, actual_amount, target_year, target_month,
   threshold_pct)` -- returns an `AnomalyResult` with fields: `is_anomalous` (bool),
   `expected_amount` (Decimal), `source` (str), `deviation_pct` (float), `direction` (str:
   'over' or 'under').
-- **Resolution logic:** Checks sources in priority order (6.12.1). Calls
+- **Resolution logic:** Checks sources in priority order (3.12.1). Calls
   `seasonal_forecast.get_forecast()` if seasonal, then `smart_estimate.get_rolling_average()`
   if actuals exist, then falls back to template base amount.
 - **Integration:** The transaction route's mark-done handler calls `check_anomaly()` when
   `actual_amount` is provided. If anomalous and `force` is not set, the response includes the
   warning partial. If `force=true`, the transaction is committed normally.
-- **Shared utility:** Tasks 6.9 and 6.12 both resolve "best estimate source for this
+- **Shared utility:** Tasks 3.9 and 3.12 both resolve "best estimate source for this
   template" in the same priority order. A shared `_resolve_best_estimate(template_id, year,
   month)` utility function avoids duplicating this logic.
-- **No retroactive review screen.** Budget variance analysis (6.5, completed) already
+- **No retroactive review screen.** Budget variance analysis (3.5, completed) already
   provides retroactive visibility into estimate-vs-actual gaps.
 
-#### 6.12.5 Interaction with Other Features
+#### 3.12.5 Interaction with Other Features
 
-- **6.1 course correction:** When a seasonal transaction is marked paid, 6.1.4 writes the
+- **3.1 course correction:** When a seasonal transaction is marked paid, 3.1.4 writes the
   actual to seasonal_history. Anomaly detection runs before this write. If the user confirms
   an anomalous amount, it still gets recorded -- the actual is real data regardless.
-- **6.2 smart estimates:** An anomalous-but-confirmed actual shifts the rolling average. Over
+- **3.2 smart estimates:** An anomalous-but-confirmed actual shifts the rolling average. Over
   time, if the new amount becomes the norm, future occurrences stop being flagged.
-- **6.9 estimate confidence:** The anomaly service can reuse the confidence service's source
+- **3.9 estimate confidence:** The anomaly service can reuse the confidence service's source
   resolution logic (or both use the shared utility).
 
-#### 6.12.6 Dependency
+#### 3.12.6 Dependency
 
-- **Requires:** 6.1 (seasonal forecast as comparison source) and 6.2 (rolling average as
-  comparison source). Can function with only the template base amount if 6.1 and 6.2 are not
+- **Requires:** 3.1 (seasonal forecast as comparison source) and 3.2 (rolling average as
+  comparison source). Can function with only the template base amount if 3.1 and 3.2 are not
   yet implemented, but value is significantly reduced.
-- **Benefits from:** 6.9 (shared estimate source resolution logic).
+- **Benefits from:** 3.9 (shared estimate source resolution logic).
 - **Requires:** Dashboard mark-as-paid flow (Appendix A.9) for dashboard integration. Grid
   integration depends only on the existing mark-as-paid endpoint.
 
 ---
 
 ## 4. Notifications
-
-> **Numbering note:** This section was Section 7 / Phase 10 in v4-6. Subsection labels (7.1
-> through 7.4 and their nested numbering) are preserved as historical tags.
 
 **Goal:** Alert the user to important financial events without requiring them to manually scan
 the grid or dashboard. Provide 15 notification types across 6 logical groups, delivered in-app
@@ -662,9 +654,9 @@ deferred sub-phase once the self-hosted mail server is operational. All notifica
 default to in-app enabled and email disabled. Users manage preferences through a grouped
 settings UI with expandable sections at `/settings/notifications`.
 
-### 7.1 Notification Infrastructure
+### 4.1 Notification Infrastructure
 
-#### 7.1.1 Data Model
+#### 4.1.1 Data Model
 
 The `system.notifications` and `system.notification_settings` tables are already stubbed in the
 schema. The implementation should include:
@@ -729,7 +721,7 @@ system.notification_email_preferences
 - updated_at: TIMESTAMPTZ DEFAULT NOW()
 ```
 
-#### 7.1.2 Notification Types
+#### 4.1.2 Notification Types
 
 Organized into 6 groups matching the settings UI layout.
 
@@ -765,7 +757,7 @@ Organized into 6 groups matching the settings UI layout.
 5. **Missed payment detection:** Triggered when a recurring transaction passes its due date and
    remains in Projected status (not marked Paid). Catches genuinely missed payments and
    transactions the user forgot to reconcile. Detection runs during the daily scheduled check
-   (7.1.3). Severity: warning initially, escalates to critical after a configurable number of
+   (4.1.3). Severity: warning initially, escalates to critical after a configurable number of
    days (`missed_payment_escalation_days`, default: 3). Auto-resolved when the transaction is
    marked Paid.
 6. **Unreconciled period aging:** Triggered when a pay period's end date has passed and the
@@ -817,9 +809,9 @@ Organized into 6 groups matching the settings UI layout.
     configurable threshold (`template_change_threshold_pct`, default: 15%). Example: "Your
     T-Mobile bill has averaged $95.20 over the last 3 months, but the template amount is
     $85.00 (+12%). Update the template?" Links to the template edit page. Bridges the gap
-    between anomaly detection (Section 3 task 6.12, which catches one-off spikes) and the user
+    between anomaly detection (Section 3 task 3.12, which catches one-off spikes) and the user
     forgetting to update a template after a legitimate rate change. Depends on Section 3 task
-    6.2 (rolling average engine). Runs during the daily scheduled check.
+    3.2 (rolling average engine). Runs during the daily scheduled check.
 
 **Group 6: Digests**
 
@@ -843,7 +835,7 @@ Future notification types (not in initial build):
   escrow analysis adjustment) -- depends on whether account parameter architecture stores
   future effective dates for rate changes
 
-#### 7.1.3 Persist Dashboard Alerts as Notifications
+#### 4.1.3 Persist Dashboard Alerts as Notifications
 
 The dashboard (Appendix A.9) computes three alert types ephemerally (stale anchors, negative
 projected balances, overdue reconciliation). When the notification system is implemented,
@@ -861,7 +853,7 @@ Mapping:
   thresholds. A threshold of $0.00 produces equivalent behavior.
 - Overdue reconciliation alert -> covered by unreconciled period aging (#6).
 
-#### 7.1.4 Trigger Mechanism
+#### 4.1.4 Trigger Mechanism
 
 - **On transaction edit:** After any transaction is created, updated, or status-changed, the
   balance roll-forward is recalculated. At this point, check projected balances against
@@ -876,7 +868,7 @@ Mapping:
 - **On savings goal update:** When a savings account balance changes (via transfer or anchor
   true-up), check goal progress for milestone notifications (#7) and pace alerts (#8).
 
-#### 7.1.5 Deduplication
+#### 4.1.5 Deduplication
 
 - The system should not generate duplicate notifications for the same event. Use a combination
   of notification_type + related_entity_type + related_entity_id + a time window to prevent
@@ -889,7 +881,7 @@ Mapping:
 - Savings milestones use the milestone percentage as part of the deduplication key (reaching
   50% only fires once per goal, even if the balance fluctuates around the threshold).
 
-#### 7.1.6 Snooze
+#### 4.1.6 Snooze
 
 - Any notification can be snoozed. Snoozing sets `snoozed_until` to a future timestamp.
 - Snoozed notifications are hidden from the dropdown and the `/notifications` page until the
@@ -902,7 +894,7 @@ Mapping:
 - Snoozing does not prevent deduplication. If the same event would generate a new notification
   while the original is snoozed, no duplicate is created.
 
-#### 7.1.7 Auto-Resolve
+#### 4.1.7 Auto-Resolve
 
 - Notifications are automatically marked resolved (`resolved_at` set to current timestamp)
   when the underlying condition clears. Resolved notifications are visually distinct in the UI
@@ -926,9 +918,9 @@ Mapping:
   - Weekly summary (#13): auto-resolved after 7 days (replaced by the next digest).
   - Payday reconciliation reminder (#14): auto-resolved when the period is reconciled.
 
-### 7.2 In-App Delivery
+### 4.2 In-App Delivery
 
-#### 7.2.1 Notification Bell and Dropdown
+#### 4.2.1 Notification Bell and Dropdown
 
 - **Notification bell icon** in the app header (Bootstrap navbar). Displays an unread count
   badge. The badge counts only unread, non-snoozed, non-resolved notifications.
@@ -943,7 +935,7 @@ Mapping:
   to the account dashboard; a template change detection links to the template edit page).
 - **"View all" link** at the bottom of the dropdown navigates to `/notifications`.
 
-#### 7.2.2 Notifications Page (`/notifications`)
+#### 4.2.2 Notifications Page (`/notifications`)
 
 - Full-page view of all notifications.
 - **Filters:** by notification type, by severity (info/warning/critical), by date range, by
@@ -955,7 +947,7 @@ Mapping:
 - **No analytics or trends.** This is a filtered list, not a reporting tool. Historical
   analysis of notification patterns can be done via direct database queries if needed.
 
-### 7.3 Settings UI (`/settings/notifications`)
+### 4.3 Settings UI (`/settings/notifications`)
 
 - Located as a new tab or section in the existing Settings area.
 - **Layout: Option B -- grouped settings with expandable sections.** Notification types are
@@ -984,7 +976,7 @@ Mapping:
   groups): preferred delivery time, delivery window start, delivery window end. Greyed out
   until mail server is configured.
 
-### 7.4 Email Delivery (Deferred Sub-phase)
+### 4.4 Email Delivery (Deferred Sub-phase)
 
 - **Dependency:** Requires a self-hosted mail server to be operational. This is infrastructure
   work outside the app (OPNsense mail features or a dedicated mail service on the Arch Linux
@@ -1010,9 +1002,6 @@ Mapping:
 
 ## 5. Data Export
 
-> **Numbering note:** This section was Section 8A in v4-6. Subsection labels (8A.1 through
-> 8A.3) are preserved as historical tags.
-
 **Goal:** Provide data export capabilities for use in external tools, tax preparation, and
 personal record-keeping. This section is a data management concern independent of the
 visualization and reporting overhaul (which built CSV export for analytics views as part of
@@ -1024,7 +1013,7 @@ Appendix A.9).
 - **Feature:** Export functionality accessible from a settings or reports page. Three export
   types:
 
-### 8A.1 CSV Export
+### 5.1 CSV Export
 
 Export transactions for a configurable date range. Columns include: date, pay period,
 transaction name, category, estimated amount, actual amount, status, account, and notes.
@@ -1032,14 +1021,14 @@ Transfers include both the transfer record and the shadow transaction detail. Th
 a date range and optionally filters by account, category, or status. The export downloads as
 a `.csv` file.
 
-### 8A.2 PDF Export
+### 5.2 PDF Export
 
 Generate printable PDF reports for account dashboards, payoff calculator results, amortization
 schedules, and the year-end financial summary (Appendix A.9). These are formatted for sharing
 with a financial advisor, lender, or for personal record-keeping. Each exportable page gets a
 "Download PDF" button.
 
-### 8A.3 Full Data Backup
+### 5.3 Full Data Backup
 
 A complete export of all user data as a structured file (JSON or SQL dump) that can be used
 for disaster recovery without requiring database-level access. Triggered from the settings
@@ -1172,9 +1161,9 @@ service changes.
 Replaced the existing `/charts` page with two major additions: a summary dashboard at `/`
 (now the app's landing page) and an analytics page at `/analytics` (tabbed container with
 calendar, year-end summary, budget variance, and spending trends). Built the computation
-engines AND display layers for budget variance analysis (originally 6.5), annual expense
-calendar with third-paycheck month detection (originally 6.6), and spending trend detection
-(originally 6.7). Added CSV export for all analytics views (analytics-level CSV; full
+engines AND display layers for budget variance analysis (spec'd at Section 3.5), annual
+expense calendar with third-paycheck month detection (Section 3.6), and spending trend
+detection (Section 3.7). Added CSV export for all analytics views (analytics-level CSV; full
 transaction-level export remains in Section 5). Fixed the x-axis date format bug (8.0a). Task
 8.0b (inaccurate balance values) excluded per the scope document; no bug found in code audit.
 Supporting documents: `docs/section8_scope.md`, `docs/implementation_plan_section8.md`. See
@@ -1201,13 +1190,13 @@ legacy Credit status (entry-level credit replaces it). Supporting document:
 | ------------------------------------- | ------------------------- | ---------------------------------------------------------------------- |
 | Scenarios (named, clone, compare)     | v3 Phase 7                | Indefinitely deferred; effort not worth reward                         |
 | Paycheck calibration                  | fixes_improvements.md     | Completed as Appendix A.1 task 3.10                                    |
-| Fluctuating/seasonal bills            | fixes_improvements.md     | Addressed by Section 3 task 6.1 (seasonal forecasting, planned)        |
+| Fluctuating/seasonal bills            | fixes_improvements.md     | Addressed by Section 3 task 3.1 (seasonal forecasting, planned)        |
 | Multi-user / kid accounts             | v2 Phase 6                | Section 6; far future; schema ready                                    |
 | Checking account APY/interest         | fixes_improvements.md     | User confirmed checking APY is negligible; not implementing            |
 | Recurrence pattern audit              | Roadmap v4, task 5.2      | Removed; section 3.2 confirmed all patterns are correct                |
 | Actual paycheck value entry           | Roadmap v4, task 5.3      | Removed; superseded by paycheck calibration (Appendix A.1 task 3.10)   |
 | implementation_plan_section5.md       | Roadmap v4.1, Section 5   | Defunct; Section 5 completed April 2026 without this plan (a new implementation plan was written from scratch). |
-| CSV export                            | v2 Phase 6                | Listed in v2 Phase 6 (Hardening & Ops) but not implemented. Moved to Section 5 task 8A.1. |
+| CSV export                            | v2 Phase 6                | Listed in v2 Phase 6 (Hardening & Ops) but not implemented. Moved to Section 5 task 5.1. |
 | Account Types editing                 | fixes_improvements.md     | Completed as Appendix A.4 settings UI enhancement (edit path added with metadata flags) |
 | Salary button duplication             | fixes_improvements.md     | Completed: Appendix A.3 task 4.11 (`/salary/{id}/edit` fixed March 2026); `/salary` page fix completed as Appendix A.6 task 5A.3 (April 2026) |
 | Grid estimated vs. actual             | fixes_improvements.md     | Completed as Appendix A.6 task 5A.1 (April 2026)                       |
@@ -1227,9 +1216,9 @@ legacy Credit status (entry-level credit replaces it). Supporting document:
 | 4.0     | 2026-03-24 | Post-production roadmap: added critical bug fix sprint, UX/grid overhaul phase, recurring transaction improvements phase; rescoped Phase 9 with seasonal expense forecasting; rescoped Phase 10 with tiered notification system; added multi-user as far-future placeholder; established priority ordering based on production usage feedback. |
 | 4.0.1   | 2026-03-24 | Hosting updated to Arch Linux desktop with Docker/Nginx/Cloudflare Tunnel; paycheck calibration feature added as section 3.10; seasonal history data model updated with billing period dates indexed by consumption period midpoint. |
 | 4.1     | 2026-03-27 | Section 3 marked complete. Section 4 expanded with production feedback (tasks 4.11-4.17). Section 5 retitled to "Debt and Account Improvements" with task 5.1 expanded to all debt types and tasks 5.2/5.3 removed. |
-| 4.2     | 2026-03-30 | Sections 3A, 4, 4A, 4B marked complete. Section 5 expanded with seven new tasks (5.6-5.12) and four more (5.13-5.16). Section 6 expanded with 6.5-6.7. Section 7 notification types expanded. New Section 8 added (Dashboard, Reporting, and Data Management) with subsections 8.1-8.4. |
+| 4.2     | 2026-03-30 | Sections 3A, 4, 4A, 4B marked complete. Section 5 expanded with seven new tasks (5.6-5.12) and four more (5.13-5.16). Section 6 expanded with 3.5-3.7. Section 7 notification types expanded. New Section 8 added (Dashboard, Reporting, and Data Management) with subsections 8.1-8.4. |
 | 4.3     | 2026-03-31 | New Section 5A (Cleanup Sprint, five tasks). Section 8 retitled to "Visualization and Reporting Overhaul" with chart bug fixes 8.0a/8.0b prerequisite. Task 8.4 separated into Section 8A (Data Export). Phase ordering updated. |
-| 4.4     | 2026-04-07 | Sections 5A and 5 marked complete. Mobile responsiveness added as completed unplanned work. Section 8 marked in progress; priority moved 6 -> 4. Five new tasks added to Phase 9: 6.8-6.12. |
+| 4.4     | 2026-04-07 | Sections 5A and 5 marked complete. Mobile responsiveness added as completed unplanned work. Section 8 marked in progress; priority moved 6 -> 4. Five new tasks added to Phase 9: 3.8-3.12. |
 | 4.5     | 2026-04-07 | Section 7 fully rescoped: notification types expanded from 7 to 15 across 6 named groups; data model expanded with explicit columns for all configurable parameters; new infrastructure subsections (snooze, auto-resolve, persist dashboard alerts); in-app delivery split into bell/dropdown and full page; settings UI Option B grouped expandable sections; email delivery expanded with delivery window and batching. |
 | 4.6     | 2026-04-09 | New Section 9 added (Spending Tracker and Companion View): sub-transaction entry tracking, entry-level credit card workflow, companion user role, balance calculator extended with entry-aware effective amount. Multi-user (Section 10) bumped from Priority 8 to Priority 9. Sections 10-12 renumbered. |
-| 5.0     | 2026-05-06 | Major reorganisation. Numbering: collapsed the dual Priority/Section system into a single sequential top-level track in execution order; subsection labels (6.x, 7.x, 8A.x) preserved as historical tags within carried-forward sections for continuity with prior commits and design docs. Completions: marked Visualization and Reporting Overhaul (was Priority 4 / Section 8, now Appendix A.9) and Spending Tracker and Companion View (was Priority 8 / Section 9, now Appendix A.10) complete (May 2026). Completed work relocated to Appendix A with original section labels preserved. New Section 1 (Security Remediation) added, linking to `docs/audits/security-2026-04-15/remediation-plan.md` (in progress, 16 of 56 commits merged). New Section 2 (Financial Calculation Consistency) added with three sequenced stages (Stage A committed; Stages B and C decision-pending). Execution order for remaining work: Security, Financial Consistency, Smart Features, Notifications, Data Export, Multi-User. Phase 10 (was Section 7) became Section 4. Section 8A (Data Export) became Section 5. Section 10 (Multi-User) became Section 6. Section 11 (Deferred Items Reference) became Appendix B. Supersedes `project_roadmap_v4-6.md` (preserved as historical archive). |
+| 5.0     | 2026-05-06 | Major reorganisation. Numbering: collapsed the dual Priority/Section system into a single sequential top-level track in execution order. Subsection numbers renumbered to follow their new parent: former 6.x became 3.x (Smart Features), former 7.x became 4.x (Notifications), former 8A.x became 5.x (Data Export). Internal cross-references updated to match. Completions: marked Visualization and Reporting Overhaul (was Priority 4 / Section 8, now Appendix A.9) and Spending Tracker and Companion View (was Priority 8 / Section 9, now Appendix A.10) complete (May 2026). Completed work relocated to Appendix A with original v4-6 section labels preserved on the appendix headings for cross-reference with prior commits and design docs. New Section 1 (Security Remediation) added, linking to `docs/audits/security-2026-04-15/remediation-plan.md` (in progress, 16 of 56 commits merged). New Section 2 (Financial Calculation Consistency) added with three sequenced stages (Stage A committed; Stages B and C decision-pending). Execution order for remaining work: Security, Financial Consistency, Smart Features, Notifications, Data Export, Multi-User. Phase 10 (was Section 7) became Section 4. Section 8A (Data Export) became Section 5. Section 10 (Multi-User) became Section 6. Section 11 (Deferred Items Reference) became Appendix B. Supersedes `project_roadmap_v4-6.md` (preserved as historical archive). |
