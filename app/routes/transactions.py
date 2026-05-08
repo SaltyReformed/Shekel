@@ -163,6 +163,49 @@ def _get_owned_transaction(txn_id):
     return txn
 
 
+def _verify_owned_fks_in_update(data):
+    """Verify cross-user FK ownership for the PATCH update payload.
+
+    Used by :func:`update_transaction` to reject ``pay_period_id``
+    and ``category_id`` values that belong to another user before
+    any state-changing work runs.  Without this probe an
+    authenticated owner could submit a victim's ``pay_period_id``
+    or ``category_id`` and the unfiltered ``setattr`` loop in
+    :func:`update_transaction` would silently re-parent the
+    transaction into the victim's namespace -- the FK constraint
+    passes because the row exists, just under another user, and
+    PostgreSQL never raises ``IntegrityError``.
+
+    Audit reference: F-029 / commit C-29 of the 2026-04-15
+    security remediation plan.  Mirrors the route-boundary FK
+    probes already in :func:`create_inline` and
+    :func:`create_transaction`; ``status_id`` is a reference table
+    FK (not user-scoped) and so does not need an ownership check.
+    The 404 strings deliberately match the messages used by the
+    create routes so the client cannot tell whether the row does
+    not exist or belongs to another user (security response rule:
+    "404 for both not found and not yours").
+
+    Args:
+        data: The schema-loaded PATCH payload.  ``pay_period_id``
+            and ``category_id`` are the only user-scoped FK keys
+            inspected; absent keys are skipped.
+
+    Returns:
+        ``None`` on success.  On failure, a Flask response tuple
+        ``(body, 404)`` the caller returns directly to HTMX.
+    """
+    if "pay_period_id" in data:
+        period = db.session.get(PayPeriod, data["pay_period_id"])
+        if period is None or period.user_id != current_user.id:
+            return "Pay period not found", 404
+    if "category_id" in data:
+        cat = db.session.get(Category, data["category_id"])
+        if cat is None or cat.user_id != current_user.id:
+            return "Category not found", 404
+    return None
+
+
 def _get_accessible_transaction_for_status(txn_id):
     """Fetch a transaction accessible to the current user for status changes.
 
@@ -286,6 +329,24 @@ def update_transaction(txn_id):
          the same 409 + conflict cell.  The two layers together
          close every interleaving the optimistic-lock contract is
          meant to cover.
+
+    Route-boundary FK ownership (commit C-29 / F-029 of the
+    2026-04-15 security remediation plan): when the schema accepts
+    a user-scoped FK -- ``pay_period_id`` or ``category_id`` -- the
+    submitted id is verified against ``current_user.id`` here,
+    before any state-changing work runs.  Without this probe an
+    authenticated owner could submit another user's
+    ``pay_period_id`` or ``category_id`` and the unfiltered
+    ``setattr`` loop would silently re-parent the transaction into
+    the victim's namespace (the FK row exists, the FK constraint
+    passes, and PostgreSQL never raises ``IntegrityError``).
+    ``status_id`` is a reference table FK (not user-scoped) and so
+    does not need an ownership check.  The probe runs before the
+    transfer-shadow branch so a malicious request that targets a
+    transfer shadow with a cross-user FK is rejected even though
+    the transfer-shadow path drops ``pay_period_id`` silently --
+    matching the layered defense ``transfers.update_transfer``
+    received in commit C-27.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -297,6 +358,17 @@ def update_transaction(txn_id):
         return jsonify(errors=errors), 400
 
     data = _update_schema.load(request.form)
+
+    # Route-boundary FK ownership (commit C-29 / F-029).  Reject
+    # cross-user ``pay_period_id`` / ``category_id`` before the
+    # stale-form check or the transfer-shadow branch so the
+    # security response (404) takes precedence over the UX
+    # response (409 conflict cell) when the same request triggers
+    # both.  See :func:`_verify_owned_fks_in_update` for the
+    # threat-model details.
+    fk_error = _verify_owned_fks_in_update(data)
+    if fk_error is not None:
+        return fk_error
 
     # Stale-form check.  Performed before any mutation so audit-log
     # triggers record only successful edits.  Conditional on the
