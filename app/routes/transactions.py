@@ -6,10 +6,10 @@ Returns HTMX fragments for inline editing in the grid.
 """
 
 import logging
-from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
+from marshmallow import ValidationError as MarshmallowValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -24,6 +24,7 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import Status
 from app.schemas.validation import (
+    MarkDoneSchema,
     TransactionUpdateSchema,
     TransactionCreateSchema,
     InlineTransactionCreateSchema,
@@ -56,6 +57,13 @@ transactions_bp = Blueprint("transactions", __name__)
 _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
+
+# Schema for the optional ``actual_amount`` form field on
+# ``mark_done``.  Single instance per process (Marshmallow contract);
+# replaces the per-branch raw ``Decimal(request.form.get("actual_amount"))``
+# parse the route used before commit C-27 / F-042 / F-162 of the
+# 2026-04-15 security remediation plan.
+_mark_done_schema = MarkDoneSchema()
 
 
 def _render_cell(txn, **extra):
@@ -418,7 +426,12 @@ def mark_done(txn_id):
     Automatically picks the correct status based on transaction type.
     For entry-capable transactions with entries, auto-computes
     actual_amount from the entry sum.  For all others, accepts an
-    optional actual_amount from the form.
+    optional actual_amount from the form -- parsed via
+    :class:`MarkDoneSchema` so a malformed numeric value returns a
+    clean 400 with the Marshmallow per-field message instead of the
+    legacy ``"Invalid actual amount"`` translation, and a negative
+    value is rejected at the schema tier (commit C-27 / F-042 /
+    F-162 of the 2026-04-15 security remediation plan).
 
     Optimistic locking (commit C-18 / F-010): the button-click path
     has no form-side ``version_id`` to compare, so the optimistic
@@ -430,6 +443,19 @@ def mark_done(txn_id):
     txn = _get_accessible_transaction_for_status(txn_id)
     if txn is None:
         return "Not found", 404
+
+    # Validate the optional ``actual_amount`` form field once,
+    # before branching on transfer detection, so both code paths
+    # apply identical validation.  ``MarkDoneSchema`` strips empty
+    # strings via its pre_load hook so the missing-field UX (a
+    # button click with no body) yields ``actual_amount`` absent
+    # from the loaded dict; that branches into "leave the column
+    # untouched" below, matching the legacy behaviour.
+    try:
+        mark_done_data = _mark_done_schema.load(request.form)
+    except MarshmallowValidationError as exc:
+        return jsonify(errors=exc.messages), 400
+    actual_amount = mark_done_data.get("actual_amount")
 
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
@@ -447,12 +473,8 @@ def mark_done(txn_id):
             "paid_at": db.func.now(),
         }
 
-        actual = request.form.get("actual_amount")
-        if actual:
-            try:
-                svc_kwargs["actual_amount"] = Decimal(actual)
-            except (InvalidOperation, ValueError, ArithmeticError):
-                return "Invalid actual amount", 400
+        if actual_amount is not None:
+            svc_kwargs["actual_amount"] = actual_amount
 
         try:
             transfer_service.update_transfer(
@@ -515,12 +537,8 @@ def mark_done(txn_id):
         txn.status_id = status_id
         txn.paid_at = db.func.now()
         # Accept an optional manual actual amount from the form.
-        actual = request.form.get("actual_amount")
-        if actual:
-            try:
-                txn.actual_amount = Decimal(actual)
-            except (InvalidOperation, ValueError, ArithmeticError):
-                return "Invalid actual amount", 400
+        if actual_amount is not None:
+            txn.actual_amount = actual_amount
 
     try:
         db.session.commit()

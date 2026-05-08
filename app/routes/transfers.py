@@ -127,7 +127,24 @@ def new_transfer_template():
 @login_required
 @require_owner
 def create_transfer_template():
-    """Create a new transfer template with optional recurrence rule."""
+    """Create a new transfer template with optional recurrence rule.
+
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): every user-scoped FK
+    accepted from the form -- ``from_account_id``, ``to_account_id``,
+    ``category_id`` -- is verified against ``current_user.id`` before
+    the row is persisted.  ``start_period_id`` is checked deeper in
+    the function only when the recurrence pattern is
+    ``EVERY_N_PERIODS`` (used to compute ``offset_periods``); the
+    follow-up one-time-transfer branch (``is_one_time and
+    start_period_id``) re-fetches the period and verifies ownership
+    a second time, so a malicious ``start_period_id`` cannot leak
+    into the transfer service.  The flash + redirect UX matches the
+    existing template-form pattern; the security response rule
+    (404 for both not-found and not-yours) is preserved indirectly
+    by re-rendering the same form page rather than confirming
+    whether the FK exists for someone else.
+    """
     errors = _create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
@@ -135,15 +152,18 @@ def create_transfer_template():
 
     data = _create_schema.load(request.form)
 
-    # Validate account ownership.
-    from_acct = db.session.get(Account, data.get("from_account_id"))
-    to_acct = db.session.get(Account, data.get("to_account_id"))
-    if not from_acct or from_acct.user_id != current_user.id:
-        flash("Invalid source account.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
-    if not to_acct or to_acct.user_id != current_user.id:
-        flash("Invalid destination account.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
+    # --- Route-boundary FK ownership ---
+    # Single-return loop so adding a future FK does not push the
+    # function past pylint's too-many-returns threshold.  The
+    # message-per-FK detail is preserved via the per-row label.
+    for model, pk, label in (
+        (Account, data.get("from_account_id"), "source account"),
+        (Account, data.get("to_account_id"), "destination account"),
+        (Category, data.get("category_id"), "category"),
+    ):
+        if not _user_owns(model, pk):
+            flash(f"Invalid {label}.", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
 
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
@@ -367,17 +387,33 @@ def update_transfer_template(template_id):
         for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
-    # Validate account ownership if accounts are being changed.
-    if "from_account_id" in data:
-        from_acct = db.session.get(Account, data["from_account_id"])
-        if not from_acct or from_acct.user_id != current_user.id:
-            flash("Invalid source account.", "danger")
-            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    if "to_account_id" in data:
-        to_acct = db.session.get(Account, data["to_account_id"])
-        if not to_acct or to_acct.user_id != current_user.id:
-            flash("Invalid destination account.", "danger")
-            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # Each user-scoped FK is verified only when present in the
+    # partial update payload (the loaded ``data`` dict only carries
+    # keys the user submitted -- BaseSchema's EXCLUDE meta drops
+    # stray form fields).  ``category_id`` accepts ``None`` per the
+    # schema; ``None`` clears the category and skips the probe.
+    # Single-return loop so a future FK addition does not push the
+    # function past pylint's too-many-returns threshold.
+    ownership_failure = None
+    for field, model, label in (
+        ("from_account_id", Account, "source account"),
+        ("to_account_id", Account, "destination account"),
+        ("category_id", Category, "category"),
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None:
+            continue
+        if not _user_owns(model, value):
+            ownership_failure = label
+            break
+    if ownership_failure is not None:
+        flash(f"Invalid {ownership_failure}.", "danger")
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
 
     _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "category_id", "is_active", "sort_order"}
     for field, value in data.items():
@@ -731,6 +767,23 @@ def get_full_edit(xfer_id):
 def update_transfer(xfer_id):
     """Update a transfer and its shadow transactions (inline edit save).
 
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): when the schema accepts
+    a ``category_id`` (the only user-scoped FK
+    :class:`TransferUpdateSchema` exposes), it is verified against
+    ``current_user.id`` here, before the service is invoked.  This
+    layered defense matches :func:`create_ad_hoc` and
+    :func:`app.routes.transactions.create_inline`; the underlying
+    ``transfer_service.update_transfer`` already runs the same
+    ownership check via ``_get_owned_category``, but enforcing the
+    rule at the route layer keeps the security boundary visible
+    where requests arrive and protects against a future refactor
+    that bypasses the service helper.  ``status_id`` is a reference
+    table FK (not user-scoped) and so does not need an ownership
+    check.  Setting ``category_id`` to ``None`` (clearing the
+    category) is permitted and skips the ownership probe per the
+    schema's ``allow_none=True`` policy.
+
     Optimistic locking (commit C-18 / F-010): the cell ships
     ``version_id`` as a hidden input set to ``Transfer.version_id``
     at render time.  When the submitted value differs from the
@@ -760,6 +813,18 @@ def update_transfer(xfer_id):
             xfer_id, submitted_version, xfer.version_id,
         )
         return _stale_transfer_response(xfer_id), 409
+
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # The only user-scoped FK ``TransferUpdateSchema`` exposes is
+    # ``category_id``; ``status_id`` references the ref table.
+    # ``allow_none=True`` on ``category_id`` means clearing the
+    # category (setting it to NULL) is legitimate and must skip the
+    # ownership probe -- the service drops it through unchanged in
+    # that case.
+    if data.get("category_id") is not None and not _user_owns(
+        Category, data["category_id"],
+    ):
+        return "Not found", 404
 
     # Auto-set is_override when a template-linked transfer's amount changes.
     if xfer.transfer_template_id and "amount" in data:
@@ -808,6 +873,20 @@ def update_transfer(xfer_id):
 def create_ad_hoc():
     """Create an ad-hoc (one-time) transfer with shadow transactions.
 
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): every FK accepted from
+    the form is verified against ``current_user.id`` before the
+    service is invoked, mirroring the
+    :func:`app.routes.transactions.create_inline` pattern.  This
+    layered defense is intentional: ``transfer_service`` already
+    runs the same checks via its private ``_get_owned_*`` helpers,
+    but a future refactor (or a new ``service`` consumer) that
+    skips one of those calls would silently regress the IDOR
+    protection.  Per the project security response rule, all
+    ownership failures return 404 -- the same status as a missing
+    record -- so the response leaks no information about whether
+    the row exists for someone else.
+
     Double-submit handling (F-050 / C-22): the partial unique index
     ``uq_transfers_adhoc_dedupe`` on
     ``(user_id, from_account_id, to_account_id, amount, pay_period_id,
@@ -827,6 +906,26 @@ def create_ad_hoc():
         return jsonify(errors=errors), 400
 
     data = _xfer_create_schema.load(request.form)
+
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # Verify every FK the schema accepted belongs to the requester
+    # BEFORE the service call so the security boundary is visible at
+    # the route layer and a future refactor that bypasses
+    # ``transfer_service._get_owned_*`` does not silently regress
+    # IDOR protection.  All failures collapse to 404 per the
+    # project's security response rule -- the loop body has a
+    # single ``return`` so adding a sixth FK in the future does
+    # not push the function past pylint's too-many-returns
+    # threshold.
+    for model, pk in (
+        (Account, data["from_account_id"]),
+        (Account, data["to_account_id"]),
+        (PayPeriod, data["pay_period_id"]),
+        (Scenario, data["scenario_id"]),
+        (Category, data["category_id"]),
+    ):
+        if not _user_owns(model, pk):
+            return "Not found", 404
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
@@ -1094,6 +1193,46 @@ def _get_owned_transfer(xfer_id):
     if xfer.user_id != current_user.id:
         return None
     return xfer
+
+
+def _user_owns(model, pk):
+    """Return True iff the row at *pk* exists and belongs to ``current_user``.
+
+    Used by :func:`create_ad_hoc`, :func:`update_transfer`,
+    :func:`create_transfer_template`, and
+    :func:`update_transfer_template` to enforce route-boundary FK
+    ownership without scattering ``db.session.get`` + null/owner
+    boilerplate across each endpoint.  The helper is intentionally
+    minimal -- it returns a boolean so the caller controls the 404
+    response shape (HTMX text vs flash + redirect for the form
+    routes); centralising the response would force every consumer
+    onto a single shape and lose the existing UX parity with
+    surrounding code.
+
+    All consulted models in commit C-27 (``Account``, ``PayPeriod``,
+    ``Scenario``, ``Category``) carry a direct ``user_id`` column, so
+    the check is a single ``db.session.get`` followed by an equality
+    compare.  Following the project security response rule, callers
+    surface ownership failures as 404 -- identical to the missing-PK
+    case -- so the response leaks no information about whether the
+    row exists for someone else.
+
+    Args:
+        model: SQLAlchemy model class with a ``user_id`` column.
+        pk: Primary key value.  ``None`` is treated as "no row" and
+            returns ``False`` so a caller that passes an optional FK
+            stays safe.
+
+    Returns:
+        True if the row exists and ``row.user_id == current_user.id``;
+        False otherwise.
+    """
+    if pk is None:
+        return False
+    record = db.session.get(model, pk)
+    if record is None:
+        return False
+    return record.user_id == current_user.id
 
 
 def _stale_transfer_response(xfer_id):

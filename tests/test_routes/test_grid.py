@@ -862,7 +862,17 @@ class TestTransactionNegativePaths:
     def test_mark_done_with_invalid_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 400."""
+        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 400.
+
+        Pre-C-27: the route caught ``InvalidOperation`` and returned
+        the literal string ``"Invalid actual amount"`` with status
+        400.  Post-C-27 (commit C-27 of the 2026-04-15 security
+        remediation plan): :class:`MarkDoneSchema` rejects the
+        value at the schema tier and the route returns
+        ``jsonify(errors=...)`` so HTMX form callers can render
+        the per-field message.  The status code stays 400; only
+        the body shape and message text changed.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
@@ -872,11 +882,16 @@ class TestTransactionNegativePaths:
                 data={"actual_amount": "not_a_number"},
             )
             assert resp.status_code == 400
-            assert b"Invalid actual amount" in resp.data
+            payload = resp.get_json()
+            assert payload is not None
+            assert "actual_amount" in payload["errors"]
 
-            # The route modifies txn.status_id before parsing actual_amount.
-            # The early return skips commit, so rollback to discard dirty state.
-            db.session.rollback()
+            # ``MarkDoneSchema`` runs before the route's status
+            # mutation (commit C-27 reordered the parse to the
+            # top of the function), so a rollback is no longer
+            # required to keep the row clean.  The assertions
+            # remain to guard against regression.
+            db.session.expire_all()
             txn_after = db.session.get(Transaction, txn_id)
             assert txn_after.status.name == "Projected"
             assert txn_after.actual_amount is None
@@ -886,8 +901,17 @@ class TestTransactionNegativePaths:
     ):
         """POST /transactions/<id>/mark-done rejects negative actual_amount.
 
-        The CHECK constraint on budget.transactions.actual_amount
-        prevents negative values at the database level (L-01).
+        Two layers reject this value:
+          * Pre-C-27 only the DB CHECK constraint
+            ``actual_amount >= 0`` rejected the row, surfacing as
+            a 500 IntegrityError without the route's catch.
+          * Post-C-27 (commit C-27 of the 2026-04-15 security
+            remediation plan): :class:`MarkDoneSchema`'s
+            ``Range(min=0)`` rejects the value at the schema tier
+            so the route returns 400 before the row is touched.
+
+        The DB CHECK remains as the storage-tier backstop (L-01)
+        for any future caller that bypasses the schema.
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
@@ -897,12 +921,13 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-50.00"},
             )
-            # The DB CHECK constraint rejects the negative amount.
             assert resp.status_code == 400
 
-            db.session.rollback()
+            db.session.expire_all()
             db.session.refresh(txn)
-            assert txn.status_id == original_status_id
+            assert txn.status_id == original_status_id, (
+                "schema-tier rejection must not transition the row"
+            )
 
     # ── XSS protection test ──────────────────────────────────────
 

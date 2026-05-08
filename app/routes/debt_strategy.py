@@ -14,10 +14,11 @@ per-account payoff timelines.
 import json
 import logging
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from flask import Blueprint, render_template, request
 from flask_login import current_user, login_required
+from marshmallow import ValidationError
 
 from app.utils.auth_helpers import require_owner
 
@@ -26,6 +27,7 @@ from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
+from app.schemas.validation import DebtStrategyCalculateSchema
 from app.services import amortization_engine
 from app.services.debt_strategy_service import (
     DebtAccount,
@@ -40,8 +42,12 @@ logger = logging.getLogger(__name__)
 
 debt_strategy_bp = Blueprint("debt_strategy", __name__)
 
-# Strategies accepted by the form.  Matches debt_strategy_service constants.
-_VALID_STRATEGIES = frozenset({STRATEGY_AVALANCHE, STRATEGY_SNOWBALL, STRATEGY_CUSTOM})
+# Single Marshmallow schema instance per process -- safe for concurrent
+# use by Marshmallow contract.  Replaces the per-request hand-parsing
+# at lines 234, 251, and 261 (pre-C-27) so ``extra_monthly``,
+# ``strategy``, and ``custom_order`` get the same field-level Range,
+# OneOf, and Length validators a JSON caller would.
+_calculate_schema = DebtStrategyCalculateSchema()
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +201,77 @@ def _compute_real_principal(params, scenario_id, principal, rate):
     return principal
 
 
+def _first_validation_message(exc):
+    """Return the first user-facing message from a ``ValidationError``.
+
+    ``DebtStrategyCalculateSchema`` raises Marshmallow's standard
+    ``ValidationError`` which carries a nested ``messages`` dict.
+    The HTMX UX renders a single-line error banner inside the
+    ``_results.html`` partial, so this helper picks the first
+    available message in deterministic order: the cross-field
+    ``_schema`` key first (for the ``custom`` + missing
+    ``custom_order`` case which is the most common user mistake),
+    then the per-field messages in alphabetical order so two
+    test runs see the same response.
+
+    The fallback "Invalid input" handles a future schema change
+    that produces an empty ``messages`` dict (Marshmallow itself
+    has never done this in practice; the fallback is purely
+    defensive against regressions).
+
+    Args:
+        exc: The ``ValidationError`` raised by ``schema.load``.
+
+    Returns:
+        A single user-facing string suitable for the
+        ``_results.html`` ``error`` slot.
+    """
+    messages = exc.messages
+    if isinstance(messages, dict):
+        # ``_schema`` carries cross-field errors; surface those first
+        # because they almost always describe the user-input problem
+        # in domain terms ("Custom strategy requires a priority
+        # order") rather than a field-coercion error.
+        schema_msgs = messages.get("_schema")
+        if schema_msgs:
+            return _flatten_message(schema_msgs)
+        # Otherwise pick the first field's first message in
+        # alphabetical order so HTML form testing is deterministic.
+        for field_name in sorted(messages):
+            field_msgs = messages[field_name]
+            flat = _flatten_message(field_msgs)
+            if flat:
+                return flat
+    elif isinstance(messages, list) and messages:
+        return _flatten_message(messages)
+    return "Invalid input."
+
+
+def _flatten_message(value):
+    """Return the first scalar string from a Marshmallow error value.
+
+    Marshmallow nests messages as ``list[str]`` for simple validators
+    and ``dict[str, list[str]]`` for nested schemas.  This helper
+    walks one level of nesting so a single-string result reaches the
+    template regardless of the validator that produced it.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            flat = _flatten_message(item)
+            if flat:
+                return flat
+        return ""
+    if isinstance(value, dict):
+        for key in sorted(value):
+            flat = _flatten_message(value[key])
+            if flat:
+                return flat
+        return ""
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -229,41 +306,35 @@ def calculate():
     table and per-account payoff timeline.  Always computes three
     scenarios (no-extra baseline, avalanche, snowball).  When the
     user selects custom, a fourth scenario is added.
+
+    Input validation runs through ``DebtStrategyCalculateSchema``
+    (commit C-27 / F-040): ``extra_monthly`` is range-bounded,
+    ``strategy`` is restricted to the three known constants, and
+    the cross-field rule rejects ``custom`` without a
+    ``custom_order``.  Schema errors render the legacy
+    ``_results.html`` partial with the first per-field message so
+    the existing HTMX UX -- inline error banner inside the form's
+    results target -- is preserved.
     """
-    # --- Parse extra_monthly ---
-    extra_raw = request.form.get("extra_monthly", "0").strip()
+    # --- Parse and validate the form payload ---
     try:
-        extra_monthly = Decimal(extra_raw)
-    except InvalidOperation:
+        data = _calculate_schema.load(request.form)
+    except ValidationError as exc:
         return render_template(
             "debt_strategy/_results.html",
-            error=f"Invalid extra monthly amount: {extra_raw!r}. "
-                  "Enter a number like 200 or 200.00.",
+            error=_first_validation_message(exc),
         )
 
-    if extra_monthly < Decimal("0"):
-        return render_template(
-            "debt_strategy/_results.html",
-            error="Extra monthly amount cannot be negative.",
-        )
+    extra_monthly: Decimal = data["extra_monthly"]
+    strategy: str = data["strategy"]
+    custom_raw: str | None = data.get("custom_order")
 
-    # --- Parse strategy ---
-    strategy = request.form.get("strategy", STRATEGY_AVALANCHE).strip()
-    if strategy not in _VALID_STRATEGIES:
-        return render_template(
-            "debt_strategy/_results.html",
-            error=f"Invalid strategy: {strategy!r}.",
-        )
-
-    # --- Parse custom order ---
+    # --- Parse custom_order: schema validated presence/length only;
+    # the per-element integer coercion lives here so a malformed
+    # entry is reported as a user-friendly error rather than a
+    # generic Marshmallow message. ---
     custom_order = None
     if strategy == STRATEGY_CUSTOM:
-        custom_raw = request.form.get("custom_order", "").strip()
-        if not custom_raw:
-            return render_template(
-                "debt_strategy/_results.html",
-                error="Custom strategy requires a priority order.",
-            )
         try:
             custom_order = [int(x.strip()) for x in custom_raw.split(",")]
         except ValueError:

@@ -8,10 +8,10 @@ logic used by the grid's mark-done endpoint.
 """
 
 import logging
-from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from marshmallow import ValidationError as MarshmallowValidationError
 
 from app.utils.auth_helpers import require_owner
 from sqlalchemy.exc import IntegrityError
@@ -21,12 +21,20 @@ from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.schemas.validation import MarkDoneSchema
 from app.services import dashboard_service, transfer_service
 from app.services.state_machine import verify_transition
 
 logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
+
+# Schema for the optional ``actual_amount`` form field on
+# ``mark_paid``.  Single instance per process (Marshmallow contract);
+# replaces the inline ``Decimal(...)`` parse the route used before
+# commit C-27 / F-042 / F-162 of the 2026-04-15 security
+# remediation plan.
+_mark_done_schema = MarkDoneSchema()
 
 
 @dashboard_bp.route("/")
@@ -54,7 +62,12 @@ def mark_paid(txn_id):
     handling to transfer_service.update_transfer() to maintain
     transfer invariants (CLAUDE.md rule 4).
 
-    Accepts optional actual_amount from form data.
+    Accepts optional ``actual_amount`` from form data, validated by
+    :class:`MarkDoneSchema` so a malformed numeric value returns a
+    clean field-level 400 (Marshmallow message) instead of the
+    legacy ``"Invalid actual amount"`` translation, and a negative
+    value is rejected at the schema tier (commit C-27 / F-042 /
+    F-162 of the 2026-04-15 security remediation plan).
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -66,10 +79,16 @@ def mark_paid(txn_id):
     else:
         status_id = ref_cache.status_id(StatusEnum.DONE)
 
-    # Parse optional actual amount from form.
-    actual_amount = _parse_actual_amount()
-    if actual_amount is False:
-        return "Invalid actual amount", 400
+    # Validate the optional ``actual_amount`` form field via the
+    # shared Marshmallow schema.  ``strip_empty_strings`` (in the
+    # schema) removes the empty-input UX so a button-click with no
+    # actual_amount yields ``actual_amount`` absent from the loaded
+    # dict, branching into "leave the column untouched" below.
+    try:
+        mark_done_data = _mark_done_schema.load(request.form)
+    except MarshmallowValidationError as exc:
+        return jsonify(errors=exc.messages), 400
+    actual_amount = mark_done_data.get("actual_amount")
 
     # Transfer shadows route through transfer_service to update both
     # shadows and the parent transfer atomically.
@@ -171,21 +190,6 @@ def _get_owned_transaction(txn_id):
     if txn.pay_period.user_id != current_user.id:
         return None
     return txn
-
-
-def _parse_actual_amount():
-    """Parse optional actual_amount from form data.
-
-    Returns:
-        Decimal if provided, None if not provided, False if invalid.
-    """
-    actual = request.form.get("actual_amount")
-    if not actual:
-        return None
-    try:
-        return Decimal(actual)
-    except (InvalidOperation, ValueError, ArithmeticError):
-        return False
 
 
 def _txn_to_bill(txn):
