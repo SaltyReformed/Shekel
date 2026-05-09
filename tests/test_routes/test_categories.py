@@ -232,7 +232,7 @@ class TestCategoryDelete:
             assert b"in use" in resp.data
 
     def test_delete_category_idor(self, app, auth_client, seed_user):
-        """POST /categories/<id>/delete for another user's category is rejected."""
+        """POST /categories/<id>/delete for another user's category returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_category()
 
@@ -240,21 +240,19 @@ class TestCategoryDelete:
                 f"/categories/{other['category'].id}/delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             # Verify other user's category still exists.
             assert db.session.get(Category, other["category"].id) is not None
 
     def test_delete_nonexistent_category(self, app, auth_client, seed_user):
-        """POST /categories/999999/delete for missing category redirects."""
+        """POST /categories/999999/delete for missing category returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/categories/999999/delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
     def test_delete_allowed_when_only_other_user_has_template(
         self, app, auth_client, seed_user, seed_second_user,
@@ -741,7 +739,7 @@ class TestCategoryEdit:
     def test_edit_category_idor(
         self, app, auth_client, seed_user,
     ):
-        """Editing another user's category returns 'not found' (same as nonexistent)."""
+        """Editing another user's category returns 404 (security: same as nonexistent)."""
         with app.app_context():
             other = _create_other_user_category()
 
@@ -750,22 +748,20 @@ class TestCategoryEdit:
                 data={"group_name": "Hacked", "item_name": "Pwned"},
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             db.session.refresh(other["category"])
             assert other["category"].group_name == "Other"
 
     def test_edit_category_nonexistent(self, app, auth_client, seed_user):
-        """Editing a nonexistent category returns 'not found'."""
+        """Editing a nonexistent category returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/categories/999999/edit",
                 data={"group_name": "Ghost", "item_name": "Phantom"},
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
     def test_edit_category_no_op_same_values(self, app, auth_client, seed_user):
         """Submitting the same values is not flagged as a duplicate."""
@@ -1511,7 +1507,7 @@ class TestCategoryArchiveDelete:
             assert b"Rent Payment" in resp.data
 
     def test_archive_category_idor(self, app, auth_client, seed_user):
-        """C-5A.5-36: Archiving another user's category returns 'not found'."""
+        """C-5A.5-36: Archiving another user's category returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_category()
 
@@ -1519,14 +1515,13 @@ class TestCategoryArchiveDelete:
                 f"/categories/{other['category'].id}/archive",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             db.session.refresh(other["category"])
             assert other["category"].is_active is True
 
     def test_unarchive_category_idor(self, app, auth_client, seed_user):
-        """Unarchiving another user's archived category returns 'not found'."""
+        """Unarchiving another user's archived category returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_category()
             other["category"].is_active = False
@@ -1536,8 +1531,7 @@ class TestCategoryArchiveDelete:
                 f"/categories/{other['category'].id}/unarchive",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             db.session.refresh(other["category"])
             assert other["category"].is_active is False

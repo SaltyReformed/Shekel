@@ -8,10 +8,11 @@ Updating a template triggers recurrence regeneration.
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from markupsafe import Markup
 
 from app.extensions import db
@@ -260,10 +261,9 @@ def create_template():
 @require_owner
 def edit_template(template_id):
     """Display the template edit form."""
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     categories = (
         db.session.query(Category)
@@ -298,11 +298,18 @@ def update_template(template_id):
     """Update a template and regenerate future transactions.
 
     Uses POST with _method=PUT for HTML form compatibility.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent edit that races past the form-side check
+    -- is caught and converted to the same flash + redirect.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -310,6 +317,24 @@ def update_template(template_id):
         return redirect(url_for("templates.edit_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != template.version_id:
+        logger.info(
+            "Stale-form conflict on update_template id=%d "
+            "(submitted=%d, current=%d)",
+            template_id, submitted_version, template.version_id,
+        )
+        flash(
+            "This recurring transaction was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "templates.edit_template", template_id=template_id,
+        ))
+
     effective_from = data.pop("effective_from", date.today())
 
     # Remove start_period_id from update data (set once at creation).
@@ -417,7 +442,21 @@ def update_template(template_id):
                 "warning",
             )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_template id=%d", template_id,
+        )
+        flash(
+            "This recurring transaction was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "templates.edit_template", template_id=template_id,
+        ))
     flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
@@ -426,11 +465,17 @@ def update_template(template_id):
 @login_required
 @require_owner
 def archive_template(template_id):
-    """Archive a template (stops future generation, keeps history)."""
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    """Archive a template (stops future generation, keeps history).
+
+    Optimistic locking (commit C-18 / F-010): the
+    ``is_active = False`` flush is version-pinned by SQLAlchemy.
+    A concurrent edit raises ``StaleDataError`` which the handler
+    converts to a flash + redirect so the user retries against
+    fresh state.
+    """
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = False
 
@@ -442,7 +487,19 @@ def archive_template(template_id):
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on archive_template id=%d", template_id,
+        )
+        flash(
+            "This recurring transaction was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("templates.list_templates"))
 
     flash(
         f"Recurring transaction '{template.name}' archived. "
@@ -456,11 +513,13 @@ def archive_template(template_id):
 @login_required
 @require_owner
 def unarchive_template(template_id):
-    """Unarchive a template and restore projected transactions."""
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    """Unarchive a template and restore projected transactions.
+
+    Optimistic locking: see :func:`archive_template`.
+    """
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = True
 
@@ -485,7 +544,19 @@ def unarchive_template(template_id):
                 template, periods, scenario.id, effective_from=date.today(),
             )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on unarchive_template id=%d", template_id,
+        )
+        flash(
+            "This recurring transaction was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("templates.list_templates"))
 
     flash(
         f"Recurring transaction '{template.name}' unarchived. "
@@ -515,10 +586,9 @@ def hard_delete_template(template_id):
     template first would orphan transaction rows with NULL template_id
     instead of removing them cleanly.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     if archive_helpers.template_has_paid_history(template.id):
         flash(
@@ -535,7 +605,19 @@ def hard_delete_template(template_id):
                 Transaction.status_id == projected_id,
                 Transaction.is_deleted.is_(False),
             ).update({"is_deleted": True}, synchronize_session="fetch")
-            db.session.commit()
+            try:
+                db.session.commit()
+            except StaleDataError:
+                db.session.rollback()
+                logger.info(
+                    "Stale-data conflict during archive-fallback in "
+                    "hard_delete_template id=%d", template_id,
+                )
+                flash(
+                    "This recurring transaction was changed by another "
+                    "action.  Please reload and try again.",
+                    "warning",
+                )
         return redirect(url_for("templates.list_templates"))
 
     # No history -- safe to permanently delete.
@@ -548,7 +630,20 @@ def hard_delete_template(template_id):
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on hard_delete_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transaction was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("templates.list_templates"))
 
     flash(f"Recurring transaction '{template_name}' permanently deleted.", "info")
     return redirect(url_for("templates.list_templates"))

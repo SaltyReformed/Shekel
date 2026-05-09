@@ -284,6 +284,11 @@ EVT_TRANSFER_RESTORED = _register(
     "transfer_restored", BUSINESS,
     "Transfer service restored a soft-deleted transfer.",
 )
+EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT = _register(
+    "transfer_restore_refused_archived_account", BUSINESS,
+    "restore_transfer refused to reactivate a transfer whose source or "
+    "destination account is archived (is_active = False).  Closes F-164.",
+)
 
 
 # ── Business events: credit (legacy per-transaction) workflow ──────
@@ -355,6 +360,11 @@ EVT_RECURRENCE_REGENERATED = _register(
 EVT_RECURRENCE_CONFLICTS_RESOLVED = _register(
     "recurrence_conflicts_resolved", BUSINESS,
     "User resolved override/delete conflicts after a regeneration.",
+)
+EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED = _register(
+    "resolve_conflicts_shadow_refused", BUSINESS,
+    "recurrence_engine.resolve_conflicts refused to mutate a transfer "
+    "shadow transaction (transfer_id IS NOT NULL).  Closes F-007.",
 )
 EVT_TRANSFER_RECURRENCE_GENERATED = _register(
     "transfer_recurrence_generated", BUSINESS,

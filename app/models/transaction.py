@@ -16,7 +16,19 @@ from app.models.mixins import TimestampMixin
 
 
 class Transaction(TimestampMixin, db.Model):
-    """A single income or expense entry within a pay period."""
+    """A single income or expense entry within a pay period.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
+    DELETE is automatically narrowed to ``WHERE id = ? AND
+    version_id = ?`` and the stored value is incremented in the same
+    statement.  Two concurrent requests that both load the row at
+    version N race for the bump; the loser's WHERE matches zero
+    rows, SQLAlchemy raises :class:`sqlalchemy.orm.exc.StaleDataError`,
+    and the calling route returns 409 (HTMX endpoints) or
+    flash + redirect (non-HTMX form posts).  See commit C-18 of the
+    2026-04-15 security remediation plan.
+    """
 
     __tablename__ = "transactions"
     __table_args__ = (
@@ -26,11 +38,52 @@ class Transaction(TimestampMixin, db.Model):
         ),
         db.Index("idx_transactions_template", "template_id"),
         db.Index("idx_transactions_credit_payback", "credit_payback_for_id"),
+        # At most one *active* CC Payback row per source transaction.
+        # Backstops the SELECT-FOR-UPDATE serialisation in
+        # ``credit_workflow.mark_as_credit`` and
+        # ``entry_credit_workflow.sync_entry_payback`` so any future
+        # caller that bypasses the service layer fails loudly with an
+        # IntegrityError on this index instead of silently doubling the
+        # user's projected debt.  ``is_deleted = FALSE`` keeps soft-
+        # deleted paybacks out of the index so a re-mark of the same
+        # source row after a soft-delete remains legal.  See commit C-19
+        # of the 2026-04-15 security remediation plan.
+        db.Index(
+            "uq_transactions_credit_payback_unique",
+            "credit_payback_for_id",
+            unique=True,
+            postgresql_where=db.text(
+                "credit_payback_for_id IS NOT NULL "
+                "AND is_deleted = FALSE"
+            ),
+        ),
         db.Index("idx_transactions_account", "account_id"),
         db.Index(
             "idx_transactions_transfer",
             "transfer_id",
             postgresql_where=db.text("transfer_id IS NOT NULL"),
+        ),
+        # At most one *active* expense shadow and one *active* income
+        # shadow per transfer.  Database-level backstop for the
+        # service-layer invariant (CLAUDE.md "Transfer Invariants" #1)
+        # that every transfer has exactly two linked shadow
+        # transactions.  Without this index a defective caller -- or
+        # a hypothetical script that bypasses ``transfer_service`` --
+        # could insert a third shadow row and silently double-charge
+        # the user's projection.  ``is_deleted = FALSE`` keeps soft-
+        # deleted shadows out of the index so the soft-delete +
+        # restore round trip remains legal, mirroring the predicate
+        # on ``uq_transactions_credit_payback_unique``.  Audit
+        # reference: F-046 / commit C-21 of the 2026-04-15 security
+        # remediation plan.
+        db.Index(
+            "uq_transactions_transfer_type_active",
+            "transfer_id", "transaction_type_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_id IS NOT NULL "
+                "AND is_deleted = FALSE"
+            ),
         ),
         db.Index(
             "idx_transactions_due_date",
@@ -63,6 +116,10 @@ class Transaction(TimestampMixin, db.Model):
         db.CheckConstraint(
             "actual_amount IS NULL OR actual_amount >= 0",
             name="ck_transactions_actual_amount",
+        ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transactions_version_id_positive",
         ),
         {"schema": "budget"},
     )
@@ -100,8 +157,14 @@ class Transaction(TimestampMixin, db.Model):
     )
     estimated_amount = db.Column(db.Numeric(12, 2), nullable=False)
     actual_amount = db.Column(db.Numeric(12, 2))
-    is_override = db.Column(db.Boolean, default=False)
-    is_deleted = db.Column(db.Boolean, default=False)
+    is_override = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_deleted = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     transfer_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transfers.id", ondelete="CASCADE"),
@@ -113,6 +176,21 @@ class Transaction(TimestampMixin, db.Model):
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.  NOT NULL with server_default="1" so existing
+    # production rows are filled at ALTER TABLE time and new rows
+    # always start at version 1.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: SQLAlchemy will (a) issue
+    # ``UPDATE ... WHERE id = ? AND version_id = ?`` for every flush
+    # of a dirty Transaction, (b) atomically increment version_id in
+    # the same statement, and (c) raise StaleDataError when rowcount
+    # = 0.  Routes that mutate Transaction MUST catch StaleDataError
+    # and surface a 409 / flash + redirect.  See app/routes/transactions.py.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

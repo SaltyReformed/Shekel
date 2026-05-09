@@ -12,13 +12,15 @@ from datetime import date
 from decimal import Decimal
 
 from flask import (
-    Blueprint, make_response, redirect, render_template, request, url_for,
+    Blueprint, abort, make_response, redirect, render_template, request,
+    url_for,
 )
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.user import UserSettings
 from app.services import (
@@ -31,6 +33,62 @@ from app.services import (
 )
 
 analytics_bp = Blueprint("analytics", __name__)
+
+
+def _validate_owned_or_abort(model, pk):
+    """Validate that ``pk`` references a record owned by ``current_user``.
+
+    Used at the top of analytics route handlers to enforce the
+    project security response rule: "404 for both 'not found' and
+    'not yours.'"  Without this guard the underlying services
+    silently fall back to default data on a cross-user
+    ``account_id`` (calendar) or read victim metadata into the
+    response label and CSV filename on a cross-user ``period_id``
+    (variance), bypassing the access boundary documented in the
+    project's auth-helper contract.
+
+    Delegates the existence + ownership check to
+    :func:`app.utils.auth_helpers.get_or_404`, which already emits
+    the structured ``resource_not_found`` (INFO) and
+    ``access_denied_cross_user`` (WARNING) audit events the SOC
+    dashboards rely on.  This wrapper adds the abort so the route
+    body can stay flat (``_validate_owned_or_abort(...)`` as a
+    one-liner instead of an explicit ``if record is None: abort``
+    branch in every handler).
+
+    A ``pk`` of ``None`` means "query argument absent" -- bypass
+    validation and let the caller's downstream logic supply a
+    user-scoped default (e.g. the user's first active checking
+    account, or the user's current pay period).  The caller MUST
+    NOT attempt to use the return value when passing ``None``.
+
+    Audit reference: F-039 + F-098 / commit C-30 of the
+    2026-04-15 security remediation plan.
+
+    Args:
+        model: The SQLAlchemy model class to look up.  Must expose
+            a ``user_id`` column (Pattern A in
+            :mod:`app.utils.auth_helpers`).
+        pk: The primary key value parsed from a query argument, or
+            ``None`` when the argument was not supplied.
+
+    Returns:
+        The loaded record on a successful ownership check, or
+        ``None`` when ``pk`` was ``None`` (no validation performed).
+
+    Raises:
+        werkzeug.exceptions.NotFound: When ``pk`` references a
+            non-existent row OR a row owned by a different user.
+            Both branches produce the same 404 so the client cannot
+            distinguish "no such row" from "not yours" by response
+            shape.
+    """
+    if pk is None:
+        return None
+    record = get_or_404(model, pk)
+    if record is None:
+        abort(404)
+    return record
 
 
 @analytics_bp.route("/analytics")
@@ -67,6 +125,14 @@ def calendar_tab():
     year = request.args.get("year", today.year, type=int)
     month = request.args.get("month", today.month, type=int)
     account_id = request.args.get("account_id", None, type=int)
+
+    # F-039 / commit C-30: a cross-user or non-existent account_id
+    # must 404 before any service call.  The underlying
+    # ``calendar_service._resolve_account`` falls back to the user's
+    # default checking account when ownership fails, which would
+    # otherwise mask the IDOR probe behind a normal-looking 200
+    # rendered against the requester's own data.
+    _validate_owned_or_abort(Account, account_id)
 
     year = max(2000, min(2100, year))
     month = max(1, min(12, month))
@@ -150,6 +216,24 @@ def variance_tab():
         format: 'csv' for CSV download.
     """
     today = date.today()
+
+    # F-098 / commit C-30: validate user-supplied ``period_id`` at
+    # the route boundary.  The variance service ignores cross-user
+    # period_ids when ``window_type != "pay_period"`` and produces
+    # an empty report when it equals "pay_period" (the txn filter
+    # joins ``account_id`` -- a user-owned account -- with
+    # ``pay_period_id``, so a victim's period yields no rows).  The
+    # leak is in the metadata path: ``_build_window_label`` and
+    # ``_variance_csv_filename`` both read ``PayPeriod.start_date``
+    # without re-checking ownership, exposing the victim's pay-
+    # period start date in the response and CSV filename.  Validate
+    # before ``_resolve_variance_params`` runs because that helper
+    # also reads ``period_id`` from query args, and we want the 404
+    # to fire before any system-default fallback masks the probe.
+    _validate_owned_or_abort(
+        PayPeriod, request.args.get("period_id", type=int),
+    )
+
     window_type, period_id, month, year = _resolve_variance_params(today)
 
     report = budget_variance_service.compute_variance(

@@ -28,6 +28,13 @@
     <form method="POST"
           action="{{ url_for('salary.update_profile', profile_id=profile.id) if profile else url_for('salary.create_profile') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# Optimistic-locking version pin (commit C-18 / F-010).
+         Submitted on update; the handler compares against the
+         current row and short-circuits with a flash + redirect if
+         the form was rendered against an older version. #}
+      {% if profile %}
+      <input type="hidden" name="version_id" value="{{ profile.version_id }}">
+      {% endif %}
       <div class="card mb-3">
         <div class="card-body">
           <div class="mb-3">

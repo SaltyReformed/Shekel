@@ -51,7 +51,14 @@ This is the single operational reference for the Shekel budget application. It c
 |------|---------|
 | `/opt/shekel/` | Application directory (git repository clone) |
 | `/opt/shekel/.env` | Environment configuration (secrets, settings) |
-| `/opt/shekel/docker-compose.yml` | Production Docker Compose file |
+| `/opt/shekel/docker-compose.yml` | Base compose file (bundled mode) |
+| `/opt/shekel/deploy/docker-compose.prod.yml` | Shared-mode override (committed copy) |
+| `/opt/shekel/deploy/nginx-bundled/nginx.conf` | Bundled-Nginx config (committed copy) |
+| `/opt/shekel/deploy/nginx-shared/nginx.conf` | Shared-Nginx main config (committed copy) |
+| `/opt/shekel/deploy/nginx-shared/conf.d/shekel.conf` | Shared-Nginx vhost (committed copy) |
+| `/opt/docker/shekel/docker-compose.override.yml` | Runtime shared-mode override; mirrors `deploy/docker-compose.prod.yml` |
+| `/opt/docker/nginx/nginx.conf` | Runtime shared-Nginx main config; mirrors `deploy/nginx-shared/nginx.conf` |
+| `/opt/docker/nginx/conf.d/shekel.conf` | Runtime shared-Nginx vhost; mirrors `deploy/nginx-shared/conf.d/shekel.conf` |
 | `/etc/cloudflared/config.yml` | Cloudflare Tunnel configuration |
 | `/root/.cloudflared/` | Tunnel credentials (cert.pem, tunnel JSON) |
 | `/var/backups/shekel/` | Local backup storage |
@@ -235,6 +242,135 @@ curl -s http://localhost/health
 # 8. Set up cron jobs (see §1 Cron Schedule above).
 crontab -e
 ```
+
+### 2.5 Shared-mode Deployment and Config Sync
+
+The maintainer's homelab runs Shekel in **shared mode**: the bundled
+`shekel-prod-nginx` service is parked in the `disabled` profile and a
+separately-managed Nginx at `/opt/docker/nginx/` proxies traffic from
+the dedicated `shekel-frontend` Docker bridge to `shekel-prod-app:8000`.
+The Shekel app is NOT on the wider `homelab` network: that network
+hosts unrelated co-tenants (Jellyfin, Immich, UniFi) and would expose
+Gunicorn directly to any of their compromise paths (audit findings
+F-020/F-129 closed in Commit C-33). The version-controlled copies of
+the runtime configs live under `deploy/`:
+
+| Repo path | Runtime path on the host |
+|-----------|--------------------------|
+| `deploy/docker-compose.prod.yml` | `/opt/docker/shekel/docker-compose.override.yml` |
+| `deploy/nginx-shared/nginx.conf` | `/opt/docker/nginx/nginx.conf` |
+| `deploy/nginx-shared/conf.d/shekel.conf` | `/opt/docker/nginx/conf.d/shekel.conf` |
+
+The repo is the source of truth. The on-host copies must match
+byte-for-byte; drift between them is a deployment-integrity bug
+(security-2026-04-15 finding F-021).
+
+#### Bringing up shared mode (first-time)
+
+```bash
+# On the host:
+cd /opt/shekel
+git checkout dev && git pull --ff-only
+
+# Ensure the dedicated shekel-frontend network exists.  The subnet
+# is pinned so Gunicorn's FORWARDED_ALLOW_IPS literal and the shared
+# Nginx's set_real_ip_from directive both reference the same CIDR.
+# Audit finding F-015 + F-020 (Commit C-33).
+docker network ls --filter name=shekel-frontend
+# If missing:
+docker network create shekel-frontend \
+    --driver bridge \
+    --subnet 172.32.0.0/24
+
+# Edit /opt/docker/docker-compose.yml so the shared nginx and
+# cloudflared services attach to shekel-frontend in addition to the
+# homelab bridge they already join.  Apply with:
+#   cd /opt/docker && docker compose up -d nginx cloudflared
+
+# Edit /opt/docker/cloudflared/config.yml so the shekel ingress rule
+# points to ``http://nginx:80`` instead of straight at
+# ``http://shekel-prod-app:8000``.  Restart cloudflared after the
+# edit:
+#   cd /opt/docker && docker compose up -d cloudflared
+
+# The runtime override location is /opt/docker/shekel/.  Either:
+#  (a) keep that directory as a thin wrapper that copies the files
+#      from the repo on each pull, or
+#  (b) invoke compose against the repo files directly.
+docker compose \
+  -f /opt/shekel/docker-compose.yml \
+  -f /opt/shekel/deploy/docker-compose.prod.yml \
+  up -d
+```
+
+#### Editing the shared-Nginx configuration
+
+```bash
+# 1. Edit and commit on the dev branch.
+#    (work happens in the repo, NOT on the runtime files)
+$EDITOR deploy/nginx-shared/nginx.conf
+$EDITOR deploy/nginx-shared/conf.d/shekel.conf
+git add deploy/nginx-shared/
+git commit -m "deploy(nginx): <what changed>"
+git push
+
+# 2. On the host, pull and copy into place.
+cd /opt/shekel
+git pull --ff-only
+sudo cp deploy/nginx-shared/nginx.conf            /opt/docker/nginx/nginx.conf
+sudo cp deploy/nginx-shared/conf.d/shekel.conf    /opt/docker/nginx/conf.d/shekel.conf
+
+# 3. Validate before reload.
+sudo docker exec nginx nginx -t
+
+# 4. Reload without dropping connections.
+sudo docker exec nginx nginx -s reload
+
+# 5. Confirm the change is live.
+curl -sSI https://shekel.saltyreformed.com | head
+```
+
+If `nginx -t` reports an error in step 3, do not reload. Restore the
+previous file with `git restore` on the host or `git checkout HEAD~1 --
+deploy/nginx-shared/...`, copy it back into place, and rerun `nginx -t`.
+
+#### Editing the shared-mode compose override
+
+```bash
+# 1. Edit and commit on the dev branch.
+$EDITOR deploy/docker-compose.prod.yml
+git add deploy/docker-compose.prod.yml
+git commit -m "deploy(compose): <what changed>"
+git push
+
+# 2. On the host, pull and copy into place.
+cd /opt/shekel
+git pull --ff-only
+sudo cp deploy/docker-compose.prod.yml /opt/docker/shekel/docker-compose.override.yml
+
+# 3. Validate the merged compose.
+cd /opt/docker/shekel
+docker compose config >/dev/null
+
+# 4. Recreate affected services.
+docker compose up -d
+```
+
+#### Verifying the host matches the repo
+
+A drift-check helper is reserved at `scripts/config_audit.py`
+(implemented in remediation commit C-49). Until that lands, verify
+manually:
+
+```bash
+diff -u /opt/shekel/deploy/nginx-shared/nginx.conf            /opt/docker/nginx/nginx.conf
+diff -u /opt/shekel/deploy/nginx-shared/conf.d/shekel.conf    /opt/docker/nginx/conf.d/shekel.conf
+diff -u /opt/shekel/deploy/docker-compose.prod.yml            /opt/docker/shekel/docker-compose.override.yml
+```
+
+Any non-empty diff is an incident: investigate before re-syncing,
+because the host change may carry an undocumented production fix that
+must be brought into the repo first.
 
 ---
 
@@ -869,7 +1005,7 @@ curl -s https://<domain>/health
 | 429 on first login attempt | Cloudflare rate limit too aggressive | Check WAF rules in Cloudflare dashboard (Security > WAF > Rate limiting rules); increase threshold |
 | 429 after a few login attempts | Flask-Limiter rate limit (5/15min) | Wait 15 minutes. To clear immediately: `docker exec shekel-prod-redis redis-cli FLUSHDB` -- counters are stored in Redis, not in app memory, so restarting the app does NOT reset them |
 | 500 on every login attempt | Redis container down or unreachable | App is configured fail-closed: rate-limit storage outage rejects every limited request. `docker compose ps redis` to check status; `docker logs shekel-prod-redis --tail 50` for errors; `docker compose up -d redis` to restart. Login resumes immediately once Redis answers PING |
-| Wrong IP in logs (127.0.0.1) | Nginx real IP config issue | Verify `set_real_ip_from` and `real_ip_header CF-Connecting-IP` in `nginx/nginx.conf` |
+| Wrong IP in logs (127.0.0.1) | Nginx real IP config issue | Verify `set_real_ip_from` and `real_ip_header CF-Connecting-IP` in the active Nginx config: `deploy/nginx-bundled/nginx.conf` (bundled mode) or `deploy/nginx-shared/nginx.conf` (shared mode -- the runtime copy is `/opt/docker/nginx/nginx.conf`) |
 | No logs in Grafana | Promtail not scraping | `docker logs promtail`. Verify `monitoring` network exists. Verify app is on the network: `docker network inspect monitoring` |
 | CSS/JS not loading | Static files volume issue | `docker exec shekel-prod-nginx ls /var/www/static/` to verify files exist. Rebuild app: `docker compose build app && docker compose up -d` |
 | Health check returns 500 | Database connection issue | `docker exec shekel-prod-db pg_isready -U shekel_user -d shekel`. Check `docker logs shekel-prod-app --tail 20` |

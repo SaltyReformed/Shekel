@@ -48,3 +48,11 @@ logs/
 
 # Worktrees
 .worktrees/
+
+# Claude Code session-local state.  scheduled_tasks.lock holds the
+# active session's PID and wakeup-scheduling metadata; it is rewritten
+# every time /loop or ScheduleWakeup runs and must not be tracked.
+# settings.local.json is per-machine overrides for the team-shared
+# .claude/settings.json.
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

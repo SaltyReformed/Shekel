@@ -627,28 +627,38 @@ class TestNegativePaths:
         return txn
 
     def test_unmark_credit_on_projected_transaction(self, app, db, seed_user, seed_periods):
-        """Calling unmark_credit on a projected (never credited) transaction is a silent no-op.
+        """unmark_credit on a non-Credit row raises ValidationError.
 
-        The function sets status to 'projected' (which it already is), finds
-        no payback transaction to delete, and returns without error. The
-        transaction remains unchanged.
-        A user double-clicking 'unmark credit' or calling the endpoint on the
-        wrong transaction must not corrupt data.
+        After the C-21 follow-up the helper guards against being
+        called on a transaction that is not currently in Credit
+        status -- the previous implementation silently rewrote the
+        status to Projected on any caller-supplied row, which
+        would (for a Paid row, for example) drop a settled
+        transaction back to Projected and erase its place in the
+        audit trail.
+
+        The original intent of this test ("A user double-clicking
+        'unmark credit' or calling the endpoint on the wrong
+        transaction must not corrupt data") is now satisfied by a
+        loud rejection rather than a silent no-op: the row stays
+        unchanged AND the caller learns the request was rejected.
         """
         with app.app_context():
             txn = self._create_expense(seed_user, seed_periods)
             original_status_id = txn.status_id
 
-            # unmark_credit on a projected transaction -- no exception expected.
-            credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
-            db.session.flush()
+            with pytest.raises(ValidationError) as excinfo:
+                credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
+            msg = str(excinfo.value)
+            assert "Projected" in msg
+            assert "Only Credit" in msg
 
-            # Status unchanged (was projected, still projected).
+            # Row unchanged -- the bespoke guard fires before any write.
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
             assert txn.status_id == original_status_id
 
-            # No payback transaction exists for this transaction.
+            # No payback transaction exists or was created.
             payback_count = (
                 db.session.query(Transaction)
                 .filter_by(credit_payback_for_id=txn.id)

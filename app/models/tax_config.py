@@ -21,6 +21,13 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
         db.CheckConstraint("standard_deduction >= 0", name="ck_tax_bracket_sets_nonneg_deduction"),
         db.CheckConstraint("child_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_child_credit"),
         db.CheckConstraint("other_dependent_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_other_credit"),
+        # F-077 / C-24: ``tax_year`` is the IRS tax year a bracket
+        # set applies to.  The schema layer added the same Range in
+        # commit C-24; the CHECK is the storage-tier counterpart.
+        db.CheckConstraint(
+            "tax_year >= 2000 AND tax_year <= 2100",
+            name="ck_tax_bracket_sets_valid_tax_year",
+        ),
         {"schema": "salary"},
     )
 
@@ -77,7 +84,9 @@ class TaxBracket(db.Model):
     min_income = db.Column(db.Numeric(12, 2), nullable=False)
     max_income = db.Column(db.Numeric(12, 2))
     rate = db.Column(db.Numeric(5, 4), nullable=False)
-    sort_order = db.Column(db.Integer, default=0)
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
 
     # Relationships
     bracket_set = db.relationship("TaxBracketSet", back_populates="brackets")
@@ -98,6 +107,19 @@ class StateTaxConfig(CreatedAtMixin, db.Model):
         db.CheckConstraint(
             "flat_rate IS NULL OR (flat_rate >= 0 AND flat_rate <= 1)",
             name="ck_state_tax_configs_valid_rate",
+        ),
+        # F-077 / C-24: ``standard_deduction`` is nullable (NULL =
+        # state has no standard deduction); when present, must be
+        # non-negative.
+        db.CheckConstraint(
+            "standard_deduction IS NULL OR standard_deduction >= 0",
+            name="ck_state_tax_configs_nonneg_standard_deduction",
+        ),
+        # F-077 / C-24: tax_year sweep paired with the tax_bracket_sets
+        # equivalent.
+        db.CheckConstraint(
+            "tax_year >= 2000 AND tax_year <= 2100",
+            name="ck_state_tax_configs_valid_tax_year",
         ),
         {"schema": "salary"},
     )
@@ -139,6 +161,12 @@ class FicaConfig(CreatedAtMixin, db.Model):
             name="ck_fica_configs_valid_surtax_rate",
         ),
         db.CheckConstraint("medicare_surtax_threshold > 0", name="ck_fica_configs_positive_surtax_threshold"),
+        # F-077 / C-24: tax_year sweep paired with the tax_bracket_sets
+        # and state_tax_configs equivalents.
+        db.CheckConstraint(
+            "tax_year >= 2000 AND tax_year <= 2100",
+            name="ck_fica_configs_valid_tax_year",
+        ),
         {"schema": "salary"},
     )
 
@@ -148,12 +176,25 @@ class FicaConfig(CreatedAtMixin, db.Model):
         nullable=False,
     )
     tax_year = db.Column(db.Integer, nullable=False)
-    ss_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0620)
-    ss_wage_base = db.Column(db.Numeric(12, 2), nullable=False, default=176100)
-    medicare_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0145)
-    medicare_surtax_rate = db.Column(db.Numeric(5, 4), nullable=False, default=0.0090)
+    ss_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0620,
+        server_default=db.text("0.0620"),
+    )
+    ss_wage_base = db.Column(
+        db.Numeric(12, 2), nullable=False, default=176100,
+        server_default=db.text("176100"),
+    )
+    medicare_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0145,
+        server_default=db.text("0.0145"),
+    )
+    medicare_surtax_rate = db.Column(
+        db.Numeric(5, 4), nullable=False, default=0.0090,
+        server_default=db.text("0.0090"),
+    )
     medicare_surtax_threshold = db.Column(
-        db.Numeric(12, 2), nullable=False, default=200000
+        db.Numeric(12, 2), nullable=False, default=200000,
+        server_default=db.text("200000"),
     )
 
     def __repr__(self):

@@ -142,25 +142,28 @@ class TestLoanDashboard:
         assert b"Configure" in resp.data
 
     def test_dashboard_404_nonexistent(self, auth_client, seed_user, db, seed_periods):
-        """Nonexistent account redirects to savings dashboard."""
+        """Nonexistent account returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.get("/accounts/99999/loan")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_dashboard_idor(self, auth_client, second_user, db, seed_periods):
-        """Another user's loan dashboard is rejected without leaking data."""
+        """Another user's loan dashboard returns 404 without leaking data (security)."""
         other = _create_other_loan(second_user, db.session)
         resp = auth_client.get(f"/accounts/{other.id}/loan")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
         assert b"Other Loan" not in resp.data
 
     def test_dashboard_wrong_type(self, auth_client, seed_user, db, seed_periods):
-        """Non-amortizing account type redirects away."""
+        """Non-amortizing account type returns 404.
+
+        The loan dashboard route's _load_loan_account helper returns None
+        for both ownership-failure and wrong-type cases, and the route
+        now uniformly aborts 404 for any None result. This is the same
+        404-for-not-found-or-not-yours security response.
+        """
         acct = seed_user["account"]  # checking account
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_dashboard_login_required(self, client, seed_user, db, seed_periods):
         """Unauthenticated request redirects to login."""
@@ -397,7 +400,7 @@ class TestLoanParamsUpdate:
         assert params.arm_first_adjustment_months == 60
 
     def test_params_update_idor(self, auth_client, second_user, db, seed_periods):
-        """POST to another user's loan params is rejected and unchanged."""
+        """POST to another user's loan params returns 404 (security) and is unchanged."""
         other = _create_other_loan(second_user, db.session)
         orig = db.session.query(LoanParams).filter_by(account_id=other.id).one()
         orig_principal = orig.current_principal
@@ -410,31 +413,32 @@ class TestLoanParamsUpdate:
                 "payment_day": "28",
             },
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
         db.session.expire_all()
         after = db.session.query(LoanParams).filter_by(account_id=other.id).one()
         assert after.current_principal == orig_principal
 
     def test_params_update_nonexistent(self, auth_client, seed_user, db, seed_periods):
-        """POST to nonexistent account redirects with flash."""
+        """POST to nonexistent account returns 404 (security)."""
         resp = auth_client.post(
             "/accounts/999999/loan/params",
             data={"current_principal": "20000.00", "interest_rate": "5.0", "payment_day": "1"},
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_params_update_wrong_type(self, auth_client, seed_user, db, seed_periods):
-        """POST loan params to checking account redirects."""
+        """POST loan params to checking account returns 404.
+
+        The route's _load_loan_account helper returns None for both
+        ownership-failure and wrong-type cases, which both abort 404.
+        """
         checking = seed_user["account"]
         resp = auth_client.post(
             f"/accounts/{checking.id}/loan/params",
             data={"current_principal": "20000.00", "interest_rate": "5.0", "payment_day": "1"},
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_amortization_uses_updated_term(self, auth_client, seed_user, db, seed_periods):
         """Changing term_months recalculates amortization on next dashboard load."""
@@ -586,6 +590,71 @@ class TestRateHistory:
 
         count = db.session.query(RateHistory).filter_by(account_id=other.id).count()
         assert count == 0
+
+    def test_rate_change_same_date_double_submit(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """F-104 / C-22: same effective_date double-submit produces one row.
+
+        The composite unique ``uq_rate_history_account_effective_date``
+        rejects the second INSERT.  The route flashes a clear
+        message and re-renders the rate history without the
+        proposed duplicate; total row count is exactly 1.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        data = {
+            "effective_date": "2026-04-01",
+            "interest_rate": "7.000",
+        }
+        r1 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        assert r1.status_code == 200
+
+        r2 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        # Idempotent path: route returns the partial; total rows == 1.
+        assert r2.status_code == 200
+
+        db.session.expire_all()
+        count = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert count == 1, (
+            f"Expected 1 rate history row after duplicate submit, "
+            f"found {count}; F-104 dedupe failed."
+        )
+
+    def test_rate_change_different_date_allowed(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """F-104 / C-22: different effective dates both succeed."""
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        r1 = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-04-01", "interest_rate": "7.000"},
+        )
+        r2 = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-05-01", "interest_rate": "7.500"},
+        )
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+
+        db.session.expire_all()
+        count = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert count == 2
 
 
 # ── Payoff Calculator Tests ──────────────────────────────────────────
@@ -1263,7 +1332,7 @@ class TestTransferPrompt:
         self, auth_client, seed_user, seed_second_user,
         seed_second_periods, db, seed_periods,
     ):
-        """POST with other user's account as source: 404-equivalent redirect."""
+        """POST with other user's account as source returns 404 (security)."""
         acct = _create_mortgage(seed_user, db.session)
         other_account = seed_second_user["account"]
 
@@ -1271,9 +1340,8 @@ class TestTransferPrompt:
             f"/accounts/{acct.id}/loan/create-transfer",
             data={"source_account_id": str(other_account.id)},
         )
-        # Should not succeed -- security response rule.
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        # Should not succeed -- security response rule (404 for not-yours).
+        assert resp.status_code == 404
 
     def test_create_transfer_validates_source_not_self(
         self, auth_client, seed_user, db, seed_periods,
@@ -1292,7 +1360,7 @@ class TestTransferPrompt:
         self, auth_client, seed_user, seed_second_user,
         seed_second_periods, db, seed_periods,
     ):
-        """POST to other user's debt account: 404-equivalent redirect."""
+        """POST to other user's debt account returns 404 (security)."""
         other_loan = _create_loan_account(
             seed_second_user, db.session, "Mortgage", "Other Mortgage",
             Decimal("200000.00"), Decimal("0.06000"), 360,
@@ -1304,8 +1372,7 @@ class TestTransferPrompt:
             f"/accounts/{other_loan.id}/loan/create-transfer",
             data={"source_account_id": str(checking.id)},
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_create_transfer_amount_override(
         self, auth_client, seed_user, db, seed_periods,
@@ -2966,8 +3033,7 @@ class TestRecurrenceEndDateUpdate:
 
         # Access other user's loan as the primary user.
         resp = auth_client.get(f"/accounts/{other_loan.id}/loan")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
         # Other user's recurrence rule should be untouched.
         db.session.refresh(rule)

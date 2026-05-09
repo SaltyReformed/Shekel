@@ -18,6 +18,11 @@
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
 
+    {# Optimistic-locking pin: handler compares against
+       txn.version_id and short-circuits with 409 when the form is
+       stale (commit C-18 / F-010). #}
+    <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+
     {# Estimated amount #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Estimated</label>

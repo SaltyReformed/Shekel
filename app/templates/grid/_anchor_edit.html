@@ -1,5 +1,13 @@
 {# Anchor balance -- toggles between display and edit mode.
-   Expected context: account, editing (bool).
+   Expected context: account, editing (bool), conflict (bool, optional).
+
+   When conflict=True, the editor was attempting an update against a
+   stale version_id and the route returned 409.  The display cell
+   surfaces a small warning icon and tooltip so the user knows the
+   row was changed by another tab/request and can click to reload
+   the editor with the fresh value.  See
+   app/routes/accounts.py:true_up for the optimistic-locking contract
+   (commit C-17 / F-009).
 #}
 {% if editing %}
 {# Edit mode: input field with save on Enter #}
@@ -8,6 +16,10 @@
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
       class="d-inline-flex align-items-center gap-2">
+  {# Optimistic-locking pin: handler compares against
+     account.version_id and short-circuits with 409 when the form is
+     stale. #}
+  <input type="hidden" name="version_id" value="{{ account.version_id }}">
   <div class="input-group input-group-sm mw-px-200">
     <span class="input-group-text">$</span>
     <input type="number" step="0.01" name="anchor_balance"
@@ -33,12 +45,17 @@
      hx-get="{{ url_for('accounts.anchor_form', account_id=account.id) }}"
      hx-trigger="click"
      hx-swap="outerHTML"
-     class="anchor-balance-display font-mono"
+     class="anchor-balance-display font-mono{% if conflict %} text-warning{% endif %}"
      role="button"
      tabindex="0"
-     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance if account.current_anchor_balance else 0) }}. Click to edit."
-     title="Click to update balance">
+     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance if account.current_anchor_balance else 0) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
+     title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to update balance{% endif %}">
   ${{ "{:,.0f}".format(account.current_anchor_balance if account.current_anchor_balance else 0) }}
+  {% if conflict %}
+  <i class="bi bi-exclamation-triangle text-warning ms-1 small"
+     aria-label="Edit conflict"></i>
+  {% else %}
   <i class="bi bi-pencil-square text-muted ms-1 small"></i>
+  {% endif %}
 </div>
 {% endif %}

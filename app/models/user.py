@@ -95,7 +95,10 @@ class User(UserMixin, TimestampMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(100))
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
     # Timestamp of most recent "log out all sessions" or password change event.
     # The user loader compares this against the session creation time to reject stale sessions.
     session_invalidated_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -195,6 +198,27 @@ class UserSettings(TimestampMixin, db.Model):
             "trend_alert_threshold >= 0 AND trend_alert_threshold <= 1",
             name="ck_user_settings_valid_trend_threshold",
         ),
+        # F-077 / C-24: SWR is the percentage of portfolio drawn
+        # each year in retirement (4% rule -> ``Decimal("0.0400")``).
+        # The retirement-settings route divides percent input by
+        # 100 before persistence; CHECK pins storage to ``[0, 1]``.
+        # The column carries a Python-side default but is nominally
+        # nullable, so the CHECK admits NULL.
+        db.CheckConstraint(
+            "safe_withdrawal_rate IS NULL OR "
+            "(safe_withdrawal_rate >= 0 AND safe_withdrawal_rate <= 1)",
+            name="ck_user_settings_valid_safe_withdrawal",
+        ),
+        # F-077 / C-24: Estimated effective tax rate during
+        # retirement (NULL = unset, fall back to current bracket-
+        # based estimate).  Same percent-to-decimal convention as
+        # ``safe_withdrawal_rate``.
+        db.CheckConstraint(
+            "estimated_retirement_tax_rate IS NULL OR "
+            "(estimated_retirement_tax_rate >= 0 AND "
+            "estimated_retirement_tax_rate <= 1)",
+            name="ck_user_settings_valid_estimated_tax_rate",
+        ),
         db.CheckConstraint(
             "anchor_staleness_days > 0",
             name="ck_user_settings_positive_staleness_days",
@@ -293,7 +317,10 @@ class MfaConfig(TimestampMixin, db.Model):
     pending_secret_expires_at = db.Column(
         db.DateTime(timezone=True), nullable=True,
     )
-    is_enabled = db.Column(db.Boolean, default=False)
+    is_enabled = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     backup_codes = db.Column(db.JSON)
     confirmed_at = db.Column(db.DateTime(timezone=True))
     # Highest TOTP time-step (Unix-seconds // 30) that the user has

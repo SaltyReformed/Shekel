@@ -399,7 +399,7 @@ class TestProfileUpdate:
     def test_edit_other_users_profile_redirects(
         self, app, auth_client, seed_user
     ):
-        """GET /salary/<id>/edit for another user's profile redirects."""
+        """GET /salary/<id>/edit for another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
 
@@ -408,13 +408,12 @@ class TestProfileUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Salary profile not found." in response.data
+            assert response.status_code == 404
 
     def test_update_other_users_profile_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/<id> for another user's profile redirects."""
+        """POST /salary/<id> for another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
 
@@ -424,13 +423,12 @@ class TestProfileUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Salary profile not found." in response.data
+            assert response.status_code == 404
 
     def test_delete_other_users_profile_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/<id>/delete for another user's profile redirects."""
+        """POST /salary/<id>/delete for another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
 
@@ -439,8 +437,7 @@ class TestProfileUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Salary profile not found." in response.data
+            assert response.status_code == 404
 
 
 # ── Raises ─────────────────────────────────────────────────────────
@@ -642,8 +639,8 @@ class TestRaises:
                 },
             )
 
-            # Should redirect, not 200.
-            assert response.status_code == 302
+            # Security: 404 for both not-found and not-yours.
+            assert response.status_code == 404
 
             # Raise should be unchanged.
             db.session.expire_all()
@@ -716,7 +713,7 @@ class TestRaises:
             assert b"Please correct the highlighted errors" in response.data
 
     def test_add_raise_profile_not_found(self, app, auth_client, seed_user):
-        """POST /salary/<id>/raises for non-existent profile flashes danger."""
+        """POST /salary/<id>/raises for non-existent profile returns 404 (security)."""
         with app.app_context():
             response = auth_client.post(
                 "/salary/999999/raises",
@@ -724,13 +721,12 @@ class TestRaises:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Salary profile not found." in response.data
+            assert response.status_code == 404
 
     def test_delete_other_users_raise_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/raises/<id>/delete for another user's raise shows 'Raise not found.'."""
+        """POST /salary/raises/<id>/delete for another user's raise returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
             raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
@@ -750,8 +746,7 @@ class TestRaises:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Raise not found." in response.data
+            assert response.status_code == 404
 
 
 # ── Deductions ─────────────────────────────────────────────────────
@@ -824,7 +819,7 @@ class TestDeductions:
     def test_delete_other_users_deduction_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/deductions/<id>/delete for another user's deduction shows 'Deduction not found.'."""
+        """POST /salary/deductions/<id>/delete for another user's deduction returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
             pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
@@ -845,8 +840,7 @@ class TestDeductions:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Deduction not found." in response.data
+            assert response.status_code == 404
 
     def test_add_deduction_htmx_returns_partial(
         self, app, auth_client, seed_user, seed_periods
@@ -979,7 +973,8 @@ class TestDeductions:
                 },
             )
 
-            assert response.status_code == 302
+            # Security: 404 for both not-found and not-yours.
+            assert response.status_code == 404
 
             db.session.expire_all()
             after = db.session.get(PaycheckDeduction, other_ded.id)
@@ -1351,7 +1346,7 @@ class TestBreakdown:
     def test_breakdown_other_users_profile_redirects(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """GET /salary/<id>/breakdown/<period_id> for another user's profile redirects."""
+        """GET /salary/<id>/breakdown/<period_id> for another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
 
@@ -1360,8 +1355,7 @@ class TestBreakdown:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Salary profile not found." in response.data
+            assert response.status_code == 404
 
 
 # ── Tax Config ─────────────────────────────────────────────────────
@@ -1661,15 +1655,14 @@ class TestSalaryNegativePaths:
     """Negative-path tests: nonexistent IDs, IDOR on raises/deductions/views."""
 
     def test_edit_nonexistent_profile(self, app, auth_client, seed_user):
-        """GET /salary/999999/edit for a nonexistent profile redirects with flash."""
+        """GET /salary/999999/edit for a nonexistent profile returns 404 (security)."""
         with app.app_context():
             resp = auth_client.get("/salary/999999/edit", follow_redirects=True)
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
     def test_update_nonexistent_profile(self, app, auth_client, seed_user):
-        """POST /salary/999999 for a nonexistent profile redirects with flash."""
+        """POST /salary/999999 for a nonexistent profile returns 404 (security)."""
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
 
@@ -1680,18 +1673,16 @@ class TestSalaryNegativePaths:
                 "state_code": "NC",
             }, follow_redirects=True)
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
     def test_delete_nonexistent_profile(self, app, auth_client, seed_user):
-        """POST /salary/999999/delete for a nonexistent profile redirects with flash."""
+        """POST /salary/999999/delete for a nonexistent profile returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/salary/999999/delete", follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
     def test_add_raise_to_other_users_profile_idor(
         self, app, auth_client, seed_user, second_user
@@ -1712,8 +1703,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify no raise was created for the other user's profile.
             raise_count = db.session.query(SalaryRaise).filter_by(
@@ -1742,8 +1732,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify no deduction was created for the other user's profile.
             ded_count = db.session.query(PaycheckDeduction).filter_by(
@@ -1775,8 +1764,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Raise not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify raise still exists in DB.
             db.session.expire_all()
@@ -1808,8 +1796,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Deduction not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify deduction still exists in DB.
             db.session.expire_all()
@@ -1828,8 +1815,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
             # No sensitive data from the other user's profile should leak.
             assert b"Other Job" not in resp.data
 
@@ -1845,8 +1831,7 @@ class TestSalaryNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Salary profile not found." in resp.data
+            assert resp.status_code == 404
 
 
 # ── Net Biweekly Mismatch Fixes (section 3.3) ────────────────────────
@@ -2575,7 +2560,7 @@ class TestCalibration:
     def test_calibrate_confirm_idor_blocked(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST confirm on another user's profile is rejected."""
+        """POST confirm on another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
             resp = auth_client.post(
@@ -2593,7 +2578,7 @@ class TestCalibration:
                     "pay_stub_date": "2026-03-14",
                 },
             )
-            assert resp.status_code == 302
+            assert resp.status_code == 404
 
             # No calibration should exist for the victim's profile.
             count = db.session.query(CalibrationOverride).filter_by(
@@ -2630,7 +2615,7 @@ class TestCalibration:
             resp = auth_client.post(
                 f"/salary/{other['profile'].id}/calibrate/delete",
             )
-            assert resp.status_code == 302
+            assert resp.status_code == 404
 
             # Victim's calibration must still exist.
             db.session.expire_all()
@@ -2644,13 +2629,13 @@ class TestCalibration:
     def test_calibrate_form_other_user_blocked(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """GET /salary/<id>/calibrate for another user's profile is rejected."""
+        """GET /salary/<id>/calibrate for another user's profile returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
             resp = auth_client.get(
                 f"/salary/{other['profile'].id}/calibrate",
             )
-            assert resp.status_code == 302
+            assert resp.status_code == 404
 
 
 # ── Button Placement ──────────────────────────────────────────────

@@ -6,11 +6,12 @@ Returns HTMX fragments for inline editing in the grid.
 """
 
 import logging
-from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
+from marshmallow import ValidationError as MarshmallowValidationError
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
@@ -23,6 +24,7 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import Status
 from app.schemas.validation import (
+    MarkDoneSchema,
     TransactionUpdateSchema,
     TransactionCreateSchema,
     InlineTransactionCreateSchema,
@@ -35,8 +37,17 @@ from app.services import (
     transfer_service,
 )
 from app.services.entry_service import build_entry_sums_dict
+from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
+from app.utils.db_errors import is_unique_violation
+
+# Name of the partial unique index that backstops commit C-19's
+# duplicate CC Payback fix.  Mirrors the literal in
+# ``migrations/versions/b3d8f4a01c92_*.py`` and
+# ``app.models.transaction.Transaction.__table_args__``; renaming
+# the index requires a coordinated edit across all three sites.
+_CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +57,13 @@ transactions_bp = Blueprint("transactions", __name__)
 _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
+
+# Schema for the optional ``actual_amount`` form field on
+# ``mark_done``.  Single instance per process (Marshmallow contract);
+# replaces the per-branch raw ``Decimal(request.form.get("actual_amount"))``
+# parse the route used before commit C-27 / F-042 / F-162 of the
+# 2026-04-15 security remediation plan.
+_mark_done_schema = MarkDoneSchema()
 
 
 def _render_cell(txn, **extra):
@@ -58,7 +76,7 @@ def _render_cell(txn, **extra):
     Args:
         txn: The Transaction object to render.
         **extra: Additional keyword arguments forwarded to render_template
-            (e.g. wrap_div=True).
+            (e.g. wrap_div=True, conflict=True).
 
     Returns:
         Rendered HTML string.
@@ -69,6 +87,63 @@ def _render_cell(txn, **extra):
         entry_sums=build_entry_sums_dict([txn]),
         **extra,
     )
+
+
+def _credit_payback_idempotent_response(exc, txn_id):
+    """Translate a credit-payback unique-index violation into a 200.
+
+    Backstop for commit C-19 (audit finding F-008): if a future
+    caller bypasses ``credit_workflow.mark_as_credit``'s row lock
+    and a duplicate payback INSERT reaches PostgreSQL,
+    ``uq_transactions_credit_payback_unique`` rejects it and this
+    helper rolls back, re-fetches the source row, and renders the
+    cell at HTTP 200 -- matching what a serialised request would
+    have produced.  Other ``IntegrityError`` constraint hits return
+    the standard 400 so unrelated FK / check failures stay visible.
+    """
+    db.session.rollback()
+    if not is_unique_violation(exc, _CREDIT_PAYBACK_UNIQUE_INDEX):
+        return "Invalid reference. Check that all referenced records exist.", 400
+    logger.info(
+        "Duplicate CC payback prevented on mark_credit id=%d "
+        "(idempotent success)", txn_id,
+    )
+    refreshed = _get_owned_transaction(txn_id)
+    if refreshed is None:
+        return "Not found", 404
+    return (
+        _render_cell(refreshed),
+        200,
+        {"HX-Trigger": "gridRefresh"},
+    )
+
+
+def _stale_transaction_response(txn_id):
+    """Roll back the session and render the cell in conflict mode + 409.
+
+    Used by every PATCH/POST/DELETE handler that can race a
+    concurrent commit against the version-pinned UPDATE.  Re-fetches
+    the transaction from the database so the user sees the winner's
+    state -- never the loser's stale in-memory copy -- and tags the
+    cell with ``conflict=True`` so the template surfaces a warning
+    indicator.  Returns a 404 if the row was hard-deleted by the
+    winning request.
+
+    Args:
+        txn_id: Primary key of the transaction the route was trying
+            to mutate.  Used to re-fetch under ownership checks so
+            the conflict UI renders the correct row.
+
+    Returns:
+        Flask response tuple ``(html, 409)`` or ``("Not found", 404)``
+        when the row vanished entirely.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+    return _render_cell(txn, conflict=True), 409
 
 
 def _get_owned_transaction(txn_id):
@@ -86,6 +161,49 @@ def _get_owned_transaction(txn_id):
     if txn.pay_period.user_id != current_user.id:
         return None
     return txn
+
+
+def _verify_owned_fks_in_update(data):
+    """Verify cross-user FK ownership for the PATCH update payload.
+
+    Used by :func:`update_transaction` to reject ``pay_period_id``
+    and ``category_id`` values that belong to another user before
+    any state-changing work runs.  Without this probe an
+    authenticated owner could submit a victim's ``pay_period_id``
+    or ``category_id`` and the unfiltered ``setattr`` loop in
+    :func:`update_transaction` would silently re-parent the
+    transaction into the victim's namespace -- the FK constraint
+    passes because the row exists, just under another user, and
+    PostgreSQL never raises ``IntegrityError``.
+
+    Audit reference: F-029 / commit C-29 of the 2026-04-15
+    security remediation plan.  Mirrors the route-boundary FK
+    probes already in :func:`create_inline` and
+    :func:`create_transaction`; ``status_id`` is a reference table
+    FK (not user-scoped) and so does not need an ownership check.
+    The 404 strings deliberately match the messages used by the
+    create routes so the client cannot tell whether the row does
+    not exist or belongs to another user (security response rule:
+    "404 for both not found and not yours").
+
+    Args:
+        data: The schema-loaded PATCH payload.  ``pay_period_id``
+            and ``category_id`` are the only user-scoped FK keys
+            inspected; absent keys are skipped.
+
+    Returns:
+        ``None`` on success.  On failure, a Flask response tuple
+        ``(body, 404)`` the caller returns directly to HTMX.
+    """
+    if "pay_period_id" in data:
+        period = db.session.get(PayPeriod, data["pay_period_id"])
+        if period is None or period.user_id != current_user.id:
+            return "Pay period not found", 404
+    if "category_id" in data:
+        cat = db.session.get(Category, data["category_id"])
+        if cat is None or cat.user_id != current_user.id:
+            return "Category not found", 404
+    return None
 
 
 def _get_accessible_transaction_for_status(txn_id):
@@ -194,6 +312,41 @@ def update_transaction(txn_id):
 
     Returns the updated cell fragment.  Sends an HX-Trigger header
     to refresh the balance row.
+
+    Optimistic locking (commit C-18 / F-010) operates in two layers:
+
+      1. Stale-form check: the cell ships ``version_id`` as a hidden
+         input set to ``Transaction.version_id`` at render time.
+         When the submitted value differs from the row's current
+         counter, the handler short-circuits with a 409 + conflict
+         cell partial and records nothing.  This catches the
+         sequential Tab-1/Tab-2 race documented in C-17.
+
+      2. SQLAlchemy ``version_id_col``: any concurrent flush that
+         races past the stale-form check is still narrowed by
+         ``WHERE version_id = ?`` at the database tier; the loser
+         raises ``StaleDataError`` which the handler converts into
+         the same 409 + conflict cell.  The two layers together
+         close every interleaving the optimistic-lock contract is
+         meant to cover.
+
+    Route-boundary FK ownership (commit C-29 / F-029 of the
+    2026-04-15 security remediation plan): when the schema accepts
+    a user-scoped FK -- ``pay_period_id`` or ``category_id`` -- the
+    submitted id is verified against ``current_user.id`` here,
+    before any state-changing work runs.  Without this probe an
+    authenticated owner could submit another user's
+    ``pay_period_id`` or ``category_id`` and the unfiltered
+    ``setattr`` loop would silently re-parent the transaction into
+    the victim's namespace (the FK row exists, the FK constraint
+    passes, and PostgreSQL never raises ``IntegrityError``).
+    ``status_id`` is a reference table FK (not user-scoped) and so
+    does not need an ownership check.  The probe runs before the
+    transfer-shadow branch so a malicious request that targets a
+    transfer shadow with a cross-user FK is rejected even though
+    the transfer-shadow path drops ``pay_period_id`` silently --
+    matching the layered defense ``transfers.update_transfer``
+    received in commit C-27.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -205,6 +358,30 @@ def update_transaction(txn_id):
         return jsonify(errors=errors), 400
 
     data = _update_schema.load(request.form)
+
+    # Route-boundary FK ownership (commit C-29 / F-029).  Reject
+    # cross-user ``pay_period_id`` / ``category_id`` before the
+    # stale-form check or the transfer-shadow branch so the
+    # security response (404) takes precedence over the UX
+    # response (409 conflict cell) when the same request triggers
+    # both.  See :func:`_verify_owned_fks_in_update` for the
+    # threat-model details.
+    fk_error = _verify_owned_fks_in_update(data)
+    if fk_error is not None:
+        return fk_error
+
+    # Stale-form check.  Performed before any mutation so audit-log
+    # triggers record only successful edits.  Conditional on the
+    # form having submitted a version (clients that omit it fall
+    # through to the SQLAlchemy-tier check at flush time).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != txn.version_id:
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(submitted=%d, current=%d)",
+            txn_id, submitted_version, txn.version_id,
+        )
+        return _render_cell(txn, conflict=True), 409
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
@@ -231,10 +408,15 @@ def update_transaction(txn_id):
             transfer_service.update_transfer(
                 txn.transfer_id, current_user.id, **svc_kwargs
             )
+            db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on update_transaction shadow id=%d", txn_id,
+            )
+            return _stale_transaction_response(txn_id)
         except (NotFoundError, ValidationError) as exc:
             return str(exc), 400
 
-        db.session.commit()
         db.session.refresh(txn)
         logger.info(
             "user_id=%d updated shadow transaction %d (transfer %d)",
@@ -248,6 +430,19 @@ def update_transaction(txn_id):
     # triggering an FK violation when the session is dirtied.
     revert_paid_at = False
     if "status_id" in data:
+        # Verify the transition BEFORE any other status-dependent work
+        # (envelope guard, paid_at revert).  An illegal transition --
+        # for example settled -> projected -- short-circuits the
+        # request with a 400 and leaves the row untouched.  Audit
+        # reference: F-161 / commit C-21 of the 2026-04-15 security
+        # remediation plan.
+        try:
+            verify_transition(
+                txn.status_id, data["status_id"], context="transaction",
+            )
+        except ValidationError as exc:
+            return str(exc), 400
+
         # Block Credit status on entry-capable transactions -- credit
         # handling is per-entry, not per-transaction (scope doc section 5.2).
         credit_id = ref_cache.status_id(StatusEnum.CREDIT)
@@ -277,6 +472,11 @@ def update_transaction(txn_id):
 
     try:
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -298,11 +498,36 @@ def mark_done(txn_id):
     Automatically picks the correct status based on transaction type.
     For entry-capable transactions with entries, auto-computes
     actual_amount from the entry sum.  For all others, accepts an
-    optional actual_amount from the form.
+    optional actual_amount from the form -- parsed via
+    :class:`MarkDoneSchema` so a malformed numeric value returns a
+    clean 400 with the Marshmallow per-field message instead of the
+    legacy ``"Invalid actual amount"`` translation, and a negative
+    value is rejected at the schema tier (commit C-27 / F-042 /
+    F-162 of the 2026-04-15 security remediation plan).
+
+    Optimistic locking (commit C-18 / F-010): the button-click path
+    has no form-side ``version_id`` to compare, so the optimistic
+    lock relies on SQLAlchemy's ``version_id_col`` race detection
+    at flush time.  ``StaleDataError`` is converted to a 409 +
+    conflict cell so the user retries against fresh state instead
+    of seeing a 500.
     """
     txn = _get_accessible_transaction_for_status(txn_id)
     if txn is None:
         return "Not found", 404
+
+    # Validate the optional ``actual_amount`` form field once,
+    # before branching on transfer detection, so both code paths
+    # apply identical validation.  ``MarkDoneSchema`` strips empty
+    # strings via its pre_load hook so the missing-field UX (a
+    # button click with no body) yields ``actual_amount`` absent
+    # from the loaded dict; that branches into "leave the column
+    # untouched" below, matching the legacy behaviour.
+    try:
+        mark_done_data = _mark_done_schema.load(request.form)
+    except MarshmallowValidationError as exc:
+        return jsonify(errors=exc.messages), 400
+    actual_amount = mark_done_data.get("actual_amount")
 
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
@@ -320,21 +545,29 @@ def mark_done(txn_id):
             "paid_at": db.func.now(),
         }
 
-        actual = request.form.get("actual_amount")
-        if actual:
-            try:
-                svc_kwargs["actual_amount"] = Decimal(actual)
-            except (InvalidOperation, ValueError, ArithmeticError):
-                return "Invalid actual amount", 400
+        if actual_amount is not None:
+            svc_kwargs["actual_amount"] = actual_amount
 
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs
-        )
         try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id, **svc_kwargs
+            )
             db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on mark_done shadow id=%d", txn_id,
+            )
+            return _stale_transaction_response(txn_id)
         except IntegrityError:
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
+        except ValidationError as exc:
+            # transfer_service.update_transfer runs the transition
+            # through the state machine (commit C-21).  A mark-done
+            # request against a Cancelled or Settled transfer shadow
+            # surfaces here as 400 instead of crashing the request.
+            db.session.rollback()
+            return str(exc), 400
         db.session.refresh(txn)
         response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -363,18 +596,29 @@ def mark_done(txn_id):
         except ValidationError as exc:
             return str(exc), 400
     else:
+        # State-machine guard: only Projected (or the identity edge from
+        # Paid/Received) can transition into Paid/Received via mark_done.
+        # The envelope branch above already enforces the same rule via
+        # ``settle_from_entries``'s stricter ``is_immutable`` precondition,
+        # so the guard sits on the direct branch where the gap was.
+        # Audit reference: F-047 / F-161 follow-up to commit C-21.
+        try:
+            verify_transition(txn.status_id, status_id, context="transaction")
+        except ValidationError as exc:
+            return str(exc), 400
         txn.status_id = status_id
         txn.paid_at = db.func.now()
         # Accept an optional manual actual amount from the form.
-        actual = request.form.get("actual_amount")
-        if actual:
-            try:
-                txn.actual_amount = Decimal(actual)
-            except (InvalidOperation, ValueError, ArithmeticError):
-                return "Invalid actual amount", 400
+        if actual_amount is not None:
+            txn.actual_amount = actual_amount
 
     try:
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on mark_done id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -388,7 +632,19 @@ def mark_done(txn_id):
 @login_required
 @require_owner
 def mark_credit(txn_id):
-    """Mark a transaction as 'credit' and auto-generate a payback expense."""
+    """Mark a transaction as 'credit' and auto-generate a payback expense.
+
+    Optimistic locking (commit C-18 / F-010):
+    ``StaleDataError`` -> 409 conflict cell.
+
+    TOCTOU duplicate-payback prevention (commit C-19 / F-008):
+    ``credit_workflow.mark_as_credit`` acquires
+    ``SELECT ... FOR NO KEY UPDATE`` on the source row to serialise
+    concurrent requests; the partial unique index
+    ``uq_transactions_credit_payback_unique`` backstops any future
+    caller that bypasses the lock, and the IntegrityError catch
+    below converts the violation into idempotent success.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
@@ -398,8 +654,17 @@ def mark_credit(txn_id):
         return "Cannot mark a transfer shadow as credit.", 400
 
     try:
-        payback = credit_workflow.mark_as_credit(txn_id, current_user.id)
+        credit_workflow.mark_as_credit(txn_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on mark_credit id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19 -- see
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(exc, txn_id)
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
     response = _render_cell(txn)
@@ -410,7 +675,10 @@ def mark_credit(txn_id):
 @login_required
 @require_owner
 def unmark_credit(txn_id):
-    """Revert credit status and delete the auto-generated payback."""
+    """Revert credit status and delete the auto-generated payback.
+
+    Optimistic locking: see :func:`mark_credit`.
+    """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
@@ -422,8 +690,21 @@ def unmark_credit(txn_id):
     try:
         credit_workflow.unmark_credit(txn_id, current_user.id)
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on unmark_credit id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     except NotFoundError as exc:
         return str(exc), 404
+    except ValidationError as exc:
+        # Raised when the bespoke source-state guard or the
+        # state-machine verification in
+        # ``credit_workflow.unmark_credit`` rejects the request --
+        # e.g. attempting to unmark a Paid row.  The body names the
+        # offending status so the user understands why.
+        db.session.rollback()
+        return str(exc), 400
     response = _render_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -436,26 +717,62 @@ def cancel_transaction(txn_id):
 
     Shadow transactions route through the transfer service to cancel
     the parent transfer and both shadows atomically.
+
+    Optimistic locking: see :func:`mark_credit`.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
+    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id,
-            status_id=ref_cache.status_id(StatusEnum.CANCELLED),
-        )
-        db.session.commit()
+        try:
+            transfer_service.update_transfer(
+                txn.transfer_id, current_user.id,
+                status_id=cancelled_id,
+            )
+            db.session.commit()
+        except StaleDataError:
+            logger.info(
+                "Stale-data conflict on cancel_transaction shadow id=%d",
+                txn_id,
+            )
+            return _stale_transaction_response(txn_id)
+        except ValidationError as exc:
+            # transfer_service runs the transition through the state
+            # machine.  An attempt to cancel a Paid/Received/Settled
+            # transfer surfaces here as 400 instead of crashing the
+            # request -- the transfer-service path was already wired
+            # by commit C-21; this except clause is the route's
+            # corresponding translation.
+            db.session.rollback()
+            return str(exc), 400
         db.session.refresh(txn)
         response = _render_cell(txn)
         return response, 200, {"HX-Trigger": "gridRefresh"}
     # --- End guard ---
 
-    txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
+    # State-machine guard: Cancelled is reachable only from Projected
+    # (or the Cancelled identity edge for idempotent re-submits).  A
+    # direct done -> cancelled or settled -> cancelled would erase the
+    # paid/archived audit trail and is rejected with 400.  Audit
+    # reference: F-047 / F-161 follow-up to commit C-21.
+    try:
+        verify_transition(txn.status_id, cancelled_id, context="transaction")
+    except ValidationError as exc:
+        return str(exc), 400
 
-    db.session.commit()
+    txn.status_id = cancelled_id
+
+    try:
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on cancel_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
     response = _render_cell(txn)
@@ -605,6 +922,26 @@ def create_inline():
     Auto-derives the name from the category.  Returns the new
     transaction cell wrapped in a div with a unique ID for HTMX
     targeting.
+
+    Double-submit handling (F-102 / C-22): unlike the ad-hoc
+    transfer create path (F-050), no database-level uniqueness
+    constraint is enforced here.  Two transactions with identical
+    (account_id, category_id, amount, pay_period_id) are a
+    legitimate use case -- two $4 coffees on the same day, two
+    identical fast-food charges, the user genuinely buying the
+    same thing twice -- and rejecting them at the database layer
+    would force the user to artificially differentiate amounts
+    that match real-world receipts.  The mitigation is the
+    client-side ``hx-disabled-elt`` HTMX directive on every
+    transaction-create form (``_transaction_quick_create.html``,
+    ``_transaction_full_create.html``,
+    ``grid.html#addTransactionModal``): the submit control is
+    disabled while the request is in flight, preventing accidental
+    re-submits from a double-click or network retry.  The residual
+    risk -- a user clicks rapidly enough to bypass the disable
+    state, or replays the request via the back button -- is
+    accepted as operator UX rather than a financial-correctness
+    concern.
     """
     errors = _inline_create_schema.validate(request.form)
     if errors:
@@ -705,6 +1042,12 @@ def delete_transaction(txn_id):
 
     Shadow transactions cannot be directly deleted -- the user must
     delete the parent transfer instead.
+
+    Optimistic locking (commit C-18 / F-010): both the soft-delete
+    UPDATE and the hard-delete DELETE are version-pinned by
+    SQLAlchemy.  A concurrent commit that bumps the row's version
+    raises ``StaleDataError`` which the handler converts to a 409 +
+    conflict cell so the user can retry against fresh state.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -721,7 +1064,13 @@ def delete_transaction(txn_id):
         # Ad-hoc: hard delete.
         db.session.delete(txn)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on delete_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
     logger.info("user_id=%d deleted transaction %d", current_user.id, txn_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 

@@ -1396,7 +1396,20 @@ class TestRaiseRangeValidation:
 
 
 class TestContributionPerPeriodRange:
-    """SavingsGoalCreateSchema rejects negative contributions (M-14)."""
+    """SavingsGoalCreateSchema enforces a strictly positive contribution.
+
+    Pre-C-25 the schema accepted 0 (``Range(min=0)``) but the DB CHECK
+    rejected it (``contribution_per_period IS NULL OR
+    contribution_per_period > 0``), so a 0 input surfaced as a 500
+    IntegrityError on commit.  F-106 / C-25 of the 2026-04-15 security
+    remediation plan tightens the schema to
+    ``Range(min=Decimal("0"), min_inclusive=False)`` so the boundary
+    is enforced uniformly at the schema and storage tiers.  The
+    detailed coverage lives in
+    :mod:`tests.test_schemas.test_c25_boundary_inclusivity`; the
+    cases here remain as a regression gate alongside the rest of the
+    legacy schema-validation suite.
+    """
 
     def _base(self, **overrides):
         data = {
@@ -1407,16 +1420,21 @@ class TestContributionPerPeriodRange:
         return data
 
     def test_negative_contribution_rejected(self):
-        """contribution_per_period=-100 is rejected (min=0)."""
+        """contribution_per_period=-100 is rejected by the strictly-positive bound."""
         with pytest.raises(ValidationError) as exc:
             SavingsGoalCreateSchema().load(
                 self._base(contribution_per_period="-100.00")
             )
         assert "contribution_per_period" in exc.value.messages
 
-    def test_zero_contribution_accepted(self):
-        """contribution_per_period=0 is accepted."""
-        data = SavingsGoalCreateSchema().load(
-            self._base(contribution_per_period="0.00")
-        )
-        assert data["contribution_per_period"] == Decimal("0.00")
+    def test_zero_contribution_rejected(self):
+        """contribution_per_period=0 is rejected (F-106 / C-25).
+
+        DB CHECK rejects 0; the schema must reject it too so the
+        gap surfaces as a clean 400 instead of a 500 on commit.
+        """
+        with pytest.raises(ValidationError) as exc:
+            SavingsGoalCreateSchema().load(
+                self._base(contribution_per_period="0.00")
+            )
+        assert "contribution_per_period" in exc.value.messages

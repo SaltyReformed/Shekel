@@ -2,7 +2,15 @@
    Clicking opens the inline edit form via HTMX.
 
    Expected context: found.txn (or txn) -- a Transaction object.
-   Optional: wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
+   Optional:
+     wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
+     conflict -- if true, surfaces a small warning indicator and an
+                 aria/title hint that the row was changed by another
+                 action.  Set by routes that catch a stale-form
+                 submission or StaleDataError on commit and need to
+                 refresh the user's view with current data.  See
+                 commit C-18 of the 2026-04-15 security remediation
+                 plan.
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
@@ -13,16 +21,21 @@
   {% set remaining = t.estimated_amount - es.total %}
   {% set over_budget = remaining < 0 %}
 {% endif %}
+{% set is_conflict = conflict is defined and conflict %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
-<div class="txn-cell"
+<div class="txn-cell{% if is_conflict %} text-warning{% endif %}"
      hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
      hx-trigger="click"
      hx-target="#txn-cell-{{ t.id }}"
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
-     title="{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
+     aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
+     title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
+  {% if is_conflict %}
+  <i class="bi bi-exclamation-triangle text-warning small me-1"
+     aria-label="Edit conflict"></i>
+  {% endif %}
 
   {# Entry progress display for tracked transactions #}
   {% if show_progress %}

@@ -1,5 +1,12 @@
 {# Inline anchor balance cell for the accounts list page.
-   Expected context: acct, editing (bool).
+   Expected context: acct, editing (bool), conflict (bool, optional).
+
+   When conflict=True, the editor was attempting an update against a
+   stale version_id and the route returned 409.  Render the display
+   cell tagged with a small warning so the user sees the latest
+   balance and a "changed by another action" hint without a forced
+   page reload.  See app/routes/accounts.py:inline_anchor_update for
+   the optimistic-locking contract (commit C-17 / F-009).
 #}
 {% if editing %}
 <form hx-patch="{{ url_for('accounts.inline_anchor_update', account_id=acct.id) }}"
@@ -7,6 +14,9 @@
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
       class="d-inline-flex align-items-center gap-1">
+  {# Optimistic-locking pin: handler compares against acct.version_id
+     and short-circuits with 409 when the form is stale. #}
+  <input type="hidden" name="version_id" value="{{ acct.version_id }}">
   <div class="input-group input-group-sm mw-px-160">
     <span class="input-group-text">$</span>
     <input type="number" step="0.01" name="anchor_balance"
@@ -32,10 +42,15 @@
       hx-swap="outerHTML"
       role="button"
       tabindex="0"
-      class="font-mono cursor-pointer"
-      aria-label="Current balance: ${{ '{:,.2f}'.format(acct.current_anchor_balance|float) if acct.current_anchor_balance is not none else '0.00' }}. Click to edit."
-      title="Click to edit">
+      class="font-mono cursor-pointer{% if conflict %} text-warning{% endif %}"
+      aria-label="Current balance: ${{ '{:,.2f}'.format(acct.current_anchor_balance|float) if acct.current_anchor_balance is not none else '0.00' }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
+      title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to edit{% endif %}">
   ${{ "%.2f"|format(acct.current_anchor_balance|float) if acct.current_anchor_balance is not none else '0.00' }}
+  {% if conflict %}
+  <i class="bi bi-exclamation-triangle text-warning ms-1 small"
+     aria-label="Edit conflict"></i>
+  {% else %}
   <i class="bi bi-pencil-square text-muted ms-1 small"></i>
+  {% endif %}
 </span>
 {% endif %}

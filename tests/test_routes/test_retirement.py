@@ -72,12 +72,12 @@ def _create_salary_profile(seed_user, db_session):
     return profile
 
 
-def _create_pension(seed_user, db_session, salary_profile=None):
+def _create_pension(seed_user, db_session, salary_profile=None, name="State Pension"):
     """Helper to create a pension profile."""
     pension = PensionProfile(
         user_id=seed_user["user"].id,
         salary_profile_id=salary_profile.id if salary_profile else None,
-        name="State Pension",
+        name=name,
         benefit_multiplier=Decimal("0.01850"),
         consecutive_high_years=4,
         hire_date=date(2018, 7, 1),
@@ -215,6 +215,107 @@ class TestPensionCRUD:
         db.session.refresh(pension)
         assert pension.is_active is False
 
+    def test_create_pension_double_submit(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-105 / C-22: same-name double-submit creates exactly one pension.
+
+        The composite unique ``uq_pension_profiles_user_name`` rejects
+        the second INSERT.  The route catches the IntegrityError and
+        returns idempotent success: the user lands on the retirement
+        dashboard with the pension they intended to create.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        data = {
+            "name": "DuplicateName",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        }
+        r1 = auth_client.post("/retirement/pension", data=data)
+        assert r1.status_code == 302
+
+        r2 = auth_client.post("/retirement/pension", data=data)
+        assert r2.status_code == 302
+
+        db.session.expire_all()
+        rows = (
+            db.session.query(PensionProfile)
+            .filter_by(user_id=seed_user["user"].id, name="DuplicateName")
+            .all()
+        )
+        assert len(rows) == 1, (
+            f"Expected 1 pension after double-submit, found {len(rows)}; "
+            f"F-105 dedupe failed."
+        )
+
+    def test_create_pension_different_names_allowed(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-105 / C-22: distinct names create distinct pension rows."""
+        profile = _create_salary_profile(seed_user, db.session)
+        base = {
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        }
+        r1 = auth_client.post(
+            "/retirement/pension", data={**base, "name": "Plan A"},
+        )
+        r2 = auth_client.post(
+            "/retirement/pension", data={**base, "name": "Plan B"},
+        )
+        assert r1.status_code == 302
+        assert r2.status_code == 302
+
+        db.session.expire_all()
+        count = (
+            db.session.query(PensionProfile)
+            .filter_by(user_id=seed_user["user"].id)
+            .count()
+        )
+        assert count == 2
+
+    def test_update_pension_collision_returns_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-105 / C-22: renaming pension to an existing name returns 422.
+
+        Constraint enforcement on the update path: the user cannot
+        bypass the unique by editing an existing pension to match
+        another's name.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        first = _create_pension(
+            seed_user, db.session,
+            salary_profile=profile, name="First Pension",
+        )
+        second = _create_pension(
+            seed_user, db.session,
+            salary_profile=profile, name="Second Pension",
+        )
+
+        resp = auth_client.post(f"/retirement/pension/{second.id}", data={
+            "name": "First Pension",  # Collision target.
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 422
+        assert b"already have a pension profile with this name" in resp.data
+
+        db.session.expire_all()
+        db.session.refresh(second)
+        assert second.name == "Second Pension", (
+            "Failed update should not have mutated the row."
+        )
+
     def test_edit_pension_idor(
         self, auth_client, second_user, db, seed_periods_today,
     ):
@@ -231,11 +332,7 @@ class TestPensionCRUD:
         db.session.commit()
 
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/retirement" in location, (
-            f"IDOR redirect went to {location}, expected /retirement"
-        )
+        assert resp.status_code == 404
         assert b"Other Pension" not in resp.data, (
             "IDOR response leaked victim's pension name"
         )
@@ -261,11 +358,7 @@ class TestPensionCRUD:
         orig_active = pension.is_active
 
         resp = auth_client.post(f"/retirement/pension/{pension.id}/delete")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/retirement" in location, (
-            f"IDOR redirect went to {location}, expected /retirement"
-        )
+        assert resp.status_code == 404
 
         db.session.expire_all()
         after = db.session.get(PensionProfile, pension.id)
@@ -709,36 +802,27 @@ class TestRetirementNegativePaths:
     def test_edit_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """GET edit for nonexistent pension redirects with flash."""
+        """GET edit for nonexistent pension returns 404 (security)."""
         resp = auth_client.get("/retirement/pension/999999/edit")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_update_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """POST update for nonexistent pension redirects with flash."""
+        """POST update for nonexistent pension returns 404 (security)."""
         resp = auth_client.post("/retirement/pension/999999", data={
             "name": "Ghost",
             "benefit_multiplier": "2.0",
             "hire_date": "2020-01-01",
         })
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_delete_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """POST delete for nonexistent pension redirects with flash."""
+        """POST delete for nonexistent pension returns 404 (security)."""
         resp = auth_client.post("/retirement/pension/999999/delete")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_edit_pension_idor_no_data_leaked(
         self, auth_client, second_user, db, seed_periods_today,
@@ -755,7 +839,7 @@ class TestRetirementNegativePaths:
         db.session.commit()
 
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
-        assert resp.status_code == 302
+        assert resp.status_code == 404
         assert b"Secret Pension" not in resp.data
         assert b"0.02500" not in resp.data
 

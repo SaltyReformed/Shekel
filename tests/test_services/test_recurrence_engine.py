@@ -25,7 +25,7 @@ from app.services.recurrence_engine import (
     _match_semi_annual,
     _match_annual,
 )
-from app.exceptions import RecurrenceConflict
+from app.exceptions import RecurrenceConflict, ValidationError
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
 # use in FakeRule and test helpers.  Allows tests to construct FakeRule
@@ -1296,6 +1296,225 @@ class TestResolveConflicts:
             assert txn_a.estimated_amount == Decimal("50.00")
             assert txn_b.is_override is True
             assert txn_b.estimated_amount == Decimal("888.88")
+
+
+class TestResolveConflictsShadowGuard:
+    """C-20 / F-007: ``resolve_conflicts`` must refuse to mutate
+    transfer shadow transactions (``transfer_id IS NOT NULL``).
+
+    These tests close CLAUDE.md Transfer invariant 4 (no code path
+    directly mutates a shadow -- all transfer mutations route through
+    ``transfer_service``).  Pre-C-20, the convention was enforced
+    only by reviewer discipline; the per-row loop in
+    ``recurrence_engine.resolve_conflicts`` had no defensive check
+    and would silently desynchronise a shadow from its transfer
+    parent if a shadow ID ever appeared in the conflict list.
+    """
+
+    def _create_transfer_with_shadows(self, seed_user, seed_periods):
+        """Helper: build a transfer + its two shadow rows.
+
+        Creates a savings ``Account``, the two default
+        ``Transfers: Incoming`` / ``Transfers: Outgoing`` categories
+        (which the ``seed_user`` fixture does not include), and a
+        single transfer in the first period.  Returns the resulting
+        transfer plus its two shadows so the test can drive
+        ``resolve_conflicts`` against them.
+        """
+        from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
+
+        savings_type = (
+            db.session.query(AccountType).filter_by(name="Savings").one()
+        )
+        savings = Account(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            current_anchor_balance=Decimal("0.00"),
+        )
+        db.session.add(savings)
+
+        outgoing = Category(
+            user_id=seed_user["user"].id,
+            group_name="Transfers",
+            item_name="Outgoing",
+        )
+        incoming = Category(
+            user_id=seed_user["user"].id,
+            group_name="Transfers",
+            item_name="Incoming",
+        )
+        db.session.add_all([outgoing, incoming])
+        db.session.flush()
+
+        projected = (
+            db.session.query(Status).filter_by(name="Projected").one()
+        )
+
+        xfer = transfer_service.create_transfer(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("100.00"),
+            status_id=projected.id,
+            category_id=outgoing.id,
+        )
+        db.session.flush()
+
+        shadows = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer.id)
+            .all()
+        )
+        assert len(shadows) == 2, (
+            "Pre-condition: transfer must have exactly two shadows."
+        )
+        return xfer, shadows
+
+    def test_update_action_on_shadow_raises_validation_error(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A shadow ID with action='update' raises ValidationError and
+        leaves the shadow unchanged.
+
+        The guard must surface as a hard failure rather than a silent
+        skip: silently skipping would let a buggy caller pass shadow
+        IDs unnoticed and ship a regression that desyncs the parent
+        transfer's amount/status/period from its sibling shadow.
+        """
+        with app.app_context():
+            _, shadows = self._create_transfer_with_shadows(
+                seed_user, seed_periods,
+            )
+            shadow = shadows[0]
+            shadow_id = shadow.id
+            original_amount = shadow.estimated_amount
+            original_override = shadow.is_override
+            original_deleted = shadow.is_deleted
+            # Commit so the shadow survives the post-raise rollback
+            # below.  Without the commit, rollback would undo the
+            # transfer/shadow creation along with the failed mutation.
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="transfer shadow"):
+                recurrence_engine.resolve_conflicts(
+                    [shadow_id],
+                    action="update",
+                    user_id=seed_user["user"].id,
+                    new_amount=Decimal("9999.99"),
+                )
+
+            db.session.rollback()
+            shadow_after = db.session.get(Transaction, shadow_id)
+            assert shadow_after is not None
+            assert shadow_after.estimated_amount == original_amount
+            assert shadow_after.is_override == original_override
+            assert shadow_after.is_deleted == original_deleted
+
+    def test_cross_user_shadow_silently_skipped(
+        self, app, db, seed_user, seed_periods, second_user,
+    ):
+        """Cross-user requests for a shadow ID stay silent.
+
+        Defense-in-depth: the existing cross-user check (silent skip
+        + ACCESS event) must take precedence over the new shadow
+        guard so an attacker probing for shadow IDs cannot
+        distinguish ``shadow + cross-user`` from ``not-found +
+        cross-user``.  Both must look identical to the caller.
+        """
+        with app.app_context():
+            _, shadows = self._create_transfer_with_shadows(
+                seed_user, seed_periods,
+            )
+            shadow = shadows[0]
+            shadow_id = shadow.id
+            original_amount = shadow.estimated_amount
+
+            # Calling as second_user must NOT raise -- cross-user
+            # silent skip wins over the shadow guard.
+            recurrence_engine.resolve_conflicts(
+                [shadow_id],
+                action="update",
+                user_id=second_user["user"].id,
+                new_amount=Decimal("9999.99"),
+            )
+            db.session.flush()
+
+            shadow_after = db.session.get(Transaction, shadow_id)
+            assert shadow_after.estimated_amount == original_amount
+
+    def test_regular_transaction_still_resolves_after_guard(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Sanity: the C-20 guard does not regress regular-transaction
+        resolution.
+
+        With a non-shadow transaction
+        (``transfer_id IS NULL``), ``resolve_conflicts`` must keep
+        applying its existing semantics: clear flags and apply the
+        new amount.  Companion to ``TestResolveConflicts`` -- this
+        test exists explicitly under the C-20 class so a future
+        refactor of the shadow guard cannot accidentally break the
+        baseline path.
+        """
+        with app.app_context():
+            pattern = (
+                db.session.query(RecurrencePattern)
+                .filter_by(name="Every Period")
+                .one()
+            )
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense")
+                .one()
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=pattern.id,
+            )
+            db.session.add(rule)
+            db.session.flush()
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Car Payment"].id,
+                recurrence_rule_id=rule.id,
+                transaction_type_id=expense_type.id,
+                name="Regular Recurring",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            created = recurrence_engine.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            txn = created[0]
+            assert txn.transfer_id is None, (
+                "Pre-condition: regular transaction must not be a shadow."
+            )
+            txn.is_override = True
+            txn.estimated_amount = Decimal("999.99")
+            db.session.flush()
+
+            recurrence_engine.resolve_conflicts(
+                [txn.id],
+                action="update",
+                user_id=seed_user["user"].id,
+                new_amount=Decimal("50.00"),
+            )
+            db.session.flush()
+
+            db.session.refresh(txn)
+            assert txn.is_override is False
+            assert txn.is_deleted is False
+            assert txn.estimated_amount == Decimal("50.00")
 
 
 class TestCrossUserIsolation:

@@ -8,10 +8,17 @@ paycheck breakdown, and salary projection views.
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import (
+    fresh_login_required,
+    get_or_404,
+    get_owned_via_parent,
+    require_owner,
+)
 from markupsafe import Markup
 
 from app.extensions import db
@@ -48,8 +55,10 @@ from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
     DeductionCreateSchema,
+    DeductionUpdateSchema,
     FicaConfigSchema,
     RaiseCreateSchema,
+    RaiseUpdateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
@@ -58,15 +67,28 @@ from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
 from app.services.calibration_service import derive_effective_rates
 from app.services.tax_config_service import load_tax_configs
+from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
+
+# Names of the composite unique constraints that backstop the
+# raise / deduction double-submit fixes (F-051 + F-052 / C-23).
+# Each literal mirrors the model declaration in
+# ``app/models/salary_raise.py`` and
+# ``app/models/paycheck_deduction.py`` and the migration revision
+# ``a3b9c2d40e15``; renaming a constraint requires a coordinated
+# edit across all three sites.
+_SALARY_RAISES_UNIQUE_CONSTRAINT = "uq_salary_raises_profile_type_year_month"
+_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT = "uq_paycheck_deductions_profile_name"
 
 salary_bp = Blueprint("salary", __name__)
 
 _create_schema = SalaryProfileCreateSchema()
 _update_schema = SalaryProfileUpdateSchema()
 _raise_schema = RaiseCreateSchema()
+_raise_update_schema = RaiseUpdateSchema()
 _deduction_schema = DeductionCreateSchema()
+_deduction_update_schema = DeductionUpdateSchema()
 _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
@@ -262,10 +284,9 @@ def create_profile():
 @require_owner
 def edit_profile(profile_id):
     """Display the salary profile edit form with raises and deductions."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     filing_statuses = db.session.query(FilingStatus).all()
     raise_types = db.session.query(RaiseType).all()
@@ -289,11 +310,19 @@ def edit_profile(profile_id):
 @login_required
 @require_owner
 def update_profile(profile_id):
-    """Update a salary profile and recalculate linked transactions."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Update a salary profile and recalculate linked transactions.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent edit that races past the form-side check
+    -- is caught and converted to the same flash + redirect.
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -301,6 +330,21 @@ def update_profile(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != profile.version_id:
+        logger.info(
+            "Stale-form conflict on update_profile id=%d "
+            "(submitted=%d, current=%d)",
+            profile_id, submitted_version, profile.version_id,
+        )
+        flash(
+            "This salary profile was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     try:
         _PROFILE_UPDATE_FIELDS = {
@@ -323,6 +367,17 @@ def update_profile(profile_id):
         _regenerate_salary_transactions(profile)
 
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_profile id=%d", profile_id,
+        )
+        flash(
+            "This salary profile was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to update salary profile %d", current_user.id, profile_id)
@@ -338,17 +393,34 @@ def update_profile(profile_id):
 @login_required
 @require_owner
 def delete_profile(profile_id):
-    """Soft-delete a salary profile and deactivate its template."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Soft-delete a salary profile and deactivate its template.
+
+    Optimistic locking (commit C-18 / F-010): the
+    ``is_active = False`` flush is version-pinned by SQLAlchemy.
+    A concurrent edit raises ``StaleDataError`` which the handler
+    converts into a flash + redirect.
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     profile.is_active = False
     if profile.template:
         profile.template.is_active = False
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_profile id=%d", profile_id,
+        )
+        flash(
+            "This salary profile was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.list_profiles"))
     logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' deactivated.", "info")
     return redirect(url_for("salary.list_profiles"))
@@ -362,10 +434,9 @@ def delete_profile(profile_id):
 @require_owner
 def add_raise(profile_id):
     """Add a raise to a salary profile."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _raise_schema.validate(request.form)
     if errors:
@@ -387,6 +458,37 @@ def add_raise(profile_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except IntegrityError as exc:
+        # Duplicate-raise double-submit (F-051 / C-23): the composite
+        # unique ``uq_salary_raises_profile_type_year_month`` rejects
+        # the second INSERT when the user clicks Save twice in a row,
+        # the browser retries on a flaky network, or the back button
+        # is used to re-submit the form.  Roll back and treat as
+        # idempotent success: the user lands on the edit page with
+        # the raise they intended to create regardless of which
+        # request reached the database first, so neither path
+        # surfaces the constraint name as a 500.
+        db.session.rollback()
+        if not is_unique_violation(exc, _SALARY_RAISES_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to add raise to profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, profile_id,
+            )
+            flash("Failed to add raise. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        logger.info(
+            "Duplicate salary raise prevented on profile %d "
+            "(idempotent success)", profile_id,
+        )
+        flash(
+            "A raise with that type and effective date already "
+            "exists on this profile.",
+            "info",
+        )
+        if request.headers.get("HX-Request"):
+            return _render_raises_partial(profile)
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
@@ -405,11 +507,18 @@ def add_raise(profile_id):
 @login_required
 @require_owner
 def delete_raise(raise_id):
-    """Remove a raise from a salary profile."""
-    salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
-        flash("Raise not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Remove a raise from a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the DELETE statement
+    is version-pinned by SQLAlchemy; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect.
+    """
+    salary_raise = get_owned_via_parent(
+        SalaryRaise, raise_id, "salary_profile",
+    )
+    if salary_raise is None:
+        abort(404)
 
     profile = salary_raise.salary_profile
 
@@ -417,6 +526,17 @@ def delete_raise(raise_id):
         db.session.delete(salary_raise)
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_raise id=%d", raise_id,
+        )
+        flash(
+            "This raise was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
@@ -435,21 +555,44 @@ def delete_raise(raise_id):
 @login_required
 @require_owner
 def update_raise(raise_id):
-    """Update an existing raise on a salary profile."""
-    salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
-        flash("Raise not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Update an existing raise on a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input populated by app.js.  A stale
+    submission is rejected with a flash + redirect; the
+    SQLAlchemy-tier check catches the truly-concurrent case at
+    flush time and produces the same response.
+    """
+    salary_raise = get_owned_via_parent(
+        SalaryRaise, raise_id, "salary_profile",
+    )
+    if salary_raise is None:
+        abort(404)
 
     profile = salary_raise.salary_profile
 
-    errors = _raise_schema.validate(request.form)
+    errors = _raise_update_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    data = _raise_schema.load(request.form)
+    data = _raise_update_schema.load(request.form)
     data["is_recurring"] = request.form.get("is_recurring") == "on"
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != salary_raise.version_id:
+        logger.info(
+            "Stale-form conflict on update_raise id=%d "
+            "(submitted=%d, current=%d)",
+            raise_id, submitted_version, salary_raise.version_id,
+        )
+        flash(
+            "This raise was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
@@ -467,6 +610,47 @@ def update_raise(raise_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_raise id=%d", raise_id,
+        )
+        flash(
+            "This raise was changed by another action while you were "
+            "editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    except IntegrityError as exc:
+        # Duplicate-key collision on update (F-051 / C-23): the user
+        # edited this raise's (type, year, month) tuple to one
+        # another active raise on the same salary profile already
+        # holds.  Roll back the stale session, surface the
+        # field-level error as a flash, and redirect to the edit
+        # page so the user can revise their input -- crashing the
+        # request with a 500 would expose the constraint name and
+        # leave the user without context to recover.
+        db.session.rollback()
+        if not is_unique_violation(exc, _SALARY_RAISES_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to update raise %d on profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, raise_id, profile.id,
+            )
+            flash("Failed to update raise. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+        logger.info(
+            "Duplicate-key conflict on update_raise id=%d "
+            "(another raise already covers this profile/type/date)",
+            raise_id,
+        )
+        flash(
+            "Another raise on this profile already covers that "
+            "type and effective date.  Edit or remove it before "
+            "applying these changes.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception(
@@ -492,10 +676,9 @@ def update_raise(raise_id):
 @require_owner
 def add_deduction(profile_id):
     """Add a deduction to a salary profile."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _deduction_schema.validate(request.form)
     if errors:
@@ -518,6 +701,40 @@ def add_deduction(profile_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except IntegrityError as exc:
+        # Duplicate-deduction double-submit (F-052 / C-23): the
+        # composite unique ``uq_paycheck_deductions_profile_name``
+        # rejects the second INSERT when the user clicks Save
+        # twice in a row, the browser retries on a flaky network,
+        # or a deactivated deduction with the same name still
+        # exists on the profile.  Roll back and treat as
+        # idempotent success: the user lands on the edit page with
+        # the deduction they intended to create regardless of
+        # which request reached the database first.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to add deduction to profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, profile_id,
+            )
+            flash("Failed to add deduction. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        attempted_name = data.get("name", "")
+        logger.info(
+            "Duplicate paycheck deduction prevented on profile %d "
+            "(name=%r, idempotent success)",
+            profile_id, attempted_name,
+        )
+        flash(
+            f"A deduction named '{attempted_name}' already exists "
+            f"on this profile.  Edit or reactivate it instead of "
+            f"creating a duplicate.",
+            "info",
+        )
+        if request.headers.get("HX-Request"):
+            return _render_deductions_partial(profile)
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
@@ -536,11 +753,18 @@ def add_deduction(profile_id):
 @login_required
 @require_owner
 def delete_deduction(ded_id):
-    """Remove a deduction from a salary profile."""
-    deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None or deduction.salary_profile.user_id != current_user.id:
-        flash("Deduction not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Remove a deduction from a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the DELETE statement
+    is version-pinned by SQLAlchemy; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect.
+    """
+    deduction = get_owned_via_parent(
+        PaycheckDeduction, ded_id, "salary_profile",
+    )
+    if deduction is None:
+        abort(404)
 
     profile = deduction.salary_profile
 
@@ -548,6 +772,17 @@ def delete_deduction(ded_id):
         db.session.delete(deduction)
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on delete_deduction id=%d", ded_id,
+        )
+        flash(
+            "This deduction was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
@@ -566,21 +801,44 @@ def delete_deduction(ded_id):
 @login_required
 @require_owner
 def update_deduction(ded_id):
-    """Update an existing deduction on a salary profile."""
-    deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None or deduction.salary_profile.user_id != current_user.id:
-        flash("Deduction not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    """Update an existing deduction on a salary profile.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input populated by app.js.  A stale
+    submission is rejected with a flash + redirect; the
+    SQLAlchemy-tier check catches the truly-concurrent case at
+    flush time and produces the same response.
+    """
+    deduction = get_owned_via_parent(
+        PaycheckDeduction, ded_id, "salary_profile",
+    )
+    if deduction is None:
+        abort(404)
 
     profile = deduction.salary_profile
 
-    errors = _deduction_schema.validate(request.form)
+    errors = _deduction_update_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    data = _deduction_schema.load(request.form)
+    data = _deduction_update_schema.load(request.form)
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != deduction.version_id:
+        logger.info(
+            "Stale-form conflict on update_deduction id=%d "
+            "(submitted=%d, current=%d)",
+            ded_id, submitted_version, deduction.version_id,
+        )
+        flash(
+            "This deduction was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     from decimal import Decimal as D
@@ -601,6 +859,46 @@ def update_deduction(ded_id):
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_deduction id=%d", ded_id,
+        )
+        flash(
+            "This deduction was changed by another action while you "
+            "were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    except IntegrityError as exc:
+        # Name-collision rename (F-052 / C-23): the user renamed
+        # this deduction to one another active or inactive
+        # deduction on the same profile already holds.  Roll back
+        # the stale session and surface the field-level error as a
+        # flash.  Crashing the request with a 500 would leak the
+        # constraint name and leave the user without context to
+        # recover.
+        db.session.rollback()
+        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+            logger.exception(
+                "user_id=%d failed to update deduction %d on profile %d "
+                "(unexpected IntegrityError)",
+                current_user.id, ded_id, profile.id,
+            )
+            flash("Failed to update deduction. Please try again.", "danger")
+            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+        logger.info(
+            "Duplicate-name conflict on update_deduction id=%d "
+            "(another deduction with this name exists on the profile)",
+            ded_id,
+        )
+        flash(
+            "Another deduction on this profile already uses that "
+            "name.  Choose a different name or remove the existing "
+            "deduction first.",
+            "warning",
+        )
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except Exception:
         db.session.rollback()
         logger.exception(
@@ -626,15 +924,13 @@ def update_deduction(ded_id):
 @require_owner
 def breakdown(profile_id, period_id):
     """Show paycheck breakdown for a specific period."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
-    period = db.session.get(PayPeriod, period_id)
-    if period is None or period.user_id != current_user.id:
-        flash("Pay period not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    period = get_or_404(PayPeriod, period_id)
+    if period is None:
+        abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
@@ -656,7 +952,18 @@ def breakdown(profile_id, period_id):
 @login_required
 @require_owner
 def breakdown_current(profile_id):
-    """Show paycheck breakdown for the current period."""
+    """Show paycheck breakdown for the current period.
+
+    Verifies ownership of ``profile_id`` before redirecting so a
+    cross-user request 404s here rather than producing a 302 to
+    :func:`breakdown` (which would also 404, but the intermediate
+    redirect leaks the existence of the requested profile-id slot
+    and breaks the project's "404 for both 'not found' and 'not
+    yours'" security rule -- audit commit C-31 / F-087).
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
     current_period = pay_period_service.get_current_period(current_user.id)
     if not current_period:
         flash(Markup(
@@ -667,7 +974,7 @@ def breakdown_current(profile_id):
         return redirect(url_for("salary.list_profiles"))
     return redirect(url_for(
         "salary.breakdown",
-        profile_id=profile_id,
+        profile_id=profile.id,
         period_id=current_period.id,
     ))
 
@@ -677,10 +984,9 @@ def breakdown_current(profile_id):
 @require_owner
 def projection(profile_id):
     """Show salary projection table for all periods."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
@@ -707,10 +1013,9 @@ def projection(profile_id):
 @require_owner
 def calibrate_form(profile_id):
     """Display the pay stub calibration form."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     return render_template(
         "salary/calibrate.html",
@@ -723,10 +1028,9 @@ def calibrate_form(profile_id):
 @require_owner
 def calibrate_preview(profile_id):
     """Validate pay stub data and show derived rates for confirmation."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _calibration_schema.validate(request.form)
     if errors:
@@ -787,10 +1091,9 @@ def calibrate_preview(profile_id):
 @require_owner
 def calibrate_confirm(profile_id):
     """Save the calibration override and regenerate transactions."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _calibration_confirm_schema.validate(request.form)
     if errors:
@@ -852,10 +1155,9 @@ def calibrate_confirm(profile_id):
 @require_owner
 def calibrate_delete(profile_id):
     """Remove calibration override and revert to bracket-based taxes."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     existing = (
         db.session.query(CalibrationOverride)

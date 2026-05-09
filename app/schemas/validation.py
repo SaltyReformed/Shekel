@@ -3,11 +3,89 @@ Shekel Budget App -- Marshmallow Validation Schemas
 
 Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
+
+Percent / decimal-rate convention
+---------------------------------
+
+Percentage rate fields (FICA, state flat rates, inflation, APY,
+trend alert threshold, etc.) are stored as decimal fractions in the
+database -- a 6.2% rate is persisted as ``Decimal("0.0620")`` in a
+``Numeric(5, 4)`` or ``Numeric(7, 5)`` column with a database
+CHECK constraint pinning the value to ``[0, 1]`` (and similar
+ranges for the few "match-multiplier" cases).  The forms that
+collect these values render the user-facing percent
+(``0.0620 * 100 == 6.20``) and the routes divide by 100 (or call
+``app.utils.formatting.pct_to_decimal``) before persistence.
+
+The schemas in this module therefore validate the user-input
+representation:
+
+  - Schemas that run BEFORE the route's ``/100`` conversion accept
+    the percent (e.g. ``Range(min=0, max=100)`` for a 0-100% rate).
+  - Schemas that run AFTER the route's ``/100`` conversion (such as
+    ``InvestmentParamsCreateSchema``, where the route's
+    ``_convert_percentage_inputs`` helper rewrites the form payload
+    in place before ``schema.load``) accept the decimal fraction
+    (e.g. ``Range(min=0, max=1)`` for a 0-100% rate, or wider for
+    multiplier semantics like 401(k) employer match).
+
+The DB CHECK constraints added by commit C-24 of the 2026-04-15
+security remediation plan are the storage-tier counterpart to these
+validators; they are deliberately not redundant because they catch
+raw-SQL bypasses of the route layer.  See
+``migrations/versions/<C-24>_marshmallow_range_check_sweep.py`` for
+the storage-tier bounds and keep both sides in sync when adding a
+new column.
+
+Monetary range validators
+-------------------------
+
+Pure monetary fields (deduction amount, SalaryProfile W-4 fields,
+TaxBracketSet credits, etc.) get ``Range(min=...)`` validators per
+commit C-24.  The minimum mirrors the database CHECK (``>= 0`` or
+``> 0`` per column); the maximum is set well below the column's
+storage limit but above any plausible real-world value, so a typo
+that injects an extra digit is rejected with a clean field-level
+400 instead of being silently committed.
 """
 
 from decimal import Decimal
 
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
+
+from app.services.debt_strategy_service import (
+    STRATEGY_AVALANCHE,
+    STRATEGY_CUSTOM,
+    STRATEGY_SNOWBALL,
+)
+
+
+# ── Shared range validators (commit C-24) ─────────────────────────
+#
+# These constants centralise the percent-format and monetary range
+# rules used across more than one schema below.  Validator instances
+# are immutable for the parameter set they were constructed with, so
+# a single shared instance per pattern is safe; if two fields need
+# different bounds (e.g. raise percentage vs FICA rate), declare a
+# second constant rather than mutating an existing one.
+
+# Percent input that maps to a decimal fraction in storage: 0..100
+# percent inclusive (e.g. user-entered "6.2" for a 6.2% rate, route
+# divides by 100 before persistence).  Used by FICA, state flat-rate,
+# loan interest, escrow inflation, default inflation, etc.
+_PERCENT_INPUT_RANGE = validate.Range(
+    min=Decimal("0"), max=Decimal("100"),
+)
+
+# Monetary range for W-4 / tax credit fields where the DB CHECK is
+# ``>= 0``.  10,000,000 is generous: it accommodates very large W-4
+# adjustments while still rejecting an obvious typo (extra digit) on
+# a routine entry.  Columns are ``Numeric(12, 2)`` so the database
+# can hold up to ~10B; this validator caps the schema layer well
+# below that.
+_NON_NEGATIVE_MONETARY = validate.Range(
+    min=Decimal("0"), max=Decimal("10000000"),
+)
 
 
 class BaseSchema(Schema):
@@ -18,7 +96,20 @@ class BaseSchema(Schema):
 
 
 class TransactionUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating a transaction."""
+    """Validates PATCH data for updating a transaction.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the cell or popover was rendered.  The route handler
+    compares the submitted value against ``Transaction.version_id``
+    and short-circuits with 409 Conflict if they differ -- a stale-
+    form check that catches the Tab-1/Tab-2 race even when the two
+    requests are sequential rather than truly concurrent.  Optional
+    so callers without a way to plumb the version through still
+    pass validation; in that case only the SQLAlchemy
+    ``version_id_col`` race detection applies, which catches the
+    truly-concurrent case at flush time.  See commit C-18 of the
+    2026-04-15 security remediation plan.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -34,6 +125,7 @@ class TransactionUpdateSchema(BaseSchema):
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
     paid_at = fields.DateTime(allow_none=True, dump_only=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class TransactionCreateSchema(BaseSchema):
@@ -175,6 +267,9 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     two relevant fields, the validator returns early and the route
     layer applies the rule against the existing template's stored
     values.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     # Override -- all fields optional for update.
@@ -187,11 +282,27 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
 
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
+
 
 class AnchorUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating the account anchor balance."""
+    """Validates PATCH data for updating the account anchor balance.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the form was rendered.  The route handler compares
+    the submitted value against ``Account.version_id`` and returns
+    409 Conflict if they differ -- a stale-form check that catches
+    the Tab-1/Tab-2 race even when the two requests are sequential
+    rather than truly concurrent.  Optional so callers that have
+    no way to plumb the version through (e.g. a future programmatic
+    client) still pass validation; in that case only the
+    SQLAlchemy ``version_id_col`` race detection applies, which
+    catches the truly-concurrent case at flush time.
+    """
 
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class PayPeriodGenerateSchema(BaseSchema):
@@ -221,6 +332,131 @@ class CategoryEditSchema(BaseSchema):
     item_name = fields.String(required=True, validate=validate.Length(min=1, max=100))
 
 
+class MarkDoneSchema(BaseSchema):
+    """Validates POST data for the mark-done / mark-paid status routes.
+
+    Used by ``transactions.mark_done`` (both transfer-shadow and
+    regular branches) and ``dashboard.mark_paid`` to replace the raw
+    ``Decimal(request.form.get("actual_amount"))`` parse the routes
+    previously used.  Marshmallow's Decimal field rejects malformed
+    numeric input with a clean field-level 400 instead of the routes'
+    catch-and-translate 400, and the ``Range(min=0)`` validator is
+    the schema-tier counterpart to the DB CHECK
+    ``actual_amount IS NULL OR actual_amount >= 0`` on
+    ``budget.transactions.actual_amount``.
+
+    ``allow_none=True`` matches the column's nullability so a JSON
+    caller can clear the actual amount explicitly (the form path is
+    already handled by ``BaseSchema``'s EXCLUDE policy plus the
+    routes' "if value present" check on the loaded result).  The
+    routes treat a missing ``actual_amount`` key as "leave the column
+    untouched" rather than "clear it" -- mark-done with no body must
+    not nullify a previously recorded actual amount.  Audit
+    references: F-042 / F-162 / commit C-27 of the 2026-04-15
+    security remediation plan.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields stay missing.
+
+        HTML forms always submit every <input> element, including
+        empty ones, as empty strings.  Without this hook, an
+        unfilled ``actual_amount`` field would arrive as ``""`` and
+        fail Decimal coercion -- defeating the point of replacing
+        the inline try/except.
+        """
+        return {k: v for k, v in data.items() if v != ""}
+
+    actual_amount = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(min=Decimal("0")),
+    )
+
+
+class DebtStrategyCalculateSchema(BaseSchema):
+    """Validates POST data for the debt strategy calculator.
+
+    ``extra_monthly`` is the additional monthly payment the user
+    proposes to allocate across debts; the field-level ``Range``
+    rejects negative values at the schema tier and the upper bound
+    rejects a typo that injected an extra digit before the
+    ``calculate_strategy`` service amplifies it through the payoff
+    simulation.  ``Decimal("1000000")`` is far above any realistic
+    debt-payoff budget but well within the simulation's float-free
+    arithmetic range, so an order-of-magnitude typo on a routine
+    entry is rejected here rather than producing wildly skewed
+    payoff timelines.
+
+    ``strategy`` must be one of the three constants exported by
+    ``app.services.debt_strategy_service`` (``avalanche``,
+    ``snowball``, ``custom``); the ``OneOf`` validator surfaces the
+    same "Invalid strategy" message the route used to compose by
+    hand.  ``load_default`` mirrors the form's pre-selected radio
+    button so a payload that legitimately omits the field still
+    deserialises -- a defensive choice against a future caller that
+    drops the field while keeping the existing UX for the HTML
+    form.
+
+    ``custom_order`` is the priority list for the ``custom``
+    strategy.  The schema validates the raw string (presence and
+    length); the route splits on commas, coerces to integers, and
+    runs the IDOR cross-account-ownership check that the schema
+    cannot do without a database session.  The 500-character cap is
+    generous -- each debt account ID is at most ~10 digits plus a
+    comma, so 500 characters fits roughly 40 accounts while
+    rejecting a pathological payload.  ``custom`` requires the
+    field; the cross-field rule
+    :meth:`validate_custom_requires_order` enforces that contract
+    so a future JSON caller gets the same error shape as the HTML
+    form.
+
+    Audit references: F-040 / commit C-27 of the 2026-04-15 security
+    remediation plan.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields stay missing."""
+        return {k: v for k, v in data.items() if v != ""}
+
+    extra_monthly = fields.Decimal(
+        load_default=Decimal("0"), places=2, as_string=True,
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("1000000"),
+        ),
+    )
+    strategy = fields.String(
+        load_default=STRATEGY_AVALANCHE,
+        validate=validate.OneOf(
+            (STRATEGY_AVALANCHE, STRATEGY_SNOWBALL, STRATEGY_CUSTOM),
+        ),
+    )
+    custom_order = fields.String(
+        load_default=None, allow_none=True,
+        validate=validate.Length(min=1, max=500),
+    )
+
+    @validates_schema
+    def validate_custom_requires_order(self, data, **kwargs):
+        """Require ``custom_order`` when ``strategy == 'custom'``.
+
+        Mirrors the cross-field rule the route enforced inline
+        before commit C-27.  Keeping the rule on the schema means a
+        future caller (a JSON client, a CLI script) gets the same
+        error shape as the HTML form path -- and the message text
+        matches the legacy route output so the existing
+        ``test_custom_missing_order`` UX assertion still holds.
+        """
+        if data.get("strategy") != STRATEGY_CUSTOM:
+            return
+        if not data.get("custom_order"):
+            raise ValidationError(
+                "Custom strategy requires a priority order.",
+                field_name="custom_order",
+            )
+
+
 # ── Salary / Paycheck Schemas (Phase 2) ───────────────────────────
 
 
@@ -246,24 +482,39 @@ class SalaryProfileCreateSchema(BaseSchema):
 
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
-        load_default=0, validate=validate.Range(min=0)
+        load_default=0, validate=validate.Range(min=0, max=99),
     )
     other_dependents = fields.Integer(
-        load_default=0, validate=validate.Range(min=0)
+        load_default=0, validate=validate.Range(min=0, max=99),
     )
+    # F-074 / C-24: Added explicit Range(>= 0) to backstop the DB
+    # CHECK (``additional_income >= 0``); the column is
+    # ``Numeric(12, 2)`` and the upper bound is a generous form-
+    # layer ceiling (see ``_NON_NEGATIVE_MONETARY``).
     additional_income = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
+    # F-074 / C-24: Same as additional_income.  DB CHECK
+    # ``additional_deductions >= 0``.
     additional_deductions = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
+    # F-074 / C-24: Per-period extra withholding.  DB CHECK
+    # ``extra_withholding >= 0``.
     extra_withholding = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
 
 
 class SalaryProfileUpdateSchema(BaseSchema):
-    """Validates POST data for updating a salary profile."""
+    """Validates POST data for updating a salary profile.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -281,11 +532,29 @@ class SalaryProfileUpdateSchema(BaseSchema):
     )
 
     # W-4 fields (IRS Pub 15-T)
-    qualifying_children = fields.Integer(validate=validate.Range(min=0))
-    other_dependents = fields.Integer(validate=validate.Range(min=0))
-    additional_income = fields.Decimal(places=2, as_string=True)
-    additional_deductions = fields.Decimal(places=2, as_string=True)
-    extra_withholding = fields.Decimal(places=2, as_string=True)
+    qualifying_children = fields.Integer(
+        validate=validate.Range(min=0, max=99),
+    )
+    other_dependents = fields.Integer(
+        validate=validate.Range(min=0, max=99),
+    )
+    # F-074 / C-24: See :class:`SalaryProfileCreateSchema` for the
+    # bound rationale; the same Range applies on update.
+    additional_income = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    additional_deductions = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    extra_withholding = fields.Decimal(
+        places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class RaiseCreateSchema(BaseSchema):
@@ -302,13 +571,36 @@ class RaiseCreateSchema(BaseSchema):
     effective_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
     )
+    # F-011 / C-24: Tightened from Range(-100, 1000) to a positive,
+    # column-fitting bound.  The user enters percent (e.g. "3" for a
+    # 3% raise); the route divides by 100 before persistence into
+    # ``salary.salary_raises.percentage`` (``Numeric(5, 4)`` -- max
+    # storable 9.9999 == 999.99% raise).  A zero or negative raise is
+    # not a raise at all (the audit's "no pay cuts" policy -- pay
+    # cuts are not modelled today; revisit if that changes).  200% is
+    # the realistic upper: a single-event 3x salary jump is already
+    # extraordinary, and any larger entry is a typo we want rejected
+    # at the form rather than silently amplified by recurring-raise
+    # compounding.  The DB CHECK ``percentage > 0`` is the storage-
+    # tier counterpart.
     percentage = fields.Decimal(
         places=2, as_string=True,
-        validate=validate.Range(min=-100, max=1000),
+        validate=validate.Range(
+            min=Decimal("0.01"), max=Decimal("200"),
+        ),
     )
+    # F-011 / C-24: Tightened from Range(-1e7, 1e7) to a positive,
+    # column-fitting bound on a flat-dollar raise per period.
+    # ``salary.salary_raises.flat_amount`` is ``Numeric(12, 2)``; the
+    # DB CHECK ``flat_amount > 0`` rejects zero/negative.  $10M is
+    # the schema-layer ceiling -- well above any realistic raise but
+    # below the column limit, so an order-of-magnitude typo is
+    # rejected with a clean 400 rather than being committed.
     flat_amount = fields.Decimal(
         places=2, as_string=True,
-        validate=validate.Range(min=-10000000, max=10000000),
+        validate=validate.Range(
+            min=Decimal("0.01"), max=Decimal("10000000"),
+        ),
     )
     is_recurring = fields.Boolean(load_default=False)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
@@ -323,8 +615,39 @@ class RaiseCreateSchema(BaseSchema):
             )
 
 
+class RaiseUpdateSchema(RaiseCreateSchema):
+    """Validates POST data for updating an existing salary raise.
+
+    Inherits all required-field and cross-field rules from
+    :class:`RaiseCreateSchema` (the salary edit form submits the
+    full record on every save), and adds the optimistic-locking
+    ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
+    contract.  Commit C-18 of the 2026-04-15 security remediation
+    plan.
+    """
+
+    version_id = fields.Integer(validate=validate.Range(min=1))
+
+
 class DeductionCreateSchema(BaseSchema):
-    """Validates POST data for adding a paycheck deduction."""
+    """Validates POST data for adding a paycheck deduction.
+
+    The ``amount`` field carries dual semantics keyed off
+    ``calc_method_id``:
+
+      - ``CalcMethodEnum.FLAT`` -- the user enters a per-paycheck
+        dollar amount (e.g. "500.00") that is persisted as-is in
+        ``salary.paycheck_deductions.amount`` (``Numeric(12, 4)``).
+      - ``CalcMethodEnum.PERCENTAGE`` -- the user enters a percent
+        of gross pay (e.g. "6" for 6%); the route divides by 100
+        before persistence so the storage value is the decimal
+        fraction.
+
+    The wide field-level ``Range`` accommodates the dollar case;
+    the cross-field validator ``validate_amount_against_calc_method``
+    additionally rejects implausibly large percent inputs (a 500%
+    deduction is a typo, not a deduction) per F-012 / C-24.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -333,45 +656,167 @@ class DeductionCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     deduction_timing_id = fields.Integer(required=True)
     calc_method_id = fields.Integer(required=True)
-    amount = fields.Decimal(required=True, places=4, as_string=True)
+    # F-012 / C-24: Added explicit positive Range to backstop the DB
+    # CHECK (``amount > 0``).  Column is ``Numeric(12, 4)``; min
+    # 0.0001 is the smallest representable positive value.  $1M cap
+    # is generous (a single deduction line of $1M per paycheck is
+    # already nonsense) but rejects the obvious "extra digit" typo
+    # at the form rather than letting an IntegrityError come back as
+    # a 500.  The percent-input ceiling (calc_method = PERCENTAGE)
+    # is enforced separately by
+    # ``validate_amount_against_calc_method`` because the
+    # field-level Range cannot see ``calc_method_id``.
+    amount = fields.Decimal(
+        required=True, places=4, as_string=True,
+        validate=validate.Range(
+            min=Decimal("0.0001"), max=Decimal("1000000"),
+        ),
+    )
     deductions_per_year = fields.Integer(
         load_default=26, validate=validate.OneOf([12, 24, 26])
     )
-    annual_cap = fields.Decimal(places=2, as_string=True, allow_none=True)
+    # F-012 / C-24: ``annual_cap`` is nullable in the model (NULL =
+    # uncapped); when present, must be positive (DB CHECK
+    # ``annual_cap IS NULL OR annual_cap > 0``).  Column is
+    # ``Numeric(12, 2)``; $100M cap is far above the largest
+    # realistic annual cap (HSA family limit ~$8K, 401(k) elective
+    # ~$23K, 401(k) including employer ~$70K).
+    annual_cap = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(
+            min=Decimal("0"), min_inclusive=False,
+            max=Decimal("100000000"),
+        ),
+    )
     inflation_enabled = fields.Boolean(load_default=False)
-    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True)
+    # F-077 / C-24: Schema validates the user-input percent (e.g.
+    # ``3`` for a 3% annual escalation); the route divides by 100
+    # before persistence into ``Numeric(5, 4)``.  DB CHECK pins
+    # storage to ``[0, 1]``.
+    inflation_rate = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=_PERCENT_INPUT_RANGE,
+    )
     inflation_effective_month = fields.Integer(
         validate=validate.Range(min=1, max=12), allow_none=True
     )
     target_account_id = fields.Integer(allow_none=True)
 
+    @validates_schema
+    def validate_amount_against_calc_method(self, data, **kwargs):
+        """Cap ``amount`` to a sane percent range when the calc method is PERCENTAGE.
+
+        The field-level Range is wide enough to admit any plausible
+        flat-dollar deduction; without this cross-field rule the
+        same wide bound silently accepts a "500" entered against
+        ``calc_method = PERCENTAGE`` (read as "500% of gross") and
+        produces a deduction that drains every paycheck to zero.
+        Cap percent inputs at 100% -- the realistic ceiling for a
+        single deduction line -- and let
+        ``CalcMethodEnum.FLAT`` keep the wider field-level bound.
+        F-012 / C-24 of the 2026-04-15 security remediation plan.
+
+        Raises:
+            ValidationError: When ``calc_method_id`` resolves to
+                ``PERCENTAGE`` and ``amount`` is greater than 100.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
+
+        calc_method_id = data.get("calc_method_id")
+        amount = data.get("amount")
+        if calc_method_id is None or amount is None:
+            return
+        try:
+            percentage_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+        except KeyError:
+            # ref_cache not initialised -- the route layer will
+            # surface the missing reference data; no extra check we
+            # can do here.
+            return
+        if calc_method_id != percentage_id:
+            return
+        if amount > Decimal("100"):
+            raise ValidationError(
+                "Percentage deductions must be at most 100%.",
+                field_name="amount",
+            )
+
+
+class DeductionUpdateSchema(DeductionCreateSchema):
+    """Validates POST data for updating an existing paycheck deduction.
+
+    Inherits the required-field rules and the
+    ``validate_amount_against_calc_method`` cross-field rule from
+    :class:`DeductionCreateSchema` (the salary edit form submits the
+    full record on every save), and adds the optimistic-locking
+    ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
+    contract.  Commit C-18 of the 2026-04-15 security remediation
+    plan.
+    """
+
+    version_id = fields.Integer(validate=validate.Range(min=1))
+
 
 class TaxBracketSetSchema(BaseSchema):
-    """Validates POST data for updating a tax bracket set."""
+    """Validates POST data for updating a tax bracket set.
+
+    F-075 / C-24: monetary fields gain ``Range(min=0)`` validators
+    so the schema layer rejects negative entries before the DB
+    CHECK (``standard_deduction >= 0`` etc.) raises an opaque
+    IntegrityError.  ``tax_year`` is bounded to ``[2000, 2100]`` to
+    match the storage CHECK introduced by C-24's migration.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         return {k: v for k, v in data.items() if v != ""}
 
     filing_status_id = fields.Integer(required=True)
-    tax_year = fields.Integer(required=True)
-    standard_deduction = fields.Decimal(required=True, places=2, as_string=True)
-    child_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True
+    tax_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
     )
+    # F-075 / C-24: Added explicit ``Range(>= 0)`` to backstop DB
+    # CHECK ``standard_deduction >= 0``.  The 2026 federal standard
+    # deduction tops out around $32,200 (married jointly); $10M is
+    # a wildly generous form-layer ceiling that still rejects an
+    # extra-zero typo.
+    standard_deduction = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    # F-075 / C-24: DB CHECK ``child_credit_amount >= 0``.  The CTC
+    # is $2,000 per child today; cap matches the form-layer
+    # ceiling.
+    child_credit_amount = fields.Decimal(
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    # F-075 / C-24: DB CHECK ``other_dependent_credit_amount >= 0``.
     other_dependent_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True
+        load_default="0", places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
     )
 
 
 class FicaConfigSchema(BaseSchema):
-    """Validates POST data for updating FICA configuration."""
+    """Validates POST data for updating FICA configuration.
+
+    F-076 / C-24: ``tax_year`` bounded to ``[2000, 2100]`` to match
+    the same-named bound on
+    :class:`StateTaxConfigSchema`/:class:`TaxBracketSetSchema`; the
+    rate fields keep their percent-input ``Range`` (the route
+    divides by 100 before persistence into ``Numeric(5, 4)`` columns
+    with DB CHECK ``rate >= 0 AND rate <= 1``).
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         return {k: v for k, v in data.items() if v != ""}
 
-    tax_year = fields.Integer(required=True)
+    tax_year = fields.Integer(
+        required=True, validate=validate.Range(min=2000, max=2100),
+    )
     ss_rate = fields.Decimal(
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, max=100),
@@ -408,9 +853,11 @@ class StateTaxConfigSchema(BaseSchema):
         places=2, as_string=True,
         validate=validate.Range(min=0, max=100),
     )
+    # F-077 / C-24: Backstop new DB CHECK
+    # ``standard_deduction IS NULL OR standard_deduction >= 0``.
     standard_deduction = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=_NON_NEGATIVE_MONETARY,
     )
     tax_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
@@ -455,7 +902,11 @@ class TransferTemplateCreateSchema(BaseSchema):
 
 
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
-    """Validates PUT data for updating a transfer template."""
+    """Validates PUT data for updating a transfer template.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
@@ -468,6 +919,9 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class TransferCreateSchema(BaseSchema):
@@ -496,7 +950,11 @@ class TransferCreateSchema(BaseSchema):
 
 
 class TransferUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating a transfer (inline edit)."""
+    """Validates PATCH data for updating a transfer (inline edit).
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -509,6 +967,9 @@ class TransferUpdateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 # ── Savings Goal Schemas (Phase 4) ────────────────────────────────
@@ -541,9 +1002,18 @@ class SavingsGoalCreateSchema(BaseSchema):
         validate=validate.Range(min=0, min_inclusive=False),
     )
     target_date = fields.Date()
+    # F-106 / C-25: DB CHECK enforces ``contribution_per_period IS NULL
+    # OR contribution_per_period > 0``.  Schema must reject 0 too (the
+    # previous ``min=0`` inclusive bound would defer the rejection to
+    # the database, surfacing as a 500 IntegrityError instead of a
+    # field-level 400).  ``allow_none=True`` matches the column's
+    # nullability so JSON callers can clear the contribution
+    # explicitly; the form path is already covered by
+    # ``strip_empty_strings`` above.
     contribution_per_period = fields.Decimal(
+        load_default=None, allow_none=True,
         places=2, as_string=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     goal_mode_id = fields.Integer(load_default=1)
     income_unit_id = fields.Integer(load_default=None, allow_none=True)
@@ -621,6 +1091,9 @@ class SavingsGoalUpdateSchema(BaseSchema):
     defaults to None (not provided) for updates -- the cross-field
     validator only fires when goal_mode_id is explicitly included in
     the update payload.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     @pre_load
@@ -635,9 +1108,12 @@ class SavingsGoalUpdateSchema(BaseSchema):
         validate=validate.Range(min=0, min_inclusive=False),
     )
     target_date = fields.Date(allow_none=True)
+    # F-106 / C-25: see :class:`SavingsGoalCreateSchema` for the
+    # boundary-inclusivity rationale.  Update path also accepts
+    # ``None`` to clear the contribution.
     contribution_per_period = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     is_active = fields.Boolean()
     goal_mode_id = fields.Integer()
@@ -646,6 +1122,9 @@ class SavingsGoalUpdateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
+
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
     @validates_schema
     def validate_goal_mode_fields(self, data, **kwargs):
@@ -727,7 +1206,14 @@ class AccountCreateSchema(BaseSchema):
 
 
 class AccountUpdateSchema(BaseSchema):
-    """Validates POST data for updating an account."""
+    """Validates POST data for updating an account.
+
+    ``version_id`` is the optimistic-locking counter from the row at
+    the moment the edit form was rendered.  The handler compares
+    the submitted value against the current ``Account.version_id``
+    and short-circuits with 409 Conflict on mismatch; see the
+    matching docstring on :class:`AnchorUpdateSchema`.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -737,6 +1223,7 @@ class AccountUpdateSchema(BaseSchema):
     account_type_id = fields.Integer()
     is_active = fields.Boolean()
     anchor_balance = fields.Decimal(places=2, as_string=True)
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
 
 class AccountTypeCreateSchema(BaseSchema):
@@ -948,7 +1435,12 @@ class LoanParamsCreateSchema(BaseSchema):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
-    original_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    # F-107 / C-25: DB CHECK enforces ``original_principal > 0``;
+    # schema must reject 0 too so the gap surfaces as a 400 not a 500.
+    original_principal = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
+    )
     current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
     interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
     term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=600))
@@ -1093,11 +1585,20 @@ class InvestmentParamsCreateSchema(BaseSchema):
         required=True, places=5, as_string=True,
         validate=validate.Range(min=-1, max=1),
     )
+    # F-077 / C-24: Backstop the new DB CHECK
+    # ``annual_contribution_limit IS NULL OR annual_contribution_limit >= 0``
+    # with a wide form-layer ceiling.  Real limits top out at the
+    # employer-plus-employee 401(k) cap (~$70K in 2026); $100M is a
+    # generous typo guard.
     annual_contribution_limit = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000000"),
+        ),
     )
-    contribution_limit_year = fields.Integer(allow_none=True)
+    contribution_limit_year = fields.Integer(
+        allow_none=True, validate=validate.Range(min=2000, max=2100),
+    )
     employer_contribution_type = fields.String(
         load_default="none",
         validate=validate.OneOf(["none", "flat_percentage", "match"]),
@@ -1127,11 +1628,17 @@ class InvestmentParamsUpdateSchema(BaseSchema):
         places=5, as_string=True,
         validate=validate.Range(min=-1, max=1),
     )
+    # F-077 / C-24: see :class:`InvestmentParamsCreateSchema` for
+    # the bound rationale; the same Range applies on update.
     annual_contribution_limit = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000000"),
+        ),
     )
-    contribution_limit_year = fields.Integer(allow_none=True)
+    contribution_limit_year = fields.Integer(
+        allow_none=True, validate=validate.Range(min=2000, max=2100),
+    )
     employer_contribution_type = fields.String(
         validate=validate.OneOf(["none", "flat_percentage", "match"]),
     )
@@ -1399,6 +1906,9 @@ class EntryUpdateSchema(BaseSchema):
 
     All fields optional for partial updates.  When present, the same
     validation rules as EntryCreateSchema apply.
+
+    ``version_id`` is the optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
     """
 
     @pre_load
@@ -1414,26 +1924,65 @@ class EntryUpdateSchema(BaseSchema):
     entry_date = fields.Date()
     is_credit = fields.Boolean()
 
+    # Optimistic-locking pin (commit C-18).
+    version_id = fields.Integer(validate=validate.Range(min=1))
 
-# --- Companion user management -------------------------------------------
+
+# --- Auth and companion user management ----------------------------------
 #
-# Email regex matches auth_service.register_user so the two code paths
-# accept the same set of addresses.  The password byte limit matches
-# bcrypt's hard 72-byte ceiling enforced by auth_service.hash_password.
-# The minimum length matches change_password and register_user.
+# Email regex and password length rules are shared between the auth
+# blueprint (login, register, change_password, MFA flows) and the
+# companion-management routes so both code paths accept the same set
+# of addresses and enforce the same bcrypt-bounded password rules.
+# The 72-byte ceiling is bcrypt's hard input cap (see
+# ``auth_service.hash_password``); inputs longer than that would be
+# silently truncated and could not be reproduced at verify time
+# without the same truncation.  The 12-character minimum matches
+# ``auth_service.register_user`` and ``auth_service.change_password``.
+#
+# Commit C-26 of the 2026-04-15 security remediation plan promotes
+# these constants out of the companion-only namespace so every auth
+# schema can reuse them.  Companion-specific schemas continue to use
+# the same constants.
+#
+# F-163 (Low) bounds backup_code at 32 characters so a megabyte-sized
+# string cannot reach the bcrypt verifier on the /mfa/verify path; the
+# real backup codes are 28 hex characters, so 32 is generous without
+# admitting any DoS surface.  TOTP codes are exactly 6 digits.
 
-_COMPANION_EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-_COMPANION_PASSWORD_MIN_LENGTH = 12
-_COMPANION_PASSWORD_MAX_BYTES = 72
+_AUTH_EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+_AUTH_EMAIL_MAX_LENGTH = 255
+_AUTH_DISPLAY_NAME_MAX_LENGTH = 100
+_AUTH_PASSWORD_MIN_LENGTH = 12
+_AUTH_PASSWORD_MAX_BYTES = 72
+_AUTH_PASSWORD_MAX_CHARS = 72
+
+# F-163: TOTP codes are exactly six decimal digits but the verifier
+# accepts whatever the user types (and reports "Invalid code") so the
+# schema enforces a length cap rather than a strict shape.  The cap
+# matches the on-screen input width and prevents a megabyte-sized
+# string from reaching the verifier.
+_TOTP_CODE_MAX_LENGTH = 6
+
+# F-163: Backup codes are 28 hex characters (post-C-03 issue width);
+# a 32-character cap accommodates that with a small margin and rejects
+# DoS-sized inputs before bcrypt is invoked on the verify path.
+_BACKUP_CODE_MAX_LENGTH = 32
 
 
-def _normalize_companion_form(data):
-    """Strip whitespace and lowercase email for a companion form payload.
+def _normalize_auth_form(data):
+    """Strip whitespace and lowercase email for any auth form payload.
 
-    Works with both Werkzeug ImmutableMultiDict (from request.form) and
-    plain dicts.  Leaves password fields untouched because leading or
-    trailing spaces may be intentional.  Missing keys are left missing
-    so required-field validation produces the correct error.
+    Works with both Werkzeug ImmutableMultiDict (from ``request.form``)
+    and plain dicts.  Leaves password and code fields untouched because
+    leading or trailing spaces in those values are handled at the route
+    boundary (passwords compare byte-for-byte; code fields are stripped
+    in the schema's per-field ``@pre_load``).  Missing keys are left
+    missing so required-field validation produces the correct error.
+
+    Used by every schema in the auth blueprint plus the companion-
+    management schemas so the email-normalization rule is identical in
+    both code paths.
     """
     cleaned = dict(data)
     if "email" in cleaned and isinstance(cleaned["email"], str):
@@ -1441,6 +1990,382 @@ def _normalize_companion_form(data):
     if "display_name" in cleaned and isinstance(cleaned["display_name"], str):
         cleaned["display_name"] = cleaned["display_name"].strip()
     return cleaned
+
+
+def _auth_email_field():
+    """Construct the standard email field used by every auth schema.
+
+    Centralises the field definition so a future change to the email
+    rules (e.g. tightening the regex, adding a deny-list of throwaway
+    domains) lands in one place.  Returns a fresh ``fields.String``
+    each call because Marshmallow field instances carry per-schema
+    metadata and cannot be safely shared across class declarations.
+
+    Both validators surface the same "Invalid email format." message
+    so the user-facing flash stays consistent between empty-string,
+    over-length, and malformed-shape failures.  An attacker probing
+    the registration form can therefore not distinguish "no such
+    address pattern" from "address too long" from response wording.
+    """
+    return fields.String(
+        required=True,
+        validate=[
+            validate.Length(
+                min=1, max=_AUTH_EMAIL_MAX_LENGTH,
+                error="Invalid email format.",
+            ),
+            validate.Regexp(_AUTH_EMAIL_REGEX, error="Invalid email format."),
+        ],
+    )
+
+
+def _verify_password_bytes(password, *, field_name="password"):
+    """Reject passwords longer than bcrypt's 72-byte UTF-8 limit.
+
+    Used by every schema that accepts a *new* password (register,
+    change-password, companion create/edit).  A separate, dedicated
+    validator is kept for *login* / *current_password* / *reauth*
+    paths -- those accept any historical password length up to the
+    same byte cap so a legacy short password can still be entered for
+    verification.
+
+    Raises:
+        ValidationError: If the UTF-8 encoding of ``password`` exceeds
+            ``_AUTH_PASSWORD_MAX_BYTES``.
+    """
+    if password is None:
+        return
+    if len(password.encode("utf-8")) > _AUTH_PASSWORD_MAX_BYTES:
+        raise ValidationError(
+            "Password is too long. Please use 72 characters or fewer.",
+            field_name,
+        )
+
+
+# Backwards-compatible aliases so any external reference to the older
+# companion-prefixed names (no callers in-tree, but the module-public
+# constants were importable) keeps working.  Removing these would be
+# an API break; aliasing is the right call until a deliberate cleanup
+# commit retires them.
+_COMPANION_EMAIL_REGEX = _AUTH_EMAIL_REGEX
+_COMPANION_PASSWORD_MIN_LENGTH = _AUTH_PASSWORD_MIN_LENGTH
+_COMPANION_PASSWORD_MAX_BYTES = _AUTH_PASSWORD_MAX_BYTES
+_normalize_companion_form = _normalize_auth_form
+
+
+# --- Auth blueprint schemas (commit C-26) --------------------------------
+#
+# Every POST handler in app/routes/auth.py validates its form payload
+# through one of the schemas below before invoking auth_service or
+# mfa_service.  Schema-level validation is the only line of defence
+# against megabyte-sized backup codes hitting bcrypt (F-163), and it
+# keeps the route handlers free of inline ``request.form.get`` plumbing
+# (F-041).
+#
+# Login/current-password/reauth paths accept any historical password
+# length (min=1) up to the bcrypt 72-byte ceiling so a legacy short
+# password registered before the 12-character rule was tightened can
+# still be entered for verification.  Routes that mint a *new*
+# password (register, change-password, companion create/edit) enforce
+# the full 12-character minimum plus the 72-byte UTF-8 cap.
+
+
+class _AuthFormSchema(BaseSchema):
+    """Base for every auth-blueprint schema.
+
+    Strips and lowercases the email field on load so each subclass
+    inherits the canonical normalization without re-declaring the
+    ``@pre_load``.  Subclasses add their own field validators and
+    cross-field rules; the normalization is purely shape-level.
+    """
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip whitespace and lowercase the email before field validation."""
+        return _normalize_auth_form(data)
+
+
+class LoginSchema(_AuthFormSchema):
+    """Validates POST data for /login.
+
+    Accepts any historical password length up to the bcrypt 72-byte
+    ceiling (min=1, max=72 characters) so users with passwords
+    registered before the 12-character minimum was tightened can still
+    log in for verification.  The 72-character cap doubles as F-163 DoS
+    protection: bcrypt would silently truncate any longer input, so
+    accepting it would let an attacker pay no cost while the server
+    paid the bcrypt cost on a hash they can never reproduce.
+
+    The ``remember`` field accepts the HTML-form ``"on"`` value
+    submitted by the login form's "Remember me" checkbox, plus the
+    Marshmallow defaults (``true`` / ``1``) for parity with API
+    callers; missing or unchecked deserializes to ``False``.
+
+    The ``next`` parameter is intentionally NOT in this schema -- it
+    is a query-string argument validated through ``_is_safe_redirect``
+    in the route, where the open-redirect rule lives.
+    """
+
+    email = _auth_email_field()
+    password = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=_AUTH_PASSWORD_MAX_CHARS),
+    )
+    # ``True``/``1`` and ``False``/``0`` collide as set members in
+    # Python (``hash(True) == hash(1)``) so listing both would trip
+    # the ``duplicate-value`` Pylint check; the ``True``/``False``
+    # entries cover the bool inputs that an API caller might submit
+    # natively, while the integer/string variants cover the form-
+    # encoded paths that arrive over HTTP.
+    remember = fields.Boolean(
+        load_default=False,
+        truthy={"on", "true", "True", "TRUE", "1", "t", "T", True},
+        falsy={"off", "false", "False", "FALSE", "0", "f", "F", False, ""},
+    )
+
+
+class RegisterSchema(_AuthFormSchema):
+    """Validates POST data for /register.
+
+    Required fields: email, display_name, password, confirm_password.
+    Enforces the same 12-character minimum / 72-byte UTF-8 maximum as
+    ``auth_service.register_user`` so the schema layer rejects bad
+    input before the service is called.  Email uniqueness is enforced
+    by the service (it needs a live DB session), so the schema only
+    validates shape.
+    """
+
+    email = _auth_email_field()
+    display_name = fields.String(
+        required=True,
+        validate=[
+            validate.Length(min=1, error="Display name is required."),
+            validate.Length(
+                max=_AUTH_DISPLAY_NAME_MAX_LENGTH,
+                error=(
+                    "Display name must be at most "
+                    f"{_AUTH_DISPLAY_NAME_MAX_LENGTH} characters."
+                ),
+            ),
+        ],
+    )
+    password = fields.String(
+        required=True,
+        validate=[
+            validate.Length(
+                min=_AUTH_PASSWORD_MIN_LENGTH,
+                error="Password must be at least 12 characters.",
+            ),
+            validate.Length(
+                max=_AUTH_PASSWORD_MAX_CHARS,
+                error="Password is too long. Please use 72 characters or fewer.",
+            ),
+        ],
+    )
+    confirm_password = fields.String(required=True)
+
+    @validates_schema
+    def validate_password_bytes(self, data, **kwargs):
+        """Reject passwords longer than bcrypt's 72-byte UTF-8 limit."""
+        _verify_password_bytes(data.get("password"))
+
+    @validates_schema
+    def validate_confirm_matches(self, data, **kwargs):
+        """Require ``confirm_password`` to equal ``password``."""
+        if data.get("password") != data.get("confirm_password"):
+            raise ValidationError(
+                "Password and confirmation do not match.",
+                "confirm_password",
+            )
+
+
+class ChangePasswordSchema(BaseSchema):
+    """Validates POST data for /change-password.
+
+    ``current_password`` is verified against the stored hash by
+    ``auth_service.change_password``; the schema only enforces shape
+    (presence and bcrypt byte cap) so a legacy short password registered
+    before the 12-character rule was tightened can still be supplied
+    here for verification.
+
+    ``new_password`` and ``confirm_password`` enforce the same
+    12-character minimum / 72-byte maximum as ``auth_service``.  The
+    cross-field validator runs only when both new and confirm are
+    populated; if either is missing the per-field ``required=True``
+    error wins.
+
+    No email field on this form -- the user is already authenticated.
+    """
+
+    current_password = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=_AUTH_PASSWORD_MAX_CHARS),
+    )
+    new_password = fields.String(
+        required=True,
+        validate=[
+            validate.Length(
+                min=_AUTH_PASSWORD_MIN_LENGTH,
+                error="New password must be at least 12 characters.",
+            ),
+            validate.Length(
+                max=_AUTH_PASSWORD_MAX_CHARS,
+                error="Password is too long. Please use 72 characters or fewer.",
+            ),
+        ],
+    )
+    confirm_password = fields.String(required=True)
+
+    @validates_schema
+    def validate_new_password_bytes(self, data, **kwargs):
+        """Reject new passwords longer than bcrypt's 72-byte UTF-8 limit."""
+        _verify_password_bytes(data.get("new_password"), field_name="new_password")
+
+    @validates_schema
+    def validate_confirm_matches(self, data, **kwargs):
+        """Require ``confirm_password`` to equal ``new_password``."""
+        if data.get("new_password") != data.get("confirm_password"):
+            raise ValidationError(
+                "New password and confirmation do not match.",
+                "confirm_password",
+            )
+
+
+def _strip_code_field(data, key):
+    """Strip whitespace from a code field if it is a string.
+
+    Mirrors the ``.strip()`` calls the route layer used to do inline
+    on ``totp_code`` and ``backup_code``; centralising the strip in the
+    schema means every auth route reads already-normalised values.
+    """
+    if key in data and isinstance(data[key], str):
+        data[key] = data[key].strip()
+    return data
+
+
+class MfaVerifySchema(BaseSchema):
+    """Validates POST data for /mfa/verify.
+
+    Both fields default to the empty string because the form has two
+    one-of inputs (TOTP code or backup code) and the user submits only
+    one.  ``totp_code`` is capped at 6 characters and ``backup_code``
+    at 32 characters -- F-163 DoS protection that prevents a megabyte-
+    sized backup code from reaching bcrypt verification.  The route
+    layer handles the "neither field present" case (renders "Invalid
+    verification code.").
+    """
+
+    totp_code = fields.String(
+        load_default="",
+        validate=validate.Length(max=_TOTP_CODE_MAX_LENGTH),
+    )
+    backup_code = fields.String(
+        load_default="",
+        validate=validate.Length(max=_BACKUP_CODE_MAX_LENGTH),
+    )
+
+    @pre_load
+    def strip_codes(self, data, **kwargs):
+        """Strip whitespace from totp_code and backup_code before validation.
+
+        The schema's max-length checks would otherwise reject a code
+        with leading/trailing whitespace; matching the route's prior
+        ``.strip()`` calls keeps user-pasted codes accepted while still
+        capping the post-strip length.
+        """
+        cleaned = dict(data)
+        cleaned = _strip_code_field(cleaned, "totp_code")
+        cleaned = _strip_code_field(cleaned, "backup_code")
+        return cleaned
+
+
+class MfaConfirmSchema(BaseSchema):
+    """Validates POST data for /mfa/confirm.
+
+    Used during MFA enrolment after /mfa/setup has stored the
+    encrypted pending secret server-side.  Required because confirming
+    enrolment without a code is meaningless; the 6-character cap
+    matches the TOTP shape.
+    """
+
+    totp_code = fields.String(
+        load_default="",
+        validate=validate.Length(max=_TOTP_CODE_MAX_LENGTH),
+    )
+
+    @pre_load
+    def strip_codes(self, data, **kwargs):
+        """Strip whitespace from totp_code before length validation."""
+        return _strip_code_field(dict(data), "totp_code")
+
+
+class MfaDisableSchema(BaseSchema):
+    """Validates POST data for /mfa/disable.
+
+    Requires both the user's current password (verified by
+    ``auth_service.verify_password``) and a current TOTP code (verified
+    by ``mfa_service.verify_totp_code`` with replay protection).
+    Backup codes are intentionally NOT accepted here -- the disable
+    flow is the canonical "I can still log in normally" path; the
+    "I lost my authenticator" path goes through /login + backup code
+    instead.
+
+    ``current_password`` accepts any historical password length so a
+    legacy short password can be entered for verification (same rule
+    as ``ChangePasswordSchema.current_password``).
+    """
+
+    current_password = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=_AUTH_PASSWORD_MAX_CHARS),
+    )
+    totp_code = fields.String(
+        load_default="",
+        validate=validate.Length(max=_TOTP_CODE_MAX_LENGTH),
+    )
+
+    @pre_load
+    def strip_codes(self, data, **kwargs):
+        """Strip whitespace from totp_code before length validation."""
+        return _strip_code_field(dict(data), "totp_code")
+
+
+class ReauthSchema(BaseSchema):
+    """Validates POST data for /reauth (step-up re-authentication).
+
+    Used when a high-value action (e.g. password change, MFA disable,
+    salary edit) requires fresh proof of identity.  Mirrors the /login
+    flow: password is required and totp_code is optional (only verified
+    if the user has MFA enabled).  Backup codes are intentionally NOT
+    accepted here -- they are single-use recovery credentials for the
+    "I lost my authenticator" scenario at primary login.
+
+    ``password`` accepts any historical length so a legacy short
+    password can be entered for verification.
+    """
+
+    password = fields.String(
+        required=True,
+        validate=validate.Length(min=1, max=_AUTH_PASSWORD_MAX_CHARS),
+    )
+    totp_code = fields.String(
+        load_default="",
+        validate=validate.Length(max=_TOTP_CODE_MAX_LENGTH),
+    )
+
+    @pre_load
+    def strip_codes(self, data, **kwargs):
+        """Strip whitespace from totp_code before length validation."""
+        return _strip_code_field(dict(data), "totp_code")
+
+
+# --- Companion user management -------------------------------------------
+#
+# Companion schemas reuse the auth-level email/password constants and
+# the shared ``_normalize_auth_form`` helper.  The companion paths have
+# two extra rules: ``password_confirm`` rather than ``confirm_password``
+# (matching the existing template), and the edit schema treats blank
+# password fields as "no change" rather than "missing required field."
 
 
 class CompanionCreateSchema(BaseSchema):
@@ -1458,24 +2383,16 @@ class CompanionCreateSchema(BaseSchema):
     @pre_load
     def normalize_inputs(self, data, **kwargs):
         """Strip whitespace and lowercase the email before field validation."""
-        return _normalize_companion_form(data)
+        return _normalize_auth_form(data)
 
-    email = fields.String(
-        required=True,
-        validate=[
-            validate.Length(min=1, max=255),
-            validate.Regexp(
-                _COMPANION_EMAIL_REGEX, error="Invalid email format.",
-            ),
-        ],
-    )
+    email = _auth_email_field()
     display_name = fields.String(
         required=True,
-        validate=validate.Length(min=1, max=100),
+        validate=validate.Length(min=1, max=_AUTH_DISPLAY_NAME_MAX_LENGTH),
     )
     password = fields.String(
         required=True,
-        validate=validate.Length(min=_COMPANION_PASSWORD_MIN_LENGTH),
+        validate=validate.Length(min=_AUTH_PASSWORD_MIN_LENGTH),
     )
     password_confirm = fields.String(required=True)
 
@@ -1483,10 +2400,10 @@ class CompanionCreateSchema(BaseSchema):
     def validate_password_bytes(self, data, **kwargs):
         """Reject passwords longer than bcrypt's 72-byte UTF-8 limit."""
         password = data.get("password") or ""
-        if len(password.encode("utf-8")) > _COMPANION_PASSWORD_MAX_BYTES:
+        if len(password.encode("utf-8")) > _AUTH_PASSWORD_MAX_BYTES:
             raise ValidationError(
                 "Password must be at most "
-                f"{_COMPANION_PASSWORD_MAX_BYTES} bytes.",
+                f"{_AUTH_PASSWORD_MAX_BYTES} bytes.",
                 "password",
             )
 
@@ -1512,20 +2429,12 @@ class CompanionEditSchema(BaseSchema):
     @pre_load
     def normalize_inputs(self, data, **kwargs):
         """Strip whitespace and lowercase the email before field validation."""
-        return _normalize_companion_form(data)
+        return _normalize_auth_form(data)
 
-    email = fields.String(
-        required=True,
-        validate=[
-            validate.Length(min=1, max=255),
-            validate.Regexp(
-                _COMPANION_EMAIL_REGEX, error="Invalid email format.",
-            ),
-        ],
-    )
+    email = _auth_email_field()
     display_name = fields.String(
         required=True,
-        validate=validate.Length(min=1, max=100),
+        validate=validate.Length(min=1, max=_AUTH_DISPLAY_NAME_MAX_LENGTH),
     )
     password = fields.String(load_default="")
     password_confirm = fields.String(load_default="")
@@ -1542,16 +2451,16 @@ class CompanionEditSchema(BaseSchema):
         confirm = data.get("password_confirm") or ""
         if not password and not confirm:
             return
-        if len(password) < _COMPANION_PASSWORD_MIN_LENGTH:
+        if len(password) < _AUTH_PASSWORD_MIN_LENGTH:
             raise ValidationError(
                 "Password must be at least "
-                f"{_COMPANION_PASSWORD_MIN_LENGTH} characters.",
+                f"{_AUTH_PASSWORD_MIN_LENGTH} characters.",
                 "password",
             )
-        if len(password.encode("utf-8")) > _COMPANION_PASSWORD_MAX_BYTES:
+        if len(password.encode("utf-8")) > _AUTH_PASSWORD_MAX_BYTES:
             raise ValidationError(
                 "Password must be at most "
-                f"{_COMPANION_PASSWORD_MAX_BYTES} bytes.",
+                f"{_AUTH_PASSWORD_MAX_BYTES} bytes.",
                 "password",
             )
         if password != confirm:

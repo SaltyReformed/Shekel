@@ -30,6 +30,7 @@ from decimal import Decimal, InvalidOperation
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.ref import Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -37,10 +38,12 @@ from app.models.transfer_template import TransferTemplate
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services.state_machine import verify_transition
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
+    EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
     EVT_TRANSFER_RESTORED,
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
@@ -485,11 +488,49 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.estimated_amount = new_amount
 
     # ── status_id ──────────────────────────────────────────────────
+    # Verify the transition BEFORE any propagation so an illegal
+    # request (for example settled -> projected) leaves both the
+    # parent transfer and the two shadow transactions untouched.
+    # The state machine raises ``ValidationError`` -- the route
+    # layer surfaces it as a 400.  Audit reference: F-047 / commit
+    # C-21 of the 2026-04-15 security remediation plan.
     if "status_id" in kwargs:
         new_status_id = kwargs["status_id"]
+        verify_transition(xfer.status_id, new_status_id, context="transfer")
         xfer.status_id = new_status_id
         expense_shadow.status_id = new_status_id
         income_shadow.status_id = new_status_id
+
+        # Defense-in-depth ``paid_at`` synchronization (F-048 / C-22):
+        # the route layer (``transfers.mark_done``,
+        # ``transactions.mark_done`` shadow path,
+        # ``dashboard.mark_paid``) is expected to pass an explicit
+        # ``paid_at`` whenever it sets a settled status, but a future
+        # caller that forgets is still forced into a coherent state
+        # here.  Two cases:
+        #
+        # * Transitioning to a settled status (``is_settled = TRUE``)
+        #   without an explicit ``paid_at`` -> default to ``now()`` so
+        #   ``Transaction.days_paid_before_due`` and the dashboard's
+        #   "paid on time" indicator work.
+        # * Transitioning to a non-settled status without an explicit
+        #   ``paid_at`` -> clear the existing timestamp so a Paid
+        #   transfer reverted to Projected does not retain a stale
+        #   payment time.
+        #
+        # Both branches no-op when the caller passed ``paid_at``
+        # explicitly (including ``paid_at=None``); the explicit
+        # downstream assignment in this function then takes effect.
+        if "paid_at" not in kwargs:
+            new_status = db.session.get(Status, new_status_id)
+            if new_status is not None:
+                if new_status.is_settled:
+                    settled_ts = db.func.now()
+                    expense_shadow.paid_at = settled_ts
+                    income_shadow.paid_at = settled_ts
+                else:
+                    expense_shadow.paid_at = None
+                    income_shadow.paid_at = None
 
     # ── pay_period_id ──────────────────────────────────────────────
     if "pay_period_id" in kwargs:
@@ -666,7 +707,10 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
             belong to user_id.
         ValidationError: If shadow transactions are missing or have
             an invalid type pairing, indicating data corruption that
-            cannot be automatically repaired.
+            cannot be automatically repaired; or if either the source
+            or destination account has been archived
+            (``is_active = False``) since the transfer was soft-deleted
+            (F-164).  Reactivate the account before restoring.
     """
     # Must allow deleted transfers since that is the expected input.
     xfer = _get_transfer_or_raise(transfer_id, user_id, allow_deleted=True)
@@ -722,6 +766,41 @@ def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
             f"Transfer {transfer_id} shadows do not have the expected "
             f"expense/income type pairing.  Cannot restore -- data "
             f"integrity issue requiring manual intervention."
+        )
+
+    # ── Refuse restore onto archived accounts (F-164) ───────────────
+    # Account FK is RESTRICT (see ``models/transfer.py``) so the rows
+    # cannot be hard-deleted while the transfer references them; the
+    # only way they go away semantically is via ``is_active = False``.
+    # Reactivating a transfer pointed at an archived account would
+    # silently resurrect entries against an account the user has
+    # withdrawn from active projections, producing balance drift the
+    # user has no UI affordance to investigate.  Hard-fail instead and
+    # require the user to reactivate the account first.
+    from_account = db.session.get(Account, xfer.from_account_id)
+    to_account = db.session.get(Account, xfer.to_account_id)
+    from_active = bool(from_account is not None and from_account.is_active)
+    to_active = bool(to_account is not None and to_account.is_active)
+    if not (from_active and to_active):
+        log_event(
+            logger, logging.WARNING,
+            EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT, BUSINESS,
+            "Refused to restore transfer with archived account",
+            user_id=user_id,
+            transfer_id=transfer_id,
+            from_account_id=xfer.from_account_id,
+            to_account_id=xfer.to_account_id,
+            from_account_active=from_active,
+            to_account_active=to_active,
+        )
+        # Roll back the is_deleted flip applied at the top of the
+        # function so the transfer stays soft-deleted on the caller's
+        # rollback path.  Matches the rollback pattern used in the
+        # shadow-count and shadow-type validation branches above.
+        xfer.is_deleted = True
+        raise ValidationError(
+            "Cannot restore transfer: source or destination account "
+            "is archived.  Reactivate the account before restoring."
         )
 
     # ── Restore shadows and verify invariants ───────────────────────

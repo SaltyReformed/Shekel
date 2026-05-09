@@ -12,7 +12,14 @@ from app.models.mixins import TimestampMixin
 
 
 class TransferTemplate(TimestampMixin, db.Model):
-    """Blueprint for a recurring transfer between two accounts."""
+    """Blueprint for a recurring transfer between two accounts.
+
+    Optimistic locking: see :class:`Transaction` for the
+    ``version_id_col`` contract.  Concurrent transfer-template edits
+    race for the bump; the loser raises ``StaleDataError`` and the
+    route surfaces a flash + redirect.  See commit C-18 of the
+    2026-04-15 security remediation plan.
+    """
 
     __tablename__ = "transfer_templates"
     __table_args__ = (
@@ -24,6 +31,10 @@ class TransferTemplate(TimestampMixin, db.Model):
         db.CheckConstraint(
             "default_amount > 0",
             name="ck_transfer_templates_positive_amount",
+        ),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transfer_templates_version_id_positive",
         ),
         db.UniqueConstraint("user_id", "name", name="uq_transfer_templates_user_name"),
         {"schema": "budget"},
@@ -47,11 +58,24 @@ class TransferTemplate(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
-    sort_order = db.Column(db.Integer, default=0)
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     from_account = db.relationship(

@@ -64,25 +64,20 @@ class TestHysaDetailView:
         assert b"APY" in resp.data
 
     def test_hysa_detail_idor(self, auth_client, second_user, db):
-        """GET another user's HYSA account is rejected
+        """GET another user's HYSA account returns 404 (security)
         and does not leak victim data."""
         other_acct, _ = _create_other_hysa(second_user, db.session)
 
         resp = auth_client.get(f"/accounts/{other_acct.id}/interest")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/accounts" in location, (
-            f"IDOR redirect went to {location}, expected /accounts"
-        )
+        assert resp.status_code == 404
         assert b"Other HYSA" not in resp.data, (
             "IDOR response leaked victim's account name"
         )
 
     def test_hysa_detail_nonexistent(self, auth_client, seed_user, db):
-        """Bad account ID → redirect to accounts list."""
+        """Bad account ID returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.get("/accounts/99999/interest")
-        assert resp.status_code == 302
-        assert "/accounts" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_hysa_detail_wrong_type(self, auth_client, seed_user, db):
         """Non-HYSA account → redirect to accounts list with warning."""
@@ -154,11 +149,7 @@ class TestInterestParamsUpdate:
         )
 
         # Phase C: Verify no state change.
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/accounts" in location, (
-            f"IDOR redirect went to {location}, expected /accounts"
-        )
+        assert resp.status_code == 404
 
         db.session.expire_all()
         after = db.session.query(InterestParams).filter_by(
@@ -223,15 +214,12 @@ class TestHysaNegativePaths:
         assert after.compounding_frequency == orig_freq
 
     def test_params_update_nonexistent_account(self, auth_client, seed_user, db):
-        """POST to nonexistent account redirects with flash."""
+        """POST to nonexistent account returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.post(
             "/accounts/999999/interest/params",
             data={"apy": "0.04500", "compounding_frequency": "daily"},
         )
-        assert resp.status_code == 302
-        assert "/accounts" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Account not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_params_update_wrong_account_type(self, auth_client, seed_user, db):
         """POST HYSA params to a checking account is rejected."""

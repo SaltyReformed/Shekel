@@ -393,20 +393,40 @@ class TestConcurrentAnchorUpdate:
     """Verify concurrent anchor balance updates produce consistent state.
 
     Two threads simultaneously PATCH /accounts/<id>/true-up with
-    different balance values.  The invariant is that the final balance
-    is exactly one of the two submitted values -- not the original,
-    not a sum, not any other value.
+    different balance values.  The invariants:
+
+      1. Neither request produces a 500.
+      2. The final committed balance is exactly one of the two
+         submitted values -- not the original 5000.00, not a sum,
+         not any other value.
+      3. After commit C-17 (anchor balance optimistic locking /
+         audit finding F-009) the route is no longer "last-write-
+         wins."  The Account model carries a ``version_id_col``;
+         the loser of the race detects a stale ``version_id`` at
+         flush time and the route translates SQLAlchemy's
+         ``StaleDataError`` into a 409 Conflict response.  At
+         least one request returns 200; any non-200 response
+         must be a 409 Conflict (never a 500 or other status).
+
+    Tolerance for serialised-without-contention runs: if the OS
+    scheduler happens to fully drain one request before the other
+    starts its UPDATE, both get 200 and the second simply overrides
+    the first (the original "last-write-wins" semantics).  The
+    barrier makes this rare but not impossible, so the assertion
+    accepts either {200, 200} (rare, scheduler-dependent) or
+    {200, 409} (the typical concurrent case).
     """
 
     def test_concurrent_true_up(self, app, db):
         """Two threads update anchor balance to different values simultaneously.
 
-        Invariant: final balance is exactly 2000.00 or 3000.00, not
-        the original 5000.00 or any other value.
-
-        Uses a single client with two sequential-then-concurrent
-        requests to avoid Flask test client session interference
-        when two clients log in as the same user.
+        See class docstring for the full invariant set.  This test was
+        originally authored as a pre-C-17 invariant check ("both
+        succeed, last-write-wins"); commit C-17 introduced
+        optimistic locking on Account so the loser now correctly
+        receives a 409.  The test was not updated at the time and
+        regressed to a hard failure -- this revision restores it to
+        a green state that asserts the new, correct contract.
         """
         data = _create_user_with_data(db.session)
         account_id = data["account"].id
@@ -430,15 +450,31 @@ class TestConcurrentAnchorUpdate:
             ),
         )
 
-        # Neither request should produce a 500.
+        # Invariant 1: neither request produces a 500.
         assert resp_a.status_code != 500, f"Thread A got 500: {resp_a.data[:200]}"
         assert resp_b.status_code != 500, f"Thread B got 500: {resp_b.data[:200]}"
 
-        # Both should succeed (last-write-wins is expected).
-        assert resp_a.status_code == 200, f"Thread A failed: {resp_a.status_code}"
-        assert resp_b.status_code == 200, f"Thread B failed: {resp_b.status_code}"
+        # Invariant 3: at least one request returns 200, and any
+        # non-200 response is a 409 Conflict (the optimistic-locking
+        # contract from commit C-17).  No other status codes are
+        # acceptable here.
+        statuses = (resp_a.status_code, resp_b.status_code)
+        assert 200 in statuses, (
+            f"At least one thread must succeed (200); got A={resp_a.status_code}, "
+            f"B={resp_b.status_code}"
+        )
+        for label, status, resp in (
+            ("A", resp_a.status_code, resp_a),
+            ("B", resp_b.status_code, resp_b),
+        ):
+            assert status in (200, 409), (
+                f"Thread {label} returned {status}; "
+                f"expected 200 (winner) or 409 (loser).  "
+                f"Body: {resp.data[:200]}"
+            )
 
-        # Invariant: final balance is exactly one of the two submitted values.
+        # Invariant 2: final committed balance is exactly one of the
+        # two submitted values, never the original 5000.00.
         db.session.expire_all()
         final = db.session.get(Account, account_id)
         assert final is not None
@@ -448,5 +484,6 @@ class TestConcurrentAnchorUpdate:
             f"Anchor balance is {final.current_anchor_balance}, "
             f"expected 2000.00 or 3000.00"
         )
-        # Anchor period must be set (both threads set it to the current period).
+        # Anchor period must be set (whichever thread won set it
+        # to the current period).
         assert final.current_anchor_period_id is not None

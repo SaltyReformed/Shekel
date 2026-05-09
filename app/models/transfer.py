@@ -12,7 +12,20 @@ from app.models.mixins import TimestampMixin
 
 
 class Transfer(TimestampMixin, db.Model):
-    """A transfer between two accounts within a pay period."""
+    """A transfer between two accounts within a pay period.
+
+    Optimistic locking: ``version_id`` is the SQLAlchemy
+    ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
+    DELETE is narrowed to ``WHERE id = ? AND version_id = ?`` and
+    the stored value is atomically incremented; concurrent
+    mutations race for the bump and the loser raises
+    :class:`sqlalchemy.orm.exc.StaleDataError`.  The transfer
+    service propagates parent-transfer mutations to both shadow
+    transactions, so the parent's version pin protects the entire
+    three-row write set even though the shadow rows carry their
+    own ``version_id`` columns.  See commit C-18 of the 2026-04-15
+    security remediation plan.
+    """
 
     __tablename__ = "transfers"
     __table_args__ = (
@@ -22,6 +35,10 @@ class Transfer(TimestampMixin, db.Model):
             name="ck_transfers_different_accounts",
         ),
         db.CheckConstraint("amount > 0", name="ck_transfers_positive_amount"),
+        db.CheckConstraint(
+            "version_id > 0",
+            name="ck_transfers_version_id_positive",
+        ),
         # One non-deleted, non-override transfer per template per period
         # per scenario.  Mirrors the relaxed transactions index: override
         # siblings may coexist with their rule-generated parent so
@@ -37,6 +54,35 @@ class Transfer(TimestampMixin, db.Model):
                 "transfer_template_id IS NOT NULL "
                 "AND is_deleted = FALSE "
                 "AND is_override = FALSE"
+            ),
+        ),
+        # Ad-hoc duplicate prevention (F-050 / C-22).  Without this index
+        # a double-submit of the ad-hoc transfer form -- network retry,
+        # double-click, browser back-and-resubmit -- creates two parent
+        # transfers in the same period.  Each duplicate transfer also
+        # produces two shadow transactions, so a single accidental
+        # double-click silently doubles the user's projected debit and
+        # credit by 4 rows total; balance projections drift by
+        # ``2 * amount`` until the user notices and manually reconciles.
+        # The composite key (user_id, from_account_id, to_account_id,
+        # amount, pay_period_id, scenario_id) plus the
+        # ``transfer_template_id IS NULL`` predicate scopes the
+        # constraint to ad-hoc transfers only -- recurring transfers
+        # are protected by the index above and may legitimately repeat
+        # across periods.  ``is_deleted = FALSE`` keeps soft-deleted
+        # rows out of the index so a delete-and-recreate workflow
+        # remains legal, mirroring the predicate on
+        # ``uq_transactions_transfer_type_active``.  scenario_id is
+        # included so an ad-hoc transfer in the baseline scenario
+        # does not block the same transfer in a what-if scenario.
+        db.Index(
+            "uq_transfers_adhoc_dedupe",
+            "user_id", "from_account_id", "to_account_id",
+            "amount", "pay_period_id", "scenario_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_template_id IS NULL "
+                "AND is_deleted = FALSE"
             ),
         ),
         {"schema": "budget"},
@@ -74,12 +120,30 @@ class Transfer(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200))
     amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_override = db.Column(db.Boolean, default=False, nullable=False)
-    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
+    is_override = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_deleted = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
+    # Optimistic-locking version counter.  See class docstring and
+    # commit C-18.  NOT NULL with server_default="1" so existing
+    # production rows are filled at ALTER TABLE time and new rows
+    # always start at version 1.
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    # Optimistic locking: see class docstring.  Routes that mutate
+    # Transfer (or call transfer_service helpers that flush) MUST
+    # catch StaleDataError and surface a 409 / flash + redirect.
+    __mapper_args__ = {"version_id_col": version_id}
 
     # Relationships
     template = db.relationship("TransferTemplate", back_populates="transfers")

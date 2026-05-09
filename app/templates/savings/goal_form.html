@@ -21,6 +21,13 @@
     <form method="POST"
           action="{{ url_for('savings.update_goal', goal_id=goal.id) if goal else url_for('savings.create_goal') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# Optimistic-locking version pin (commit C-18 / F-010).
+         Submitted on update; the handler compares against the
+         current row and short-circuits with a flash + redirect if
+         the form was rendered against an older version. #}
+      {% if goal %}
+      <input type="hidden" name="version_id" value="{{ goal.version_id }}">
+      {% endif %}
 
       <div class="mb-3">
         <label for="account_id" class="form-label">Account</label>

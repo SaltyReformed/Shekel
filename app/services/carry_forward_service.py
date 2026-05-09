@@ -345,6 +345,8 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
 
     count = 0
 
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
     # The discrete and envelope branches both run inside a no_autoflush
     # block so a partially-mutated row (is_override flipped, pay_period
     # not yet flipped, etc.) cannot trigger an autoflush mid-iteration
@@ -354,20 +356,86 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     # FINAL state is index-safe.  See the original 33cd21e fix and
     # docs/carry-forward-aftermath-implementation-plan.md Phase 4.
     with db.session.no_autoflush:
-        # Discrete branch first.  Running discrete before envelope is a
-        # deliberate ordering: the envelope branch may invoke
-        # ``recurrence_engine.generate_for_template`` (which performs
-        # an explicit ``db.session.flush()``); flushing while a
-        # template-linked discrete row still has ``is_override = False``
-        # AND a new ``pay_period_id = target`` would collide with the
-        # rule-generated row already in the target period.  Setting
-        # ``is_override`` BEFORE ``pay_period_id`` keeps every loop
-        # iteration self-consistent at flush time.
-        for txn in ctx.discrete_txns:
-            if txn.template_id is not None:
-                txn.is_override = True
-            txn.pay_period_id = target_period_id
-            count += 1
+        # ── Discrete branch ────────────────────────────────────────
+        # Conditional bulk UPDATE rather than per-row ORM mutation.
+        # The ``status_id == projected`` predicate in the WHERE clause
+        # closes the F-049 race: between the SELECT in
+        # ``_build_carry_forward_context`` and the flush, a concurrent
+        # ``mark_done`` (or ``mark_credit`` / ``cancel``) request can
+        # transition a row out of Projected, and a per-row
+        # ``setattr(...)`` followed by a flush would carry a settled
+        # row into the target period -- erasing the user's prior
+        # status decision.  The bulk UPDATE atomically re-checks the
+        # status as a SQL precondition, so race-loser rows are
+        # silently left in place (still Paid, still in the source
+        # period, untouched by this batch) and the count reflects
+        # only the rows that actually moved.  Audit reference:
+        # F-049 / commit C-22 of the 2026-04-15 security remediation
+        # plan.
+        #
+        # Two passes are required because template-linked rows must
+        # flip ``is_override = TRUE`` as part of the same SQL UPDATE
+        # to keep the row index-safe (the partial unique index
+        # ``idx_transactions_template_period_scenario`` excludes
+        # override rows, so flipping the flag and the period together
+        # avoids any transient state that could collide with the
+        # rule-generated row already in the target period).  Ad-hoc
+        # rows (``template_id IS NULL``) sit outside that index in
+        # every state and only need the period flip.
+        #
+        # The ``Transaction.version_id: + 1`` assignment honors the
+        # optimistic-lock contract from C-17 / F-009: every UPDATE
+        # bumps the counter so any concurrent ORM-level flush against
+        # the same row fails its ``WHERE version_id = ?`` and surfaces
+        # as ``StaleDataError`` rather than silently overwriting our
+        # batch.  ``synchronize_session="fetch"`` issues a SELECT
+        # before the UPDATE to identify affected rows and expires
+        # those instances in the session so any later access reads
+        # fresh values from the database -- preserving the
+        # ``no_autoflush`` invariant that the in-memory state never
+        # diverges from the database while the loop runs.
+        if ctx.discrete_txns:
+            template_ids = [
+                t.id for t in ctx.discrete_txns if t.template_id is not None
+            ]
+            adhoc_ids = [
+                t.id for t in ctx.discrete_txns if t.template_id is None
+            ]
+
+            if template_ids:
+                count += (
+                    db.session.query(Transaction)
+                    .filter(
+                        Transaction.id.in_(template_ids),
+                        Transaction.status_id == projected_id,
+                        Transaction.is_deleted.is_(False),
+                    )
+                    .update(
+                        {
+                            Transaction.pay_period_id: target_period_id,
+                            Transaction.is_override: True,
+                            Transaction.version_id: Transaction.version_id + 1,
+                        },
+                        synchronize_session="fetch",
+                    )
+                )
+
+            if adhoc_ids:
+                count += (
+                    db.session.query(Transaction)
+                    .filter(
+                        Transaction.id.in_(adhoc_ids),
+                        Transaction.status_id == projected_id,
+                        Transaction.is_deleted.is_(False),
+                    )
+                    .update(
+                        {
+                            Transaction.pay_period_id: target_period_id,
+                            Transaction.version_id: Transaction.version_id + 1,
+                        },
+                        synchronize_session="fetch",
+                    )
+                )
 
         # Envelope branch.  Each iteration settles the source row and
         # bumps the target's canonical row by the unspent leftover.

@@ -74,6 +74,7 @@
                     data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
                     data-ded-inflation-rate="{{ '%.2f'|format((d.inflation_rate * 100)|float) if d.inflation_rate else '' }}"
                     data-ded-inflation-month="{{ d.inflation_effective_month or '' }}"
+                    data-ded-version-id="{{ d.version_id }}"
                     data-ded-edit-url="{{ url_for('salary.update_deduction', ded_id=d.id) }}">
               <i class="bi bi-pencil"></i>
             </button>
@@ -109,6 +110,10 @@
             hx-disabled-elt="find button[type=submit]"
             data-add-action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {# Optimistic-locking pin (commit C-18 / F-010).  Empty for
+           the create flow; populated by app.js when the form is
+           switched to edit mode for an existing deduction. #}
+        <input type="hidden" name="version_id" id="deduction-version-id" value="">
         {# Row 1: Identity #}
         <div class="row g-2 mb-2">
           <div class="col-md-6">

@@ -21,6 +21,13 @@
     <form method="POST"
           action="{{ url_for('accounts.update_account', account_id=account.id) if account else url_for('accounts.create_account') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# Optimistic-locking version pin (commit C-17 / F-009).  Submitted
+         to the route handler, which compares against the current row
+         and short-circuits with 409 if the form was rendered against
+         an older version. #}
+      {% if account %}
+      <input type="hidden" name="version_id" value="{{ account.version_id }}">
+      {% endif %}
 
       <div class="mb-3">
         <label for="name" class="form-label">Name</label>

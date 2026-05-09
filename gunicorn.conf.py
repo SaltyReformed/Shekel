@@ -70,14 +70,46 @@ limit_request_fields = 100
 limit_request_field_size = 8190
 
 # ── Forwarded Headers ────────────────────────────────────────────
-# Trust X-Forwarded-* headers only from RFC 1918 private subnets,
-# which covers all Docker bridge networks.  Override via the
-# FORWARDED_ALLOW_IPS environment variable if the architecture
-# changes (e.g., non-RFC1918 reverse proxy).
+# Trust X-Forwarded-* headers ONLY from the IPs/CIDRs declared in
+# FORWARDED_ALLOW_IPS.  No fallback default -- a missing or empty
+# value fails the gunicorn config load before the master process
+# binds its socket, so a misconfigured deploy is impossible to
+# overlook.  The previous default of "172.16.0.0/12,192.168.0.0/16,
+# 10.0.0.0/8" trusted every RFC 1918 private subnet, which let any
+# co-tenant container on the homelab Docker bridge forge
+# X-Forwarded-For / CF-Connecting-IP and bypass per-IP rate limits.
+# See audit finding F-015 (proxy header spoofing) and Commit C-33.
 #
-# IMPORTANT: Do NOT set to "*" unless Gunicorn is behind a trusted
-# reverse proxy on a private network with no external access.
-forwarded_allow_ips = os.getenv(
-    "FORWARDED_ALLOW_IPS",
-    "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8",
-)
+# Set FORWARDED_ALLOW_IPS to:
+#   - the trusted reverse-proxy container's IP, or
+#   - the Docker bridge CIDR that contains ONLY the trusted
+#     reverse proxy (and the app itself -- the app does not talk
+#     to itself via this surface).
+#
+# Bundled mode (docker-compose.yml):  the in-stack nginx and the
+#   app share the pinned ``backend`` bridge (172.31.0.0/24); the
+#   compose env block defaults FORWARDED_ALLOW_IPS to that CIDR.
+#
+# Shared mode (deploy/docker-compose.prod.yml):  the externally-
+#   managed shared nginx and the app meet on the pinned
+#   ``shekel-frontend`` bridge (172.32.0.0/24); the override env
+#   block sets FORWARDED_ALLOW_IPS to that CIDR.
+#
+# Local-only invocations of ``gunicorn --config gunicorn.conf.py``
+# (rare; ``flask run`` is the dev path) must export
+# FORWARDED_ALLOW_IPS=127.0.0.1 explicitly.  The hard fail surfaces
+# the misconfig before Gunicorn starts honouring forged headers.
+_forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "").strip()
+if not _forwarded_allow_ips:
+    raise RuntimeError(
+        "FORWARDED_ALLOW_IPS is not set.  Gunicorn refuses to start "
+        "without an explicit allow list because trusting all RFC 1918 "
+        "ranges (the previous default) lets any co-tenant on the same "
+        "Docker bridge forge X-Forwarded-For and bypass rate limiting. "
+        "Set FORWARDED_ALLOW_IPS to the trusted reverse proxy's "
+        "container IP or the Docker bridge subnet that contains only "
+        "the proxy and the app.  See gunicorn.conf.py and "
+        "docs/audits/security-2026-04-15/remediation-plan.md (Commit "
+        "C-33) for the full rationale."
+    )
+forwarded_allow_ips = _forwarded_allow_ips

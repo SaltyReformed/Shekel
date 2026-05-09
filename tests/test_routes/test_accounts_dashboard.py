@@ -451,7 +451,7 @@ class TestAccountHardDelete:
             assert savings.is_active is True
 
     def test_hard_delete_account_idor(self, app, auth_client, seed_user, db):
-        """C-5A.5-27: Hard-deleting another user's account returns 'not found'."""
+        """C-5A.5-27: Hard-deleting another user's account returns 404 (security)."""
         with app.app_context():
             other_user = User(
                 email="other@shekel.local",
@@ -478,8 +478,7 @@ class TestAccountHardDelete:
                 f"/accounts/{other_id}/hard-delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
             assert db.session.get(Account, other_id) is not None
 
     def test_list_separates_active_and_archived_accounts(

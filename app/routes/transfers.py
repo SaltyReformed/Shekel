@@ -9,11 +9,12 @@ transactions.py (grid cell HTMX endpoints).
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.category import Category
@@ -38,8 +39,16 @@ from app.services import transfer_recurrence, transfer_service, pay_period_servi
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
+from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
+
+# Name of the partial unique index that backstops the ad-hoc transfer
+# double-submit fix (F-050 / C-22).  Mirrors the literal in
+# ``app/models/transfer.py:Transfer.__table_args__`` and
+# ``migrations/versions/<C-22 revision>.py``; renaming the index
+# requires a coordinated edit across all three sites.
+_TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
 
 transfers_bp = Blueprint("transfers", __name__)
 
@@ -118,7 +127,24 @@ def new_transfer_template():
 @login_required
 @require_owner
 def create_transfer_template():
-    """Create a new transfer template with optional recurrence rule."""
+    """Create a new transfer template with optional recurrence rule.
+
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): every user-scoped FK
+    accepted from the form -- ``from_account_id``, ``to_account_id``,
+    ``category_id`` -- is verified against ``current_user.id`` before
+    the row is persisted.  ``start_period_id`` is checked deeper in
+    the function only when the recurrence pattern is
+    ``EVERY_N_PERIODS`` (used to compute ``offset_periods``); the
+    follow-up one-time-transfer branch (``is_one_time and
+    start_period_id``) re-fetches the period and verifies ownership
+    a second time, so a malicious ``start_period_id`` cannot leak
+    into the transfer service.  The flash + redirect UX matches the
+    existing template-form pattern; the security response rule
+    (404 for both not-found and not-yours) is preserved indirectly
+    by re-rendering the same form page rather than confirming
+    whether the FK exists for someone else.
+    """
     errors = _create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
@@ -126,15 +152,18 @@ def create_transfer_template():
 
     data = _create_schema.load(request.form)
 
-    # Validate account ownership.
-    from_acct = db.session.get(Account, data.get("from_account_id"))
-    to_acct = db.session.get(Account, data.get("to_account_id"))
-    if not from_acct or from_acct.user_id != current_user.id:
-        flash("Invalid source account.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
-    if not to_acct or to_acct.user_id != current_user.id:
-        flash("Invalid destination account.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
+    # --- Route-boundary FK ownership ---
+    # Single-return loop so adding a future FK does not push the
+    # function past pylint's too-many-returns threshold.  The
+    # message-per-FK detail is preserved via the per-row label.
+    for model, pk, label in (
+        (Account, data.get("from_account_id"), "source account"),
+        (Account, data.get("to_account_id"), "destination account"),
+        (Category, data.get("category_id"), "category"),
+    ):
+        if not _user_owns(model, pk):
+            flash(f"Invalid {label}.", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
 
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
@@ -249,10 +278,9 @@ def create_transfer_template():
 @require_owner
 def edit_transfer_template(template_id):
     """Display the transfer template edit form."""
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     accounts = (
         db.session.query(Account)
@@ -283,11 +311,20 @@ def edit_transfer_template(template_id):
 @login_required
 @require_owner
 def update_transfer_template(template_id):
-    """Update a transfer template and regenerate future transfers."""
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    """Update a transfer template and regenerate future transfers.
+
+    Optimistic locking (commit C-18 / F-010): the edit form ships
+    ``version_id`` as a hidden input.  When the submitted value
+    differs from the row's current counter, the handler short-
+    circuits with a flash + redirect so the audit trail records
+    only the winner.  ``StaleDataError`` raised at flush time --
+    e.g. by a concurrent transfer-template edit that races past
+    the form-side check -- is caught and converted to the same
+    flash + redirect.
+    """
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -295,6 +332,24 @@ def update_transfer_template(template_id):
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
 
     data = _update_schema.load(request.form)
+
+    # Stale-form check (commit C-18 / F-010).
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != template.version_id:
+        logger.info(
+            "Stale-form conflict on update_transfer_template id=%d "
+            "(submitted=%d, current=%d)",
+            template_id, submitted_version, template.version_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
+
     effective_from = data.pop("effective_from", date.today())
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
@@ -330,17 +385,33 @@ def update_transfer_template(template_id):
         for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
             data.pop(key, None)
 
-    # Validate account ownership if accounts are being changed.
-    if "from_account_id" in data:
-        from_acct = db.session.get(Account, data["from_account_id"])
-        if not from_acct or from_acct.user_id != current_user.id:
-            flash("Invalid source account.", "danger")
-            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    if "to_account_id" in data:
-        to_acct = db.session.get(Account, data["to_account_id"])
-        if not to_acct or to_acct.user_id != current_user.id:
-            flash("Invalid destination account.", "danger")
-            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # Each user-scoped FK is verified only when present in the
+    # partial update payload (the loaded ``data`` dict only carries
+    # keys the user submitted -- BaseSchema's EXCLUDE meta drops
+    # stray form fields).  ``category_id`` accepts ``None`` per the
+    # schema; ``None`` clears the category and skips the probe.
+    # Single-return loop so a future FK addition does not push the
+    # function past pylint's too-many-returns threshold.
+    ownership_failure = None
+    for field, model, label in (
+        ("from_account_id", Account, "source account"),
+        ("to_account_id", Account, "destination account"),
+        ("category_id", Category, "category"),
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None:
+            continue
+        if not _user_owns(model, value):
+            ownership_failure = label
+            break
+    if ownership_failure is not None:
+        flash(f"Invalid {ownership_failure}.", "danger")
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
 
     _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "category_id", "is_active", "sort_order"}
     for field, value in data.items():
@@ -381,6 +452,20 @@ def update_transfer_template(template_id):
 
     try:
         db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on update_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action while "
+            "you were editing.  Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template_id,
+        ))
     except IntegrityError:
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
@@ -398,11 +483,16 @@ def archive_transfer_template(template_id):
     Soft-deletes projected transfers and their shadow transactions via
     the transfer service to maintain the three-level cascade:
     template archival -> transfer soft-delete -> shadow soft-delete.
+
+    Optimistic locking (commit C-18 / F-010): the template's
+    ``version_id`` is enforced by SQLAlchemy on the
+    ``is_active = False`` flush; a concurrent edit raises
+    ``StaleDataError`` which the handler converts into a flash +
+    redirect so the user retries against fresh state.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = False
 
@@ -422,7 +512,20 @@ def archive_transfer_template(template_id):
     for xfer in transfers_to_delete:
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on archive_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(
         f"Recurring transfer '{template.name}' archived. "
@@ -439,11 +542,12 @@ def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
 
     Restores soft-deleted transfers and their shadow transactions.
+
+    Optimistic locking: see :func:`archive_transfer_template`.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = True
 
@@ -478,7 +582,20 @@ def unarchive_transfer_template(template_id):
                 template, periods, scenario.id, effective_from=date.today(),
             )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on unarchive_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
     flash(
         f"Recurring transfer '{template.name}' unarchived. "
         f"{restored_count} projected transfer(s) restored.",
@@ -515,10 +632,9 @@ def hard_delete_transfer_template(template_id):
         transfer service (which CASCADE-deletes shadows), then the
         template itself is permanently removed.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     if archive_helpers.transfer_template_has_paid_history(template.id):
         flash(
@@ -542,7 +658,19 @@ def hard_delete_transfer_template(template_id):
             )
             for xfer in transfers_to_delete:
                 transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-            db.session.commit()
+            try:
+                db.session.commit()
+            except StaleDataError:
+                db.session.rollback()
+                logger.info(
+                    "Stale-data conflict during archive-fallback in "
+                    "hard_delete_transfer_template id=%d", template_id,
+                )
+                flash(
+                    "This recurring transfer was changed by another action.  "
+                    "Please reload and try again.",
+                    "warning",
+                )
         return redirect(url_for("transfers.list_transfer_templates"))
 
     # No history -- safe to permanently delete.
@@ -560,7 +688,20 @@ def hard_delete_transfer_template(template_id):
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
 
     db.session.delete(template)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except StaleDataError:
+        db.session.rollback()
+        logger.info(
+            "Stale-data conflict on hard_delete_transfer_template id=%d",
+            template_id,
+        )
+        flash(
+            "This recurring transfer was changed by another action.  "
+            "Please reload and try again.",
+            "warning",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
     return redirect(url_for("transfers.list_transfer_templates"))
@@ -619,7 +760,35 @@ def get_full_edit(xfer_id):
 @login_required
 @require_owner
 def update_transfer(xfer_id):
-    """Update a transfer and its shadow transactions (inline edit save)."""
+    """Update a transfer and its shadow transactions (inline edit save).
+
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): when the schema accepts
+    a ``category_id`` (the only user-scoped FK
+    :class:`TransferUpdateSchema` exposes), it is verified against
+    ``current_user.id`` here, before the service is invoked.  This
+    layered defense matches :func:`create_ad_hoc` and
+    :func:`app.routes.transactions.create_inline`; the underlying
+    ``transfer_service.update_transfer`` already runs the same
+    ownership check via ``_get_owned_category``, but enforcing the
+    rule at the route layer keeps the security boundary visible
+    where requests arrive and protects against a future refactor
+    that bypasses the service helper.  ``status_id`` is a reference
+    table FK (not user-scoped) and so does not need an ownership
+    check.  Setting ``category_id`` to ``None`` (clearing the
+    category) is permitted and skips the ownership probe per the
+    schema's ``allow_none=True`` policy.
+
+    Optimistic locking (commit C-18 / F-010): the cell ships
+    ``version_id`` as a hidden input set to ``Transfer.version_id``
+    at render time.  When the submitted value differs from the
+    row's current counter, the handler short-circuits with a 409 +
+    conflict cell partial and records nothing.  ``StaleDataError``
+    raised at flush time -- the truly-concurrent case the form-side
+    check cannot see -- is caught and converted to the same 409 +
+    conflict cell so the user retries against fresh state instead
+    of seeing a 500.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
@@ -630,19 +799,44 @@ def update_transfer(xfer_id):
 
     data = _xfer_update_schema.load(request.form)
 
+    # Stale-form check.
+    submitted_version = data.pop("version_id", None)
+    if submitted_version is not None and submitted_version != xfer.version_id:
+        logger.info(
+            "Stale-form conflict on update_transfer id=%d "
+            "(submitted=%d, current=%d)",
+            xfer_id, submitted_version, xfer.version_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
+
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # The only user-scoped FK ``TransferUpdateSchema`` exposes is
+    # ``category_id``; ``status_id`` references the ref table.
+    # ``allow_none=True`` on ``category_id`` means clearing the
+    # category (setting it to NULL) is legitimate and must skip the
+    # ownership probe -- the service drops it through unchanged in
+    # that case.
+    if data.get("category_id") is not None and not _user_owns(
+        Category, data["category_id"],
+    ):
+        return "Not found", 404
+
     # Auto-set is_override when a template-linked transfer's amount changes.
     if xfer.transfer_template_id and "amount" in data:
         data["is_override"] = True
 
     try:
         transfer_service.update_transfer(xfer.id, current_user.id, **data)
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except NotFoundError:
         return "Not found", 404
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
-
-    try:
-        db.session.commit()
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -672,15 +866,71 @@ def update_transfer(xfer_id):
 @login_required
 @require_owner
 def create_ad_hoc():
-    """Create an ad-hoc (one-time) transfer with shadow transactions."""
+    """Create an ad-hoc (one-time) transfer with shadow transactions.
+
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): every FK accepted from
+    the form is verified against ``current_user.id`` before the
+    service is invoked, mirroring the
+    :func:`app.routes.transactions.create_inline` pattern.  This
+    layered defense is intentional: ``transfer_service`` already
+    runs the same checks via its private ``_get_owned_*`` helpers,
+    but a future refactor (or a new ``service`` consumer) that
+    skips one of those calls would silently regress the IDOR
+    protection.  Per the project security response rule, all
+    ownership failures return 404 -- the same status as a missing
+    record -- so the response leaks no information about whether
+    the row exists for someone else.
+
+    Double-submit handling (F-050 / C-22): the partial unique index
+    ``uq_transfers_adhoc_dedupe`` on
+    ``(user_id, from_account_id, to_account_id, amount, pay_period_id,
+    scenario_id)`` rejects a second active ad-hoc transfer with
+    identical parameters.  When two requests race past the form (a
+    network retry, a double-click, the back-and-resubmit pattern), the
+    first commits the transfer and the second's INSERT fires the index
+    constraint.  Rather than surface the database error as a generic
+    400, this handler treats the second request as idempotent success:
+    rolls back the failed INSERT, re-fetches the winning transfer,
+    and returns the same 201 + cell HTML the first request produced.
+    The user sees the transfer they intended to create regardless of
+    which request reached the database first.
+    """
     errors = _xfer_create_schema.validate(request.form)
     if errors:
         return jsonify(errors=errors), 400
 
     data = _xfer_create_schema.load(request.form)
 
+    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
+    # Verify every FK the schema accepted belongs to the requester
+    # BEFORE the service call so the security boundary is visible at
+    # the route layer and a future refactor that bypasses
+    # ``transfer_service._get_owned_*`` does not silently regress
+    # IDOR protection.  All failures collapse to 404 per the
+    # project's security response rule -- the loop body has a
+    # single ``return`` so adding a sixth FK in the future does
+    # not push the function past pylint's too-many-returns
+    # threshold.
+    for model, pk in (
+        (Account, data["from_account_id"]),
+        (Account, data["to_account_id"]),
+        (PayPeriod, data["pay_period_id"]),
+        (Scenario, data["scenario_id"]),
+        (Category, data["category_id"]),
+    ):
+        if not _user_owns(model, pk):
+            return "Not found", 404
+
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
+    # ``transfer_service.create_transfer`` calls ``db.session.flush()``
+    # internally to obtain the transfer's primary key for the shadow
+    # rows.  The IntegrityError on ``uq_transfers_adhoc_dedupe`` therefore
+    # fires *during* the service call, not at the subsequent
+    # ``db.session.commit()``.  Both code paths must catch the
+    # constraint hit and translate it into idempotent success or the
+    # caller sees a 500.
     try:
         xfer = transfer_service.create_transfer(
             user_id=current_user.id,
@@ -698,17 +948,86 @@ def create_ad_hoc():
         return "Not found", 404
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
+    except IntegrityError as exc:
+        db.session.rollback()
+        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
+            return _adhoc_dedupe_idempotent_response(data)
+        return "Invalid reference. Check that all referenced records exist.", 400
 
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
+            return _adhoc_dedupe_idempotent_response(data)
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
+    )
+    return response, 201, {"HX-Trigger": "balanceChanged"}
+
+
+def _adhoc_dedupe_idempotent_response(data):
+    """Return the winning ad-hoc transfer's cell as idempotent success.
+
+    Called from ``create_ad_hoc`` when ``uq_transfers_adhoc_dedupe``
+    rejects a second concurrent INSERT.  Re-fetches the active
+    transfer matching the submitted parameters and returns the same
+    201 + ``_transfer_cell.html`` payload the first request produced
+    so the user's view matches the database state regardless of which
+    request reached PostgreSQL first.
+
+    The lookup uses the same predicate as the index (matching
+    ``transfer_template_id IS NULL`` and ``is_deleted = FALSE``) so it
+    only ever matches the row that triggered the violation.  A
+    missing match indicates the row was deleted between the
+    IntegrityError and this lookup -- vanishingly unlikely under
+    normal use, but treated as a 409 with a clear message rather than
+    a 500.
+
+    Args:
+        data: The deserialised ``TransferCreateSchema`` output for
+            the failed request.
+
+    Returns:
+        Flask response tuple: ``(html, 201, {"HX-Trigger": ...})`` on
+        success, or a 409 string on the unrecoverable race.
+    """
+    existing = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.user_id == current_user.id,
+            Transfer.from_account_id == data["from_account_id"],
+            Transfer.to_account_id == data["to_account_id"],
+            Transfer.amount == data["amount"],
+            Transfer.pay_period_id == data["pay_period_id"],
+            Transfer.scenario_id == data["scenario_id"],
+            Transfer.transfer_template_id.is_(None),
+            Transfer.is_deleted.is_(False),
+        )
+        .first()
+    )
+    if existing is None:
+        # Vanishingly rare: the winning row was soft-deleted or hard-
+        # deleted between the IntegrityError and this lookup.  Surface
+        # a 409 so the operator retries against the post-delete state
+        # instead of seeing a 500 from the missing record.
+        return (
+            "Duplicate ad-hoc transfer detected but the winning row "
+            "is no longer active.  Reload and try again.",
+            409,
+        )
+    logger.info(
+        "Duplicate ad-hoc transfer prevented; returning existing id=%d "
+        "(idempotent success)", existing.id,
+    )
+    account = resolve_grid_account(current_user.id, current_user.settings)
+    response = render_template(
+        "transfers/_transfer_cell.html",
+        xfer=existing, account=account, wrap_div=True,
     )
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
@@ -721,15 +1040,26 @@ def delete_transfer(xfer_id):
 
     Routes through transfer_service to ensure shadow transactions are
     also deleted (soft or hard) alongside the parent transfer.
+
+    Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE
+    and hard-delete DELETE are both version-pinned by SQLAlchemy.
+    A concurrent commit that bumped the row's version raises
+    ``StaleDataError`` which the handler converts into a 409 +
+    conflict cell.
     """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     soft = bool(xfer.transfer_template_id)
-    transfer_service.delete_transfer(xfer.id, current_user.id, soft=soft)
-
-    db.session.commit()
+    try:
+        transfer_service.delete_transfer(xfer.id, current_user.id, soft=soft)
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on delete_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     logger.info("user_id=%d deleted transfer %d", current_user.id, xfer_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
@@ -741,16 +1071,41 @@ def delete_transfer(xfer_id):
 @login_required
 @require_owner
 def mark_done(xfer_id):
-    """Mark a transfer and its shadows as 'done' (settled)."""
+    """Mark a transfer and its shadows as 'done' (settled).
+
+    Optimistic locking (commit C-18 / F-010): no form-side
+    ``version_id`` is shipped with the button click; the SQLAlchemy
+    ``version_id_col`` lock catches concurrent races at flush time
+    and the handler converts ``StaleDataError`` into a 409 +
+    conflict cell.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
-    transfer_service.update_transfer(xfer.id, current_user.id, status_id=done_id)
-
     try:
+        # ``paid_at`` parity with ``transactions.mark_done`` and
+        # ``dashboard.mark_paid``: settling a transfer must record
+        # *when* it was settled.  Without this kwarg the shadow
+        # transactions reach Paid with NULL ``paid_at``, breaking
+        # ``Transaction.days_paid_before_due`` analytics, the
+        # dashboard's "paid on time" indicator, and any downstream
+        # report that joins on the timestamp.  The transfer service
+        # mirrors the same default (see ``update_transfer``) so any
+        # future caller that forgets the kwarg still produces a
+        # well-formed settled transfer.  Audit reference: F-048 /
+        # commit C-22 of the 2026-04-15 security remediation plan.
+        transfer_service.update_transfer(
+            xfer.id, current_user.id,
+            status_id=done_id, paid_at=db.func.now(),
+        )
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on transfer mark_done id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -779,18 +1134,25 @@ def mark_done(xfer_id):
 @login_required
 @require_owner
 def cancel_transfer(xfer_id):
-    """Mark a transfer and its shadows as 'cancelled'."""
+    """Mark a transfer and its shadows as 'cancelled'.
+
+    Optimistic locking: see :func:`mark_done`.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
 
     cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-    transfer_service.update_transfer(
-        xfer.id, current_user.id, status_id=cancelled_id
-    )
-
     try:
+        transfer_service.update_transfer(
+            xfer.id, current_user.id, status_id=cancelled_id,
+        )
         db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on cancel_transfer id=%d", xfer_id,
+        )
+        return _stale_transfer_response(xfer_id), 409
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -826,6 +1188,96 @@ def _get_owned_transfer(xfer_id):
     if xfer.user_id != current_user.id:
         return None
     return xfer
+
+
+def _user_owns(model, pk):
+    """Return True iff the row at *pk* exists and belongs to ``current_user``.
+
+    Used by :func:`create_ad_hoc`, :func:`update_transfer`,
+    :func:`create_transfer_template`, and
+    :func:`update_transfer_template` to enforce route-boundary FK
+    ownership without scattering ``db.session.get`` + null/owner
+    boilerplate across each endpoint.  The helper is intentionally
+    minimal -- it returns a boolean so the caller controls the 404
+    response shape (HTMX text vs flash + redirect for the form
+    routes); centralising the response would force every consumer
+    onto a single shape and lose the existing UX parity with
+    surrounding code.
+
+    All consulted models in commit C-27 (``Account``, ``PayPeriod``,
+    ``Scenario``, ``Category``) carry a direct ``user_id`` column, so
+    the check is a single ``db.session.get`` followed by an equality
+    compare.  Following the project security response rule, callers
+    surface ownership failures as 404 -- identical to the missing-PK
+    case -- so the response leaks no information about whether the
+    row exists for someone else.
+
+    Args:
+        model: SQLAlchemy model class with a ``user_id`` column.
+        pk: Primary key value.  ``None`` is treated as "no row" and
+            returns ``False`` so a caller that passes an optional FK
+            stays safe.
+
+    Returns:
+        True if the row exists and ``row.user_id == current_user.id``;
+        False otherwise.
+    """
+    if pk is None:
+        return False
+    record = db.session.get(model, pk)
+    if record is None:
+        return False
+    return record.user_id == current_user.id
+
+
+def _stale_transfer_response(xfer_id):
+    """Roll back the session and render the transfer cell in conflict mode.
+
+    Used by every transfer-mutating HTMX route to convert a stale
+    form or ``StaleDataError`` flush failure into a coherent UI
+    response instead of a 500.  Re-fetches the transfer so the
+    user's view shows the winner's state (never the loser's stale
+    in-memory copy) and tags the cell with ``conflict=True``.
+    Falls back to a 404 string when the row was hard-deleted by
+    the winning request.
+
+    Note: caller adds the 409 status code -- this helper returns
+    only the rendered HTML so it can be reused both before and
+    after the database commit.
+
+    Args:
+        xfer_id: Primary key of the transfer the route was trying
+            to mutate.
+
+    Returns:
+        Rendered HTML string, or the literal string ``"Not found"``
+        when the row no longer exists.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found"
+
+    # Render the shadow's transaction cell when the request came
+    # from the grid (source_txn_id present and validated), or the
+    # transfer cell otherwise.  Mirrors the shadow-context handling
+    # in :func:`update_transfer`.
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        return render_template(
+            "grid/_transaction_cell.html",
+            txn=shadow,
+            entry_sums=build_entry_sums_dict([shadow]),
+            conflict=True,
+        )
+
+    account = resolve_grid_account(current_user.id, current_user.settings)
+    return render_template(
+        "transfers/_transfer_cell.html",
+        xfer=xfer, account=account, conflict=True,
+    )
 
 
 def _resolve_shadow_context(xfer):

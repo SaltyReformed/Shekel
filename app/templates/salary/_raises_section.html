@@ -59,6 +59,7 @@
                     data-raise-percentage="{{ '%.2f'|format((r.percentage * 100)|float) if r.percentage else '' }}"
                     data-raise-flat="{{ '%.2f'|format(r.flat_amount|float) if r.flat_amount else '' }}"
                     data-raise-recurring="{{ 'true' if r.is_recurring else 'false' }}"
+                    data-raise-version-id="{{ r.version_id }}"
                     data-raise-edit-url="{{ url_for('salary.update_raise', raise_id=r.id) }}">
               <i class="bi bi-pencil"></i>
             </button>
@@ -94,6 +95,10 @@
             hx-disabled-elt="find button[type=submit]"
             data-add-action="{{ url_for('salary.add_raise', profile_id=profile.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {# Optimistic-locking pin (commit C-18 / F-010).  Empty for
+           the create flow; populated by app.js when the form is
+           switched to edit mode for an existing raise. #}
+        <input type="hidden" name="version_id" id="raise-version-id" value="">
         <div class="row g-2 align-items-end">
           <div class="col-md-2">
             <label class="form-label">Type</label>

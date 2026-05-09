@@ -104,10 +104,23 @@ def init(db_session):
     _role_map = {}
     _acct_type_meta = {}
 
-    # Build name -> id lookup from the database.
+    # Build name -> id lookup from the database.  ``account_types``
+    # is filtered to seeded built-ins (``user_id IS NULL``) because
+    # after commit C-28 / F-044 owners can register custom types
+    # whose names collide with built-ins (the user's own "HYSA"
+    # alongside the seeded "HYSA").  The cache's enum-to-id contract
+    # promises a single, stable ID per ``AcctTypeEnum`` member; the
+    # filter restores uniqueness and keeps custom types out of a
+    # cache that is loaded once at startup and could not see them
+    # appear later anyway.
     status_rows = {row.name: row.id for row in db_session.query(Status).all()}
     txn_type_rows = {row.name: row.id for row in db_session.query(TransactionType).all()}
-    acct_type_rows = {row.name: row.id for row in db_session.query(AccountType).all()}
+    acct_type_rows = {
+        row.name: row.id
+        for row in db_session.query(AccountType)
+        .filter(AccountType.user_id.is_(None))
+        .all()
+    }
     acct_category_rows = {row.name: row.id for row in db_session.query(AccountTypeCategory).all()}
     recurrence_pattern_rows = {row.name: row.id for row in db_session.query(RecurrencePattern).all()}
     deduction_timing_rows = {row.name: row.id for row in db_session.query(DeductionTiming).all()}
@@ -204,7 +217,16 @@ def init(db_session):
         )
 
     # Build account type metadata cache for icon/term-limit lookups.
-    for row in db_session.query(AccountType).all():
+    # Same filter as ``acct_type_rows`` -- the cache is loaded once
+    # at startup and only knows about seeded built-ins.  Owner-scoped
+    # custom types still resolve their icon/max_term via the ORM
+    # relationship in templates (``account.account_type.icon_class``)
+    # without going through this cache.
+    for row in (
+        db_session.query(AccountType)
+        .filter(AccountType.user_id.is_(None))
+        .all()
+    ):
         _acct_type_meta[row.id] = {
             "icon_class": row.icon_class,
             "max_term_months": row.max_term_months,

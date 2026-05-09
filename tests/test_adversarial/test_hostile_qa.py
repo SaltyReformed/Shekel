@@ -206,11 +206,14 @@ class TestStateMachineViolations:
     def test_done_to_cancelled_transition(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Done → cancelled transition.
+        """Done -> cancelled transition is now rejected (C-21 follow-up).
 
-        A done transaction (with actual_amount set) is cancelled.
-        Verifies that actual_amount is preserved in the DB but
-        effective_amount drops to zero (excluded from balance calcs).
+        After the C-21 follow-up the cancel endpoint runs every
+        status change through ``verify_transition``.  Done -> Cancelled
+        is illegal -- the user must revert to Projected first so the
+        audit trail records both the revert and the subsequent
+        cancellation.  The actual_amount stays untouched on the
+        rejected request.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
@@ -220,17 +223,15 @@ class TestStateMachineViolations:
             # Verify initial effective_amount uses actual_amount.
             assert txn.effective_amount == Decimal("85.00")
 
-            # Cancel the transaction.
+            # Cancel the transaction -- now refused.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
-
-            # Current behavior: actual_amount is preserved in the DB.
-            # The cancel endpoint only changes status_id, does not clear actual_amount.
+            # Row stays Paid; actual_amount preserved.
+            assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("85.00")
+            assert txn.effective_amount == Decimal("85.00")
 
     def test_received_to_projected_reversion(
         self, app, auth_client, seed_user, seed_periods,
@@ -324,29 +325,44 @@ class TestStateMachineViolations:
     def test_cancelled_to_done_direct(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Cancelled → done via direct PATCH (bypassing mark_done).
+        """Cancelled -> done via direct PATCH is rejected (C-21).
 
-        PATCHing status_id to done bypasses the mark_done endpoint,
-        resulting in a 'done' transaction without actual_amount.
-        effective_amount falls through to estimated_amount.
+        After commit C-21 the PATCH endpoint runs every status change
+        through ``app.services.state_machine.verify_transition``.
+        ``Cancelled`` may only revert to ``Projected``; a direct jump
+        to ``Paid`` skips the projected step the audit log relies on
+        and is refused with a 400.  The user is expected to revert to
+        Projected first and then mark the row as Paid via the
+        mark-done endpoint -- which writes ``paid_at`` and (on
+        envelope rows) settles entries -- preserving the workflow
+        guarantees the dashboard depends on.
+
+        Was: documented as "current behavior allows it; ideal would
+        reject."  Commit C-21 is the implementation of that ideal,
+        addressing audit finding F-161.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
             db.session.commit()
+            cancelled_status_id = txn.status_id
 
             done_status = db.session.query(Status).filter_by(name="Paid").one()
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(done_status.id)},
             )
-            # Current behavior: no transition guard, direct status change is allowed.
-            # Ideal: cancelled → done should be rejected; use mark_done instead.
-            assert resp.status_code == 200
+            # State machine refuses cancelled -> done.  The body names
+            # both endpoints so the user understands why.
+            assert resp.status_code == 400
+            body = resp.data.decode()
+            assert "transaction" in body
+            assert str(cancelled_status_id) in body
+            assert str(done_status.id) in body
 
+            # The row stays Cancelled -- no partial mutation.
             db.session.refresh(txn)
-            assert txn.status.name == "Paid"
-            # effective_amount for done without actual_amount uses estimated_amount.
-            assert txn.effective_amount == txn.estimated_amount
+            assert txn.status.name == "Cancelled"
+            assert txn.effective_amount == Decimal("0")
 
     def test_cancel_already_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -371,11 +387,14 @@ class TestStateMachineViolations:
     def test_mark_done_on_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """POST mark_done on a cancelled transaction.
+        """POST mark_done on a cancelled transaction is now rejected (C-21 follow-up).
 
-        A cancelled transaction is excluded from balance calculations.
-        mark_done re-includes it as 'done', which could corrupt balance
-        projections if the cancellation was intentional.
+        After the C-21 follow-up the mark_done endpoint runs every
+        status change through ``verify_transition``.  Cancelled may
+        only revert to Projected; a direct jump to Paid would
+        resurrect a cancelled row and corrupt balance projections
+        (the original concern this test documented).  The row stays
+        Cancelled and no actual_amount is recorded.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, status_name="Cancelled")
@@ -385,14 +404,14 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "95.00"},
             )
-            # Current behavior: mark_done has no guard against cancelled transactions.
-            # Ideal: should reject with "cannot mark cancelled as done".
-            assert resp.status_code == 200
+            assert resp.status_code == 400
 
             db.session.refresh(txn)
-            assert txn.status.name == "Paid"
-            assert txn.actual_amount == Decimal("95.00")
-            assert txn.effective_amount == Decimal("95.00")
+            assert txn.status.name == "Cancelled"
+            # No actual_amount recorded -- the rejected request did
+            # not commit any partial state.
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("0")
 
     def test_mark_credit_on_done_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -996,23 +1015,18 @@ class TestAuthEdgeCases:
     def test_access_other_users_account(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to edit User B's account → must get redirect/flash.
+        """User A tries to edit User B's account -- must get 404 (security).
 
-        Account routes check user_id == current_user.id and redirect with
-        a flash warning when the account doesn't belong to the current user.
+        Account routes check user_id == current_user.id and return 404
+        when the account doesn't belong to the current user (security
+        rule: 404 for both not-found and not-yours).
         Uses the shared second_user fixture from conftest.py.
         """
         with app.app_context():
             # Auth client is logged in as user 1 -- try to edit user 2's account.
             resp = auth_client.get(f"/accounts/{second_user['account'].id}/edit")
-            # Current behavior: redirect to accounts list with flash.
-            assert resp.status_code == 302
-            assert "/accounts" in resp.headers.get("Location", "")
+            assert resp.status_code == 404
             assert b"Other Checking" not in resp.data
-
-            # Follow redirect to verify the flash warning message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"not found" in follow.data.lower()
 
             # Verify DB state unchanged after IDOR attempt.
             acct2 = db.session.get(Account, second_user["account"].id)
@@ -1150,11 +1164,7 @@ class TestCrossResourceIDOR:
 
             # Auth client (user 1) tries to access user 2's salary profile.
             resp = auth_client.get(f"/salary/{profile_id}/edit")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Salary profile not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify profile is unchanged in DB.
             db.session.refresh(profile)
@@ -1164,21 +1174,17 @@ class TestCrossResourceIDOR:
     def test_delete_other_users_category(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to DELETE User B's category → rejected.
+        """User A tries to DELETE User B's category -- rejected.
 
-        The categories route checks user_id ownership and redirects
-        with a flash warning.
+        The categories route checks user_id ownership and returns 404
+        (security: 404 for not-found and not-yours).
         """
         with app.app_context():
             cat = second_user["categories"]["Rent"]
             cat_id = cat.id
 
             resp = auth_client.post(f"/categories/{cat_id}/delete")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Category not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify category still exists.
             cat_after = db.session.get(Category, cat_id)
@@ -1187,10 +1193,10 @@ class TestCrossResourceIDOR:
     def test_delete_other_users_transfer_template(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to DELETE User B's transfer template → rejected.
+        """User A tries to DELETE User B's transfer template -- rejected.
 
-        The transfers route checks user_id ownership and redirects
-        with a flash warning.
+        The transfers route checks user_id ownership and returns 404
+        (security: 404 for not-found and not-yours).
         """
         with app.app_context():
             # Create a savings account and transfer template for second user.
@@ -1219,11 +1225,7 @@ class TestCrossResourceIDOR:
 
             # Auth client (user 1) tries to archive user 2's template.
             resp = auth_client.post(f"/transfers/{template2_id}/archive")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Recurring transfer not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify template still exists and is active.
             db.session.refresh(template2)

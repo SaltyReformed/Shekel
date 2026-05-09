@@ -6,10 +6,10 @@ CRUD for the flat two-level category system (group + item name).
 
 import logging
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 
 from app.extensions import db
 from app.models.category import Category
@@ -98,10 +98,9 @@ def create_category():
 @require_owner
 def edit_category(category_id):
     """Edit a category item name and/or group assignment (re-parenting)."""
-    category = db.session.get(Category, category_id)
-    if category is None or category.user_id != current_user.id:
-        flash("Category not found.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+    category = get_or_404(Category, category_id)
+    if category is None:
+        abort(404)
 
     errors = _edit_schema.validate(request.form)
     if errors:
@@ -148,10 +147,9 @@ def edit_category(category_id):
 @require_owner
 def archive_category(category_id):
     """Archive a category (hide from active views, preserve data)."""
-    category = db.session.get(Category, category_id)
-    if category is None or category.user_id != current_user.id:
-        flash("Category not found.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+    category = get_or_404(Category, category_id)
+    if category is None:
+        abort(404)
 
     category.is_active = False
     db.session.commit()
@@ -164,10 +162,9 @@ def archive_category(category_id):
 @require_owner
 def unarchive_category(category_id):
     """Unarchive a category (return to active views)."""
-    category = db.session.get(Category, category_id)
-    if category is None or category.user_id != current_user.id:
-        flash("Category not found.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+    category = get_or_404(Category, category_id)
+    if category is None:
+        abort(404)
 
     category.is_active = True
     db.session.commit()
@@ -186,10 +183,9 @@ def delete_category(category_id):
     user.  If in use, the category is archived instead of deleted.
     If not in use, it is permanently removed.
     """
-    category = db.session.get(Category, category_id)
-    if category is None or category.user_id != current_user.id:
-        flash("Category not found.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+    category = get_or_404(Category, category_id)
+    if category is None:
+        abort(404)
 
     if archive_helpers.category_has_usage(category_id, current_user.id):
         flash(

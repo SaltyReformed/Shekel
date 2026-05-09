@@ -322,7 +322,7 @@ class TestTemplateUpdate:
             assert b"Please correct the highlighted errors" in resp.data
 
     def test_update_template_idor(self, app, auth_client, seed_user):
-        """POST /templates/<id> for another user's template redirects."""
+        """POST /templates/<id> for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -331,15 +331,14 @@ class TestTemplateUpdate:
                 data={"name": "Hijacked"},
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found" in resp.data
+            assert resp.status_code == 404
 
             # Verify original unchanged.
             db.session.refresh(other["template"])
             assert other["template"].name == "Other Rent"
 
     def test_edit_template_idor(self, app, auth_client, seed_user):
-        """GET /templates/<id>/edit for another user's template redirects."""
+        """GET /templates/<id>/edit for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -347,8 +346,7 @@ class TestTemplateUpdate:
                 f"/templates/{other['template'].id}/edit",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found" in resp.data
+            assert resp.status_code == 404
 
     def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id> flashes warning when recurrence conflict occurs."""
@@ -663,7 +661,7 @@ class TestTemplateArchive:
             assert remaining == 0
 
     def test_archive_template_idor(self, app, auth_client, seed_user):
-        """POST /templates/<id>/archive for another user's template redirects."""
+        """POST /templates/<id>/archive for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -671,22 +669,20 @@ class TestTemplateArchive:
                 f"/templates/{other['template'].id}/archive",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found" in resp.data
+            assert resp.status_code == 404
 
             # Verify template still active.
             db.session.refresh(other["template"])
             assert other["template"].is_active is True
 
     def test_archive_nonexistent_template(self, app, auth_client, seed_user):
-        """POST /templates/999999/archive for missing template redirects."""
+        """POST /templates/999999/archive for missing template returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/templates/999999/archive",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found" in resp.data
+            assert resp.status_code == 404
 
 
 # ── Unarchive Tests ──────────────────────────────────────────────────
@@ -732,7 +728,7 @@ class TestTemplateUnarchive:
             assert active_txns == 10
 
     def test_unarchive_template_idor(self, app, auth_client, seed_user):
-        """POST /templates/<id>/unarchive for another user's template redirects."""
+        """POST /templates/<id>/unarchive for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -740,8 +736,7 @@ class TestTemplateUnarchive:
                 f"/templates/{other['template'].id}/unarchive",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found" in resp.data
+            assert resp.status_code == 404
 
 
 # ── Preview Recurrence Tests ─────────────────────────────────────────
@@ -1003,25 +998,23 @@ class TestTemplateNegativePaths:
             assert count == 0
 
     def test_edit_nonexistent_template(self, app, auth_client, seed_user):
-        """GET /templates/999999/edit for missing template redirects with flash."""
+        """GET /templates/999999/edit for missing template returns 404 (security)."""
         with app.app_context():
             resp = auth_client.get(
                 "/templates/999999/edit",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found." in resp.data
+            assert resp.status_code == 404
 
     def test_update_nonexistent_template(self, app, auth_client, seed_user):
-        """POST /templates/999999 for missing template redirects with flash."""
+        """POST /templates/999999 for missing template returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/templates/999999",
                 data={"name": "Ghost"},
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Recurring transaction not found." in resp.data
+            assert resp.status_code == 404
 
     def test_create_template_xss_in_name(self, app, auth_client, seed_user):
         """XSS payload in template name is escaped by Jinja2 auto-escaping."""
@@ -1270,7 +1263,7 @@ class TestTemplateHardDelete:
             assert remaining == 0
 
     def test_hard_delete_template_idor(self, app, auth_client, seed_user):
-        """C-5A.5-14: Hard-deleting another user's template returns 'not found'."""
+        """C-5A.5-14: Hard-deleting another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
             other_id = other["template"].id
@@ -1279,8 +1272,7 @@ class TestTemplateHardDelete:
                 f"/templates/{other_id}/hard-delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             # Other user's template still exists.
             assert db.session.get(TransactionTemplate, other_id) is not None

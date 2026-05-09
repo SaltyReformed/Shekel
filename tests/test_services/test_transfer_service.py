@@ -580,6 +580,133 @@ class TestUpdateTransfer:
             for s in shadows:
                 assert s.actual_amount is None
 
+    def test_paid_at_defaults_to_now_on_settle_when_omitted(
+        self, app, db, transfer_data
+    ):
+        """F-048 / C-22: settling without explicit paid_at defaults to now().
+
+        Defense-in-depth for the route layer: any caller that
+        forgets to pass ``paid_at`` when transitioning to a settled
+        status (Paid/Received/Settled) still produces shadows with
+        a non-NULL ``paid_at`` timestamp -- the dashboard's "paid
+        on time" indicator and ``Transaction.days_paid_before_due``
+        analytics rely on it.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
+            assert done_status.is_settled is True
+
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, status_id=done_status.id
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.paid_at is not None, (
+                    f"Shadow {s.id} has NULL paid_at after settle "
+                    f"without explicit kwarg; defense-in-depth failed."
+                )
+
+    def test_paid_at_explicit_kwarg_wins_over_default(
+        self, app, db, transfer_data
+    ):
+        """F-048 / C-22: explicit paid_at takes precedence over the default.
+
+        The defense-in-depth must never overwrite an explicit caller
+        value -- including ``paid_at=None``, which the
+        ``transactions.update_transaction`` shadow path passes when
+        reverting from a settled status to Projected.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
+            projected_status = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+
+            # Step 1: settle with explicit paid_at=None.  The default
+            # would have set now(); the explicit None must win.
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id,
+                status_id=done_status.id, paid_at=None,
+            )
+            db.session.flush()
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            for s in shadows:
+                assert s.paid_at is None, (
+                    "Explicit paid_at=None was overwritten by "
+                    "defense-in-depth default."
+                )
+
+            # Step 2: revert to Projected without explicit paid_at.
+            # The defense-in-depth should clear the (already-None)
+            # timestamp on both shadows -- a no-op here, but the
+            # state must remain coherent.
+            #
+            # We need to first set paid_at to a value so we can
+            # observe the clear: skip the revert if no value exists.
+
+    def test_paid_at_cleared_on_revert_to_non_settled(
+        self, app, db, transfer_data
+    ):
+        """F-048 / C-22: reverting to non-settled clears stale paid_at.
+
+        Maintains the "paid_at iff settled" invariant: a Paid
+        transfer reverted to Projected without an explicit paid_at
+        kwarg must have its shadows' paid_at cleared, otherwise a
+        future settle would silently inherit the stale timestamp.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
+            projected_status = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+
+            # Settle (defense-in-depth sets paid_at to now()).
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, status_id=done_status.id,
+            )
+            db.session.flush()
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            for s in shadows:
+                assert s.paid_at is not None
+
+            # Revert to Projected with no explicit paid_at.
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, status_id=projected_status.id,
+            )
+            db.session.flush()
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            )
+            for s in shadows:
+                assert s.paid_at is None, (
+                    f"Shadow {s.id} retained stale paid_at after "
+                    f"revert to Projected; the F-048 invariant is "
+                    f"violated."
+                )
+
 
 # ── Delete Tests ───────────────────────────────────────────────────
 
@@ -1072,6 +1199,159 @@ class TestRestoreTransfer:
 
             with pytest.raises(ValidationError, match="integrity"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+    def test_rejects_when_source_account_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore a transfer onto an archived
+        source account.
+
+        Soft-delete a transfer, then archive the source account.  The
+        next ``restore_transfer`` must raise ``ValidationError`` and
+        leave the transfer + shadows soft-deleted (rollback the
+        ``is_deleted`` flip applied at the top of the function).  This
+        prevents the user from silently resurrecting balance entries
+        against an account they have withdrawn from active projections.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            from_account_id = td["account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            # Archive the source account post-soft-delete.
+            from_account = db.session.get(Account, from_account_id)
+            from_account.is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Rollback to clear the dirty session state from the failed
+            # restore, then re-fetch and confirm soft-delete persisted.
+            db.session.rollback()
+            xfer_after = db.session.get(Transfer, xfer_id)
+            assert xfer_after.is_deleted is True
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is True
+
+    def test_rejects_when_destination_account_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore a transfer onto an archived
+        destination account.
+
+        Symmetric counterpart to
+        ``test_rejects_when_source_account_archived``: archives the
+        ``to_account`` instead of the ``from_account`` and verifies the
+        same refusal-with-rollback behaviour.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            to_account_id = td["savings_account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            # Archive the destination account post-soft-delete.
+            to_account = db.session.get(Account, to_account_id)
+            to_account.is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            db.session.rollback()
+            xfer_after = db.session.get(Transfer, xfer_id)
+            assert xfer_after.is_deleted is True
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is True
+
+    def test_rejects_when_both_accounts_archived(
+        self, app, db, transfer_data,
+    ):
+        """F-164 / C-20: refuse to restore when both accounts are archived.
+
+        Defense-in-depth case: if the user has archived both ends of
+        the transfer, the refusal must still trigger and the error
+        message must remain the same generic ``archived`` text (no
+        information about which account is at fault, since both are).
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            from_id = td["account"].id
+            to_id = td["savings_account"].id
+            db.session.commit()
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            db.session.get(Account, from_id).is_active = False
+            db.session.get(Account, to_id).is_active = False
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="archived"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+    def test_succeeds_when_accounts_active(self, app, db, transfer_data):
+        """F-164 / C-20 sanity check: the active-account guard does
+        not regress the happy path.
+
+        With both accounts active (the default), ``restore_transfer``
+        must continue to undo the soft-delete and return the live
+        transfer.  Companion to
+        ``test_restores_transfer_and_shadows`` -- this one exists
+        explicitly to verify the new guard does not break the baseline.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+            db.session.flush()
+
+            result = transfer_service.restore_transfer(
+                xfer_id, td["user"].id,
+            )
+            assert result.is_deleted is False
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.is_deleted is False
 
 
 class TestDueDateAndPaidAtShadows:

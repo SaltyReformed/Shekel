@@ -33,7 +33,7 @@ from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
-from app.exceptions import RecurrenceConflict
+from app.exceptions import RecurrenceConflict, ValidationError
 from app.models.salary_profile import SalaryProfile
 from app.utils.log_events import (
     BUSINESS,
@@ -41,6 +41,7 @@ from app.utils.log_events import (
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_RECURRENCE_GENERATED,
     EVT_RECURRENCE_REGENERATED,
+    EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED,
     log_event,
 )
 
@@ -399,6 +400,31 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
                 )
                 skipped_count += 1
                 continue
+
+            # Transfer shadow guard (CLAUDE.md Transfer invariant 4 / F-007).
+            # Shadow rows (transfer_id IS NOT NULL) are owned by the transfer
+            # service.  resolve_conflicts is reachable only from the
+            # transaction-template regeneration flow, which never produces
+            # shadow IDs in its conflict set; a shadow ID arriving here is
+            # therefore an internal logic error or an attacker probe.
+            # Mutating a shadow directly would desynchronise the parent
+            # transfer's amount/status/period from its sibling shadow and
+            # silently corrupt the user's balance projections.  Refuse.
+            if txn.transfer_id is not None:
+                log_event(
+                    logger, logging.WARNING,
+                    EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED, BUSINESS,
+                    "Refused to mutate transfer shadow via resolve_conflicts",
+                    user_id=user_id,
+                    transaction_id=txn_id,
+                    transfer_id=txn.transfer_id,
+                    action=action,
+                )
+                raise ValidationError(
+                    "Cannot modify transfer shadow transactions via "
+                    "resolve_conflicts.  Route transfer mutations through "
+                    "transfer_service."
+                )
 
             txn.is_override = False
             txn.is_deleted = False

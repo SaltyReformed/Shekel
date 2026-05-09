@@ -7,10 +7,25 @@
      today             -- ISO date string for add form default date
      editing_id        -- int or None -- entry ID to show inline edit form
      out_of_period_ids -- set of entry IDs with dates outside the pay period
+     conflict          -- bool, optional -- when True, surface a warning
+                          banner because a previous PATCH submission
+                          was rejected by the optimistic-lock check.
+                          See commit C-18 of the 2026-04-15 security
+                          remediation plan.
 
    HTMX swap target: #entry-list-{txn.id} with outerHTML.
 #}
 <div id="entry-list-{{ txn.id }}">
+  {% if conflict is defined and conflict %}
+  {# Stale-form / StaleDataError banner.  Refreshes are pulled
+     in by the inline add/edit forms below; this banner just
+     tells the user why their last submission did not stick. #}
+  <div class="alert alert-warning py-1 px-2 mb-2 small d-flex align-items-center gap-1"
+       role="alert">
+    <i class="bi bi-exclamation-triangle text-warning" aria-hidden="true"></i>
+    <span>This entry was changed by another action.  The list below shows the latest values.</span>
+  </div>
+  {% endif %}
   {% if entries %}
   {% for entry in entries %}
   {% if editing_id == entry.id %}
@@ -20,6 +35,10 @@
           hx-target="#entry-list-{{ txn.id }}"
           hx-swap="outerHTML"
           hx-disabled-elt="find button[type=submit]">
+      {# Optimistic-locking pin: handler compares against
+         entry.version_id and short-circuits with 409 when the
+         form is stale (commit C-18). #}
+      <input type="hidden" name="version_id" value="{{ entry.version_id }}">
       <div class="d-flex gap-1 align-items-end mb-1">
         <input type="number" step="0.01" name="amount" min="0.01"
                value="{{ entry.amount }}"

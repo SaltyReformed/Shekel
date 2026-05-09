@@ -225,6 +225,13 @@ function _populateRaiseForm(editBtn) {
     var recur = form.querySelector('[name=is_recurring]');
     if (recur) recur.checked = editBtn.dataset.raiseRecurring === 'true';
 
+    // Optimistic-locking pin (commit C-18 / F-010): submit the
+    // raise's version_id so the route handler can detect a stale
+    // form before applying the update.  Cleared by _resetRaiseForm
+    // when the form returns to add mode.
+    var versionInput = form.querySelector('[name=version_id]');
+    if (versionInput) versionInput.value = editBtn.dataset.raiseVersionId || '';
+
     // Change submit button icon to a check mark.
     var btn = document.getElementById('raise-submit-btn');
     if (btn) btn.innerHTML = '<i class="bi bi-check-lg"></i>';
@@ -249,6 +256,11 @@ function _resetRaiseForm() {
     }
 
     form.reset();
+
+    // Clear the optimistic-lock pin so a subsequent add submission
+    // does not carry a stale version from a prior edit cycle.
+    var versionInput = form.querySelector('[name=version_id]');
+    if (versionInput) versionInput.value = '';
 
     var btn = document.getElementById('raise-submit-btn');
     if (btn) btn.innerHTML = '<i class="bi bi-plus"></i>';
@@ -300,6 +312,13 @@ function _populateDeductionForm(editBtn) {
     var inflMonth = form.querySelector('[name=inflation_effective_month]');
     if (inflMonth) inflMonth.value = editBtn.dataset.dedInflationMonth || '';
 
+    // Optimistic-locking pin (commit C-18 / F-010): submit the
+    // deduction's version_id so the route handler can detect a
+    // stale form before applying the update.  Cleared by
+    // _resetDeductionForm when the form returns to add mode.
+    var versionInput = form.querySelector('[name=version_id]');
+    if (versionInput) versionInput.value = editBtn.dataset.dedVersionId || '';
+
     // Change submit button text.
     var btn = document.getElementById('ded-submit-btn');
     if (btn) btn.innerHTML = '<i class="bi bi-check-lg"></i> Update';
@@ -324,6 +343,11 @@ function _resetDeductionForm() {
     }
 
     form.reset();
+
+    // Clear the optimistic-lock pin so a subsequent add submission
+    // does not carry a stale version from a prior edit cycle.
+    var versionInput = form.querySelector('[name=version_id]');
+    if (versionInput) versionInput.value = '';
 
     var btn = document.getElementById('ded-submit-btn');
     if (btn) btn.innerHTML = '<i class="bi bi-plus"></i> Add';

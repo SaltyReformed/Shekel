@@ -277,10 +277,31 @@ class TestDebtStrategyCalculate:
 
 
 class TestDebtStrategyValidation:
-    """Tests for input validation on the calculate endpoint."""
+    """Tests for input validation on the calculate endpoint.
+
+    All tests in this class exercise ``DebtStrategyCalculateSchema``
+    (commit C-27 of the 2026-04-15 security remediation plan), which
+    replaced the route's pre-C-27 hand-parsed ``Decimal``/``OneOf``
+    checks.  The schema's per-field messages -- e.g.
+    ``"Must be greater than or equal to 0..."`` for a negative
+    ``extra_monthly`` -- are surfaced to the user via
+    ``_first_validation_message``.  The route still wraps the
+    error in the legacy ``_results.html`` partial so the HTTP
+    response stays at 200 with an inline banner; only the message
+    text changed.
+    """
 
     def test_invalid_extra_negative(self, auth_client, seed_user, db, seed_periods_today):
-        """Negative extra_monthly returns a user-friendly error, not 500."""
+        """Negative extra_monthly returns the schema's range error.
+
+        The ``DebtStrategyCalculateSchema.extra_monthly`` field has
+        ``validate.Range(min=Decimal('0'), max=Decimal('1000000'))``
+        so a negative entry surfaces Marshmallow's standard
+        "Must be greater than or equal to 0 ..." message.  The
+        important assertions are (1) HTTP 200 (no 500 from the old
+        hand-parsed branch), (2) the response contains the per-field
+        Marshmallow message so the form can render it inline.
+        """
         _create_auto_loan(seed_user["user"], db.session)
 
         resp = auth_client.post("/debt-strategy/calculate", data={
@@ -289,10 +310,37 @@ class TestDebtStrategyValidation:
         })
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "negative" in html.lower()
+        assert "Must be greater than or equal to 0" in html
+
+    def test_invalid_extra_above_cap(self, auth_client, seed_user, db, seed_periods_today):
+        """Extra_monthly above the schema cap is rejected (commit C-27).
+
+        The cap is set well above any realistic debt-payoff budget
+        (``Decimal('1000000')``); above that bound an order-of-
+        magnitude typo is rejected at the schema tier instead of
+        amplifying through the simulation.  Verifies the upper
+        bound is wired up (the lower bound is exercised by
+        :meth:`test_invalid_extra_negative`).
+        """
+        _create_auto_loan(seed_user["user"], db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "9999999999",
+            "strategy": "avalanche",
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "less than or equal to 1000000" in html
 
     def test_invalid_extra_nonnumeric(self, auth_client, seed_user, db, seed_periods_today):
-        """Non-numeric extra_monthly returns a user-friendly error."""
+        """Non-numeric extra_monthly produces Marshmallow's coercion error.
+
+        Pre-C-27 the route caught ``InvalidOperation`` and rendered
+        a custom message; post-C-27 Marshmallow's Decimal field
+        rejects the value with ``"Not a valid number."``.  The
+        response stays 200 + ``_results.html`` so the HTMX UX is
+        unchanged -- only the message text moved into the schema.
+        """
         _create_auto_loan(seed_user["user"], db.session)
 
         resp = auth_client.post("/debt-strategy/calculate", data={
@@ -301,10 +349,18 @@ class TestDebtStrategyValidation:
         })
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Invalid" in html
+        assert "Not a valid number" in html
 
     def test_invalid_strategy(self, auth_client, seed_user, db, seed_periods_today):
-        """Unknown strategy name returns a user-friendly error."""
+        """Unknown strategy returns the schema's OneOf error message.
+
+        Pre-C-27: ``"Invalid strategy: 'invalid_strategy'."`` (route).
+        Post-C-27: ``"Must be one of: avalanche, snowball, custom."``
+        (Marshmallow's standard OneOf validator).  The change is
+        a deliberate UX trade: the new message lists the allowed
+        values up-front so the user does not have to consult the
+        UI to learn them.
+        """
         _create_auto_loan(seed_user["user"], db.session)
 
         resp = auth_client.post("/debt-strategy/calculate", data={
@@ -313,10 +369,21 @@ class TestDebtStrategyValidation:
         })
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Invalid strategy" in html
+        assert "Must be one of" in html
+        assert "avalanche" in html
+        assert "snowball" in html
+        assert "custom" in html
 
     def test_custom_missing_order(self, auth_client, seed_user, db, seed_periods_today):
-        """Custom strategy without custom_order returns an error."""
+        """Custom strategy without custom_order returns the schema rule.
+
+        The cross-field ``validate_custom_requires_order`` enforces
+        the dependency on the schema (instead of the pre-C-27 inline
+        check) so a JSON caller gets the same error shape as the
+        HTML form.  The user-facing message text is preserved
+        verbatim because ``_results.html`` still renders the
+        ``error`` slot.
+        """
         _create_auto_loan(seed_user["user"], db.session)
 
         resp = auth_client.post("/debt-strategy/calculate", data={
@@ -325,10 +392,45 @@ class TestDebtStrategyValidation:
         })
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "priority order" in html.lower()
+        assert "Custom strategy requires a priority order" in html
+
+    def test_custom_order_too_long_rejected(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """custom_order exceeding the 500-char cap is rejected (commit C-27).
+
+        The schema's ``validate.Length(min=1, max=500)`` rejects a
+        pathological payload -- a future caller that crafted an
+        absurdly long comma-separated list could otherwise feed an
+        unbounded list into the route's ``int(x.strip())`` loop.
+        At ~10 digits per ID + comma, 500 characters comfortably
+        fits ~40 accounts, so a legitimate request will never
+        approach this bound.
+        """
+        _create_auto_loan(seed_user["user"], db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "custom",
+            "custom_order": ",".join(["1"] * 300),
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # ``validate.Length(min=1, max=500)`` renders as
+        # "Length must be between 1 and 500." (Marshmallow's
+        # standard message when both bounds are set).
+        assert "between 1 and 500" in html
 
     def test_custom_invalid_order_format(self, auth_client, seed_user, db, seed_periods_today):
-        """Custom order with non-integer values returns an error."""
+        """Custom order with non-integer values returns the route's error.
+
+        The schema validates only presence and length on
+        ``custom_order``; the integer coercion stays in the route
+        because it produces a more actionable user message ("Invalid
+        custom order format.") and lets the route distinguish a
+        format error from a missing-field error.  Behaviour is
+        unchanged from pre-C-27.
+        """
         _create_auto_loan(seed_user["user"], db.session)
 
         resp = auth_client.post("/debt-strategy/calculate", data={
@@ -338,7 +440,7 @@ class TestDebtStrategyValidation:
         })
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Invalid" in html
+        assert "Invalid custom order format" in html
 
 
 # ── IDOR Tests ───────────────────────────────────────────────────────

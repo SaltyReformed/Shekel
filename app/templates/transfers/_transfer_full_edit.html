@@ -20,6 +20,11 @@
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
 
+    {# Optimistic-locking pin: handler compares against
+       xfer.version_id and short-circuits with 409 when the form is
+       stale (commit C-18). #}
+    <input type="hidden" name="version_id" value="{{ xfer.version_id }}">
+
     {# Pass source_txn_id so the transfer route handler can render the
        correct template (transaction cell for grid, transfer cell for
        management page).  Only present when opened from a shadow cell. #}
