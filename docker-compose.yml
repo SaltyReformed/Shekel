@@ -190,6 +190,14 @@ services:
       # if not running redis as a sibling container.  See audit finding
       # F-034 and remediation Commit C-06.
       RATELIMIT_STORAGE_URI: ${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
+      # Gunicorn proxy trust.  Pinned to the ``backend`` bridge subnet
+      # below (172.31.0.0/24) so Gunicorn honours X-Forwarded-* only
+      # from the in-stack nginx -- the only sibling on this internal
+      # bridge that proxies user traffic.  No fallback default in
+      # gunicorn.conf.py: a missing value fails the config load.  Audit
+      # finding F-015, Commit C-33.  Override only if the ``backend``
+      # subnet is repinned in this compose file.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.31.0.0/24}
     volumes:
       # Shared volume: app copies static files here for Nginx to serve.
       - static_files:/var/www/static
@@ -259,10 +267,26 @@ volumes:
   static_files:
 
 networks:
-  # Frontend network: Nginx only.  Externally accessible via port mapping.
+  # Frontend network: Nginx only.  Externally accessible via port mapping
+  # on the host.  Subnet pinned to 172.30.0.0/24 so the bundled
+  # nginx.conf can trust ``set_real_ip_from`` exactly to this CIDR,
+  # rather than the historic loose "trust every RFC 1918 range".
+  # Audit finding F-015, Commit C-33.
   frontend:
     driver: bridge
-  # Backend network: all services.  Internal only -- not reachable from host.
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/24
+  # Backend network: all services.  Internal only -- not reachable from
+  # host.  Subnet pinned to 172.31.0.0/24 so Gunicorn's
+  # FORWARDED_ALLOW_IPS env var (set on the app service above) can be
+  # a stable literal CIDR matching exactly the bridge that hosts the
+  # in-stack nginx and the app.  Audit finding F-015, Commit C-33.
   backend:
     driver: bridge
     internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/24

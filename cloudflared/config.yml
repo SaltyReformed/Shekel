@@ -46,10 +46,43 @@ credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
 # Ingress rules map hostnames to local services.  Rules are
 # evaluated top-to-bottom; the first match wins.  A catch-all
 # rule at the bottom is required by cloudflared.
+#
+# WAN-PATH SECURITY INVARIANT
+# ---------------------------
+# All public ingress MUST terminate at Nginx, never directly at
+# Gunicorn.  Nginx is the single chokepoint that enforces:
+#   - client_max_body_size (request size cap)
+#   - timeouts (slowloris defenses)
+#   - set_real_ip_from / real_ip_header (CF-Connecting-IP)
+#   - the four defense-in-depth security headers (X-Frame-Options,
+#     X-Content-Type-Options, Referrer-Policy, Permissions-Policy)
+#   - per-request access logs in JSON
+#
+# Routing cloudflared straight to ``http://shekel-prod-app:8000``
+# bypasses every one of those controls.  Audit finding F-063 called
+# out exactly that gap on the maintainer's homelab; Commit C-33
+# closed it.
 ingress:
   # Production: route all traffic for the domain to Nginx.
-  # Nginx handles static files and proxies application requests
-  # to Gunicorn on the backend Docker network.
+  #
+  # Bundled mode (this template):
+  #   cloudflared runs as a systemd service on the host (or in a
+  #   sidecar with ``network_mode: host``) and reaches the in-stack
+  #   nginx via the host port mapping (``${NGINX_PORT:-80}:80`` in
+  #   docker-compose.yml).  ``http://localhost:80`` is correct.
+  #
+  # Shared mode (operator's homelab):
+  #   cloudflared runs as a Docker container on the
+  #   ``shekel-frontend`` bridge and the shared /opt/docker/nginx
+  #   container is also on that bridge.  Replace ``localhost:80``
+  #   with ``nginx:80`` (Docker DNS resolves the service name).
+  #   Example shared-mode rule:
+  #
+  #     - hostname: <DOMAIN>
+  #       service: http://nginx:80
+  #
+  #   See deploy/docker-compose.prod.yml for the matching topology.
+  #   Audit finding F-063, Commit C-33.
   - hostname: <DOMAIN>
     service: http://localhost:80
     originRequest:

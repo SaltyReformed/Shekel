@@ -914,7 +914,24 @@ lives in the same database the attacker would be tampering with.
   default in the `os.getenv` call so a misconfigured deploy fails
   closed. See also F-020 (homelab network isolation) for the
   architectural fix.
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09). `gunicorn.conf.py:80-115`
+  drops the RFC 1918 fallback default; a missing or whitespace-only
+  `FORWARDED_ALLOW_IPS` env var raises `RuntimeError` at gunicorn
+  config load time so a misconfigured production deploy refuses to
+  start. `docker-compose.yml` pins the `frontend` and `backend`
+  bridges to `172.30.0.0/24` and `172.31.0.0/24` and defaults
+  `FORWARDED_ALLOW_IPS` to the `backend` CIDR for bundled mode;
+  `deploy/docker-compose.prod.yml` repins the env var to
+  `172.32.0.0/24` (the new `shekel-frontend` bridge) for shared
+  mode. `deploy/nginx-bundled/nginx.conf` replaces the four
+  RFC 1918 `set_real_ip_from` lines with `127.0.0.1` plus the
+  pinned frontend CIDR; `deploy/nginx-shared/nginx.conf` adds
+  `set_real_ip_from 172.32.0.0/24`, `real_ip_header
+  CF-Connecting-IP`, and `real_ip_recursive off` (the shared config
+  previously had no real_ip directives at all). Verified by 11
+  tests in `tests/test_deploy/test_proxy_trust_and_headers.py`
+  including a `runpy`-driven fail-closed assertion and a
+  source-file regression guard against the loose RFC 1918 fallback.
 
 ### F-016: SECRET_KEY has a fallback default in BaseConfig
 
@@ -1132,7 +1149,26 @@ lives in the same database the attacker would be tampering with.
   Cloudflared joins `shekel-frontend` if the WAN path bypasses nginx
   (see F-063), or keep cloudflared on homelab but terminate through
   nginx.
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09).
+  `deploy/docker-compose.prod.yml` removes the app from the
+  `homelab` network and joins it to the dedicated
+  `shekel-frontend` bridge (declared `external: true` with `name:
+  shekel-frontend` and a pinned `172.32.0.0/24` subnet documented
+  in the OPERATOR PRE-FLIGHT block). The override also drops the
+  top-level `homelab` network declaration and repins the app's
+  `FORWARDED_ALLOW_IPS` to the new shared subnet. The runbook
+  (`docs/runbook.md` §2.5) and `deploy/README.md` document the
+  one-time host-side steps to (a) create `shekel-frontend` with
+  `docker network create --subnet 172.32.0.0/24`, (b) attach the
+  shared `/opt/docker/nginx` and `/opt/docker/cloudflared`
+  containers to the new network, and (c) update
+  `/opt/docker/cloudflared/config.yml` to route through `nginx:80`
+  so the WAN path traverses the shared Nginx (see F-063 for that
+  half of the fix). Co-tenants Jellyfin, Immich, and UniFi remain
+  on `homelab` and can no longer reach Gunicorn. Verified by tests
+  in `TestProdComposeNetworkTopology` that parse the override
+  YAML and assert the app's networks list and the top-level
+  network declarations.
 
 ### F-021: Production nginx + override configs are not version-controlled
 
@@ -2897,7 +2933,22 @@ lives in the same database the attacker would be tampering with.
   nginx's HTTPS-redirect send the request back through the
   TLS listener. Closes the parity gap; nginx becomes the
   single chokepoint for all Shekel requests.
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09). `cloudflared/config.yml`
+  is updated with a "WAN-PATH SECURITY INVARIANT" comment block
+  documenting that all public ingress MUST terminate at Nginx, and
+  with an inline shared-mode example showing
+  `service: http://nginx:80` (Docker DNS resolves to the shared
+  nginx attached to `shekel-frontend`). The repo template's
+  bundled-mode rule already pointed at `localhost:80` (in-stack
+  nginx); the audit's WAN bypass evidence
+  `service: http://shekel-prod-app:8000` is now the documented
+  anti-pattern. The actual `/opt/docker/cloudflared/config.yml` on
+  the host must be updated by the operator per the OPERATOR
+  PRE-FLIGHT block in `deploy/docker-compose.prod.yml`; the
+  runbook captures the same step. Verified by
+  `TestCloudflaredTemplate` (asserts the template routes through
+  nginx, documents the shared-mode rule, and includes the WAN
+  chokepoint rationale).
 
 ### F-064: Shared nginx vhost adds no security headers for Shekel
 
@@ -2934,7 +2985,21 @@ lives in the same database the attacker would be tampering with.
   Use `always` so headers are emitted even on error pages.
   Requires F-021 remediation (commit the nginx config to the
   repo).
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09).
+  `deploy/nginx-shared/conf.d/shekel.conf` adds all four
+  `add_header ... always;` directives at server-block scope and
+  re-emits them inside `location /` so a future location-level
+  add_header (e.g. a per-route Cache-Control override) cannot
+  silently drop them through Nginx's non-inheriting add_header
+  semantics. `deploy/nginx-bundled/nginx.conf` gets the same
+  treatment at server scope plus inside `location /static/`
+  alongside the existing `Cache-Control: public, immutable`.
+  Verified by 8 file-content tests (parametrized over the four
+  headers x two contexts) plus a runtime test
+  `TestSharedNginxRuntimeHeaders` that orchestrates a real Nginx
+  + stub upstream on a Docker user-defined network and confirms
+  the headers fire on BOTH a 200 (upstream up) and a 5xx
+  (upstream stopped) -- the case the `always` flag exists for.
 
 ### F-065: No Docker daemon / container runtime audit logging
 
@@ -4848,7 +4913,16 @@ lives in the same database the attacker would be tampering with.
   code is a historical CVE hotspot.
 - **Recommendation:** Same as F-020: isolate Shekel's
   proxy path onto its own docker network.
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09). Closed alongside
+  F-020 by the `shekel-frontend` topology change in
+  `deploy/docker-compose.prod.yml` (and the matching host-side
+  attachment of `/opt/docker/nginx` and `/opt/docker/cloudflared`
+  to the new bridge documented in `docs/runbook.md` §2.5). With
+  the app off the homelab network, a compromised co-tenant
+  (jellyfin, immich, unifi) can no longer pivot to
+  `shekel-prod-app:8000` directly -- the only accessible Shekel
+  endpoint from homelab is the shared Nginx, which enforces TLS,
+  rate limits, header policies, and auth.
 
 ### F-130: SSH config not verified during audit window
 
@@ -5470,7 +5544,18 @@ lives in the same database the attacker would be tampering with.
 - **Impact:** Version disclosure.
 - **Recommendation:** Add `server_tokens off;` to both
   nginx configs (after F-021 version-controls them).
-- **Status:** Open
+- **Status:** Fixed in C-33 (2026-05-09). The shared config at
+  `deploy/nginx-shared/nginx.conf:65` already had
+  `server_tokens off;` (preserved by C-32 from the production
+  snapshot); C-33 adds the matching directive to
+  `deploy/nginx-bundled/nginx.conf` in the http block so the
+  bundled-mode response no longer emits
+  `Server: nginx/1.27.x`. Verified by file-content tests in
+  both `TestBundledNginxSecurityHeaders::test_server_tokens_off`
+  and `TestSharedNginxRealIpAndTokens::test_server_tokens_off`,
+  plus runtime tests that issue real curl requests and assert the
+  `Server` header equals the literal `nginx` (no version) on
+  both 200 and 5xx responses.
 
 ### F-157: No config-drift integrity check
 

@@ -75,23 +75,45 @@ docker compose \
 In shared mode:
 
 * `deploy/docker-compose.prod.yml` joins `shekel-prod-app` to the
-  external `homelab` bridge network and parks the bundled
-  `shekel-prod-nginx` service in the `disabled` profile, so
-  `docker compose up -d` starts only `db`, `redis`, and `app`.
+  external `shekel-frontend` bridge network (NOT the wider `homelab`
+  network) and parks the bundled `shekel-prod-nginx` service in the
+  `disabled` profile, so `docker compose up -d` starts only `db`,
+  `redis`, and `app`.
 * The shared Nginx (managed under `/opt/docker/nginx/` on the host)
-  proxies traffic to `shekel-prod-app:8000` over the `homelab`
-  network, using the vhost in `deploy/nginx-shared/conf.d/shekel.conf`.
+  proxies traffic to `shekel-prod-app:8000` over the `shekel-frontend`
+  bridge, using the vhost in `deploy/nginx-shared/conf.d/shekel.conf`.
+  Co-tenants like Jellyfin, Immich, and UniFi remain on `homelab` and
+  cannot reach the Shekel app directly (audit findings F-020/F-129
+  closed in Commit C-33).
 * `deploy/nginx-shared/nginx.conf` is the main config for the shared
   Nginx. The repo file is the source of truth; the host copy at
   `/opt/docker/nginx/nginx.conf` must match.
 
-The `homelab` network must exist before `docker compose up`:
+The `shekel-frontend` network must exist before `docker compose up`,
+with the subnet pinned so Gunicorn's `FORWARDED_ALLOW_IPS` literal
+matches and Nginx's `set_real_ip_from` directive applies:
 
 ```bash
-docker network ls --filter name=homelab
+docker network ls --filter name=shekel-frontend
 # If missing:
-docker network create homelab
+docker network create shekel-frontend \
+    --driver bridge \
+    --subnet 172.32.0.0/24
 ```
+
+The shared `/opt/docker/nginx` and `/opt/docker/cloudflared` containers
+must also join `shekel-frontend` (in addition to the `homelab` network
+they already use). Edit `/opt/docker/docker-compose.yml` and add the
+service-level `networks:` and the file-level `networks: shekel-frontend:
+external: true` block, then `docker compose up -d nginx cloudflared` to
+recreate them. The detailed step list is in
+`deploy/docker-compose.prod.yml` under "OPERATOR PRE-FLIGHT".
+
+`/opt/docker/cloudflared/config.yml` must also be updated so the Shekel
+ingress rule routes through `http://nginx:80` instead of straight at
+`http://shekel-prod-app:8000` (audit finding F-063 closed in C-33). See
+the bundled-mode `cloudflared/config.yml` template for the example
+shared-mode rule.
 
 ## Sync Procedure (Shared Mode)
 

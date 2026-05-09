@@ -248,8 +248,12 @@ crontab -e
 The maintainer's homelab runs Shekel in **shared mode**: the bundled
 `shekel-prod-nginx` service is parked in the `disabled` profile and a
 separately-managed Nginx at `/opt/docker/nginx/` proxies traffic from
-the `homelab` network to `shekel-prod-app:8000`. The version-controlled
-copies of the runtime configs live under `deploy/`:
+the dedicated `shekel-frontend` Docker bridge to `shekel-prod-app:8000`.
+The Shekel app is NOT on the wider `homelab` network: that network
+hosts unrelated co-tenants (Jellyfin, Immich, UniFi) and would expose
+Gunicorn directly to any of their compromise paths (audit findings
+F-020/F-129 closed in Commit C-33). The version-controlled copies of
+the runtime configs live under `deploy/`:
 
 | Repo path | Runtime path on the host |
 |-----------|--------------------------|
@@ -268,10 +272,26 @@ byte-for-byte; drift between them is a deployment-integrity bug
 cd /opt/shekel
 git checkout dev && git pull --ff-only
 
-# Ensure the external homelab network exists.
-docker network ls --filter name=homelab
+# Ensure the dedicated shekel-frontend network exists.  The subnet
+# is pinned so Gunicorn's FORWARDED_ALLOW_IPS literal and the shared
+# Nginx's set_real_ip_from directive both reference the same CIDR.
+# Audit finding F-015 + F-020 (Commit C-33).
+docker network ls --filter name=shekel-frontend
 # If missing:
-docker network create homelab
+docker network create shekel-frontend \
+    --driver bridge \
+    --subnet 172.32.0.0/24
+
+# Edit /opt/docker/docker-compose.yml so the shared nginx and
+# cloudflared services attach to shekel-frontend in addition to the
+# homelab bridge they already join.  Apply with:
+#   cd /opt/docker && docker compose up -d nginx cloudflared
+
+# Edit /opt/docker/cloudflared/config.yml so the shekel ingress rule
+# points to ``http://nginx:80`` instead of straight at
+# ``http://shekel-prod-app:8000``.  Restart cloudflared after the
+# edit:
+#   cd /opt/docker && docker compose up -d cloudflared
 
 # The runtime override location is /opt/docker/shekel/.  Either:
 #  (a) keep that directory as a thin wrapper that copies the files

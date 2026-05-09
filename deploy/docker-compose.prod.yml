@@ -17,14 +17,72 @@
 #
 # WHAT IT CHANGES
 # ---------------
-# 1. shekel-prod-app joins the external `homelab` bridge network in
-#    addition to `backend`, making it reachable by the shared
-#    /opt/docker/nginx container, the cloudflared tunnel, and any other
-#    homelab service that needs to talk to it.
+# 1. shekel-prod-app joins the dedicated ``shekel-frontend`` bridge
+#    (instead of the shared ``homelab`` network) so the app is reachable
+#    only by the shared /opt/docker/nginx container and the cloudflared
+#    tunnel sidecar -- both attached to ``shekel-frontend`` from
+#    /opt/docker/docker-compose.yml.  This isolates the app from
+#    co-tenants like jellyfin / immich / unifi that still live on the
+#    homelab bridge.  Audit findings F-020, F-129, F-063, Commit C-33.
+#
 # 2. The bundled shekel-prod-nginx service is parked in the "disabled"
-#    profile so `docker compose up` does not start it.  The shared
+#    profile so ``docker compose up`` does not start it.  The shared
 #    /opt/docker/nginx container (defined in /opt/docker/docker-compose.yml)
 #    is the only Nginx in this deployment.
+#
+# 3. Gunicorn's FORWARDED_ALLOW_IPS is repinned from the bundled
+#    default (the ``backend`` bridge) to the ``shekel-frontend`` bridge
+#    that actually carries the proxy hop in shared mode.
+#    See the gunicorn.conf.py block-comment for the full rationale.
+#
+# OPERATOR PRE-FLIGHT (one-time, when first switching to shared mode)
+# -------------------------------------------------------------------
+# 1. Create the shekel-frontend network on the host with a pinned subnet:
+#
+#        docker network create shekel-frontend \
+#            --driver bridge \
+#            --subnet 172.32.0.0/24
+#
+#    The subnet matches FORWARDED_ALLOW_IPS below and the
+#    ``set_real_ip_from`` directive in deploy/nginx-shared/nginx.conf.
+#
+# 2. Edit /opt/docker/docker-compose.yml so the ``nginx`` and
+#    ``cloudflared`` services join shekel-frontend in addition to the
+#    homelab network they already use:
+#
+#        services:
+#          nginx:
+#            networks:
+#              - homelab
+#              - shekel-frontend
+#          cloudflared:
+#            networks:
+#              - homelab
+#              - shekel-frontend
+#        networks:
+#          shekel-frontend:
+#            external: true
+#
+#    Recreate the affected containers:
+#
+#        cd /opt/docker
+#        docker compose up -d nginx cloudflared
+#
+# 3. Update /opt/docker/cloudflared/config.yml so the shekel ingress
+#    rule points to the shared Nginx instead of straight at gunicorn:
+#
+#        - hostname: shekel.saltyreformed.com
+#          service: http://nginx:80
+#
+#    Restart cloudflared:
+#
+#        cd /opt/docker
+#        docker compose up -d cloudflared
+#
+# Without these three steps the WAN path will 404 and Gunicorn will
+# refuse start (FORWARDED_ALLOW_IPS without a matching reverse-proxy
+# source = no trusted forwarded headers).  See docs/runbook.md "Shared-
+# mode deployment" for the rollback procedure.
 #
 # USAGE
 # -----
@@ -46,13 +104,37 @@
 
 services:
   app:
+    environment:
+      # Shared mode: the in-stack ``backend`` bridge no longer carries
+      # the reverse-proxy hop -- the shared /opt/docker/nginx talks to
+      # the app over ``shekel-frontend``.  Override the bundled-mode
+      # default with the shared subnet so Gunicorn keeps refusing
+      # X-Forwarded-* from any source other than the shared nginx /
+      # cloudflared sidecar.  Audit finding F-015, Commit C-33.
+      FORWARDED_ALLOW_IPS: 172.32.0.0/24
     networks:
       - backend
-      - homelab
+      - shekel-frontend
 
   nginx:
     profiles: ["disabled"]
 
 networks:
-  homelab:
+  # External pre-existing bridge that hosts the shared /opt/docker/nginx
+  # container, the cloudflared tunnel sidecar, and the shekel app.
+  # Nothing else -- co-tenants like jellyfin/immich/unifi stay on the
+  # homelab bridge.  Audit findings F-020, F-129, Commit C-33.
+  #
+  # The operator must create this network manually before the first
+  # ``docker compose up`` (see "OPERATOR PRE-FLIGHT" above):
+  #
+  #     docker network create shekel-frontend \
+  #         --driver bridge \
+  #         --subnet 172.32.0.0/24
+  #
+  # ``external: true`` declares that compose does NOT manage the
+  # network; ``name: shekel-frontend`` strips the project prefix so it
+  # matches the literal name the host-level compose attaches to.
+  shekel-frontend:
     external: true
+    name: shekel-frontend

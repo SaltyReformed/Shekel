@@ -122,9 +122,17 @@ class TestDeployFilesExist:
 
     def test_prod_compose_override_disables_bundled_nginx(self) -> None:
         """deploy/docker-compose.prod.yml must park the bundled nginx
-        service in the disabled profile and join app to the homelab
-        network.  These two changes are the load-bearing differences
-        between bundled and shared mode.
+        service in the disabled profile and join app to the dedicated
+        ``shekel-frontend`` bridge.  These two changes are the
+        load-bearing differences between bundled and shared mode.
+
+        Note: prior to Commit C-33 the override joined the app to the
+        wider ``homelab`` network; F-020/F-129 mandated moving Shekel
+        onto its own bridge so co-tenants (jellyfin, immich, unifi)
+        could no longer reach Gunicorn directly.  See
+        tests/test_deploy/test_proxy_trust_and_headers.py
+        TestProdComposeNetworkTopology for the topology assertions in
+        full.
         """
         assert PROD_COMPOSE_OVERRIDE.is_file(), (
             f"prod compose override missing at {PROD_COMPOSE_OVERRIDE}; "
@@ -132,7 +140,7 @@ class TestDeployFilesExist:
         )
         text = PROD_COMPOSE_OVERRIDE.read_text(encoding="utf-8")
         assert 'profiles: ["disabled"]' in text
-        assert "homelab:" in text
+        assert "shekel-frontend:" in text
         assert "external: true" in text
 
     def test_deploy_readme_exists(self) -> None:
@@ -293,9 +301,22 @@ class TestDeployComposeParses:
         # took effect.  Match the YAML-indented service header so a
         # stray "nginx" string elsewhere in the merged output (e.g.
         # an environment variable value) does not produce a false pass.
-        assert "homelab" in merged, (
-            "merged compose missing homelab network reference; "
-            "shared-mode app routing would not work"
+        #
+        # ``shekel-frontend`` is the dedicated bridge introduced by
+        # Commit C-33 to replace the wider ``homelab`` network the
+        # earlier override joined (audit findings F-020/F-129).  The
+        # merged compose must declare it as an external network so
+        # the operator's ``docker network create shekel-frontend``
+        # is the source of truth.
+        assert "shekel-frontend" in merged, (
+            "merged compose missing shekel-frontend network reference; "
+            "shared-mode app routing would not work after the C-33 "
+            "topology change"
+        )
+        assert "homelab" not in merged, (
+            "merged compose still references the homelab network; "
+            "C-33 (F-020/F-129) regression -- the app must NOT join "
+            "the shared homelab bridge"
         )
         assert "\n  nginx:" not in merged, (
             "merged compose still defines a top-level nginx service; "
