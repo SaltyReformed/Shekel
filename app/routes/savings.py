@@ -8,10 +8,10 @@ and deleting savings goals.
 
 import logging
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -164,10 +164,9 @@ def create_goal():
 @require_owner
 def edit_goal(goal_id):
     """Display the savings goal edit form."""
-    goal = db.session.get(SavingsGoal, goal_id)
-    if goal is None or goal.user_id != current_user.id:
-        flash("Goal not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    goal = get_or_404(SavingsGoal, goal_id)
+    if goal is None:
+        abort(404)
 
     return render_template(
         "savings/goal_form.html", **_goal_form_context(goal),
@@ -188,10 +187,9 @@ def update_goal(goal_id):
     e.g. by a concurrent edit that races past the form-side check
     -- is caught and converted to the same flash + redirect.
     """
-    goal = db.session.get(SavingsGoal, goal_id)
-    if goal is None or goal.user_id != current_user.id:
-        flash("Goal not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    goal = get_or_404(SavingsGoal, goal_id)
+    if goal is None:
+        abort(404)
 
     cleaned = _clean_goal_form_data(request.form)
     errors = _update_schema.validate(cleaned)
@@ -266,10 +264,9 @@ def delete_goal(goal_id):
     A concurrent edit raises ``StaleDataError`` which the handler
     converts into a flash + redirect.
     """
-    goal = db.session.get(SavingsGoal, goal_id)
-    if goal is None or goal.user_id != current_user.id:
-        flash("Goal not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    goal = get_or_404(SavingsGoal, goal_id)
+    if goal is None:
+        abort(404)
 
     goal.is_active = False
     try:

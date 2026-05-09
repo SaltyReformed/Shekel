@@ -8,11 +8,11 @@ Updating a template triggers recurrence regeneration.
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from markupsafe import Markup
 
 from app.extensions import db
@@ -261,10 +261,9 @@ def create_template():
 @require_owner
 def edit_template(template_id):
     """Display the template edit form."""
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     categories = (
         db.session.query(Category)
@@ -308,10 +307,9 @@ def update_template(template_id):
     e.g. by a concurrent edit that races past the form-side check
     -- is caught and converted to the same flash + redirect.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -475,10 +473,9 @@ def archive_template(template_id):
     converts to a flash + redirect so the user retries against
     fresh state.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = False
 
@@ -520,10 +517,9 @@ def unarchive_template(template_id):
 
     Optimistic locking: see :func:`archive_template`.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = True
 
@@ -590,10 +586,9 @@ def hard_delete_template(template_id):
     template first would orphan transaction rows with NULL template_id
     instead of removing them cleanly.
     """
-    template = db.session.get(TransactionTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transaction not found.", "danger")
-        return redirect(url_for("templates.list_templates"))
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
 
     if archive_helpers.template_has_paid_history(template.id):
         flash(

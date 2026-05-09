@@ -461,7 +461,7 @@ class TestTemplateUpdate:
     def test_update_other_users_template_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /transfers/<id> for another user's template redirects."""
+        """POST /transfers/<id> for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -471,13 +471,12 @@ class TestTemplateUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Recurring transfer not found." in response.data
+            assert response.status_code == 404
 
     def test_archive_other_users_template_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /transfers/<id>/archive for another user's template redirects."""
+        """POST /transfers/<id>/archive for another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
 
@@ -486,8 +485,7 @@ class TestTemplateUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Recurring transfer not found." in response.data
+            assert response.status_code == 404
 
 
 # ── Grid Cell Routes ───────────────────────────────────────────────
@@ -1912,7 +1910,7 @@ class TestTransferTemplateHardDelete:
     def test_hard_delete_transfer_template_idor(
         self, app, auth_client, seed_user,
     ):
-        """C-5A.5-20: Hard-deleting another user's template returns 'not found'."""
+        """C-5A.5-20: Hard-deleting another user's template returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_template()
             other_id = other["template"].id
@@ -1921,8 +1919,7 @@ class TestTransferTemplateHardDelete:
                 f"/transfers/{other_id}/hard-delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"not found" in resp.data
+            assert resp.status_code == 404
 
             # Other user's template still exists.
             assert db.session.get(TransferTemplate, other_id) is not None

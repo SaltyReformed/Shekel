@@ -8,12 +8,12 @@ Returns HTMX fragments for inline editing at the top of the grid.
 import logging
 from decimal import Decimal
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from app.utils.db_errors import is_unique_violation
 
 from app import ref_cache
@@ -384,10 +384,9 @@ def create_account():
 @require_owner
 def edit_account(account_id):
     """Display the account edit form."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     return render_template(
         "accounts/form.html",
@@ -429,10 +428,9 @@ def update_account(account_id):
          close every interleaving the optimistic-lock contract is
          meant to cover.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     # Validation phase.  Delegates to a helper that returns either
     # ``(data, None)`` (proceed) or ``({}, (message, category))``
@@ -514,10 +512,9 @@ def archive_account(account_id):
     it into a flash + redirect so the user can retry against the
     fresh row state instead of seeing a 500.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     # Guard: prevent archiving if active transfer templates reference this account.
     from app.models.transfer_template import TransferTemplate
@@ -569,10 +566,9 @@ def unarchive_account(account_id):
 
     See :func:`archive_account` for the optimistic-lock contract.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     account.is_active = True
     try:
@@ -623,10 +619,9 @@ def hard_delete_account(account_id):
       InvestmentParams, AccountAnchorHistory, SavingsGoal, LoanFeatures)
       are auto-deleted by PostgreSQL when the account row is removed.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     # Guard 2: transfer templates with RESTRICT FK.
     from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
@@ -962,8 +957,7 @@ def update_account_type(type_id):
     """
     account_type = _owned_account_type(type_id, current_user.id)
     if account_type is None:
-        flash("Account type not found.", "danger")
-        return redirect(url_for("settings.show", section="account-types"))
+        abort(404)
 
     errors = _type_update_schema.validate(request.form)
     if errors:
@@ -1028,8 +1022,7 @@ def delete_account_type(type_id):
     """
     account_type = _owned_account_type(type_id, current_user.id)
     if account_type is None:
-        flash("Account type not found.", "danger")
-        return redirect(url_for("settings.show", section="account-types"))
+        abort(404)
 
     in_use = (
         db.session.query(Account)
@@ -1242,9 +1235,9 @@ def anchor_display(account_id):
 @require_owner
 def interest_detail(account_id):
     """Interest-bearing account detail page with interest projections."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     # Verify this is an interest-bearing account type.
     if not account.account_type or not account.account_type.has_interest:
@@ -1344,10 +1337,9 @@ def interest_detail(account_id):
 @require_owner
 def update_interest_params(account_id):
     """Update interest parameters (APY, compounding frequency)."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("accounts.list_accounts"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     if not account.account_type or not account.account_type.has_interest:
         flash("This account type does not support interest parameters.", "warning")

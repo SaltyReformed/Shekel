@@ -332,11 +332,7 @@ class TestPensionCRUD:
         db.session.commit()
 
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/retirement" in location, (
-            f"IDOR redirect went to {location}, expected /retirement"
-        )
+        assert resp.status_code == 404
         assert b"Other Pension" not in resp.data, (
             "IDOR response leaked victim's pension name"
         )
@@ -362,11 +358,7 @@ class TestPensionCRUD:
         orig_active = pension.is_active
 
         resp = auth_client.post(f"/retirement/pension/{pension.id}/delete")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/retirement" in location, (
-            f"IDOR redirect went to {location}, expected /retirement"
-        )
+        assert resp.status_code == 404
 
         db.session.expire_all()
         after = db.session.get(PensionProfile, pension.id)
@@ -810,36 +802,27 @@ class TestRetirementNegativePaths:
     def test_edit_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """GET edit for nonexistent pension redirects with flash."""
+        """GET edit for nonexistent pension returns 404 (security)."""
         resp = auth_client.get("/retirement/pension/999999/edit")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_update_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """POST update for nonexistent pension redirects with flash."""
+        """POST update for nonexistent pension returns 404 (security)."""
         resp = auth_client.post("/retirement/pension/999999", data={
             "name": "Ghost",
             "benefit_multiplier": "2.0",
             "hire_date": "2020-01-01",
         })
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_delete_nonexistent_pension(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """POST delete for nonexistent pension redirects with flash."""
+        """POST delete for nonexistent pension returns 404 (security)."""
         resp = auth_client.post("/retirement/pension/999999/delete")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Pension profile not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_edit_pension_idor_no_data_leaked(
         self, auth_client, second_user, db, seed_periods_today,
@@ -856,7 +839,7 @@ class TestRetirementNegativePaths:
         db.session.commit()
 
         resp = auth_client.get(f"/retirement/pension/{pension.id}/edit")
-        assert resp.status_code == 302
+        assert resp.status_code == 404
         assert b"Secret Pension" not in resp.data
         assert b"0.02500" not in resp.data
 

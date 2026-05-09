@@ -1015,23 +1015,18 @@ class TestAuthEdgeCases:
     def test_access_other_users_account(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to edit User B's account → must get redirect/flash.
+        """User A tries to edit User B's account -- must get 404 (security).
 
-        Account routes check user_id == current_user.id and redirect with
-        a flash warning when the account doesn't belong to the current user.
+        Account routes check user_id == current_user.id and return 404
+        when the account doesn't belong to the current user (security
+        rule: 404 for both not-found and not-yours).
         Uses the shared second_user fixture from conftest.py.
         """
         with app.app_context():
             # Auth client is logged in as user 1 -- try to edit user 2's account.
             resp = auth_client.get(f"/accounts/{second_user['account'].id}/edit")
-            # Current behavior: redirect to accounts list with flash.
-            assert resp.status_code == 302
-            assert "/accounts" in resp.headers.get("Location", "")
+            assert resp.status_code == 404
             assert b"Other Checking" not in resp.data
-
-            # Follow redirect to verify the flash warning message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"not found" in follow.data.lower()
 
             # Verify DB state unchanged after IDOR attempt.
             acct2 = db.session.get(Account, second_user["account"].id)
@@ -1169,11 +1164,7 @@ class TestCrossResourceIDOR:
 
             # Auth client (user 1) tries to access user 2's salary profile.
             resp = auth_client.get(f"/salary/{profile_id}/edit")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Salary profile not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify profile is unchanged in DB.
             db.session.refresh(profile)
@@ -1183,21 +1174,17 @@ class TestCrossResourceIDOR:
     def test_delete_other_users_category(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to DELETE User B's category → rejected.
+        """User A tries to DELETE User B's category -- rejected.
 
-        The categories route checks user_id ownership and redirects
-        with a flash warning.
+        The categories route checks user_id ownership and returns 404
+        (security: 404 for not-found and not-yours).
         """
         with app.app_context():
             cat = second_user["categories"]["Rent"]
             cat_id = cat.id
 
             resp = auth_client.post(f"/categories/{cat_id}/delete")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Category not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify category still exists.
             cat_after = db.session.get(Category, cat_id)
@@ -1206,10 +1193,10 @@ class TestCrossResourceIDOR:
     def test_delete_other_users_transfer_template(
         self, app, auth_client, seed_user, seed_periods, second_user,
     ):
-        """User A tries to DELETE User B's transfer template → rejected.
+        """User A tries to DELETE User B's transfer template -- rejected.
 
-        The transfers route checks user_id ownership and redirects
-        with a flash warning.
+        The transfers route checks user_id ownership and returns 404
+        (security: 404 for not-found and not-yours).
         """
         with app.app_context():
             # Create a savings account and transfer template for second user.
@@ -1238,11 +1225,7 @@ class TestCrossResourceIDOR:
 
             # Auth client (user 1) tries to archive user 2's template.
             resp = auth_client.post(f"/transfers/{template2_id}/archive")
-            assert resp.status_code == 302
-
-            # Follow redirect to verify flash message.
-            follow = auth_client.get(resp.headers["Location"])
-            assert b"Recurring transfer not found" in follow.data
+            assert resp.status_code == 404
 
             # Verify template still exists and is active.
             db.session.refresh(template2)

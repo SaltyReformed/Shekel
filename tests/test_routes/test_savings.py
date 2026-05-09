@@ -666,7 +666,7 @@ class TestGoalUpdate:
             assert b"Please correct the highlighted errors" in resp.data
 
     def test_edit_goal_idor(self, app, auth_client, seed_user):
-        """GET /savings/goals/<id>/edit for another user's goal redirects."""
+        """GET /savings/goals/<id>/edit for another user's goal returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_goal()
 
@@ -674,11 +674,10 @@ class TestGoalUpdate:
                 f"/savings/goals/{other['goal'].id}/edit",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Goal not found" in resp.data
+            assert resp.status_code == 404
 
     def test_update_goal_idor(self, app, auth_client, seed_user):
-        """POST /savings/goals/<id> for another user's goal redirects."""
+        """POST /savings/goals/<id> for another user's goal returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_goal()
 
@@ -687,8 +686,7 @@ class TestGoalUpdate:
                 data={"name": "Hijacked"},
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Goal not found" in resp.data
+            assert resp.status_code == 404
 
             # Verify original goal unchanged.
             db.session.refresh(other["goal"])
@@ -718,7 +716,7 @@ class TestGoalDelete:
             assert goal.is_active is False
 
     def test_delete_goal_idor(self, app, auth_client, seed_user):
-        """POST /savings/goals/<id>/delete for another user's goal redirects."""
+        """POST /savings/goals/<id>/delete for another user's goal returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_with_goal()
 
@@ -726,22 +724,20 @@ class TestGoalDelete:
                 f"/savings/goals/{other['goal'].id}/delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Goal not found" in resp.data
+            assert resp.status_code == 404
 
             # Verify goal still active.
             db.session.refresh(other["goal"])
             assert other["goal"].is_active is True
 
     def test_delete_nonexistent_goal(self, app, auth_client, seed_user):
-        """POST /savings/goals/999999/delete for missing goal redirects."""
+        """POST /savings/goals/999999/delete for missing goal returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/savings/goals/999999/delete",
                 follow_redirects=True,
             )
-            assert resp.status_code == 200
-            assert b"Goal not found" in resp.data
+            assert resp.status_code == 404
 
 
 # ── Double Submit / Unique Constraint ────────────────────────────────
@@ -847,35 +843,32 @@ class TestSavingsNegativePaths:
     """Negative-path tests: nonexistent IDs, IDOR, deactivated accounts, validation."""
 
     def test_edit_nonexistent_goal(self, app, auth_client, seed_user):
-        """GET /savings/goals/999999/edit for a nonexistent goal redirects with flash."""
+        """GET /savings/goals/999999/edit for a nonexistent goal returns 404 (security)."""
         with app.app_context():
             resp = auth_client.get(
                 "/savings/goals/999999/edit", follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Goal not found." in resp.data
+            assert resp.status_code == 404
 
     def test_update_nonexistent_goal(self, app, auth_client, seed_user):
-        """POST /savings/goals/999999 for a nonexistent goal redirects with flash."""
+        """POST /savings/goals/999999 for a nonexistent goal returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post("/savings/goals/999999", data={
                 "name": "Ghost Goal",
                 "target_amount": "5000.00",
             }, follow_redirects=True)
 
-            assert resp.status_code == 200
-            assert b"Goal not found." in resp.data
+            assert resp.status_code == 404
 
     def test_delete_nonexistent_goal(self, app, auth_client, seed_user):
-        """POST /savings/goals/999999/delete for a nonexistent goal redirects with flash."""
+        """POST /savings/goals/999999/delete for a nonexistent goal returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/savings/goals/999999/delete", follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Goal not found." in resp.data
+            assert resp.status_code == 404
 
     def test_create_goal_on_deactivated_account(self, app, auth_client, seed_user):
         """POST /savings/goals with account_id of a deactivated account is rejected."""
@@ -952,8 +945,7 @@ class TestSavingsNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Goal not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify goal still exists and is active.
             db.session.expire_all()
@@ -1830,7 +1822,7 @@ class TestSavingsGoalRegression:
 
             # User A tries to access User B's goal edit form.
             resp = auth_client.get(f"/savings/goals/{other_goal.id}/edit")
-            assert resp.status_code == 302
+            assert resp.status_code == 404
 
             # User A tries to update User B's goal.
             resp = auth_client.post(f"/savings/goals/{other_goal.id}", data={
@@ -1838,7 +1830,7 @@ class TestSavingsGoalRegression:
                 "target_amount": "1.00",
                 "account_id": str(other_acct.id),
             })
-            assert resp.status_code == 302
+            assert resp.status_code == 404
 
             # Goal must be unchanged.
             db.session.refresh(other_goal)

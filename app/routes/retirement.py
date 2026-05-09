@@ -9,11 +9,11 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.db_errors import is_unique_violation
 
 from app.extensions import db
@@ -163,10 +163,9 @@ def create_pension():
 @require_owner
 def edit_pension(pension_id):
     """Display pension profile edit form."""
-    pension = db.session.get(PensionProfile, pension_id)
-    if pension is None or pension.user_id != current_user.id:
-        flash("Pension profile not found.", "danger")
-        return redirect(url_for("retirement.dashboard"))
+    pension = get_or_404(PensionProfile, pension_id)
+    if pension is None:
+        abort(404)
 
     salary_profiles = (
         db.session.query(SalaryProfile)
@@ -186,10 +185,9 @@ def edit_pension(pension_id):
 @require_owner
 def update_pension(pension_id):
     """Update a pension profile."""
-    pension = db.session.get(PensionProfile, pension_id)
-    if pension is None or pension.user_id != current_user.id:
-        flash("Pension profile not found.", "danger")
-        return redirect(url_for("retirement.dashboard"))
+    pension = get_or_404(PensionProfile, pension_id)
+    if pension is None:
+        abort(404)
 
     # Context needed for error re-render (same as edit_pension GET).
     salary_profiles = (
@@ -286,10 +284,9 @@ def update_pension(pension_id):
 @require_owner
 def delete_pension(pension_id):
     """Deactivate a pension profile."""
-    pension = db.session.get(PensionProfile, pension_id)
-    if pension is None or pension.user_id != current_user.id:
-        flash("Pension profile not found.", "danger")
-        return redirect(url_for("retirement.dashboard"))
+    pension = get_or_404(PensionProfile, pension_id)
+    if pension is None:
+        abort(404)
 
     pension.is_active = False
     db.session.commit()

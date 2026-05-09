@@ -187,7 +187,7 @@ class TestAccountUpdate:
             assert b"An account with that name already exists." in response.data
 
     def test_edit_other_users_account_redirects(self, app, auth_client, seed_user):
-        """GET /accounts/<id>/edit for another user's account redirects with flash."""
+        """GET /accounts/<id>/edit for another user's account returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_account()
 
@@ -196,11 +196,10 @@ class TestAccountUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Account not found." in response.data
+            assert response.status_code == 404
 
     def test_update_other_users_account_redirects(self, app, auth_client, seed_user):
-        """POST /accounts/<id> for another user's account redirects with flash."""
+        """POST /accounts/<id> for another user's account returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_account()
 
@@ -210,8 +209,7 @@ class TestAccountUpdate:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Account not found." in response.data
+            assert response.status_code == 404
 
             # Verify name was not changed.
             acct = db.session.get(Account, other["account"].id)
@@ -301,7 +299,7 @@ class TestAccountArchive:
     def test_archive_other_users_account_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /accounts/<id>/archive for another user's account redirects."""
+        """POST /accounts/<id>/archive for another user's account returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_account()
 
@@ -310,8 +308,7 @@ class TestAccountArchive:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Account not found." in response.data
+            assert response.status_code == 404
 
             # Other user's account should still be active.
             acct = db.session.get(Account, other["account"].id)
@@ -1322,15 +1319,14 @@ class TestAccountNegativePaths:
     """Negative-path tests: nonexistent IDs, IDOR, idempotent ops, validation, XSS."""
 
     def test_edit_nonexistent_account(self, app, auth_client, seed_user):
-        """GET /accounts/999999/edit for a nonexistent account redirects with flash."""
+        """GET /accounts/999999/edit for a nonexistent account returns 404 (security)."""
         with app.app_context():
             resp = auth_client.get("/accounts/999999/edit", follow_redirects=True)
 
-            assert resp.status_code == 200
-            assert b"Account not found." in resp.data
+            assert resp.status_code == 404
 
     def test_update_nonexistent_account(self, app, auth_client, seed_user):
-        """POST /accounts/999999 for a nonexistent account redirects with flash."""
+        """POST /accounts/999999 for a nonexistent account returns 404 (security)."""
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
 
@@ -1339,23 +1335,21 @@ class TestAccountNegativePaths:
                 "account_type_id": checking_type.id,
             }, follow_redirects=True)
 
-            assert resp.status_code == 200
-            assert b"Account not found." in resp.data
+            assert resp.status_code == 404
 
     def test_archive_nonexistent_account(self, app, auth_client, seed_user):
-        """POST /accounts/999999/archive for a nonexistent account redirects with flash."""
+        """POST /accounts/999999/archive for a nonexistent account returns 404 (security)."""
         with app.app_context():
             resp = auth_client.post(
                 "/accounts/999999/archive", follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Account not found." in resp.data
+            assert resp.status_code == 404
 
     def test_unarchive_other_users_account_idor(
         self, app, auth_client, seed_user, second_user
     ):
-        """POST /accounts/<id>/unarchive for another user's archived account is blocked."""
+        """POST /accounts/<id>/unarchive for another user's archived account returns 404 (security)."""
         with app.app_context():
             # Re-query to ensure the object is in the current session.
             acct_id = second_user["account"].id
@@ -1368,8 +1362,7 @@ class TestAccountNegativePaths:
                 follow_redirects=True,
             )
 
-            assert resp.status_code == 200
-            assert b"Account not found." in resp.data
+            assert resp.status_code == 404
 
             # Verify DB state unchanged: account still inactive.
             db.session.expire_all()
@@ -3310,13 +3303,13 @@ class TestAccountTypeMultiTenantOwnership:
     def test_owner_b_cannot_rename_owner_a_custom_type(
         self, app, db, seed_user, second_user,
     ):
-        """A cross-owner rename returns the same flash as a missing row.
+        """A cross-owner rename returns 404, identical to a missing row.
 
         Owner A creates a custom type; Owner B (logged in via a
         fresh test_client) attempts to rename it via the route.
-        The 404-equivalent response is identical to attempting to
-        rename a non-existent type so Owner B cannot use the
-        response to discover the existence of Owner A's catalogue.
+        The 404 response is identical to attempting to rename a
+        non-existent type so Owner B cannot use the response to
+        discover the existence of Owner A's catalogue.
         """
         with app.app_context():
             owner_a_type = AccountType(
@@ -3337,15 +3330,14 @@ class TestAccountTypeMultiTenantOwnership:
             follow_redirects=True,
         )
 
-        assert response.status_code == 200
-        assert b"Account type not found." in response.data
+        assert response.status_code == 404
         # Same response shape as a non-existent ID -- no leak.
         ghost_response = owner_b_client.post(
             "/accounts/types/9999999",
             data={"name": "Hijacked"},
             follow_redirects=True,
         )
-        assert b"Account type not found." in ghost_response.data
+        assert ghost_response.status_code == 404
 
         # The original row is unchanged.
         with app.app_context():
@@ -3380,8 +3372,7 @@ class TestAccountTypeMultiTenantOwnership:
             follow_redirects=True,
         )
 
-        assert response.status_code == 200
-        assert b"Account type not found." in response.data
+        assert response.status_code == 404
 
         with app.app_context():
             assert db.session.get(AccountType, type_id) is not None
@@ -3393,8 +3384,8 @@ class TestAccountTypeMultiTenantOwnership:
 
         The route's ownership guard treats the seed-time NULL the
         same as another user's ID: ``account_type.user_id !=
-        current_user.id`` is True for both.  The flash is the same
-        404-equivalent message and the row's name does not change.
+        current_user.id`` is True for both.  The route returns 404
+        and the row's name does not change.
         """
         with app.app_context():
             checking = (
@@ -3409,8 +3400,7 @@ class TestAccountTypeMultiTenantOwnership:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Account type not found." in response.data
+            assert response.status_code == 404
 
             db.session.expire(checking)
             db.session.refresh(checking)
@@ -3440,8 +3430,7 @@ class TestAccountTypeMultiTenantOwnership:
                 follow_redirects=True,
             )
 
-            assert response.status_code == 200
-            assert b"Account type not found." in response.data
+            assert response.status_code == 404
 
             assert db.session.get(AccountType, checking.id) is not None
 

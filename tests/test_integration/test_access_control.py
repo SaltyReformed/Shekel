@@ -25,19 +25,57 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 
 
-def _assert_blocked(response, msg=""):
-    """Assert that a response indicates the request was blocked.
+def _assert_not_found(response, msg=""):
+    """Assert a strict 404 response from a cross-user IDOR probe.
 
-    Ownership checks return either 302 (redirect with flash) or
-    404 (direct not-found). A 200 means the attacker got access.
+    After commit C-31 (F-087 / F-084), every owner-scoped route
+    rejects cross-user access with HTTP 404 -- the ``get_or_404``
+    /``get_owned_via_parent`` helpers in
+    :mod:`app.utils.auth_helpers` collapse "not found" and
+    "not yours" into the same response per the project security
+    rule.  This helper enforces the contract strictly: a 302
+    redirect (the legacy flash + redirect pattern) is treated as
+    a regression because the looser response leaks resource
+    existence to the attacker.
+
+    Use :func:`_assert_redirected_to_login` for routes guarded
+    only by ``@login_required`` (no ownership check) where an
+    unauthenticated probe legitimately returns a login redirect.
 
     Args:
         response: The Flask test client response.
         msg: Optional context message for the assertion.
     """
-    assert response.status_code in (302, 404), (
-        f"Expected 302 or 404 but got {response.status_code}. "
+    assert response.status_code == 404, (
+        f"Expected 404 but got {response.status_code}. "
         f"User B may have accessed User A's resource. {msg}"
+    )
+
+
+def _assert_redirected_to_login(response, msg=""):
+    """Assert a 302 redirect to the login page.
+
+    Used for routes guarded only by ``@login_required`` -- the
+    Flask-Login extension responds to unauthenticated requests
+    with a 302 to the configured login view regardless of whether
+    the resource exists or who owns it.  Cross-user (authenticated)
+    probes against owner-scoped routes must use
+    :func:`_assert_not_found` instead.
+
+    The location header is verified to point at ``/login`` so a
+    misconfigured redirect (for example, to the dashboard or a
+    third-party site) cannot pass this check silently.
+
+    Args:
+        response: The Flask test client response.
+        msg: Optional context message for the assertion.
+    """
+    assert response.status_code == 302, (
+        f"Expected 302 but got {response.status_code}. {msg}"
+    )
+    location = response.headers.get("Location", "")
+    assert "/login" in location, (
+        f"Expected redirect to /login but got {location!r}. {msg}"
     )
 
 
@@ -56,7 +94,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/edit"
             )
-            _assert_blocked(response, "GET /accounts/<id>/edit")
+            _assert_not_found(response, "GET /accounts/<id>/edit")
 
     def test_update_account_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -68,7 +106,7 @@ class TestAccountAccessControl:
                 f"/accounts/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(response, "POST /accounts/<id>")
+            _assert_not_found(response, "POST /accounts/<id>")
 
     def test_archive_account_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -79,7 +117,7 @@ class TestAccountAccessControl:
             response = second_auth_client.post(
                 f"/accounts/{target_id}/archive"
             )
-            _assert_blocked(response, "POST /accounts/<id>/archive")
+            _assert_not_found(response, "POST /accounts/<id>/archive")
 
     def test_unarchive_account_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -90,7 +128,7 @@ class TestAccountAccessControl:
             response = second_auth_client.post(
                 f"/accounts/{target_id}/unarchive"
             )
-            _assert_blocked(response, "POST /accounts/<id>/unarchive")
+            _assert_not_found(response, "POST /accounts/<id>/unarchive")
 
     def test_inline_anchor_update_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -102,7 +140,7 @@ class TestAccountAccessControl:
                 f"/accounts/{target_id}/inline-anchor",
                 data={"anchor_balance": "99999.99"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "PATCH /accounts/<id>/inline-anchor",
             )
 
@@ -115,7 +153,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/inline-anchor-form"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /accounts/<id>/inline-anchor-form",
             )
 
@@ -128,7 +166,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/inline-anchor-display"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "GET /accounts/<id>/inline-anchor-display",
             )
@@ -143,7 +181,7 @@ class TestAccountAccessControl:
                 f"/accounts/{target_id}/true-up",
                 data={"anchor_balance": "99999.99"},
             )
-            _assert_blocked(response, "PATCH /accounts/<id>/true-up")
+            _assert_not_found(response, "PATCH /accounts/<id>/true-up")
 
     def test_anchor_form_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -154,7 +192,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/anchor-form"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /accounts/<id>/anchor-form",
             )
 
@@ -167,7 +205,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/anchor-display"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /accounts/<id>/anchor-display",
             )
 
@@ -180,7 +218,7 @@ class TestAccountAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/interest"
             )
-            _assert_blocked(response, "GET /accounts/<id>/interest")
+            _assert_not_found(response, "GET /accounts/<id>/interest")
 
     def test_update_hysa_params_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -195,7 +233,7 @@ class TestAccountAccessControl:
                     "compounding_frequency": "daily",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /accounts/<id>/interest/params",
             )
 
@@ -215,7 +253,7 @@ class TestTemplateAccessControl:
             response = second_auth_client.get(
                 f"/templates/{target_id}/edit"
             )
-            _assert_blocked(response, "GET /templates/<id>/edit")
+            _assert_not_found(response, "GET /templates/<id>/edit")
 
     def test_update_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -227,7 +265,7 @@ class TestTemplateAccessControl:
                 f"/templates/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(response, "POST /templates/<id>")
+            _assert_not_found(response, "POST /templates/<id>")
 
     def test_archive_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -238,7 +276,7 @@ class TestTemplateAccessControl:
             response = second_auth_client.post(
                 f"/templates/{target_id}/archive"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /templates/<id>/archive",
             )
 
@@ -251,7 +289,7 @@ class TestTemplateAccessControl:
             response = second_auth_client.post(
                 f"/templates/{target_id}/unarchive"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /templates/<id>/unarchive",
             )
 
@@ -271,7 +309,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.get(
                 f"/transactions/{target_id}/cell"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /transactions/<id>/cell",
             )
 
@@ -284,7 +322,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.get(
                 f"/transactions/{target_id}/quick-edit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /transactions/<id>/quick-edit",
             )
 
@@ -297,7 +335,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.get(
                 f"/transactions/{target_id}/full-edit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /transactions/<id>/full-edit",
             )
 
@@ -311,7 +349,7 @@ class TestTransactionAccessControl:
                 f"/transactions/{target_id}",
                 data={"estimated_amount": "999.99"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "PATCH /transactions/<id>",
             )
 
@@ -324,7 +362,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.post(
                 f"/transactions/{target_id}/mark-done"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transactions/<id>/mark-done",
             )
 
@@ -337,7 +375,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.post(
                 f"/transactions/{target_id}/mark-credit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transactions/<id>/mark-credit",
             )
 
@@ -350,7 +388,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.delete(
                 f"/transactions/{target_id}/unmark-credit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "DELETE /transactions/<id>/unmark-credit",
             )
@@ -364,7 +402,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.post(
                 f"/transactions/{target_id}/cancel"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transactions/<id>/cancel",
             )
 
@@ -377,7 +415,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.delete(
                 f"/transactions/{target_id}"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "DELETE /transactions/<id>",
             )
 
@@ -390,7 +428,7 @@ class TestTransactionAccessControl:
             response = second_auth_client.post(
                 f"/pay-periods/{target_id}/carry-forward"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "POST /pay-periods/<id>/carry-forward",
             )
@@ -411,7 +449,7 @@ class TestTransferTemplateAccessControl:
             response = second_auth_client.get(
                 f"/transfers/{target_id}/edit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /transfers/<id>/edit",
             )
 
@@ -425,7 +463,7 @@ class TestTransferTemplateAccessControl:
                 f"/transfers/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(response, "POST /transfers/<id>")
+            _assert_not_found(response, "POST /transfers/<id>")
 
     def test_archive_transfer_template_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -436,7 +474,7 @@ class TestTransferTemplateAccessControl:
             response = second_auth_client.post(
                 f"/transfers/{target_id}/archive"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transfers/<id>/archive",
             )
 
@@ -449,7 +487,7 @@ class TestTransferTemplateAccessControl:
             response = second_auth_client.post(
                 f"/transfers/{target_id}/unarchive"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transfers/<id>/unarchive",
             )
 
@@ -469,7 +507,7 @@ class TestSalaryAccessControl:
             response = second_auth_client.get(
                 f"/salary/{target_id}/edit"
             )
-            _assert_blocked(response, "GET /salary/<id>/edit")
+            _assert_not_found(response, "GET /salary/<id>/edit")
 
     def test_update_profile_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -481,7 +519,7 @@ class TestSalaryAccessControl:
                 f"/salary/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(response, "POST /salary/<id>")
+            _assert_not_found(response, "POST /salary/<id>")
 
     def test_delete_profile_blocked(
         self, app, second_auth_client, seed_full_user_data,
@@ -492,7 +530,7 @@ class TestSalaryAccessControl:
             response = second_auth_client.post(
                 f"/salary/{target_id}/delete"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /salary/<id>/delete",
             )
 
@@ -510,7 +548,7 @@ class TestSalaryAccessControl:
                     "raise_type_id": "1",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /salary/<id>/raises",
             )
 
@@ -529,7 +567,7 @@ class TestSalaryAccessControl:
                     "calc_method_id": "1",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /salary/<id>/deductions",
             )
 
@@ -542,7 +580,7 @@ class TestSalaryAccessControl:
             response = second_auth_client.get(
                 f"/salary/{target_id}/breakdown"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /salary/<id>/breakdown",
             )
 
@@ -556,7 +594,7 @@ class TestSalaryAccessControl:
             response = second_auth_client.get(
                 f"/salary/{profile_id}/breakdown/{period_id}"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "GET /salary/<id>/breakdown/<period_id>",
             )
@@ -570,7 +608,7 @@ class TestSalaryAccessControl:
             response = second_auth_client.get(
                 f"/salary/{target_id}/projection"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /salary/<id>/projection",
             )
 
@@ -590,7 +628,7 @@ class TestSavingsAccessControl:
             response = second_auth_client.get(
                 f"/savings/goals/{target_id}/edit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /savings/goals/<id>/edit",
             )
 
@@ -604,7 +642,7 @@ class TestSavingsAccessControl:
                 f"/savings/goals/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /savings/goals/<id>",
             )
 
@@ -617,7 +655,7 @@ class TestSavingsAccessControl:
             response = second_auth_client.post(
                 f"/savings/goals/{target_id}/delete"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /savings/goals/<id>/delete",
             )
 
@@ -637,7 +675,7 @@ class TestCategoryAccessControl:
             response = second_auth_client.post(
                 f"/categories/{target_id}/delete"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /categories/<id>/delete",
             )
 
@@ -671,7 +709,7 @@ class TestRetirementAccessControl:
             response = second_auth_client.get(
                 f"/retirement/pension/{target_id}/edit"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /retirement/pension/<id>/edit",
             )
 
@@ -685,7 +723,7 @@ class TestRetirementAccessControl:
                 f"/retirement/pension/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /retirement/pension/<id>",
             )
 
@@ -698,7 +736,7 @@ class TestRetirementAccessControl:
             response = second_auth_client.post(
                 f"/retirement/pension/{target_id}/delete"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "POST /retirement/pension/<id>/delete",
             )
@@ -719,7 +757,7 @@ class TestLoanAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/loan"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /accounts/<id>/loan",
             )
 
@@ -739,7 +777,7 @@ class TestLoanAccessControl:
                     "payment_day": "1",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /accounts/<id>/loan/setup",
             )
 
@@ -753,7 +791,7 @@ class TestLoanAccessControl:
                 f"/accounts/{target_id}/loan/params",
                 data={"current_principal": "999999"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "POST /accounts/<id>/loan/params",
             )
@@ -771,7 +809,7 @@ class TestLoanAccessControl:
                     "interest_rate": "7.0",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /accounts/<id>/loan/rate",
             )
 
@@ -788,7 +826,7 @@ class TestLoanAccessControl:
                     "annual_amount": "3600",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "POST /accounts/<id>/loan/escrow",
             )
@@ -806,7 +844,7 @@ class TestLoanAccessControl:
                     "extra_monthly": "500",
                 },
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /accounts/<id>/loan/payoff",
             )
 
@@ -826,7 +864,7 @@ class TestInvestmentAccessControl:
             response = second_auth_client.get(
                 f"/accounts/{target_id}/investment"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "GET /accounts/<id>/investment",
             )
 
@@ -840,7 +878,7 @@ class TestInvestmentAccessControl:
                 f"/accounts/{target_id}/investment/growth-chart",
                 headers={"HX-Request": "true"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "GET /accounts/<id>/investment/growth-chart",
             )
@@ -855,7 +893,7 @@ class TestInvestmentAccessControl:
                 f"/accounts/{target_id}/investment/params",
                 data={"assumed_annual_return": "0.07"},
             )
-            _assert_blocked(
+            _assert_not_found(
                 response,
                 "POST /accounts/<id>/investment/params",
             )
@@ -871,7 +909,7 @@ class TestNonexistentResourceAccess:
         """Nonexistent account ID returns 302 or 404."""
         with app.app_context():
             response = second_auth_client.get("/accounts/999999/edit")
-            _assert_blocked(response, "nonexistent account")
+            _assert_not_found(response, "nonexistent account")
 
     def test_nonexistent_transaction(self, app, second_auth_client):
         """Nonexistent transaction ID returns 404."""
@@ -887,7 +925,7 @@ class TestNonexistentResourceAccess:
         """Nonexistent template ID returns 302 or 404."""
         with app.app_context():
             response = second_auth_client.get("/templates/999999/edit")
-            _assert_blocked(response, "nonexistent template")
+            _assert_not_found(response, "nonexistent template")
 
     def test_nonexistent_salary_profile(
         self, app, second_auth_client,
@@ -895,7 +933,7 @@ class TestNonexistentResourceAccess:
         """Nonexistent salary profile ID returns 302 or 404."""
         with app.app_context():
             response = second_auth_client.get("/salary/999999/edit")
-            _assert_blocked(response, "nonexistent salary profile")
+            _assert_not_found(response, "nonexistent salary profile")
 
     def test_nonexistent_savings_goal(
         self, app, second_auth_client,
@@ -905,7 +943,7 @@ class TestNonexistentResourceAccess:
             response = second_auth_client.get(
                 "/savings/goals/999999/edit"
             )
-            _assert_blocked(response, "nonexistent savings goal")
+            _assert_not_found(response, "nonexistent savings goal")
 
 
 # ---- Data Integrity After Blocked Access -----------------------------------
@@ -934,7 +972,7 @@ class TestDataIntegrityAfterBlockedAccess:
                 f"/accounts/{target_id}",
                 data={"name": "BLOCKED_TEST"},
             )
-            _assert_blocked(response, "POST /accounts/<id>")
+            _assert_not_found(response, "POST /accounts/<id>")
 
             _db.session.expire_all()
             account = _db.session.get(Account, target_id)
@@ -959,7 +997,7 @@ class TestDataIntegrityAfterBlockedAccess:
             response = second_auth_client.post(
                 f"/transactions/{target_id}/mark-done"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /transactions/<id>/mark-done",
             )
 
@@ -980,7 +1018,7 @@ class TestDataIntegrityAfterBlockedAccess:
             response = second_auth_client.post(
                 f"/templates/{target_id}/archive"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /templates/<id>/archive",
             )
 
@@ -1011,7 +1049,7 @@ class TestDataIntegrityAfterBlockedAccess:
             response = second_auth_client.post(
                 f"/categories/{target_id}/delete"
             )
-            _assert_blocked(
+            _assert_not_found(
                 response, "POST /categories/<id>/delete",
             )
 
@@ -1024,4 +1062,80 @@ class TestDataIntegrityAfterBlockedAccess:
             assert count_after == count_before, (
                 f"Category count changed from {count_before} "
                 f"to {count_after} after blocked delete"
+            )
+
+
+# ---- Section 5.10: Strict Helper Self-Tests -------------------------------
+
+
+class TestAssertionHelpers:
+    """Self-tests for the strict ``_assert_not_found`` and
+    ``_assert_redirected_to_login`` helpers introduced by commit
+    C-31 (F-084).
+
+    Without these, a typo in either helper (e.g. relaxing
+    ``_assert_not_found`` to accept 302 again) would silently
+    pass the IDOR suite and re-introduce the regression-blindness
+    that motivated splitting the original ``_assert_blocked``.
+    The lightweight stand-in response objects keep the tests
+    free of fixture wiring -- the helpers only consult
+    ``status_code`` and ``headers``.
+    """
+
+    def test_assert_not_found_passes_on_404(self):
+        """A 404 response satisfies :func:`_assert_not_found`."""
+        class _Resp:
+            """Stand-in for a Flask test client response."""
+            status_code = 404
+            headers: dict = {}
+
+        # Must not raise.
+        _assert_not_found(_Resp(), "synthetic 404")
+
+    def test_assert_not_found_rejects_302(self):
+        """A 302 response is treated as an IDOR regression.
+
+        Pre-C-31 the suite tolerated 302+flash on cross-user
+        access (the original :func:`_assert_blocked` accepted
+        either 302 or 404).  This test pins the strict contract:
+        a route that regresses to the old flash + redirect
+        pattern surfaces in CI instead of silently passing.
+        """
+        class _Resp:
+            """Stand-in for a Flask test client response."""
+            status_code = 302
+            headers = {"Location": "/accounts"}
+
+        with pytest.raises(AssertionError, match="Expected 404"):
+            _assert_not_found(_Resp(), "synthetic 302")
+
+    def test_assert_redirected_to_login_requires_login_in_location(self):
+        """``_assert_redirected_to_login`` rejects a 302 to anywhere else.
+
+        The Location header check prevents a misconfigured
+        ``LOGIN_VIEW`` (or a redirect to ``/dashboard`` / a
+        third-party site) from masquerading as a successful
+        auth-required response.  A login redirect with a
+        ``next=`` query string still passes because the assertion
+        looks for ``/login`` as a substring.
+        """
+        class _LoginResp:
+            """Stand-in for a 302 redirect to the login view."""
+            status_code = 302
+            headers = {"Location": "/login?next=%2Fbills"}
+
+        class _DashboardResp:
+            """Stand-in for a 302 redirect away from login."""
+            status_code = 302
+            headers = {"Location": "/dashboard"}
+
+        # Login redirect: must not raise.
+        _assert_redirected_to_login(_LoginResp(), "redirect to /login")
+
+        # Non-login redirect: must raise.
+        with pytest.raises(
+            AssertionError, match="Expected redirect to /login",
+        ):
+            _assert_redirected_to_login(
+                _DashboardResp(), "redirect away from login",
             )

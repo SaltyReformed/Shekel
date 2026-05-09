@@ -88,25 +88,20 @@ class TestInvestmentDashboard:
     def test_dashboard_idor(
         self, auth_client, second_user, db, seed_periods_today,
     ):
-        """GET another user's investment dashboard is rejected
+        """GET another user's investment dashboard returns 404 (security)
         and does not leak victim data."""
         other_acct = _create_other_investment(second_user, db.session)
 
         resp = auth_client.get(f"/accounts/{other_acct.id}/investment")
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/savings" in location, (
-            f"IDOR redirect went to {location}, expected /savings"
-        )
+        assert resp.status_code == 404
         assert b"Other 401k" not in resp.data, (
             "IDOR response leaked victim's account name"
         )
 
     def test_dashboard_nonexistent(self, auth_client, seed_user, db, seed_periods_today):
-        """Nonexistent account → redirect to savings dashboard."""
+        """Nonexistent account returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.get("/accounts/99999/investment")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_dashboard_brokerage(self, auth_client, seed_user, db, seed_periods_today):
         """Brokerage account (no contribution limit) works."""
@@ -193,7 +188,7 @@ class TestInvestmentParams:
     def test_params_idor(
         self, auth_client, second_user, db, seed_periods_today,
     ):
-        """POST to another user's investment params is rejected
+        """POST to another user's investment params returns 404 (security)
         and does not create any InvestmentParams row."""
         # Phase A: Setup victim's account with no params.
         other_acct = _create_other_investment(second_user, db.session)
@@ -208,11 +203,7 @@ class TestInvestmentParams:
         )
 
         # Phase C: Verify no state change.
-        assert resp.status_code == 302
-        location = resp.headers.get("Location", "")
-        assert "/savings" in location, (
-            f"IDOR redirect went to {location}, expected /savings"
-        )
+        assert resp.status_code == 404
 
         db.session.expire_all()
         created = db.session.query(InvestmentParams).filter_by(
@@ -288,8 +279,7 @@ class TestInvestmentNegativePaths:
                 "employer_contribution_type": "none",
             },
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
         db.session.expire_all()
         after = db.session.query(InvestmentParams).filter_by(
@@ -324,7 +314,7 @@ class TestInvestmentNegativePaths:
     def test_params_update_nonexistent_account(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """POST to nonexistent account redirects with flash."""
+        """POST to nonexistent account returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.post(
             "/accounts/999999/investment/params",
             data={
@@ -332,10 +322,7 @@ class TestInvestmentNegativePaths:
                 "employer_contribution_type": "none",
             },
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
-        resp2 = auth_client.get(resp.headers["Location"])
-        assert b"Account not found." in resp2.data
+        assert resp.status_code == 404
 
     def test_params_update_wrong_account_type(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -821,15 +808,14 @@ class TestContributionPrompt:
     def test_create_transfer_idor(
         self, auth_client, second_user, db, seed_periods_today,
     ):
-        """POST to other user's investment account: 404-equivalent redirect."""
+        """POST to other user's investment account returns 404 (security)."""
         other_acct = _create_other_investment(second_user, db.session)
 
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/investment/create-contribution-transfer",
             data={"source_account_id": "1", "amount": "100"},
         )
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        assert resp.status_code == 404
 
     def test_create_transfer_amount_override(
         self, auth_client, seed_user, db, seed_periods_today,

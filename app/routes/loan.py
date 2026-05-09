@@ -9,10 +9,10 @@ import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -413,8 +413,7 @@ def dashboard(account_id):
     """Loan detail page with summary, escrow, rate history, and payoff calculator."""
     account, params, account_type = _load_loan_account(account_id)
     if account is None:
-        flash("Loan account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+        abort(404)
 
     if params is None:
         return render_template(
@@ -585,10 +584,9 @@ def dashboard(account_id):
 @require_owner
 def create_params(account_id):
     """Create initial loan parameters."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     account_type = db.session.get(AccountType, account.account_type_id)
     if account_type is None or not account_type.has_amortization:
@@ -640,9 +638,16 @@ def create_params(account_id):
 def update_params(account_id):
     """Update loan parameters."""
     account, params, account_type = _load_loan_account(account_id)
-    if account is None or params is None:
-        flash("Loan account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    if account is None:
+        abort(404)
+    if params is None:
+        # Owner reached the params endpoint without configured params
+        # (e.g. a stale form, hand-crafted URL, or back-button reload
+        # after a deletion).  Redirect to the dashboard so the setup
+        # flow takes over instead of conflating this with the IDOR
+        # response above.
+        flash("Loan parameters are not configured.", "warning")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -1181,9 +1186,11 @@ def create_payment_transfer(account_id):
     The user may override with a custom amount.
     """
     account, params, _ = _load_loan_account(account_id)
-    if account is None or params is None:
-        flash("Loan account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    if account is None:
+        abort(404)
+    if params is None:
+        flash("Loan parameters are not configured.", "warning")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     errors = _transfer_schema.validate(request.form)
     if errors:
@@ -1195,10 +1202,9 @@ def create_payment_transfer(account_id):
 
     # Verify source account ownership (404 for both "not found" and
     # "not yours" per the security response rule).
-    source_account = db.session.get(Account, source_account_id)
-    if source_account is None or source_account.user_id != current_user.id:
-        flash("Loan account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    source_account = get_or_404(Account, source_account_id)
+    if source_account is None:
+        abort(404)
 
     if not source_account.is_active:
         flash("Source account is inactive.", "danger")

@@ -3594,7 +3594,19 @@ lives in the same database the attacker would be tampering with.
   routes. Audit each of the 69 tests and move to the
   correct helper. See also F-087 for the app-side pattern
   (51 routes still use 302 for "not yours").
-- **Status:** Open
+- **Status:** Fixed in C-31 (2026-05-09).
+  `tests/test_integration/test_access_control.py:28-78` now
+  defines two strict helpers: `_assert_not_found(response)`
+  asserts `status_code == 404` exactly, and
+  `_assert_redirected_to_login(response)` asserts both
+  `status_code == 302` and that the `Location` header
+  contains `/login`. Every IDOR probe in this file (User B
+  attacking User A's resources) flows through the
+  `_assert_not_found` helper -- the strict shape pairs with
+  C-31's route-side conversion of the 51 remaining
+  302+flash patterns to `abort(404)`. Three new self-tests
+  in `TestAssertionHelpers` pin the contract so a future
+  edit relaxing either helper trips CI.
 
 ### F-085: Registration uses bare logger.info instead of log_event
 
@@ -3710,7 +3722,29 @@ lives in the same database the attacker would be tampering with.
   helper to assert exactly 404. Option 2: loosen CLAUDE.md
   to say "404 or redirect to safe index" and leave the code
   alone. Option 1 tightens the contract.
-- **Status:** Open
+- **Status:** Fixed in C-31 (2026-05-09).  Option 1
+  applied: every cross-user / not-found ownership branch
+  across `accounts.py`, `categories.py`, `salary.py`,
+  `templates.py`, `transfers.py`, `savings.py`,
+  `retirement.py`, `investment.py`, and `loan.py` now
+  routes through `app/utils/auth_helpers.py::get_or_404`
+  (or `get_owned_via_parent` for `SalaryRaise` /
+  `PaycheckDeduction`) and `abort(404)` on the None
+  branch.  The flash + redirect pattern remains for
+  legitimate non-IDOR UX (validation failures, stale-form
+  conflicts, "params not configured" redirects) so the
+  user can see why their submit was rejected.  The
+  re-verified count differed slightly from the audit's
+  51 -- after C-29 / C-30, additional routes in
+  `investment.py`, `loan.py`, and `salary.breakdown_current`
+  also matched the pattern; all of them are now 404 too.
+  `companion.py:147` was already returning 404 (via the
+  raw `return "Not found", 404`) and was left as-is.
+  `retirement.update_settings`'s `flash("Settings not
+  found.", "danger")` is preserved -- it fires only when
+  the *current user's own* `UserSettings` row is missing
+  (a setup bug, not IDOR), so a redirect-with-flash is the
+  right UX.
 
 ### F-088: Password max length 72 bytes below ASVS L2 128-char target
 

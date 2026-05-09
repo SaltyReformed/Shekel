@@ -9,10 +9,10 @@ transactions.py (grid cell HTMX endpoints).
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for, jsonify
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -278,10 +278,9 @@ def create_transfer_template():
 @require_owner
 def edit_transfer_template(template_id):
     """Display the transfer template edit form."""
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     accounts = (
         db.session.query(Account)
@@ -323,10 +322,9 @@ def update_transfer_template(template_id):
     the form-side check -- is caught and converted to the same
     flash + redirect.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -492,10 +490,9 @@ def archive_transfer_template(template_id):
     ``StaleDataError`` which the handler converts into a flash +
     redirect so the user retries against fresh state.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = False
 
@@ -548,10 +545,9 @@ def unarchive_transfer_template(template_id):
 
     Optimistic locking: see :func:`archive_transfer_template`.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     template.is_active = True
 
@@ -636,10 +632,9 @@ def hard_delete_transfer_template(template_id):
         transfer service (which CASCADE-deletes shadows), then the
         template itself is permanently removed.
     """
-    template = db.session.get(TransferTemplate, template_id)
-    if template is None or template.user_id != current_user.id:
-        flash("Recurring transfer not found.", "danger")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
 
     if archive_helpers.transfer_template_has_paid_history(template.id):
         flash(

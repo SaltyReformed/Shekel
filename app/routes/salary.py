@@ -8,12 +8,17 @@ paycheck breakdown, and salary projection views.
 import logging
 from datetime import date
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import (
+    fresh_login_required,
+    get_or_404,
+    get_owned_via_parent,
+    require_owner,
+)
 from markupsafe import Markup
 
 from app.extensions import db
@@ -279,10 +284,9 @@ def create_profile():
 @require_owner
 def edit_profile(profile_id):
     """Display the salary profile edit form with raises and deductions."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     filing_statuses = db.session.query(FilingStatus).all()
     raise_types = db.session.query(RaiseType).all()
@@ -316,10 +320,9 @@ def update_profile(profile_id):
     e.g. by a concurrent edit that races past the form-side check
     -- is caught and converted to the same flash + redirect.
     """
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -397,10 +400,9 @@ def delete_profile(profile_id):
     A concurrent edit raises ``StaleDataError`` which the handler
     converts into a flash + redirect.
     """
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     profile.is_active = False
     if profile.template:
@@ -432,10 +434,9 @@ def delete_profile(profile_id):
 @require_owner
 def add_raise(profile_id):
     """Add a raise to a salary profile."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _raise_schema.validate(request.form)
     if errors:
@@ -513,10 +514,11 @@ def delete_raise(raise_id):
     ``StaleDataError`` which the handler converts into a flash +
     redirect.
     """
-    salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
-        flash("Raise not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    salary_raise = get_owned_via_parent(
+        SalaryRaise, raise_id, "salary_profile",
+    )
+    if salary_raise is None:
+        abort(404)
 
     profile = salary_raise.salary_profile
 
@@ -561,10 +563,11 @@ def update_raise(raise_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
     """
-    salary_raise = db.session.get(SalaryRaise, raise_id)
-    if salary_raise is None or salary_raise.salary_profile.user_id != current_user.id:
-        flash("Raise not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    salary_raise = get_owned_via_parent(
+        SalaryRaise, raise_id, "salary_profile",
+    )
+    if salary_raise is None:
+        abort(404)
 
     profile = salary_raise.salary_profile
 
@@ -673,10 +676,9 @@ def update_raise(raise_id):
 @require_owner
 def add_deduction(profile_id):
     """Add a deduction to a salary profile."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _deduction_schema.validate(request.form)
     if errors:
@@ -758,10 +760,11 @@ def delete_deduction(ded_id):
     ``StaleDataError`` which the handler converts into a flash +
     redirect.
     """
-    deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None or deduction.salary_profile.user_id != current_user.id:
-        flash("Deduction not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    deduction = get_owned_via_parent(
+        PaycheckDeduction, ded_id, "salary_profile",
+    )
+    if deduction is None:
+        abort(404)
 
     profile = deduction.salary_profile
 
@@ -806,10 +809,11 @@ def update_deduction(ded_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
     """
-    deduction = db.session.get(PaycheckDeduction, ded_id)
-    if deduction is None or deduction.salary_profile.user_id != current_user.id:
-        flash("Deduction not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    deduction = get_owned_via_parent(
+        PaycheckDeduction, ded_id, "salary_profile",
+    )
+    if deduction is None:
+        abort(404)
 
     profile = deduction.salary_profile
 
@@ -920,15 +924,13 @@ def update_deduction(ded_id):
 @require_owner
 def breakdown(profile_id, period_id):
     """Show paycheck breakdown for a specific period."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
-    period = db.session.get(PayPeriod, period_id)
-    if period is None or period.user_id != current_user.id:
-        flash("Pay period not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    period = get_or_404(PayPeriod, period_id)
+    if period is None:
+        abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
@@ -950,7 +952,18 @@ def breakdown(profile_id, period_id):
 @login_required
 @require_owner
 def breakdown_current(profile_id):
-    """Show paycheck breakdown for the current period."""
+    """Show paycheck breakdown for the current period.
+
+    Verifies ownership of ``profile_id`` before redirecting so a
+    cross-user request 404s here rather than producing a 302 to
+    :func:`breakdown` (which would also 404, but the intermediate
+    redirect leaks the existence of the requested profile-id slot
+    and breaks the project's "404 for both 'not found' and 'not
+    yours'" security rule -- audit commit C-31 / F-087).
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
     current_period = pay_period_service.get_current_period(current_user.id)
     if not current_period:
         flash(Markup(
@@ -961,7 +974,7 @@ def breakdown_current(profile_id):
         return redirect(url_for("salary.list_profiles"))
     return redirect(url_for(
         "salary.breakdown",
-        profile_id=profile_id,
+        profile_id=profile.id,
         period_id=current_period.id,
     ))
 
@@ -971,10 +984,9 @@ def breakdown_current(profile_id):
 @require_owner
 def projection(profile_id):
     """Show salary projection table for all periods."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
@@ -1001,10 +1013,9 @@ def projection(profile_id):
 @require_owner
 def calibrate_form(profile_id):
     """Display the pay stub calibration form."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     return render_template(
         "salary/calibrate.html",
@@ -1017,10 +1028,9 @@ def calibrate_form(profile_id):
 @require_owner
 def calibrate_preview(profile_id):
     """Validate pay stub data and show derived rates for confirmation."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _calibration_schema.validate(request.form)
     if errors:
@@ -1081,10 +1091,9 @@ def calibrate_preview(profile_id):
 @require_owner
 def calibrate_confirm(profile_id):
     """Save the calibration override and regenerate transactions."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     errors = _calibration_confirm_schema.validate(request.form)
     if errors:
@@ -1146,10 +1155,9 @@ def calibrate_confirm(profile_id):
 @require_owner
 def calibrate_delete(profile_id):
     """Remove calibration override and revert to bracket-based taxes."""
-    profile = db.session.get(SalaryProfile, profile_id)
-    if profile is None or profile.user_id != current_user.id:
-        flash("Salary profile not found.", "danger")
-        return redirect(url_for("salary.list_profiles"))
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
 
     existing = (
         db.session.query(CalibrationOverride)

@@ -9,10 +9,10 @@ import logging
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -65,10 +65,9 @@ TWO_PLACES = Decimal("0.01")
 @require_owner
 def dashboard(account_id):
     """Investment/retirement account dashboard with growth projection."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     params = (
         db.session.query(InvestmentParams)
@@ -631,10 +630,9 @@ def create_contribution_transfer(account_id):
     The amount defaults to a suggested per-period contribution based on
     the annual limit and remaining periods.  The user may override it.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     errors = _transfer_schema.validate(request.form)
     if errors:
@@ -648,10 +646,9 @@ def create_contribution_transfer(account_id):
 
     # Verify source account ownership (404 for both "not found" and
     # "not yours" per the security response rule).
-    source_account = db.session.get(Account, source_account_id)
-    if source_account is None or source_account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    source_account = get_or_404(Account, source_account_id)
+    if source_account is None:
+        abort(404)
 
     if not source_account.is_active:
         flash("Source account is inactive.", "danger")
@@ -751,10 +748,9 @@ def create_contribution_transfer(account_id):
 @require_owner
 def update_params(account_id):
     """Create or update investment parameters."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
-        flash("Account not found.", "danger")
-        return redirect(url_for("savings.dashboard"))
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
 
     params = (
         db.session.query(InvestmentParams)
