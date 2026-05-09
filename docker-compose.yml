@@ -229,8 +229,13 @@ services:
       # Override with NGINX_PORT in .env if port 80 is in use.
       - "${NGINX_PORT:-80}:80"
     volumes:
-      # Nginx configuration file (read-only).
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Nginx configuration file (read-only).  This is the BUNDLED
+      # config -- mounted only when shekel-prod-nginx actually runs.
+      # In shared-mode deployments (deploy/docker-compose.prod.yml),
+      # this service is parked in the "disabled" profile and the mount
+      # is never realized.  The shared-mode equivalents live under
+      # deploy/nginx-shared/.  See deploy/README.md for the mapping.
+      - ./deploy/nginx-bundled/nginx.conf:/etc/nginx/nginx.conf:ro
       # Static files served directly by Nginx (populated by app).
       - static_files:/var/www/static:ro
     networks:

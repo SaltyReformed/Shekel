@@ -1188,7 +1188,27 @@ lives in the same database the attacker would be tampering with.
     so its role is explicit).
   - Update README to explain which files are active in which
     deployment mode.
-- **Status:** Open
+- **Status:** Fixed in C-32 (2026-05-09). The repo's
+  `nginx/nginx.conf` was renamed (via `git mv`) to
+  `deploy/nginx-bundled/nginx.conf` with a header documenting it as
+  the bundled-mode config; `deploy/nginx-shared/nginx.conf`,
+  `deploy/nginx-shared/conf.d/shekel.conf`, and
+  `deploy/docker-compose.prod.yml` were committed from the audit
+  snapshots in `scans/shared-nginx*.txt` and
+  `scans/prod-compose-override.txt`. The base `docker-compose.yml`
+  volume mount now points at `deploy/nginx-bundled/nginx.conf`.
+  `README.md` gained a "Deployment Architecture" section, and
+  `docs/runbook.md` §2.5 documents the shared-mode sync procedure
+  (host runtime path -> repo path mapping, `nginx -t` reload,
+  manual `diff -u` drift check). `deploy/README.md` is the
+  operator-facing index. Three new tests in
+  `tests/test_deploy/test_deploy_configs.py` (8 assertions total)
+  verify file presence, `nginx -t` validity for the bundled config
+  in an ephemeral nginx:1.27-alpine container, and `docker compose
+  config` validity for the merged base + shared override. The
+  drift-check script `scripts/config_audit.py` referenced in the
+  remediation plan was deferred to C-49 (which actually populates
+  it) per CLAUDE.md rules 1 (no stubs) and 13 (no gold-plating).
 
 ### F-022: SEED_USER_PASSWORD persists in running container environment
 

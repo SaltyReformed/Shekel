@@ -23,10 +23,10 @@ docker compose version
 ### 2. Download Configuration Files
 
 ```bash
-mkdir -p shekel/nginx && cd shekel
+mkdir -p shekel/deploy/nginx-bundled && cd shekel
 curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/docker-compose.yml
 curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/.env.example
-curl -o nginx/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/nginx/nginx.conf
+curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/deploy/nginx-bundled/nginx.conf
 cp .env.example .env
 ```
 
@@ -107,40 +107,60 @@ docker volume rm shekel-prod-pgdata
 | `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See [MFA Setup](#mfa-setup) for generation instructions. |
 | `/register` returns 404 | `REGISTRATION_ENABLED` is set to `false` in `.env`. Set to `true` or remove the line to re-enable. |
-| Nginx fails with "mount ... not a directory" | The `nginx/nginx.conf` file is missing. Re-run the download step: `mkdir -p nginx && curl -o nginx/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/nginx/nginx.conf` |
+| Nginx fails with "mount ... not a directory" | The `deploy/nginx-bundled/nginx.conf` file is missing. Re-run the download step: `mkdir -p deploy/nginx-bundled && curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/deploy/nginx-bundled/nginx.conf` |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
 | Container marked unhealthy during first startup | First-time initialization (schema creation, migrations, seeding) can take over 60 seconds. The healthcheck `start_period` allows 120 seconds before failures count. Wait and check `docker compose logs -f app`. |
 | `curl` not found inside the container | The slim image does not include curl. Use Python instead: `docker compose exec app python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"` |
 | `Can't locate revision identified by ...` | The GHCR image may be older than your database. Rebuild from source (`docker compose build`) or pull the latest image (`docker compose pull`). |
 
-### Deploying Behind an Existing Reverse Proxy
+### Deployment Architecture
 
-If you already run a central Nginx (or Traefik/Caddy) on your Docker host, you do not need the bundled Nginx service. Instead, put the app container on your shared Docker network so the central proxy can reach it.
+Shekel supports two deployment modes. Both are version-controlled under
+`deploy/`. Pick the one that matches your host.
 
-**1. Create an override file** (`docker-compose.override.yml`) next to `docker-compose.yml`:
+| Mode | When to use | Reverse proxy | Active files |
+|------|-------------|---------------|--------------|
+| **Bundled** (default) | The host has no other reverse proxy. The Quick Start above runs in this mode. | `shekel-prod-nginx` (in this stack) | `deploy/nginx-bundled/nginx.conf` |
+| **Shared** | The host already runs a central Nginx (or Traefik/Caddy) in front of multiple services. | A separate Nginx managed outside this stack | `deploy/nginx-shared/nginx.conf`, `deploy/nginx-shared/conf.d/shekel.conf`, `deploy/docker-compose.prod.yml` |
 
-```yaml
-# docker-compose.override.yml -- use a central reverse proxy instead
-# of the bundled Nginx service.
-services:
-  app:
-    networks:
-      - backend
-      - homelab        # your shared proxy network
+In bundled mode the repo's `docker-compose.yml` mounts
+`deploy/nginx-bundled/nginx.conf` into the bundled
+`shekel-prod-nginx` container. Nothing under `deploy/nginx-shared/` is
+read.
 
-  nginx:
-    # Disable the bundled Nginx.
-    profiles: ["disabled"]
+In shared mode the bundled `shekel-prod-nginx` is parked in the
+`disabled` profile by `deploy/docker-compose.prod.yml`, so only `db`,
+`redis`, and `app` start. The shared Nginx (defined and managed
+outside this stack) reaches the app over an external `homelab` Docker
+network.
 
-networks:
-  homelab:
-    external: true
+For full details and the file layout under `deploy/`, see
+[`deploy/README.md`](deploy/README.md).
+
+### Deploying Behind an Existing Reverse Proxy (Shared Mode)
+
+If you already run a central Nginx (or Traefik/Caddy) on your Docker host, use shared mode. The compose override and shared Nginx files are checked into `deploy/` so disaster recovery is a `git clone` away.
+
+**1. Use the version-controlled compose override.** Either invoke compose with both files explicitly:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  up -d
 ```
 
-Replace `homelab` with whatever your shared Docker network is named.
+Or symlink/copy `deploy/docker-compose.prod.yml` to `docker-compose.override.yml` in the same directory as `docker-compose.yml` and let compose auto-load it:
 
-**2. Add a server block to your central Nginx** (e.g., `/etc/nginx/conf.d/shekel.conf`):
+```bash
+cp deploy/docker-compose.prod.yml docker-compose.override.yml
+docker compose up -d
+```
+
+The override joins the app container to an external `homelab` network and parks the bundled Nginx service in the `disabled` profile. Replace `homelab` in `deploy/docker-compose.prod.yml` if your shared network has a different name.
+
+**2. Add a server block to your central Nginx.** A reference vhost is in `deploy/nginx-shared/conf.d/shekel.conf`. The minimal version is:
 
 ```nginx
 server {
@@ -168,6 +188,7 @@ server {
 **3. Start and verify:**
 
 ```bash
+# (using whichever invocation you chose in step 1)
 docker compose up -d
 
 # Confirm the app container joined the shared network:
@@ -453,7 +474,10 @@ shekel/
 │   └── static/                  # CSS, JS (16 chart/grid/form scripts), images
 ├── migrations/                  # Alembic database migrations (19 versions)
 ├── monitoring/                  # Promtail config and Grafana/Loki runbook
-├── nginx/                       # Nginx reverse proxy configuration
+├── deploy/                      # Version-controlled deployment configs
+│   ├── nginx-bundled/           #   Bundled-mode Nginx config (default)
+│   ├── nginx-shared/            #   Shared-mode Nginx + vhost (homelab)
+│   └── docker-compose.prod.yml  #   Compose override that selects shared mode
 ├── cloudflared/                 # Cloudflare Tunnel configuration
 ├── .github/workflows/           # CI (lint + test) and Docker image publishing
 ├── scripts/                     # Seed, backup/restore, integrity check, ops scripts

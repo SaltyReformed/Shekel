@@ -1,0 +1,58 @@
+# Shekel Budget App -- Shared-Mode Compose Override
+#
+# DEPLOYMENT ROLE
+# ---------------
+# This file is the version-controlled copy of the production compose
+# override that runs on the maintainer's homelab host.  It composes
+# WITH the repo's docker-compose.yml -- it does not replace it.
+#
+# Runtime path:    /opt/docker/shekel/docker-compose.override.yml
+# Compose project: shekel-prod (set by the base docker-compose.yml).
+#
+# Renamed from "docker-compose.override.yml" to "docker-compose.prod.yml"
+# so its role is explicit when read in isolation: this is the override
+# that distinguishes shared-Nginx production from the bundled-Nginx
+# fresh-host bring-up.  In bundled mode this file is NOT used -- the
+# repo's docker-compose.yml runs by itself.
+#
+# WHAT IT CHANGES
+# ---------------
+# 1. shekel-prod-app joins the external `homelab` bridge network in
+#    addition to `backend`, making it reachable by the shared
+#    /opt/docker/nginx container, the cloudflared tunnel, and any other
+#    homelab service that needs to talk to it.
+# 2. The bundled shekel-prod-nginx service is parked in the "disabled"
+#    profile so `docker compose up` does not start it.  The shared
+#    /opt/docker/nginx container (defined in /opt/docker/docker-compose.yml)
+#    is the only Nginx in this deployment.
+#
+# USAGE
+# -----
+# On the host:
+#   cd /opt/shekel
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f deploy/docker-compose.prod.yml \
+#     up -d
+#
+# Or with the runtime override copy in /opt/docker/shekel/, where compose
+# auto-loads docker-compose.override.yml:
+#   cd /opt/docker/shekel
+#   docker compose up -d
+#
+# Either invocation must produce the same merged config.  See
+# docs/runbook.md "Shared-mode deployment" for the sync procedure that
+# keeps the on-host override in step with this file.
+
+services:
+  app:
+    networks:
+      - backend
+      - homelab
+
+  nginx:
+    profiles: ["disabled"]
+
+networks:
+  homelab:
+    external: true
