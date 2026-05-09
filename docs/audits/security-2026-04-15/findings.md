@@ -27,6 +27,19 @@
   "Informational Observations" after F-160; pre-dedup count across 19
   session reports was approximately 210.
 
+- **Phase 3 status (as of 2026-05-08):** **75 Fixed / 85 Open /
+  0 Deferred / 0 Accepted Risk** out of 160 main-listing
+  findings. Fixed by severity (per the per-finding ``Severity:``
+  fields below): 1 Critical, 18 High, 31 Medium, 24 Low, 1 Info.
+  Open by severity: 11 High, 21 Medium, 51 Low, 2 Info. The 75
+  Fixed findings closed across the 30 audit commits C-01..C-30
+  currently merged into `dev`. Open findings are the remaining
+  plan items C-31..C-58 (covering app cleanup, migrations,
+  deploy/infra, and the host-hardening runbook). Phase 2
+  follow-on findings F-161..F-164 were folded into
+  C-21/C-27/C-26/C-20 respectively per the remediation plan
+  preamble; they are not assigned individual entries below.
+
 - **Top three risks**
 
   1. **Audit-log PostgreSQL trigger infrastructure is missing from the
@@ -174,7 +187,15 @@ lives in the same database the attacker would be tampering with.
   (gitleaks or detect-secrets) so the pattern cannot recur. See also
   F-016 (still-present fallback default in `BaseConfig`) which is a
   separate defense-in-depth gap.
-- **Status:** Open
+- **Status:** Fixed in C-01 (66082c4, 2026-05-01). Compensating controls
+  shipped; the historical commit itself remains in branch history (a
+  filter-repo rewrite is documented in `docs/runbook_secrets.md` as an
+  operator-driven step). Compensations: `scripts/rotate_sessions.py`
+  bumps `users.session_invalidated_at = now()` for every user, and
+  `app/__init__.py:95-99` rejects sessions whose `_session_created_at`
+  predates that bump on every request -- so any cookie ever signed
+  under the leaked key is invalidated on the next load. `app/config.py:44`
+  drops the BaseConfig fallback so the leaked-default code path is gone.
 
 ### F-002: Pending-MFA session state has no time limit
 
@@ -219,7 +240,13 @@ lives in the same database the attacker would be tampering with.
   reject requests where the stored timestamp is more than 5 minutes
   old (15 minutes is the outer bound per common practice). Clear all
   three pending keys on rejection and redirect to `/login`.
-- **Status:** Open
+- **Status:** Fixed in C-08 (d5fa2f7, 2026-05-04).
+  `app/routes/auth.py:411` stamps `flask_session["_mfa_pending_at"]`
+  in `/login` when the pending-MFA keys are set; `_mfa_pending_state_recent`
+  at `app/routes/auth.py:223-247` reads it at the top of `/mfa/verify`
+  and rejects pending state older than 5 minutes (closing the cookie
+  replay window). The constant is colocated in `app/routes/auth.py:114`
+  alongside the rest of the pending-MFA session keys.
 
 ### F-003: Backup-code consumption does not invalidate other sessions
 
@@ -266,7 +293,13 @@ lives in the same database the attacker would be tampering with.
   `flask_session["_session_created_at"] = ...` at line 335 refreshes
   the current session so this login survives the invalidation. Mirror
   the pattern used in `/change-password:214-222`.
-- **Status:** Open
+- **Status:** Fixed in C-08 (d5fa2f7, 2026-05-04).
+  `app/routes/auth.py:889` calls `invalidate_other_sessions(user,
+  "backup_code_consumed")` immediately after the backup-code
+  consumption commit; the helper writes `session_invalidated_at = now()`
+  and refreshes the current session's `_session_created_at` so the
+  login survives. The same helper is used by `/change-password` and
+  `mfa_disable_confirm`.
 
 ### F-004: Backup code entropy is 32 bits, below ASVS L2
 
@@ -361,7 +394,15 @@ lives in the same database the attacker would be tampering with.
   state keyed on individual codes. Add a companion structured
   `log_event(..., "totp_replay_rejected", AUTH, ...)` call so the app
   can alert on replay attempts (V2.8.5 remediation).
-- **Status:** Open
+- **Status:** Fixed in C-09 (e7e0bae, 2026-05-04).
+  `app/models/user.py:339` adds the `last_totp_timestep` BigInteger
+  column to `auth.mfa_configs`. `app/services/mfa_service.py:312`
+  enforces `code_step > last_totp_timestep` and atomically advances
+  the column on success. Companion structured event
+  `EVT_TOTP_REPLAY_REJECTED` is registered at
+  `app/utils/log_events.py:201` and emitted from
+  `app/routes/auth.py:179` (and `:1210` for the MFA disable path),
+  closing the V2.8.5 logging gap as well (see F-142).
 
 ### F-006: Idle timeout / periodic re-auth missing -- 30-day remember-me
 
@@ -400,7 +441,13 @@ lives in the same database the attacker would be tampering with.
   `_session_last_activity_at` is older than N minutes (e.g. 30), force
   re-authentication. Update `_session_last_activity_at` on every
   request via `before_request` hook.
-- **Status:** Open
+- **Status:** Fixed in C-10 (2509357, 2026-05-04).
+  `app/config.py:76` sets `PERMANENT_SESSION_LIFETIME` and
+  `app/config.py:112-113` reduces `REMEMBER_COOKIE_DURATION` to 7 days
+  (env-tunable via `REMEMBER_COOKIE_DURATION_DAYS`).
+  `app/__init__.py:607-714` introduces `_session_last_activity_at`
+  with a `before_request` stamp and idle-timeout check in `load_user`,
+  forcing re-auth after the configured idle window.
 
 ### F-007: recurrence_engine.resolve_conflicts can mutate transfer shadows
 
@@ -465,7 +512,13 @@ lives in the same database the attacker would be tampering with.
   Update the function docstring to explicitly state the shadow-guard
   behavior. 30-minute fix plus one adversarial test that passes a
   shadow ID and asserts ValidationError.
-- **Status:** Open
+- **Status:** Fixed in C-20 (f78531a, 2026-05-06).
+  `app/services/recurrence_engine.py:413-425` adds the fail-fast
+  shadow guard at the top of the per-ID loop in `resolve_conflicts`:
+  any txn with `transfer_id is not None` is rejected with a logged
+  refusal and an exception, never mutated. The docstring is updated
+  to state the shadow-guard contract; an adversarial test was added
+  to the `tests/test_services/test_recurrence_engine.py` suite.
 
 ### F-008: mark_as_credit / sync_entry_payback TOCTOU creates duplicate CC paybacks
 
@@ -524,7 +577,16 @@ lives in the same database the attacker would be tampering with.
   .with_for_update().one()` so the source row is locked for the
   duration of the decision. Both fixes are cheap; prefer both for
   defense in depth.
-- **Status:** Open
+- **Status:** Fixed in C-19 (ab681b9, 2026-05-06).
+  `app/models/transaction.py:52-56` adds the partial unique index
+  `uq_transactions_credit_payback_unique` on
+  `(credit_payback_for_id) WHERE credit_payback_for_id IS NOT NULL
+  AND is_deleted = FALSE`; the matching Alembic migration is
+  `migrations/versions/b3d8f4a01c92_add_partial_unique_index_for_credit_.py`.
+  `app/services/credit_workflow.py:185` and the entry path at
+  `app/services/entry_credit_workflow.py:120` re-query the
+  payback child under the same transaction with `with_for_update`
+  before insert, closing the TOCTOU window.
 
 ### F-009: Anchor balance updates are last-writer-wins
 
@@ -577,7 +639,14 @@ lives in the same database the attacker would be tampering with.
   (`SELECT ... FOR UPDATE` on every anchor read in the route) is
   larger-scope and more invasive. See also F-010 for the stale-form
   variant of this problem.
-- **Status:** Open
+- **Status:** Fixed in C-17 (a25c065, 2026-05-06).
+  `app/models/account.py:14-35` adds the `version_id` column with
+  `__mapper_args__ = {"version_id_col": version_id}` and a
+  `version_id > 0` CHECK; SQLAlchemy now emits the optimistic-locking
+  WHERE clause on every Account UPDATE. Anchor-balance routes catch
+  `StaleDataError` and return 409 to the client. Stale-form prevention
+  for the inline-anchor and true-up paths is layered on top via the
+  C-18 generalisation (F-010).
 
 ### F-010: PATCH endpoints accept stale form amounts -- silent lost update
 
@@ -630,7 +699,15 @@ lives in the same database the attacker would be tampering with.
   dirty-field tracking (only submit fields the user actually edited).
   That narrows the blast radius to fields the user intended to change
   but does not fix the underlying race.
-- **Status:** Open
+- **Status:** Fixed in C-18 (82c2c9d, 2026-05-06). The
+  `version_id`-on-mutable-models pattern from C-17 (F-009) is generalised
+  across every PATCH endpoint. Edit forms submit the read-time
+  `version_id`, schemas require it (e.g. `app/schemas/validation.py:128`),
+  and routes raise/return 409 on stale-form submission (see e.g.
+  `app/routes/transactions.py:380` "Stale-form conflict on
+  update_transaction" and the matching paths in transfer/account/entry
+  PATCH routes). The shadow-aware branches are routed through the
+  transfer service so shadows inherit the parent's version check.
 
 ### F-011: Salary raise percentage -- schema/DB mismatch permits invalid input
 
@@ -674,7 +751,12 @@ lives in the same database the attacker would be tampering with.
   way, schema and DB must agree. Recommend (b) until pay-cut modeling
   is an explicit feature request. Three-line schema change; no
   migration needed.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  `app/schemas/validation.py` `RaiseCreateSchema` tightens
+  `percentage` to `Range(0.01, 200)` and `flat_amount` to
+  `Range(0.01, 10_000_000)`; both reject zero/negative per the "no
+  pay cuts" policy and align with the DB CHECK at
+  `app/models/salary_raise.py:25-26`.
 
 ### F-012: PaycheckDeduction amount -- schema has no Range validation
 
@@ -707,7 +789,11 @@ lives in the same database the attacker would be tampering with.
   min=Decimal("0.0001"), max=Decimal("1000000"))` to
   `DeductionCreateSchema.amount` and the corresponding update schema.
   No migration needed; three-line schema change per route.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  `app/schemas/validation.py` `DeductionCreateSchema.amount` adds
+  `validate=Range(0.0001, 1_000_000)`; a cross-field validator caps
+  percent inputs at 100 when `calc_method = PERCENTAGE`; companion
+  bounds were added to `annual_cap` and `inflation_rate`.
 
 ### F-013: user_settings.trend_alert_threshold -- mutually incompatible bounds
 
@@ -865,7 +951,14 @@ lives in the same database the attacker would be tampering with.
   already uses (`config.py:25`, no default). Update `.env.example`
   comment to direct the operator to generate a key before first run.
   See also F-112 for the placeholder-rejection widening.
-- **Status:** Open
+- **Status:** Fixed in C-01 (66082c4, 2026-05-01).
+  `app/config.py:44` reduces to `SECRET_KEY = os.getenv("SECRET_KEY")`
+  with no fallback. ProdConfig at `app/config.py:411-428` then
+  rejects empty / placeholder / short values via three distinct
+  branches keyed on `_KNOWN_DEFAULT_SECRETS` and
+  `_MIN_SECRET_KEY_LENGTH = 32`. `entrypoint.sh:38-55` adds an
+  upstream check so misconfiguration is caught before Gunicorn
+  starts. `.env.example:15` is empty with generation instructions.
 
 ### F-017: REMEMBER_COOKIE_SECURE / REMEMBER_COOKIE_SAMESITE not set in ProdConfig
 
@@ -906,7 +999,11 @@ lives in the same database the attacker would be tampering with.
   ```
   Add a `tests/test_config.py` assertion that all six cookie flags
   are set in ProdConfig.
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/config.py:382-384` sets `REMEMBER_COOKIE_SECURE`,
+  `REMEMBER_COOKIE_HTTPONLY`, and `REMEMBER_COOKIE_SAMESITE = "Lax"`
+  in ProdConfig. Companion `tests/test_config.py` assertions cover
+  all six cookie flags.
 
 ### F-018: HSTS header missing from Flask and Nginx
 
@@ -949,7 +1046,11 @@ lives in the same database the attacker would be tampering with.
   Cloudflare Edge Certificates dashboard is not already injecting
   HSTS (if it is, this finding downgrades to Info with evidence
   attached).
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/__init__.py:813` sets `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains` (no `preload`, deferred per the runbook). The
+  `preload` decision is documented in `docs/runbook_secrets.md` as a
+  separately-toggled operator step.
 
 ### F-019: Cache-Control: no-store missing on financial pages
 
@@ -989,7 +1090,11 @@ lives in the same database the attacker would be tampering with.
   `current_user.is_authenticated`), or apply globally -- the app
   serves no truly-cacheable dynamic HTML. Keep the static-asset
   caching in `nginx.conf:154` as-is.
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/__init__.py:817-832` sets `Cache-Control: no-store` (and
+  legacy `Pragma: no-cache`) on every dynamic response while excluding
+  the static endpoint so the nginx vendor caching survives. This
+  closes the back-button-leak gap on every authenticated page.
 
 ### F-020: Flat shared "homelab" network exposes app to co-tenants
 
@@ -1344,7 +1449,14 @@ lives in the same database the attacker would be tampering with.
   Cross-reference F-082 (off-host log shipping) -- the trigger logs
   need to flow to a tamper-evident destination for the defense to
   work against attacker class C (compromised dep).
-- **Status:** Open
+- **Status:** Fixed in C-13 (bf6d7a3, 2026-05-05).
+  `migrations/versions/a5be2a99ea14_rebuild_audit_infrastructure.py`
+  rebuilds `system.audit_log`, `audit_trigger_func`, and the per-table
+  AFTER triggers idempotently (`DROP TRIGGER IF EXISTS` + `CREATE
+  TRIGGER` pairs). The canonical table list lives in
+  `app/audit_infrastructure.py:AUDITED_TABLES`. `entrypoint.sh`
+  asserts the trigger count against `EXPECTED_TRIGGER_COUNT` before
+  Gunicorn starts -- a missing trigger is now a fail-loud deploy.
 
 ### F-029: Cross-user re-parenting IDOR in update_transaction PATCH
 
@@ -1412,7 +1524,14 @@ lives in the same database the attacker would be tampering with.
   removing `pay_period_id` and `category_id` from
   `TransactionUpdateSchema` entirely if "move transaction to
   another period" is not a real UI feature.
-- **Status:** Open
+- **Status:** Fixed in C-29 (7167d43, 2026-05-08).
+  `app/routes/transactions.py:362` calls a new
+  `_assert_owned_fk_payload` helper (defined at `:167-179`) which
+  validates every cross-user FK in the PATCH payload before any
+  setattr. A non-owned `pay_period_id` or `category_id` now returns
+  404 instead of silently re-parenting the transaction.
+  `app/routes/transfers.py` `update_transfer` and the create paths
+  go through the same helper (closed in C-27, F-043).
 
 ### F-030: TOTP_ENCRYPTION_KEY has no rotation path
 
@@ -1468,7 +1587,16 @@ lives in the same database the attacker would be tampering with.
   the multi-key reader, re-encrypts with the primary, and commits.
   Document the rotation procedure in `docs/runbook.md` so the key
   can be rotated without user-visible impact.
-- **Status:** Open
+- **Status:** Fixed in C-04 (9235464, 2026-05-03).
+  `app/services/mfa_service.py:18` imports `MultiFernet`;
+  `_build_fernet_list` (`app/services/mfa_service.py:87-119`) reads
+  the primary `TOTP_ENCRYPTION_KEY` plus optional
+  `TOTP_ENCRYPTION_KEY_OLD` from env, and `_load_cipher`
+  (`:123-`) returns the multi-key cipher that encrypts under the
+  primary and decrypts under any retired key.
+  `scripts/rotate_totp_key.py` iterates `auth.mfa_configs` and
+  re-encrypts each row under the primary. Procedure documented in
+  `docs/runbook_secrets.md`.
 
 ### F-031: MFA setup secret stored in the client-side Flask session cookie
 
@@ -1496,7 +1624,16 @@ lives in the same database the attacker would be tampering with.
   `totp_secret_encrypted` on `mfa_confirm`. Alternative: store an
   opaque session-scoped ID keyed into a short-lived server-side
   table.
-- **Status:** Open
+- **Status:** Fixed in C-05 (299e687, 2026-05-03).
+  `app/models/user.py:310` adds `pending_secret_encrypted`
+  (encrypted under the same Fernet/MultiFernet key as
+  `totp_secret_encrypted`) and `:317` adds
+  `pending_secret_expires_at` for a 15-minute TTL.
+  `app/routes/auth.py:951-952` writes the encrypted pending
+  secret to the row instead of the signed-but-unencrypted Flask
+  session cookie. `mfa_confirm` re-encrypts under the primary
+  key on promote so the active credential never depends on a
+  retired key.
 
 ### F-032: MFA disable does not invalidate other sessions
 
@@ -1522,7 +1659,12 @@ lives in the same database the attacker would be tampering with.
   datetime.now(timezone.utc)` and a second commit, then refresh
   `flask_session["_session_created_at"]` so the current session
   survives. Same pattern as `/change-password:214-222`.
-- **Status:** Open
+- **Status:** Fixed in C-08 (d5fa2f7, 2026-05-04).
+  `app/routes/auth.py:1262` calls `invalidate_other_sessions(
+  current_user, "mfa_disabled")` after `mfa_disable_confirm` commits;
+  the helper writes `session_invalidated_at = now()` and refreshes
+  `_session_created_at`. Same helper as F-003 / F-002, applied
+  consistently across the auth blueprint.
 
 ### F-033: No account lockout beyond IP rate-limiting
 
@@ -1556,7 +1698,15 @@ lives in the same database the attacker would be tampering with.
   increment on wrong password; reset on success; on threshold
   (e.g. 10) set `locked_until = now + 15min`. A per-account
   counter does not depend on Flask-Limiter's storage or IP trust.
-- **Status:** Open
+- **Status:** Fixed in C-11 (6e4757c, 2026-05-05).
+  `app/models/user.py:110-122` adds `failed_login_count` (NOT NULL,
+  CHECK >= 0) and `locked_until` (timezone-aware DateTime) columns.
+  `app/services/auth_service.py:86` performs the strict
+  `locked_until > now` lockout check before bcrypt; bad-password
+  paths increment the counter, successful authentication resets it,
+  and crossing the threshold sets `locked_until`. The flow is
+  per-account so it is independent of Flask-Limiter storage and
+  X-Forwarded-For trust.
 
 ### F-034: Flask-Limiter in-memory backend drifts under multi-worker Gunicorn
 
@@ -1641,7 +1791,9 @@ lives in the same database the attacker would be tampering with.
   timedelta(hours=12)` in `BaseConfig`. Make it
   env-configurable if desired. Pair with F-006 idle-timeout
   check.
-- **Status:** Open
+- **Status:** Fixed in C-10 (2509357, 2026-05-04).
+  `app/config.py:76` sets `PERMANENT_SESSION_LIFETIME` (env-tunable)
+  and is paired with the idle-timeout check shipped for F-006.
 
 ### F-036: CSP allows 'unsafe-inline' in style-src
 
@@ -1677,7 +1829,13 @@ lives in the same database the attacker would be tampering with.
   `app/static/css/app.css`, then drop `'unsafe-inline'` from
   `style-src`. If any dynamic styles remain unavoidable, use a
   per-request CSP nonce.
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/__init__.py:748-771` reconstructs the CSP without
+  `'unsafe-inline'` in `style-src` ("Styles: self only.  No
+  'unsafe-inline'..."); the 92 inline `style=""` attributes were
+  migrated to CSS utility classes in `app/static/css/app.css`, with
+  dynamic progress widths driven by `data-progress-pct` and
+  `app/static/js/progress_bar.js`.
 
 ### F-037: CSP allows external CDN origins without SRI enforcement
 
@@ -1713,7 +1871,13 @@ lives in the same database the attacker would be tampering with.
   `url_for("static", ...)`, strip external origins from the CSP.
   Minimum fix: add SRI to every CDN tag, then add `require-sri-
   for script style` to the CSP string.
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  Bootstrap 5.3.8, Bootstrap Icons 1.11.3, htmx 2.0.4, Chart.js
+  4.4.7, Inter and JetBrains Mono variable fonts are vendored
+  under `app/static/vendor/` (see `VERSIONS.txt`); the runbook
+  documents the CDN-refresh procedure. `app/__init__.py:748`
+  CSP "drop CDN origins" -- jsdelivr/unpkg/google-fonts removed
+  from script/style-src.
 
 ### F-038: login_manager.session_protection not set to "strong"
 
@@ -1805,7 +1969,12 @@ lives in the same database the attacker would be tampering with.
   Apply the same fix to `variance_tab` for `period_id`; see
   F-099. See also F-044 (account-type global table) for a
   separate ownership issue on the same blueprint.
-- **Status:** Open
+- **Status:** Fixed in C-30 (a45029a, 2026-05-08).
+  `app/routes/analytics.py:129-` adds the route-boundary ownership
+  check on `account_id` for `calendar_tab`, replacing the silent
+  fall-through to the user's default account with a 404. The same
+  pattern is applied to `variance_tab` for `period_id` at
+  `app/routes/analytics.py:220-` (F-098).
 
 ### F-040: debt_strategy.calculate parses POST form without Marshmallow schema
 
@@ -1850,7 +2019,13 @@ lives in the same database the attacker would be tampering with.
   `custom_order = fields.String(allow_none=True,
   validate=Length(max=500))`. Parse the custom order inside
   the route after schema validation.
-- **Status:** Open
+- **Status:** Fixed in C-27 (584a688, 2026-05-08).
+  `app/schemas/validation.py:377` adds `DebtStrategyCalculateSchema`
+  with the recommended Range/OneOf/Length validators and a custom
+  pre-load that splits the comma-separated `custom_order` into
+  bounded ints. `app/routes/debt_strategy.py` `calculate` now loads
+  through the schema before any service call, eliminating the
+  latent input-validation gap.
 
 ### F-041: Auth blueprint parses credentials without Marshmallow schemas
 
@@ -1885,7 +2060,15 @@ lives in the same database the attacker would be tampering with.
   `app/schemas/validation.py`. Extract the shared email and
   password rules from `CompanionCreateSchema` into a mixin
   so the owner and companion paths enforce identical rules.
-- **Status:** Open
+- **Status:** Fixed in C-26 (b8b8d51, 2026-05-08).
+  `app/schemas/validation.py:2088` `LoginSchema`, `:2127`
+  `RegisterSchema`, `:2182` `ChangePasswordSchema`, `:2246`
+  `MfaVerifySchema` (plus `MfaConfirmSchema` and `MfaDisableSchema`)
+  share `_AuthFormSchema` and a common email/password rule mixin so
+  owner and companion paths enforce identical rules. Every
+  `auth_service` / `mfa_service` entry point is now loaded through
+  a schema before invocation. `MfaVerifySchema` adds an explicit
+  length cap closing F-163.
 
 ### F-042: mark_done / mark_paid accept actual_amount via raw form parse
 
@@ -1918,7 +2101,13 @@ lives in the same database the attacker would be tampering with.
   `TransactionUpdateSchema` with partial loading). Remove
   `dashboard._parse_actual_amount`. Thread the schema output
   through both `mark_paid` and `mark_done`.
-- **Status:** Open
+- **Status:** Fixed in C-27 (584a688, 2026-05-08).
+  `app/schemas/validation.py:335` adds `MarkDoneSchema` (with
+  bounded `Range(min=0)` on `actual_amount`), and both
+  `transactions.mark_done` branches plus `dashboard` mark-paid load
+  through it before mutating. The hand-rolled
+  `dashboard._parse_actual_amount` block was removed. Closes both
+  F-042 and F-162 (raw decimal in transfer branch).
 
 ### F-043: transfers.create_ad_hoc / update_transfer trust raw FK ids
 
@@ -1955,7 +2144,12 @@ lives in the same database the attacker would be tampering with.
   `category_id` against `current_user.id`. In
   `update_transfer` validate `category_id` if present. In
   `create_transfer_template` validate `category_id` as well.
-- **Status:** Open
+- **Status:** Fixed in C-27 (584a688, 2026-05-08).
+  `app/routes/transfers.py` `create_ad_hoc`, `update_transfer`,
+  and `create_transfer_template` now perform per-field FK
+  ownership checks at the route boundary before delegating to
+  `transfer_service`. The defense-in-depth gap is closed even if
+  a future caller bypasses service-level validation.
 
 ### F-044: Account-type mutation routes operate on global (non-user-scoped) table
 
@@ -2003,7 +2197,14 @@ lives in the same database the attacker would be tampering with.
   "shared built-in"), and scope mutation routes to
   user-owned rows. Option (b) is the long-term multi-tenant
   solution.
-- **Status:** Open
+- **Status:** Fixed in C-28 (b5b576c, 2026-05-08). Implemented
+  option (b). `app/models/ref.py:31-111` adds `user_id` to
+  `ref.account_types` with two partial unique indexes:
+  `uq_account_types_seeded_name` (`(name) WHERE user_id IS NULL`)
+  for shared seed rows and `uq_account_types_user_name`
+  (`(user_id, name) WHERE user_id IS NOT NULL`) for per-tenant
+  rows. Mutation routes in `app/routes/accounts.py` are scoped to
+  `user_id` and the table is in `AUDITED_TABLES`.
 
 ### F-045: Step-up authentication missing for high-value operations
 
@@ -2034,7 +2235,13 @@ lives in the same database the attacker would be tampering with.
   account deletion, tax-config update. Handler body can
   redirect to a re-auth prompt; on success, update the
   timestamp.
-- **Status:** Open
+- **Status:** Fixed in C-10 (2509357, 2026-05-04).
+  `app/utils/auth_helpers.py:319` defines
+  `fresh_login_required(max_age_minutes)` -- a decorator that
+  checks `_fresh_login_at` and redirects to `/reauth` when stale.
+  The decorator now gates anchor-balance true-up, bulk delete,
+  companion creation, account deletion, and tax-config mutation
+  paths.
 
 ### F-046: No DB constraint enforcing "exactly two shadows per transfer"
 
@@ -2083,7 +2290,14 @@ lives in the same database the attacker would be tampering with.
   adds a PL/pgSQL trigger asserting `COUNT(*)=2` active
   shadows per active Transfer. Prefer the partial unique
   index as the minimum.
-- **Status:** Open
+- **Status:** Fixed in C-21 (f16fdc9, 2026-05-07).
+  `app/models/transaction.py:80` declares the partial unique
+  index `uq_transactions_transfer_type_active` on
+  `(transfer_id, transaction_type_id) WHERE transfer_id IS NOT
+  NULL AND is_deleted = FALSE`; matching Alembic migration is
+  `migrations/versions/c21a1f0b8e74_add_partial_unique_index_for_transfer_.py`.
+  Two expense-typed or income-typed shadows can no longer coexist
+  for one Transfer.
 
 ### F-047: Transfer status transitions have no state-machine check
 
@@ -2117,7 +2331,14 @@ lives in the same database the attacker would be tampering with.
   `status_id` changes, verify the new status is in
   `_ALLOWED_TRANSITIONS.get(xfer.status_id, set())`. Reject
   with `ValidationError` otherwise.
-- **Status:** Open
+- **Status:** Fixed in C-21 (f16fdc9, 2026-05-07).
+  `app/services/state_machine.py` declares the allowed-transition
+  table; `app/services/transfer_service.py:499` calls
+  `verify_transition(xfer.status_id, new_status_id, context=...)`
+  on every status change for the parent transfer plus both shadow
+  rows. The follow-up commit f4684962 (C-21 follow-up) extends the
+  same helper to `transaction_service` so regular transactions
+  share one state machine.
 
 ### F-048: Transfer mark_done from transfers page does not set paid_at
 
@@ -2164,7 +2385,12 @@ lives in the same database the attacker would be tampering with.
   `transfer_service.update_transfer`: if `status_id` is
   transitioning to DONE and no `paid_at` was passed, set it
   server-side.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07).
+  `app/routes/transfers.py:1106` (the `mark_done` route) passes
+  `paid_at=db.func.now()` so the transfer-management page now
+  matches the dashboard fast-action path. Service-level fallback
+  is at `app/services/transfer_service.py:522` for the explicit-
+  None case.
 
 ### F-049: carry_forward_unpaid has no status precondition check
 
@@ -2202,7 +2428,13 @@ lives in the same database the attacker would be tampering with.
   WHERE id IN (:ids) AND status_id = :projected`. Option (b)
   is cheaper and matches the "only still-projected moves"
   semantics exactly.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07). Implemented
+  option (b). `app/services/carry_forward_service.py` replaces the
+  per-row `setattr` with a conditional bulk UPDATE that filters on
+  `status_id = projected` so a row that flipped state between SELECT
+  and UPDATE is left untouched. The same commit pulls common setup
+  into `_build_carry_forward_context` shared by the mutating and
+  preview paths.
 
 ### F-050: Ad-hoc transfer POST has no idempotency -- duplicate shadows
 
@@ -2234,7 +2466,12 @@ lives in the same database the attacker would be tampering with.
   unique constraint on `(user_id, from_account_id,
   to_account_id, amount, pay_period_id, created_at
   truncated to minute)` via Alembic.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07). Idempotency
+  uniqueness migration
+  `migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py`
+  ships partial unique constraints across the affected entry points
+  (transfer ad-hoc, anchor true-up, loan-rate change, pension
+  profile). Closes F-103, F-104, F-105 in the same commit.
 
 ### F-051: Salary raise POST has no composite unique -- duplicate raise event
 
@@ -2264,7 +2501,14 @@ lives in the same database the attacker would be tampering with.
   effective_month)`. Model-level
   `UniqueConstraint(...)`. Alternative: client-side debounce.
   Unique constraint is stronger.
-- **Status:** Open
+- **Status:** Fixed in C-23 (e66c235, 2026-05-07).
+  `app/models/salary_raise.py:75` declares
+  `uq_salary_raises_profile_type_year_month` on
+  `(salary_profile_id, raise_type_id, effective_year,
+  effective_month)`. Migration
+  `migrations/versions/a3b9c2d40e15_c23_salary_raise_deduction_uniqueness.py`
+  creates the constraint live; the inflation-compounding bug is
+  blocked at the DB layer.
 
 ### F-052: Paycheck deduction POST has no composite unique -- duplicate deduction
 
@@ -2290,7 +2534,12 @@ lives in the same database the attacker would be tampering with.
   `uq_paycheck_deductions_profile_name` on
   `(salary_profile_id, name)`. Before applying, query for
   and dedup any existing duplicates.
-- **Status:** Open
+- **Status:** Fixed in C-23 (e66c235, 2026-05-07).
+  `app/models/paycheck_deduction.py:71` declares
+  `uq_paycheck_deductions_profile_name` on
+  `(salary_profile_id, name)`. Migration
+  `migrations/versions/a3b9c2d40e15_c23_salary_raise_deduction_uniqueness.py`
+  installs the constraint after a precautionary dedup pass.
 
 ### F-053: REGISTRATION_ENABLED=true in production environment
 
@@ -2796,7 +3045,14 @@ lives in the same database the attacker would be tampering with.
   `server_default='false'`. Update model declarations with
   `nullable=False, server_default="false"`. Test with a
   rollback scenario against a populated snapshot.
-- **Status:** Open
+- **Status:** Fixed in C-25 (e2b3de9, 2026-05-07).
+  `app/models/transaction.py:160-167` declares `is_override` and
+  `is_deleted` with `nullable=False, server_default=db.text("false")`;
+  the same NOT NULL + server_default sweep applies to
+  `account.is_active`, `scenario.is_baseline`, `recurrence_rule.
+  is_recurring`, `paycheck_deduction.inflation_enabled` /
+  `is_active`, and `transaction_template.sort_order`. The Alembic
+  migration backfills NULL rows before flipping NOT NULL.
 
 ### F-069: Missing partial unique index uq_scenarios_one_baseline
 
@@ -2856,7 +3112,12 @@ lives in the same database the attacker would be tampering with.
   `op.execute("CREATE SCHEMA IF NOT EXISTS system")` at the
   top of `upgrade()`. Must be part of the F-028 rebuild
   migration regardless.
-- **Status:** Open
+- **Status:** Fixed in C-13 (bf6d7a3, 2026-05-05). The rebuild
+  migration `migrations/versions/a5be2a99ea14_rebuild_audit_infrastructure.py`
+  starts with an idempotent `CREATE SCHEMA IF NOT EXISTS system`
+  prior to creating `system.audit_log`, the trigger function, and
+  the per-table triggers. Fresh-DB bringup, DR restore, and staging
+  rebuild now succeed at this step.
 
 ### F-071: Migration 22b3dd9d9ed3 partial reversal on downgrade
 
@@ -2976,7 +3237,12 @@ lives in the same database the attacker would be tampering with.
   instead of clean 400 validation errors.
 - **Recommendation:** Add `validate=validate.Range(min=0)`
   to all three fields in Create and Update schemas.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  `app/schemas/validation.py` SalaryProfile create/update schemas
+  add `Range(min=0)` to `additional_income`,
+  `additional_deductions`, and `extra_withholding` (six places
+  total). The shared `_NON_NEGATIVE_MONETARY` constant centralises
+  the rule for reuse.
 
 ### F-075: TaxBracketSet fields no Range validation
 
@@ -2994,7 +3260,11 @@ lives in the same database the attacker would be tampering with.
   mistyped negative values.
 - **Recommendation:** Add `validate=validate.Range(min=0)`
   to all three fields in `TaxBracketSetSchema`.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  `app/schemas/validation.py` `TaxBracketSetSchema` adds
+  `Range(min=0)` on `standard_deduction`, `child_credit_amount`,
+  and `other_dependent_credit_amount`; `tax_year` gains a sane
+  numeric range. Aligns with the DB CHECK at the model layer.
 
 ### F-076: Missing Marshmallow validators across salary fields
 
@@ -3017,7 +3287,13 @@ lives in the same database the attacker would be tampering with.
   = validate.Range(min=0)` helper in the schemas module, apply
   to every field that has a matching DB CHECK. One-day sweep
   across salary schemas.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  `app/schemas/validation.py:86` extracts
+  `_NON_NEGATIVE_MONETARY = validate.Range(min=0)` and
+  `_PERCENT_INPUT_RANGE`; the C-24 sweep applies them across the
+  remaining salary, FICA, investment, and tax fields. Module
+  docstring documents the percent-input -> decimal-storage
+  convention.
 
 ### F-077: Missing DB CHECKs on many Marshmallow-validated fields
 
@@ -3049,7 +3325,15 @@ lives in the same database the attacker would be tampering with.
   constraints for all listed fields. Match Marshmallow
   bounds exactly. Single migration; tests for each
   boundary.
-- **Status:** Open
+- **Status:** Fixed in C-24 (42720ca, 2026-05-07).
+  Migration `migrations/versions/b71c4a8f5d3e_c24_marshmallow_range_check_sweep.py`
+  installs the named CHECK constraints across `interest_params`,
+  `escrow_components`, `investment_params`, `loan_features`,
+  `paycheck_deductions`, `salary_raises`, `state_tax_configs`,
+  `calibration_overrides`, and `rate_history`. Constraint names
+  follow the `ck_<table>_<rule>` convention (e.g.
+  `ck_interest_params_valid_apy`,
+  `ck_escrow_components_nonneg_annual_amount`).
 
 ### F-078: FK naming-convention violation across the DB (49 of 52)
 
@@ -3152,7 +3436,15 @@ lives in the same database the attacker would be tampering with.
   any future background job uniformly. Pair with F-028
   (DB triggers) and F-082 (off-host shipping) for the full
   audit story.
-- **Status:** Open
+- **Status:** Fixed in C-14 (d56458a, 2026-05-05).
+  `app/utils/log_events.py:227-232` registers
+  `EVT_ACCESS_DENIED_OWNER_ONLY` and `EVT_ACCESS_DENIED_CROSS_USER`
+  alongside the rest of the structured-event catalogue;
+  `log_event(...)` is pushed down into every mutating service
+  (transactions, transfers, accounts, categories, salary, savings,
+  retirement, settings) so writes from routes, scripts, and future
+  jobs all emit a single canonical event. The same commit closes
+  F-085 and F-144.
 
 ### F-081: No least-privilege DB role for the application
 
@@ -3189,7 +3481,13 @@ lives in the same database the attacker would be tampering with.
   the new role. Keep `shekel_user` (owner) for migrations;
   invoke migrations explicitly with the owner-role URL,
   not the app-role URL.
-- **Status:** Open
+- **Status:** Fixed in C-13 (bf6d7a3, 2026-05-05).
+  `scripts/init_db_role.sql` provisions the `shekel_app` DML-only
+  role (no DDL, no CREATEROLE) with USAGE on `ref` and SELECT-only
+  on `system`. The runtime `DATABASE_URL` uses this role; migrations
+  are invoked with the owner-role URL. The audit-trigger function
+  is owned by the elevated role so the runtime role cannot drop or
+  bypass it (load-bearing invariant for the two-role policy).
 
 ### F-082: No off-host / tamper-evident audit log shipping
 
@@ -3226,7 +3524,13 @@ lives in the same database the attacker would be tampering with.
   Ship both `applogs` and the Postgres audit-log WAL/
   trigger output. Same remediation closes ~8 High
   Repudiation cells.
-- **Status:** Open
+- **Status:** Fixed in C-15 (f1fc08a, 2026-05-05). Implemented
+  option (b). `monitoring/promtail-config.yml` ships container
+  logs to Grafana Loki on a separate container/network;
+  `docker-compose.yml:201-203` documents the off-host shipping
+  contract. Also closes F-150 (rewritable applogs volume) and
+  F-146 (`EVT_RATE_LIMIT_EXCEEDED` registered at
+  `app/utils/log_events.py:239` so 429s alert on tampering).
 
 ### F-083: verify_password silently returns False on non-string inputs
 
@@ -3321,7 +3625,12 @@ lives in the same database the attacker would be tampering with.
   AUTH, "User registered", user_id=user.id, email=email)`.
   Capture the user object from `register_user()` return
   (currently discarded).
-- **Status:** Open
+- **Status:** Fixed in C-14 (d56458a, 2026-05-05).
+  `app/routes/auth.py` `/register` POST emits
+  `EVT_USER_REGISTERED` via `log_event(...)` after the commit;
+  the bare `logger.info` is gone. Same commit registers the
+  event and the access-denied family in
+  `app/utils/log_events.py`.
 
 ### F-086: No breached-password / reuse check on registration + change-password
 
@@ -3351,7 +3660,13 @@ lives in the same database the attacker would be tampering with.
   Optionally add zxcvbn strength score check (reject score
   < 3). Optionally add `password_history` table with last N
   bcrypt hashes for reuse prevention.
-- **Status:** Open
+- **Status:** Fixed in C-11 (6e4757c, 2026-05-05).
+  `app/config.py:221` exposes `HIBP_CHECK_ENABLED` (env-toggle,
+  defaults true) and a per-call HTTPS timeout. The HIBP service
+  uses k-anonymity at `hash_password()` time; passwords whose
+  SHA-1 prefix match-count is non-zero are rejected with a clean
+  field-level error. zxcvbn strength scoring is bundled at
+  `app/static/vendor/zxcvbn/zxcvbn.js` (closes F-089).
 
 ### F-087: Mixed 302/404 response convention for cross-user access (51 routes)
 
@@ -3441,7 +3756,11 @@ lives in the same database the attacker would be tampering with.
   asset (or self-hosted via the CDN vendoring from F-037).
   Render a strength meter in the register and change-
   password forms.
-- **Status:** Open
+- **Status:** Fixed in C-11 (6e4757c, 2026-05-05).
+  `app/static/vendor/zxcvbn/zxcvbn.js` is bundled as a vendored
+  static asset (under the same vendor tree as Bootstrap and htmx
+  per C-02). Register and change-password templates render the
+  strength meter alongside the existing helper text.
 
 ### F-090: Masked password view toggle missing
 
@@ -3462,7 +3781,13 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add a small JS toggle (vanilla,
   per CLAUDE.md "no frameworks") that swaps input type
   between `password` and `text`.
-- **Status:** Open
+- **Status:** Fixed in C-11 (6e4757c, 2026-05-05).
+  `app/static/js/password_toggle.js` adds a vanilla-JS handler;
+  every password input across `app/templates/auth/login.html`,
+  `register.html`, `reauth.html`, `mfa_disable.html`, and the
+  settings security templates declares
+  `data-action="password-toggle"` and a paired `password-toggle-btn`
+  button.
 
 ### F-091: No notification on authentication-factor changes
 
@@ -3490,7 +3815,12 @@ lives in the same database the attacker would be tampering with.
   notification (banner on next login) that surfaces
   recent auth-factor changes. When email is added, this
   is the canonical receiver of security notices.
-- **Status:** Open
+- **Status:** Fixed in C-16 (5ed0334, 2026-05-06). Implemented
+  the in-app banner path. `app/models/user.py:140-154` adds
+  `last_security_event_at` and a paired event-key column;
+  `auth_service` writes them whenever password change, MFA
+  enable, or MFA disable commits, and a context processor surfaces
+  the banner on the next authenticated page load.
 
 ### F-092: No WebAuthn / FIDO2 support
 
@@ -3626,7 +3956,10 @@ lives in the same database the attacker would be tampering with.
   ```
   One line. Requires `SESSION_COOKIE_SECURE=True` (already
   set) and `SESSION_COOKIE_PATH="/"` (default).
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/config.py:374` sets `SESSION_COOKIE_NAME = "__Host-session"`
+  in ProdConfig. `SESSION_COOKIE_SECURE = True` and the default
+  `/` path satisfy the `__Host-` prefix preconditions.
 
 ### F-097: CSP missing frame-ancestors 'none'
 
@@ -3647,7 +3980,10 @@ lives in the same database the attacker would be tampering with.
   deprecation could re-open clickjacking. Near-zero today.
 - **Recommendation:** Append `; frame-ancestors 'none'`
   to the CSP string.
-- **Status:** Open
+- **Status:** Fixed in C-02 (83af237, 2026-05-02).
+  `app/__init__.py:771` adds `frame-ancestors 'none'` to the
+  CSP directive list, alongside the new `base-uri` and
+  `form-action` rules from the same commit.
 
 ### F-098: variance_tab forwards raw period_id without ownership validation
 
@@ -3685,7 +4021,11 @@ lives in the same database the attacker would be tampering with.
           period_id = None
   ```
   Or drop period metadata from the filename.
-- **Status:** Open
+- **Status:** Fixed in C-30 (a45029a, 2026-05-08).
+  `app/routes/analytics.py:220-` validates `period_id` ownership
+  at the route boundary inside `variance_tab`; cross-user or
+  non-existent IDs return 404 before any service call. The
+  victim's `start_date` no longer leaks via the CSV filename.
 
 ### F-099: grid.balance_row dereferences scenario.id without None-check
 
@@ -3804,7 +4144,13 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Client-side debounce (disable submit
   on click, re-enable on HTMX completion). Optional
   server-side idempotency key.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07). Idempotency
+  uniqueness migration
+  `migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py`
+  installs partial unique constraints that block duplicate
+  ad-hoc transaction / loan-rate / pension-profile inserts at
+  the DB layer. Client-side debounce remains the optional UX
+  layer.
 
 ### F-103: Anchor true-up writes duplicate history rows on double-submit
 
@@ -3829,7 +4175,11 @@ lives in the same database the attacker would be tampering with.
   matches the current submission; if yes, skip writing a
   duplicate. Or collapse same-second duplicates at read
   time for reporting.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07).
+  Migration `migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py`
+  adds the AccountAnchorHistory partial unique constraint that
+  blocks duplicate same-second history rows from the true-up
+  endpoint and `inline_anchor_update`.
 
 ### F-104: Loan rate change double-submit creates duplicate RateHistory
 
@@ -3850,7 +4200,11 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add composite unique
   `uq_rate_history_account_effective_date` on
   `(account_id, effective_date)` via Alembic migration.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07).
+  Migration `migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py`
+  installs the composite unique on `(account_id, effective_date)`
+  for `RateHistory`. The duplicate-row UI symptom is now blocked
+  at the DB layer.
 
 ### F-105: Pension profile double-submit creates duplicate
 
@@ -3868,7 +4222,11 @@ lives in the same database the attacker would be tampering with.
   pension. User notices and deletes one.
 - **Recommendation:** Add composite unique
   `uq_pension_profiles_user_name` on `(user_id, name)`.
-- **Status:** Open
+- **Status:** Fixed in C-22 (5397ac9, 2026-05-07).
+  Migration `migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py`
+  adds the composite unique on `(user_id, name)` for
+  `PensionProfile`. Duplicate same-name pensions for the same
+  user are blocked at the DB layer.
 
 ### F-106: SavingsGoal.contribution_per_period -- schema accepts 0, DB rejects
 
@@ -3888,7 +4246,12 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Change schema to
   `Range(min=0, min_inclusive=False), allow_none=True`
   with `@pre_load` that strips empty strings to None.
-- **Status:** Open
+- **Status:** Fixed in C-25 (e2b3de9, 2026-05-07).
+  `app/schemas/validation.py:1006` flips `SavingsGoal.
+  contribution_per_period` to `Range(min=0,
+  min_inclusive=False)` (with `allow_none=True` plus the
+  `@pre_load` empty-string-to-None) so zero is rejected at the
+  schema layer instead of bubbling up as an IntegrityError.
 
 ### F-107: LoanParams.original_principal -- schema accepts 0, DB rejects
 
@@ -3905,7 +4268,12 @@ lives in the same database the attacker would be tampering with.
 - **Impact:** Same as F-106.
 - **Recommendation:** Change schema to
   `Range(min=0, min_inclusive=False)`.
-- **Status:** Open
+- **Status:** Fixed in C-25 (e2b3de9, 2026-05-07).
+  `app/schemas/validation.py:1438` flips
+  `LoanParamsCreateSchema.original_principal` to
+  `Range(min=0, min_inclusive=False)`. Aligns the schema with the
+  DB CHECK `original_principal > 0` so zero is rejected with a
+  clean field-level 400 instead of an IntegrityError.
 
 ### F-108: .env.dev committed stale with nonexistent path reference
 
@@ -3999,7 +4367,14 @@ lives in the same database the attacker would be tampering with.
       raise ValueError("SECRET_KEY must be set to a secure random value in production.")
   ```
   Add length check `len(self.SECRET_KEY) >= 32`.
-- **Status:** Open
+- **Status:** Fixed in C-01 (66082c4, 2026-05-01).
+  `app/config.py:24-29` declares the `_KNOWN_DEFAULT_SECRETS`
+  frozenset (containing the three historical placeholders);
+  `app/config.py:411-428` enforces the empty / placeholder /
+  length policy with three actionable error messages.
+  `entrypoint.sh:38-55` adds an upstream pre-Gunicorn validation
+  for the same three branches (presence, length, placeholder
+  set), so misconfiguration is caught before migrations run.
 
 ### F-111: docker-compose.dev.yml hardcodes SECRET_KEY as a known placeholder
 
@@ -4019,7 +4394,14 @@ lives in the same database the attacker would be tampering with.
   placeholder-rejection list.
 - **Recommendation:** Leave the dev compose value; add
   this string to the rejection list in F-110.
-- **Status:** Open
+- **Status:** Fixed in C-01 (66082c4, 2026-05-01).
+  `docker-compose.dev.yml:95` replaces the hardcoded value with
+  the required-env reference `SECRET_KEY: ${SECRET_KEY:?Set
+  SECRET_KEY in .env (see .env.example)}` -- a missing var now
+  fails compose-up with an actionable message instead of
+  silently shipping the placeholder. The placeholder string is
+  retained in `_KNOWN_DEFAULT_SECRETS` so any future
+  reintroduction is rejected at boot.
 
 ### F-112: DevConfig has no cookie hardening / no pragma comment
 
@@ -4091,7 +4473,13 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Redact email addresses in seed
   script output (log user_id + role, not email). Suppress
   "already exists" messages after initial setup.
-- **Status:** Open
+- **Status:** Fixed in C-16 (5ed0334, 2026-05-06).
+  `scripts/seed_user.py` and `scripts/seed_tax_brackets.py` now
+  redact email addresses from log output (logging user_id + role
+  only) and suppress benign "already exists" lines. Companion
+  `SensitiveFieldScrubber` log filter at
+  `app/utils/logging_config.py:297` defends downstream sinks if
+  PII is ever introduced to the logger again.
 
 ### F-115: No resource limits on any container
 
@@ -4528,7 +4916,13 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Query `pg_attrdef` directly to
   confirm whether defaults truly exist. If not, issue a
   migration to restore them. See also F-068.
-- **Status:** Open
+- **Status:** Fixed in C-25 (e2b3de9, 2026-05-07).
+  Live `pg_attrdef` was inspected; the affected columns were
+  already NOT NULL. The C-25 sweep restores `server_default`
+  on the model declarations and Alembic migration so future
+  raw INSERTs without explicit column values pick up the
+  documented defaults instead of relying on the live-DB
+  artefact.
 
 ### F-135: Boundary inclusivity mismatches (schema >=0 vs DB >0 or vice versa)
 
@@ -4551,7 +4945,13 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Align both sides to the intended
   semantic. Usually monetary amounts should be `> 0`
   and counts should be `>= 0`. Add boundary tests.
-- **Status:** Open
+- **Status:** Fixed in C-25 (e2b3de9, 2026-05-07).
+  Schema and DB are now aligned for the F-106/F-107 monetary
+  columns and for the broader strictly-positive monetary set
+  flagged in this rollup. Boundary tests assert that zero is
+  rejected with a clean field-level 400 (not an
+  IntegrityError) for every monetary column with a `> 0`
+  CHECK.
 
 ### F-136: Inconsistent inter-budget pay_period_id ondelete policies
 
@@ -4697,7 +5097,12 @@ lives in the same database the attacker would be tampering with.
   last-timestep check rejects a code, emit
   `log_event(logger, WARNING, "totp_replay_rejected",
   AUTH, user_id=user.id)`.
-- **Status:** Open
+- **Status:** Fixed in C-09 (e7e0bae, 2026-05-04).
+  `app/utils/log_events.py:201` registers
+  `EVT_TOTP_REPLAY_REJECTED` and `app/routes/auth.py:179` emits
+  it whenever the last-timestep check rejects a code (and
+  `:1210` for the disable path). Closed in the same commit as
+  F-005.
 
 ### F-143: View active sessions UI missing
 
@@ -4747,7 +5152,13 @@ lives in the same database the attacker would be tampering with.
   resource_type=..., resource_id=...)` inside
   `require_owner` and `get_or_404` when ownership
   fails.
-- **Status:** Open
+- **Status:** Fixed in C-14 (d56458a, 2026-05-05).
+  `app/utils/log_events.py:227-232` registers
+  `EVT_ACCESS_DENIED_OWNER_ONLY` (role mismatch) and
+  `EVT_ACCESS_DENIED_CROSS_USER` (ownership mismatch);
+  `require_owner` and `get_or_404` in
+  `app/utils/auth_helpers.py` emit the appropriate event before
+  returning 404. "Access denied for user X" is now queryable.
 
 ### F-145: Fourteen broad `except Exception:` blocks in routes
 
@@ -4802,7 +5213,13 @@ lives in the same database the attacker would be tampering with.
   (429 responses) to an alerting channel. Add per-user
   daily failed-login thresholds. Integrates naturally
   with F-082 (off-host log shipping).
-- **Status:** Open
+- **Status:** Fixed in C-15 (f1fc08a, 2026-05-05).
+  `app/utils/log_events.py:239` registers
+  `EVT_RATE_LIMIT_EXCEEDED` under ACCESS, and
+  `app/__init__.py:579` emits it whenever the limiter rejects
+  a request. The off-host pipeline shipped in the same commit
+  forwards 429 events to Loki; alerting hooks fire on the
+  abnormal-volume signal.
 
 ### F-147: PII and financial data not encrypted at rest
 
@@ -4884,7 +5301,12 @@ lives in the same database the attacker would be tampering with.
 - **Impact:** Same threat model as F-082 at smaller scope.
 - **Recommendation:** Ship logs to Loki/syslog/S3 for
   tamper-evidence. Same remediation as F-082.
-- **Status:** Open
+- **Status:** Fixed in C-15 (f1fc08a, 2026-05-05). Closed in the
+  same commit as F-082: `monitoring/promtail-config.yml` ships the
+  `applogs` volume contents to off-host Loki on a separate
+  network. The volume is no longer the authoritative store; an
+  attacker who pivots into the app container cannot redact what
+  has already shipped.
 
 ### F-151: No formal sensitive-data inventory / classification doc
 
@@ -5070,7 +5492,14 @@ lives in the same database the attacker would be tampering with.
   `SensitiveFieldScrubber(logging.Filter)` that walks
   `record.args` and `record.msg` for known sensitive
   patterns and rewrites to `"[REDACTED]"`.
-- **Status:** Open
+- **Status:** Fixed in C-16 (5ed0334, 2026-05-06).
+  `app/utils/logging_config.py:297` defines
+  `SensitiveFieldScrubber(logging.Filter)`, attached via the
+  `filters` config block; the filter walks `record.args` and
+  `record.msg` and rewrites password / totp / backup / secret /
+  cookie patterns to `[REDACTED]`. The substitution is
+  idempotent so a second pass cannot re-match the literal
+  redaction marker.
 
 ### Informational observations (rolled up)
 
