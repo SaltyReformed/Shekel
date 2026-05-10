@@ -659,6 +659,199 @@ served.
 5. **Commit.**  One commit per refresh; commit message names the package and
    version (e.g. `chore(vendor): bump Chart.js 4.4.7 -> 4.5.0`).
 
+### 4.11 Docker Daemon Hardening Defaults (Commit C-35)
+
+The compose files in this repo apply per-container hardening
+(`security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`,
+`read_only: true`, resource caps, log rotation) to every Shekel
+service.  This section documents the matching daemon-level defaults
+the operator should apply on the host so co-tenant containers
+managed outside this repo (jellyfin, immich, unifi) inherit the
+same posture without per-stack edits.  Audit findings F-055
+(daemon-level no-new-privileges) and F-116 (default log rotation),
+docker-bench checks 2.5 and 2.14.
+
+**File path.**  `/etc/docker/daemon.json` on the Proxmox host.
+This file is read by the Docker daemon at startup and applies its
+defaults to every container the daemon launches, including those
+managed by `/opt/docker/docker-compose.yml` outside this project.
+Changes to this file require a daemon reload (or restart) to take
+effect; existing containers continue with the settings they were
+created under and pick up the new defaults only on `up --force-recreate`.
+
+**Recommended baseline.**  Create or merge into `daemon.json`:
+
+```json
+{
+  "no-new-privileges": true,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "live-restore": true,
+  "userland-proxy": false
+}
+```
+
+Field-by-field rationale:
+
+| Field | Purpose |
+|-------|---------|
+| `no-new-privileges` | Blocks privilege elevation via setuid binaries inside any container.  Per-container `security_opt` in compose is still set explicitly (defense-in-depth against the daemon default being removed). |
+| `log-driver` + `log-opts` | Default log rotation for containers that do not declare their own `logging:` block.  Matches Shekel's per-service settings; affects co-tenant containers like immich_redis whose authors did not configure rotation. |
+| `live-restore` | Lets containers keep running across `systemctl restart docker`.  Avoids unnecessary downtime during daemon upgrades. |
+| `userland-proxy` | Disables the userland docker-proxy and routes via iptables NAT instead.  Reduces attack surface; the proxy is mostly relevant for IPv6 hairpinning that Shekel does not need. |
+
+**Apply procedure (one-time, host-side).**
+
+1. Back up the existing file (if any):
+
+   ```bash
+   sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.$(date +%Y%m%d) 2>/dev/null || true
+   ```
+
+2. Write the recommended config:
+
+   ```bash
+   sudo install -m 0644 -o root -g root /dev/stdin /etc/docker/daemon.json <<'EOF'
+   {
+     "no-new-privileges": true,
+     "log-driver": "json-file",
+     "log-opts": {
+       "max-size": "10m",
+       "max-file": "3"
+     },
+     "live-restore": true,
+     "userland-proxy": false
+   }
+   EOF
+   ```
+
+3. Validate the JSON parses cleanly:
+
+   ```bash
+   sudo docker info --format '{{json .}}' >/dev/null  # confirms daemon still reads its config
+   sudo dockerd --validate --config-file /etc/docker/daemon.json
+   ```
+
+4. Reload the daemon:
+
+   ```bash
+   sudo systemctl reload docker
+   ```
+
+   `systemctl reload` re-reads `daemon.json` without killing
+   containers (the live-restore setting above is what allows this).
+   Use `systemctl restart docker` only if reload reports the option
+   is unsupported on the installed Docker version.
+
+5. Verify the daemon picked up the new defaults:
+
+   ```bash
+   docker info | grep -E '(no-new-privileges|Live Restore|Logging Driver|Default Runtime)'
+   ```
+
+6. Force-recreate the Shekel stack to pick up the daemon-level
+   logging defaults on existing containers:
+
+   ```bash
+   cd /opt/docker/shekel
+   sudo docker compose up -d --force-recreate
+   ```
+
+   The `live-restore` change is daemon-only; it does not require
+   container recreation.  Per-container `security_opt` in
+   `docker-compose.yml` already sets `no-new-privileges` on each
+   Shekel service, so the daemon default is redundant for this
+   stack -- it is still set so that co-tenant containers and any
+   future stack on this host gets the same posture by default.
+
+**Rollback.**  Restore the backup taken in step 1 and reload the
+daemon:
+
+```bash
+sudo cp /etc/docker/daemon.json.bak.<DATE> /etc/docker/daemon.json
+sudo systemctl reload docker
+```
+
+### 4.12 Migration to Per-Service Hardening (Commit C-35)
+
+When bringing an existing Shekel deployment up under the C-35
+hardening (`user: postgres` on db, `user: nginx` on nginx, both
+under `cap_drop: ALL` and `read_only: true`), two pre-existing
+state items can trip the first start.  Address them before issuing
+`docker compose up -d --force-recreate` to recreate the
+containers.
+
+**1. Verify the `shekel-prod-pgdata` volume is owned by uid 70.**
+
+The pinned `user: postgres` directive on the db service is what
+lets the container start under `cap_drop: ALL` (without CAP_CHOWN
+the entrypoint cannot chown PGDATA on the way in -- see the
+in-line compose comment).  Production volumes initialised under
+the previous root-mode entrypoint should already be postgres-owned
+because that older entrypoint did chown them on first init, but
+verify before recreating:
+
+```bash
+sudo docker run --rm \
+    -v shekel-prod-pgdata:/d \
+    --entrypoint sh \
+    postgres:16-alpine \
+    -c 'stat -c "%u:%g %n" /d /d/PG_VERSION'
+# Expected: 70:70 /d
+#           70:70 /d/PG_VERSION
+```
+
+If the output reports `0:0` (root-owned), chown the volume in a
+disposable container before recreating:
+
+```bash
+sudo docker run --rm \
+    -v shekel-prod-pgdata:/d \
+    --entrypoint sh \
+    postgres:16-alpine \
+    -c 'chown -R 70:70 /d'
+```
+
+**2. Verify the `shekel-prod-app-state` volume is shekel-owned.**
+
+The app service runs as the `shekel` user (Dockerfile USER
+directive) and writes the seed-complete sentinel under
+`/home/shekel/app/state`.  The volume was created under Commit
+C-34 and inherits the in-image directory ownership, so this is
+mostly defensive.  Verify once:
+
+```bash
+sudo docker run --rm \
+    -v shekel-prod-app-state:/d \
+    --entrypoint sh \
+    ghcr.io/saltyreformed/shekel:latest \
+    -c 'stat -c "%u:%g %n" /d'
+# Expected: <shekel uid>:<shekel gid> /d
+```
+
+If the volume came up root-owned, chown it the same way as the
+PGDATA volume above (substituting the correct uid/gid for
+`shekel`).
+
+**3. Bring up the stack and watch for healthy state.**
+
+```bash
+cd /opt/docker/shekel
+sudo docker compose up -d --force-recreate
+sudo docker compose ps
+```
+
+Each service should report `healthy` within a minute or two.  If
+db restarts in a loop, run `sudo docker logs shekel-prod-db` --
+the first error line names the missing permission and points to
+the volume that needs chown.  If nginx restarts, run
+`sudo docker logs shekel-prod-nginx` -- the master logs the
+specific path it cannot write (most often a missed tmpfs entry
+in the compose file).
+
 ---
 
 ## 5. Monitoring & Observability

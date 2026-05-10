@@ -33,7 +33,17 @@ services:
       POSTGRES_PASSWORD: shekel_pass
       POSTGRES_DB: shekel
     ports:
-      - "5432:5432"
+      # Loopback-only bind (audit finding F-057 / Commit C-35).  The
+      # dev databases use the public credentials shekel_user / shekel_pass
+      # that are committed into this compose file and therefore
+      # readable by anyone with repo access.  Binding 0.0.0.0:5432 (the
+      # implicit Docker default) made the DB reachable from any LAN
+      # device that could route to the developer's host: a phone, a
+      # compromised IoT device, an unrelated container on a shared
+      # network.  Pinning to 127.0.0.1 keeps the DB reachable from
+      # ``flask run`` on the host (which connects via localhost) but
+      # not from anywhere off-host.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -52,7 +62,10 @@ services:
       POSTGRES_PASSWORD: shekel_pass
       POSTGRES_DB: shekel_test
     ports:
-      - "5433:5432"
+      # Loopback-only bind (audit finding F-057 / Commit C-35).  See
+      # the db service above for the full rationale; the test DB has
+      # the same exposure profile and the same fix.
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     # Kill zombie transactions from crashed test runs after 30s,

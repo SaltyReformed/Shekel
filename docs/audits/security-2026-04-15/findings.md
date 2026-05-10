@@ -2751,7 +2751,11 @@ lives in the same database the attacker would be tampering with.
   default). Alternative: add `security_opt:
   ["no-new-privileges:true"]` to each service in
   `docker-compose.yml`.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Per-container
+  `security_opt: [no-new-privileges:true]` set on db, app, nginx,
+  and redis in `docker-compose.yml`; the operator-side
+  `/etc/docker/daemon.json` runbook (docs/runbook.md §4.11) sets
+  the same flag as a daemon default for any future co-tenant.
 
 ### F-056: No capability dropping on any container
 
@@ -2775,7 +2779,13 @@ lives in the same database the attacker would be tampering with.
   specific services actually need (likely none for the
   Python app; `NET_BIND_SERVICE` if nginx binds a privileged
   port, though the compose binds 80/443 via the host).
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `cap_drop: [ALL]` set on db,
+  app, nginx, and redis in `docker-compose.yml` with no `cap_add`
+  required.  Pinning `user: postgres` (db), `user: nginx` (nginx),
+  and `user: redis` (redis already in C-15-era hardening) plus
+  moving the bundled nginx listen port to 8080 in
+  `deploy/nginx-bundled/nginx.conf` removes the residual need for
+  CAP_CHOWN, CAP_SETUID, CAP_SETGID, and CAP_NET_BIND_SERVICE.
 
 ### F-057: Dev databases bound to 0.0.0.0 with public credentials
 
@@ -2809,7 +2819,10 @@ lives in the same database the attacker would be tampering with.
   `"127.0.0.1:5432:5432"` and `"127.0.0.1:5433:5432"` so the
   bindings are loopback-only. Flask dev server uses
   `localhost` by default, so no app change needed.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Both dev DB ports now bind to
+  `127.0.0.1` only in `docker-compose.dev.yml`; verified by
+  `docker compose -f docker-compose.dev.yml config` showing
+  `host_ip: 127.0.0.1` on both 5432 and 5433 mappings.
 
 ### F-058: pyotp stale -- 33 months since last release
 
@@ -4703,7 +4716,12 @@ lives in the same database the attacker would be tampering with.
   `mem_limit: 256m` for db, `pids_limit: 200` to each
   service in `docker-compose.yml`. Tune based on observed
   usage.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `mem_limit` and `pids_limit`
+  set on every Shekel service in `docker-compose.yml`: app
+  (512 MiB / 200), db (384 MiB / 256, raised from the recommended
+  256 MiB to accommodate postgres shared_buffers + per-connection
+  work_mem), nginx (96 MiB / 100), and redis (96 MiB / 100, set
+  earlier).
 
 ### F-116: No Docker log rotation configured
 
@@ -4729,7 +4747,12 @@ lives in the same database the attacker would be tampering with.
       max-size: "10m"
       max-file: "3"
   ```
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Per-service `logging` block
+  added to db, nginx, and redis in `docker-compose.yml`; the app
+  service already had it from Commit C-15.  Operator-side
+  `/etc/docker/daemon.json` runbook (docs/runbook.md §4.11) sets
+  the same defaults so co-tenant containers without their own
+  `logging:` block inherit rotation.
 
 ### F-117: Container root filesystem is writable
 
@@ -4752,7 +4775,13 @@ lives in the same database the attacker would be tampering with.
   tmpfs:
     - /tmp
   ```
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `read_only: true` set on app,
+  db, nginx, and redis in `docker-compose.yml` with the necessary
+  tmpfs mounts per service: app (`/tmp`); db (`/tmp`,
+  `/var/run/postgresql`); nginx (`/tmp`, `/var/cache/nginx`,
+  `/var/run`, `/run`); redis (`/tmp`, `/data`).  `PYTHONDONTWRITEBYTECODE=1`
+  added to the app environment so Python does not log
+  permission-denied warnings on every import attempt.
 
 ### F-118: psycopg2 LGPL license
 

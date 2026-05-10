@@ -29,6 +29,22 @@ services:
     image: postgres:16-alpine
     container_name: shekel-prod-db
     restart: unless-stopped
+    # ``user: postgres`` is load-bearing alongside ``cap_drop: ALL``
+    # (audit findings F-055, F-056, F-117 / Commit C-35).  The
+    # postgres:16-alpine entrypoint, when it sees uid 0, runs
+    # ``chown -R postgres /var/lib/postgresql/data`` and
+    # ``chown -R postgres /var/run/postgresql`` and then drops to the
+    # postgres user via ``gosu``.  With ``cap_drop: ALL`` neither
+    # chown call has ``CAP_CHOWN`` and the entrypoint exits non-zero,
+    # taking the container with it.  Pinning ``user: postgres``
+    # (uid 70 in the alpine image) makes the entrypoint's
+    # ``[ "$(id -u)" = '0' ]`` branch fall through -- chown is
+    # skipped entirely and ``postgres`` exec's with the same uid the
+    # gosu drop would have switched to.  The existing
+    # shekel-prod-pgdata volume is already postgres-owned (the
+    # previous root-mode entrypoint chowned it on first init), so
+    # the postgres user has full write access to PGDATA.
+    user: postgres
     environment:
       POSTGRES_USER: shekel_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -42,6 +58,46 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # Container logs rotate locally so the host disk cannot fill from
+    # an unbounded log stream (audit finding F-116 / Commit C-35).
+    # Postgres is low-volume in steady state but emits verbose query
+    # logs during migrations, so 3 x 10 MiB is enough scrollback for
+    # the operator without risking the host partition.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Resource caps -- audit findings F-115 (Commit C-35).  Postgres
+    # uses shared_buffers (default 128 MiB) plus per-connection
+    # work_mem; 384 MiB is comfortable headroom for a single-user
+    # personal-finance deployment with the default max_connections.
+    # pids_limit accounts for one process per connection plus the
+    # background workers (autovacuum launcher, walwriter, checkpointer,
+    # background writer, stats collector, logical replication launcher).
+    mem_limit: 384m
+    pids_limit: 256
+    # Container hardening -- audit findings F-055, F-056, F-117
+    # (Commit C-35).  Drop every Linux capability, prevent privilege
+    # escalation via setuid binaries, and run with a read-only root
+    # filesystem.  Postgres binds TCP/5432 (non-privileged), so no
+    # capability needs to be added back.  Writable paths the postgres
+    # process needs:
+    #   - /var/lib/postgresql/data: real volume (mounted above)
+    #   - /var/run/postgresql:      tmpfs for the unix socket
+    #   - /tmp:                     tmpfs for general temp files
+    # Default tmpfs mode 1777 lets the postgres user create the
+    # socket without needing CAP_CHOWN; the entrypoint's
+    # ``chmod 03775 /var/run/postgresql || :`` falls through silently
+    # because the directory is already world-writable on tmpfs.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
 
   # ── Redis (Flask-Limiter Storage) ────────────────────────────────
   # Holds rate-limit counters that must be shared across Gunicorn
@@ -226,6 +282,20 @@ services:
       # finding F-015, Commit C-33.  Override only if the ``backend``
       # subnet is repinned in this compose file.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.31.0.0/24}
+      # Disable Python bytecode cache.  With ``read_only: true`` below
+      # (Commit C-35), Python cannot write ``__pycache__`` directories
+      # under /home/shekel/app and would log noisy "permission denied"
+      # warnings on every import.  Setting this to ``1`` skips the
+      # write attempt entirely.  Functionally equivalent: bytecode is
+      # compiled in-memory per process; the production workload is
+      # long-running so the one-time compile cost is amortised.
+      PYTHONDONTWRITEBYTECODE: "1"
+      # Force unbuffered stdout/stderr.  Container logs reach Docker's
+      # json-file driver (and downstream Loki via Alloy) line-by-line
+      # rather than waiting for a flush, so an OOM-killed worker still
+      # leaves a complete record in the log stream.  Required for the
+      # observability pipeline documented in observability.md / C-15.
+      PYTHONUNBUFFERED: "1"
     volumes:
       # Shared volume: app copies static files here for Nginx to serve.
       - static_files:/var/www/static
@@ -260,6 +330,40 @@ services:
       timeout: 5s
       start_period: 120s
       retries: 3
+    # Resource caps -- audit finding F-115 (Commit C-35).  Two
+    # gunicorn workers plus the master is roughly 200-300 MiB resident
+    # for this app's import surface (Flask, SQLAlchemy, Marshmallow,
+    # cryptography, the budget service modules); 512 MiB leaves
+    # headroom for transient spikes during 2-year recurrence
+    # regeneration without crowding sibling containers on the host.
+    # pids_limit covers the master, both workers, and short-lived
+    # subprocesses (psql/python in entrypoint.sh, healthcheck shells).
+    mem_limit: 512m
+    pids_limit: 200
+    # Container hardening -- audit findings F-055, F-056, F-117
+    # (Commit C-35).  The Dockerfile already runs the gunicorn
+    # process as the unprivileged ``shekel`` user, so capabilities
+    # serve no purpose at runtime; cap_drop ALL closes the residual
+    # surface a setuid binary in /opt/venv or apt-installed libpq
+    # could expose under a future RCE.  no-new-privileges blocks any
+    # such binary from elevating even within its own user.  The
+    # rootfs becomes immutable so an attacker who lands code execution
+    # in Gunicorn cannot persist a payload to /home/shekel/app or
+    # /opt/venv -- restarting the container reverts to the
+    # last-deployed image.  Writable surfaces:
+    #   - /tmp:                              tmpfs (Python/cryptography temps)
+    #   - /home/shekel/app/state:            named volume (seed sentinel)
+    #   - /var/www/static:                   shared volume (entrypoint copies static files)
+    # PYTHONDONTWRITEBYTECODE=1 above suppresses the __pycache__
+    # write attempts that would otherwise log "permission denied" on
+    # every module import.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────────
   nginx:
@@ -269,10 +373,32 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    # ``user: nginx`` lets nginx run with ``cap_drop: ALL`` (audit
+    # findings F-055, F-056, F-117 / Commit C-35).  The nginx
+    # alpine image's master process defaults to root and forks
+    # workers under whatever the ``user`` directive says (default
+    # ``nginx`` user from the upstream config we override).  The
+    # privilege drop from root to nginx requires CAP_SETUID and
+    # CAP_SETGID, which we cannot grant without re-introducing exactly
+    # the surface this hardening is meant to remove.  Pinning the
+    # whole process tree to the nginx user up-front sidesteps the
+    # drop entirely and lets us run with zero capabilities.  The
+    # paired changes that make this viable:
+    #   - deploy/nginx-bundled/nginx.conf listens on 8080 (non-priv)
+    #     so the master does not need CAP_NET_BIND_SERVICE.
+    #   - deploy/nginx-bundled/nginx.conf writes ``pid /tmp/nginx.pid;``
+    #     so the master can record its pid on the read-only rootfs's
+    #     /tmp tmpfs (the default /run path is owned by root and not
+    #     writable by the nginx user without CAP_DAC_OVERRIDE).
+    user: nginx
     ports:
-      # External access: host port 80 → Nginx port 80.
-      # Override with NGINX_PORT in .env if port 80 is in use.
-      - "${NGINX_PORT:-80}:80"
+      # External access: host port 80 → Nginx port 8080.  The
+      # external-facing port is unchanged; only the internal listen
+      # port moved from 80 to 8080 so nginx (running as the
+      # unprivileged ``nginx`` user) does not need
+      # CAP_NET_BIND_SERVICE under cap_drop ALL.  Override the host
+      # side with NGINX_PORT in .env if port 80 is already in use.
+      - "${NGINX_PORT:-80}:8080"
     volumes:
       # Nginx configuration file (read-only).  This is the BUNDLED
       # config -- mounted only when shekel-prod-nginx actually runs.
@@ -287,11 +413,55 @@ services:
       - frontend
       - backend
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost/health || exit 1"]
+      # Probes the internal listen port (8080) -- see the ``ports``
+      # block above for why the internal port moved off 80.
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
+    # Container logs rotate locally so the host disk cannot fill from
+    # an unbounded access-log stream (audit finding F-116 / Commit
+    # C-35).  Nginx access logs already stream to /dev/stdout via the
+    # bundled config, so this controls the json-file driver buffer
+    # under /var/lib/docker/containers/<id>.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Resource caps -- audit finding F-115 (Commit C-35).  Nginx is
+    # tightly bounded; 96 MiB matches the redis sibling and is
+    # generous for the static-file + reverse-proxy workload of a
+    # single-user app.  pids_limit accommodates the master plus
+    # ``worker_processes auto`` (one per host CPU core, capped at
+    # whatever the cgroup exposes).
+    mem_limit: 96m
+    pids_limit: 100
+    # Container hardening -- audit findings F-055, F-056, F-117
+    # (Commit C-35).  Nginx running as the unprivileged ``nginx``
+    # user (see ``user:`` above) on a non-privileged listen port
+    # needs zero Linux capabilities.  Read-only rootfs prevents
+    # post-RCE persistence; the writable paths nginx actually
+    # touches are exposed via tmpfs:
+    #   - /tmp:                tmpfs (pid file, generic temp space)
+    #   - /var/cache/nginx:    tmpfs (proxy/client_body temp dirs;
+    #                          empty in steady state because
+    #                          ``proxy_buffering off`` is set in
+    #                          deploy/nginx-bundled/nginx.conf, but
+    #                          nginx still requires the path to exist)
+    #   - /var/run, /run:      tmpfs (the nginx alpine image's
+    #                          docker-entrypoint.d scripts probe these)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+      - /run
 
 volumes:
   # PostgreSQL data persistence.

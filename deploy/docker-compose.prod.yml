@@ -101,6 +101,20 @@
 # Either invocation must produce the same merged config.  See
 # docs/runbook.md "Shared-mode deployment" for the sync procedure that
 # keeps the on-host override in step with this file.
+#
+# CONTAINER HARDENING INHERITANCE (Commit C-35)
+# ---------------------------------------------
+# This override does NOT redeclare the ``security_opt``,
+# ``cap_drop``, ``read_only``, ``tmpfs``, ``mem_limit``,
+# ``pids_limit``, ``logging``, or ``user`` settings from the base
+# docker-compose.yml.  Compose merges per-key by default for those
+# scalars; the only keys this file overrides are ``environment.*``
+# (FORWARDED_ALLOW_IPS), ``networks`` (replaces the list), and
+# ``profiles`` (adds disabled to nginx).  Every hardening field on
+# the app and db services flows through to the shared-mode runtime
+# unchanged.  Verified by ``docker compose -f docker-compose.yml
+# -f deploy/docker-compose.prod.yml config`` and by the test suite
+# under tests/test_deploy/test_container_hardening.py.
 
 services:
   app:
