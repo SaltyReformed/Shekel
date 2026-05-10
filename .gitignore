@@ -14,8 +14,14 @@ venv/
 .venv/
 env/
 
-# Environment / secrets
+# Environment / secrets.  ``.env`` is the operator's local copy of
+# .env.example with real values filled in.  ``.env.dev`` was a
+# historical dev-only env file that referred to a no-longer-existent
+# Flask entrypoint path; it was removed in Commit C-38 (audit
+# finding F-108).  The pattern stays here so an operator who recreates
+# a local .env.dev for any reason does not accidentally commit it.
 .env
+.env.dev
 
 # Cosign key material.  The PUBLIC key (deploy/cosign.pub) is
 # committed -- verifiers need it.  Every other cosign key file is a

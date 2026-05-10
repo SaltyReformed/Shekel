@@ -21,10 +21,21 @@ load_dotenv()
 # is publicly known and cannot provide cryptographic confidentiality
 # for session cookies or itsdangerous-signed tokens.  See audit
 # findings F-001, F-016, F-110, F-111.
+#
+# ``replaced_by_docker_secret`` is the placeholder the audit's Commit
+# C-38 runbook tells operators to leave in ``.env`` when migrating
+# to Docker secrets (Posture 2).  In steady-state Posture 2 the
+# entrypoint loader overwrites the env value with the real secret
+# from ``/run/secrets/secret_key`` before this check runs, so the
+# placeholder is not seen here.  But if the secret file is missing
+# or unreadable, the placeholder remains -- catching it here closes
+# the gap where the operator believes they are on Posture 2 but is
+# actually running on the publicly-known placeholder.
 _KNOWN_DEFAULT_SECRETS = frozenset({
     "dev-only-change-me-in-production",
     "change-me-to-a-random-secret-key",
     "dev-secret-key-not-for-production",
+    "replaced_by_docker_secret",
 })
 
 # Minimum acceptable SECRET_KEY length for production.  32 characters
@@ -274,7 +285,36 @@ def _runtime_database_uri(default: str | None = None) -> str | None:
 
 
 class DevConfig(BaseConfig):
-    """Development configuration -- debug mode, local PostgreSQL."""
+    """Development configuration -- debug mode, local PostgreSQL.
+
+    Cookie-flag pragma (audit finding F-112):
+        DevConfig deliberately does NOT set ``SESSION_COOKIE_SECURE``,
+        ``REMEMBER_COOKIE_SECURE``, or the ``__Host-`` session cookie
+        prefix that ProdConfig sets.  ``flask run`` serves over plain
+        HTTP on ``http://localhost:5000``: a ``Secure``-flagged cookie
+        would never ride that connection, so an authenticated dev
+        session would silently break -- ``/login`` would 200 but the
+        cookie never reaches the client and every subsequent request
+        would loop back to ``/login``.  Likewise the ``__Host-``
+        prefix is enforced by browsers only when ``Secure=True`` and
+        ``Path="/"`` are set.
+
+        The Flask defaults DevConfig inherits (``SESSION_COOKIE_SECURE
+        = False``, ``SESSION_COOKIE_HTTPONLY = True``,
+        ``SESSION_COOKIE_SAMESITE = None``) are the right posture for
+        local HTTP development -- HttpOnly remains on so a dev XSS
+        does not trivially exfiltrate the session, but Secure stays
+        off so the cookie actually rides ``http://``.  Production
+        traffic terminates TLS at the reverse proxy and the cookie
+        flags ProdConfig sets are correct for that path.
+
+        Operators who run dev under TLS (e.g. behind a local
+        reverse proxy with mkcert) can opt in by setting
+        ``FLASK_ENV=production`` for that shell, which switches the
+        config map to ProdConfig and applies the hardened flags.
+        The DevConfig class is for the supported HTTP-localhost
+        workflow only.
+    """
 
     DEBUG = True
     # Falls back to peer-auth local connection if neither
@@ -428,6 +468,7 @@ class ProdConfig(BaseConfig):
         if (
             self.SECRET_KEY in _KNOWN_DEFAULT_SECRETS
             or self.SECRET_KEY.startswith("dev-only")
+            or self.SECRET_KEY.startswith("replaced_by_docker_secret")
         ):
             raise ValueError(
                 "SECRET_KEY matches a known placeholder; "
