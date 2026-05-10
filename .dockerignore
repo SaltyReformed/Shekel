@@ -1,42 +1,179 @@
-# Version control
+# Shekel Budget App -- Docker build context exclusions
+#
+# Closes audit finding F-113.  Goal: ship the smallest production
+# image that still supports every container-side workflow documented
+# in docs/runbook.md and entrypoint.sh.
+#
+# What MUST live inside the image:
+#   - app/                      Flask application package
+#   - migrations/               Alembic migration history (used by
+#                               flask db upgrade in entrypoint.sh and
+#                               docker exec ops)
+#   - scripts/init_db.sql       Schema bootstrap (entrypoint.sh)
+#   - scripts/init_db_role.sql  Role provisioning (entrypoint.sh)
+#   - scripts/init_database.py  First-boot schema apply (entrypoint.sh)
+#   - scripts/seed_user.py      Seed initial owner (entrypoint.sh +
+#                               docker exec ops)
+#   - scripts/seed_ref_tables.py    Seed lookup tables (entrypoint.sh)
+#   - scripts/seed_tax_brackets.py  Seed US tax brackets (entrypoint.sh)
+#   - scripts/seed_companion.py     Seed companion user (docker exec)
+#   - scripts/audit_cleanup.py  Audit log retention (docker exec)
+#   - scripts/integrity_check.py    Integrity sweep (docker exec)
+#   - scripts/repair_orphaned_transfers.py    Data repair (docker exec)
+#   - scripts/reset_mfa.py      Operator MFA reset (docker exec)
+#   - scripts/rotate_sessions.py    Session invalidation (docker exec)
+#   - scripts/rotate_totp_key.py    Key rotation (docker exec)
+#   - alembic.ini               Alembic config
+#   - entrypoint.sh             ENTRYPOINT
+#   - gunicorn.conf.py          gunicorn config
+#   - requirements.txt          Pip metadata reference (deps already
+#                               built into /opt/venv in stage 1, but
+#                               kept for forensic ``pip freeze``-style
+#                               diffing inside a debugging exec)
+#   - run.py                    Flask app factory entrypoint
+#
+# Everything else listed below is dev-time tooling, host-side ops
+# scripts, build context noise, or documentation -- none of which is
+# referenced from inside the container.
+
+# ── Version control ────────────────────────────────────────────────
 .git
 .gitignore
 
-# Environment & secrets
+# ── Environment & secrets ──────────────────────────────────────────
+# .env files contain live credentials; never bake into the image.
+# .env.example is exempted so the image carries the documentation
+# template (referenced by docs/runbook_secrets.md procedures).
 .env
 .env.*
 !.env.example
 
-# Python artifacts
+# ── Python build artifacts ─────────────────────────────────────────
 __pycache__
 *.pyc
 *.pyo
-.pytest_cache
+*.egg
+*.egg-info
+.eggs
+build
+dist
+
+# ── Virtualenvs ────────────────────────────────────────────────────
+# .venv:        Developer virtualenv (deps already installed into
+#               /opt/venv inside the image during stage 1).
+# .audit-venv:  ~437 MB virtualenv used by the audit-time scanner
+#               suite; host-only.
 .venv
 venv
+env
+.audit-venv
 
-# Test suite
+# ── Test infrastructure ────────────────────────────────────────────
+# Tests are not runnable inside the slim runtime image (no pytest, no
+# test database fixtures); shipping them only inflates the layer.
 tests/
+.pytest_cache
+htmlcov
+.coverage
+coverage.xml
+pytest.ini
 
-# Logs & data
+# ── Dev-only toolchain configs ─────────────────────────────────────
+requirements-dev.txt
+.pylintrc
+.markdownlint.json
+.rumdl.toml
+
+# ── Logs & ephemeral state ─────────────────────────────────────────
+# logs/ is a host-side directory used by deploy/backup scripts.  The
+# app inside the container writes to stdout (captured by Docker's
+# json-file driver per Commit C-15), never to /home/shekel/app/logs.
+# state/ is created by entrypoint.sh when running under the dev
+# compose's host-bind mount; the production image ships a fresh
+# (empty) /home/shekel/app/state directory pre-created by the
+# Dockerfile to anchor the named-volume mount.
 logs/
 pgdata/
+state/
+*.log
 
-# Documentation
+# ── Documentation ──────────────────────────────────────────────────
+# docs/ holds runbooks, audit reports, plans, and design docs -- all
+# operator-facing content.  The host-side checkout retains all of it
+# for the operator; the runtime container does not need any of it.
+# Top-level *.md files are the same story.
 docs/
 *.md
 
-# CI/CD & IDE
-.github/
+# ── Editor / IDE / OS ──────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+.DS_Store
+Thumbs.db
 
-# Docker files (don't nest)
+# ── CI ─────────────────────────────────────────────────────────────
+.github/
+
+# ── Docker (don't include compose / Dockerfile in build context) ──
+# Dockerfile and compose files are read by ``docker build`` and
+# ``docker compose`` from the host; copying them into the image
+# would only confuse a forensic reader and leak the deploy topology.
 docker-compose*.yml
 Dockerfile
 .dockerignore
 
-# Linting config
-.pylintrc
+# ── Deployment configs (mounted from host, not baked in) ───────────
+# nginx configs under deploy/ are bind-mounted into the nginx
+# container at runtime; the app container never reads them.  The
+# compose override at deploy/docker-compose.prod.yml is consumed by
+# ``docker compose`` on the host.  Audit finding F-021 / Commit C-32.
+deploy/
+
+# ── External service templates (host-side) ─────────────────────────
+# cloudflared/config.yml is a template installed on the host as
+# /etc/cloudflared/config.yml; it is not used by the app container.
+cloudflared/
+
+# ── Host-only diagnostics & monitoring ─────────────────────────────
+diagnostics/
+monitoring/
+
+# ── Claude Code session state ──────────────────────────────────────
+.claude/
+
+# ── One-time patches (kept in repo for git history, not runtime) ───
+amortization-fix.patch
+
+# ── Worktrees / temp artifacts ─────────────────────────────────────
+.worktrees/
+
+# ── Dev-only scripts ───────────────────────────────────────────────
+# scripts/ is mostly runtime-essential; entrypoint.sh runs five of
+# the .py / .sql files at container start and the runbook documents
+# many ``docker exec ... python scripts/...`` invocations.  Only the
+# strictly host-only or build-time scripts are excluded here.
+#
+# scripts/audit/  Audit-time supporting modules (host-only).
+# scripts/hooks/  Git / claude-code hooks (host-only).
+# scripts/benchmark_triggers.py  Manual perf benchmark (dev-only;
+#                 acceptable to run via host venv).
+# scripts/vendor_google_fonts.py Vendoring step that runs at build
+#                 time on the host; fonts already shipped in
+#                 app/static/vendor/.
+# scripts/backup.sh, restore.sh, verify_backup.sh,
+# scripts/backup_retention.sh, deploy.sh, retire_stale_containers.sh
+#                 Host-side ops scripts that talk to ``docker`` from
+#                 outside the container.
+scripts/audit/
+scripts/hooks/
+scripts/benchmark_triggers.py
+scripts/vendor_google_fonts.py
+scripts/backup.sh
+scripts/backup_retention.sh
+scripts/restore.sh
+scripts/verify_backup.sh
+scripts/deploy.sh
+scripts/retire_stale_containers.sh

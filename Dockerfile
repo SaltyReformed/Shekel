@@ -45,7 +45,15 @@ COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 # collector documented in observability.md) so no /home/shekel/app/logs
 # directory is created or written -- see Commit C-15 / findings F-082
 # and F-150.
-RUN mkdir -p /var/www/static \
+#
+# /home/shekel/app/state is a small writable volume mount target the
+# seed sentinel lives under.  Pre-creating the directory in the image
+# guarantees it is shekel-owned when Docker first creates the volume
+# (the volume inherits the contents and ownership of the underlying
+# image path on first creation) so entrypoint.sh's ``touch`` runs as
+# the unprivileged shekel user without an in-line chown step.  See
+# audit finding F-022 and remediation Commit C-34.
+RUN mkdir -p /var/www/static /home/shekel/app/state \
     && chown -R shekel:shekel /home/shekel/app /var/www/static
 
 USER shekel

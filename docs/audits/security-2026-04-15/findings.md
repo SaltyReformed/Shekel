@@ -1279,7 +1279,32 @@ lives in the same database the attacker would be tampering with.
   seeding script, or pass them on the `docker run` command that
   invokes the seed script and not on the long-running app service.
   (3) Consider Docker secrets for credentials that must persist.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). Three-layer credential
+  scrub now keeps `SEED_USER_PASSWORD` and `SEED_USER_EMAIL` out of
+  the long-running Gunicorn process: (a)
+  `scripts/seed_user.py:_scrub_seed_env_vars` calls `os.environ.pop`
+  + `os.unsetenv` from a `finally` block so even a failed seed
+  scrubs the credential before the script exits;
+  (b) `entrypoint.sh:147-203` checks a `/home/shekel/app/state/.seed-complete`
+  sentinel (writable named volume `shekel-prod-app-state` mounted
+  from `docker-compose.yml`), then `unset SEED_USER_PASSWORD
+  SEED_USER_EMAIL SEED_USER_DISPLAY_NAME` BEFORE `exec "$@"` hands
+  off to Gunicorn -- so `cat /proc/<gunicorn-pid>/environ | grep
+  SEED_USER` returns nothing in steady state; (c) `docker-compose.yml`
+  comments document the operator workflow for removing the SEED_USER_*
+  lines from `.env` after first boot and recreating the container so
+  Docker's stored `Container.Config.Env` no longer carries the
+  password. The remaining `docker exec ... env` channel (which reads
+  from Config.Env, not from /proc) is closed by the operator step in
+  the .env.example comment block; full Docker secrets migration is
+  scheduled for Commit C-38. Tests:
+  `tests/test_scripts/test_seed_user.py::TestSeedUserCredentialScrub`
+  exercises the Python scrub end-to-end (including subprocess
+  inheritance);
+  `tests/test_deploy/test_seed_credential_hygiene.py` asserts the
+  source-level invariants for entrypoint.sh, docker-compose.yml,
+  Dockerfile, and seed_user.py and verifies the mount-path /
+  sentinel-path agreement.
 
 ### F-023: Host .env files are world-readable (mode 644)
 
@@ -2622,7 +2647,26 @@ lives in the same database the attacker would be tampering with.
   existing `@REGISTRATION_ENABLED` gate at
   `app/routes/auth.py` already handles the false case
   (returns 404).
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). Production registration is
+  now disabled by default at three layers: (a) `docker-compose.yml`
+  flips the interpolation default from `${REGISTRATION_ENABLED:-true}`
+  to `${REGISTRATION_ENABLED:-false}`, so a deploy without an explicit
+  `.env` value gets the safe posture; (b) `app/config.py` ProdConfig
+  adds an explicit `REGISTRATION_ENABLED = os.getenv(..., "false")`
+  override (defense-in-depth against an operator removing the
+  docker-compose default); BaseConfig keeps the `"true"` default for
+  DevConfig and TestConfig ergonomics. (c) `.env.example` ships the
+  documented production posture (`REGISTRATION_ENABLED=false`) with
+  a comment block explaining the layering. The existing route gate
+  at `app/routes/auth.py:462` and `:480` continues to return 404
+  when the flag is false. Tests:
+  `tests/test_routes/test_auth.py::TestRegistration::test_register_disabled_get_returns_404`,
+  `::test_register_disabled_post_returns_404`,
+  `::test_login_hides_register_link_when_disabled` (existing,
+  unchanged) and the new
+  `tests/test_deploy/test_seed_credential_hygiene.py::TestRegistrationDisabledByDefault`
+  asserts the docker-compose, .env.example, and ProdConfig defaults
+  remain `false`.
 
 ### F-054: Stale pre-rename containers still running
 
@@ -2655,7 +2699,25 @@ lives in the same database the attacker would be tampering with.
   (2) `docker compose -p shekel down -v` (careful: the -v
   removes volumes; don't run until the backup confirmation
   step). (3) Remove the stale networks.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). New helper
+  `scripts/retire_stale_containers.sh` enumerates the audited
+  resources (the three pre-rename containers, three stale networks,
+  and the `shekel_pgdata` volume), defaults to `--dry-run` so a
+  forgotten flag cannot delete data, and gates destruction behind
+  `--confirm` plus an interactive `yes` prompt (skippable with
+  `--force` after a prior dry-run review). The `shekel_pgdata`
+  volume is ALWAYS tarballed to `${BACKUP_DIR:-/var/backups/shekel/stale-volumes}`
+  via an ephemeral alpine container BEFORE `docker volume rm` --
+  the script enforces source-order ``backup_volume`` -> ``remove_volume``
+  in main(), and the test suite asserts on that ordering. The
+  operator runs the script once on the host after reviewing the
+  dry-run output; verified in audit-time dry-run on this host and
+  found three stale containers, one network, and the 48.2M pgdata
+  volume. Tests:
+  `tests/test_deploy/test_seed_credential_hygiene.py::TestRetireStaleContainersScript`
+  asserts existence, `bash -n` cleanliness, the dry-run-by-default
+  invariant, complete enumeration of the F-054 resource list, the
+  backup-before-remove ordering, and the `--confirm` gating.
 
 ### F-055: no-new-privileges not set at daemon or per-container level
 
@@ -4569,7 +4631,29 @@ lives in the same database the attacker would be tampering with.
   non-runtime files, or use multi-stage build copying
   only `app/`, `requirements.txt`, `gunicorn.conf.py`,
   `run.py`, `entrypoint.sh`, `migrations/`.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). The repo's `.dockerignore`
+  was rewritten with a leading inventory of the runtime-essential
+  paths (so future maintainers can answer the "is this needed in
+  the image?" question without spelunking entrypoint.sh) and an
+  expanded exclusion list covering `.claude/`, `.audit-venv/`,
+  `amortization-fix.patch`, `cloudflared/`, `diagnostics/`,
+  `monitoring/`, `requirements-dev.txt`, `pytest.ini`, `deploy/`
+  (configs are bind-mounted from the host), and the dev-only
+  scripts (`scripts/audit/`, `scripts/hooks/`,
+  `scripts/benchmark_triggers.py`,
+  `scripts/vendor_google_fonts.py`) plus the host-side ops scripts
+  (`scripts/backup.sh`, `scripts/restore.sh`, etc.). Notably
+  divergent from the original remediation plan: the plan called for
+  excluding the entire `scripts/` tree except two files, but
+  entrypoint.sh runs five scripts at container start and the
+  runbook documents many `docker exec ... python scripts/X.py`
+  invocations -- excluding them would break operator workflows.
+  The .dockerignore keeps every script the runbook references and
+  excludes only the strictly-host-only or build-time scripts.
+  Tests: `tests/test_deploy/test_seed_credential_hygiene.py::TestDockerignoreCoverage`
+  parametrizes on every audited path (both the exclusion list and
+  the runtime-essential keep-list) and asserts the documentation
+  comment block continues to inventory the runtime essentials.
 
 ### F-114: User email addresses logged on every container start
 

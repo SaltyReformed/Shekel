@@ -39,9 +39,9 @@ Edit `.env` and set these values:
 | `POSTGRES_PASSWORD` | Yes | Choose a strong database password. |
 | `SECRET_KEY` | Yes | Run `openssl rand -hex 32` and paste the output. |
 | `TOTP_ENCRYPTION_KEY` | No | Required before enabling MFA/TOTP. See [MFA Setup](#mfa-setup). |
-| `REGISTRATION_ENABLED` | No | Set to `false` to disable public registration. Default: `true`. See [Security](#security). |
-| `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local` |
-| `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026` |
+| `REGISTRATION_ENABLED` | No | Set to `true` to enable the `/register` endpoint. Default in production: `false` (see [Security](#security)). |
+| `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local`. **Remove from `.env` after the first successful boot** (see [Security](#security)). |
+| `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026`. **Remove from `.env` after the first successful boot** (see [Security](#security)). |
 
 ### 4. Create the Database Volume and Start
 
@@ -106,7 +106,7 @@ docker volume rm shekel-prod-pgdata
 | `SECRET_KEY` error on startup | Set `SECRET_KEY` in your `.env` file. Run `openssl rand -hex 32` to generate one. |
 | `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See [MFA Setup](#mfa-setup) for generation instructions. |
-| `/register` returns 404 | `REGISTRATION_ENABLED` is set to `false` in `.env`. Set to `true` or remove the line to re-enable. |
+| `/register` returns 404 | `REGISTRATION_ENABLED` is `false` (the production default). Set `REGISTRATION_ENABLED=true` in `.env` to re-enable. |
 | Nginx fails with "mount ... not a directory" | The `deploy/nginx-bundled/nginx.conf` file is missing. Re-run the download step: `mkdir -p deploy/nginx-bundled && curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/deploy/nginx-bundled/nginx.conf` |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
@@ -254,10 +254,11 @@ If Shekel is only accessible on your local network, the default configuration is
 
 If you expose Shekel outside your local network, take these additional steps:
 
-1. **Disable public registration.** Set `REGISTRATION_ENABLED=false` in your `.env` to prevent strangers from creating accounts.
+1. **Verify public registration is disabled.** `REGISTRATION_ENABLED` defaults to `false` in production (set in `docker-compose.yml` and enforced by `ProdConfig`). Confirm with `docker exec shekel-prod-app env | grep REGISTRATION_ENABLED` -- the value should be `false`.
 2. **Enable MFA for all users.** Go to Settings > Security > Enable TOTP. This requires `TOTP_ENCRYPTION_KEY` to be set (see [MFA Setup](#mfa-setup) below).
 3. **Verify HTTPS.** Cloudflare Tunnel and Tailscale handle TLS automatically. If using a different method, ensure your reverse proxy terminates HTTPS.
 4. **Change the default seed password immediately** if you used the default `ChangeMe!2026`.
+5. **Scrub seed credentials from `.env` after the first successful boot.** Remove the `SEED_USER_EMAIL` and `SEED_USER_PASSWORD` lines from `.env`, then run `docker compose up -d --force-recreate app` so Docker's stored `Container.Config.Env` no longer carries the password. The seed user already exists in the database; the env values are no longer needed. Verify with `docker exec shekel-prod-app env | grep -c SEED_USER_PASSWORD` -- the count should be `0`.
 
 ### General Recommendations
 

@@ -135,22 +135,68 @@ echo "Seeding reference data..."
 python scripts/seed_ref_tables.py
 
 # ── 5. Seed initial user (optional, first run only) ────────────
-# Only runs if SEED_USER_EMAIL is set and non-empty.
-# seed_user.py is idempotent -- skips if the user already exists.
-# Alternative: leave SEED_USER_EMAIL empty and use /register instead.
-# seed_user.py creates: user, settings, checking account, baseline
-# scenario, and default categories.  It does NOT create tax data --
-# that is handled by seed_tax_brackets.py in the next step.
+# Only runs if SEED_USER_EMAIL is set and non-empty AND the seed
+# sentinel file is absent.  seed_user.py is itself idempotent at the
+# database level (skips when the user row exists), so the sentinel
+# is purely a noise-reduction measure: it spares the operator a
+# "User already exists" log line on every container restart.
 #
-# The /register web route creates all of the above PLUS tax data in
-# a single transaction via auth_service.register_user().
+# Seed sentinel path:
+#   The sentinel lives in a writable named volume mounted at
+#   /home/shekel/app/state.  A writable mount is required because
+#   the production rootfs may be ``read_only: true`` (planned
+#   Commit C-35).  The volume persists across container restarts so
+#   the sentinel survives ``docker compose restart app``; recreating
+#   the volume (e.g. operator-driven cleanup) re-runs the seed
+#   script's idempotent path on the next start.
+#
+# Alternative to seed-script: leave SEED_USER_EMAIL empty and use
+# /register instead.  seed_user.py creates: user, settings, checking
+# account, baseline scenario, and default categories.  It does NOT
+# create tax data -- that is handled by seed_tax_brackets.py in the
+# next step.  The /register web route creates all of the above PLUS
+# tax data in a single transaction via auth_service.register_user().
+SEED_STATE_DIR="/home/shekel/app/state"
+SEED_SENTINEL="${SEED_STATE_DIR}/.seed-complete"
 if [ -n "${SEED_USER_EMAIL}" ]; then
-    echo "Seeding initial user..."
-    python scripts/seed_user.py
-    echo "User seeding complete."
+    if [ -f "${SEED_SENTINEL}" ]; then
+        echo "Seed sentinel present at ${SEED_SENTINEL}; skipping user seed step."
+    else
+        echo "Seeding initial user..."
+        python scripts/seed_user.py
+        echo "User seeding complete."
+        # Materialise the sentinel only after the seed script
+        # returned cleanly -- ``set -e`` above would have aborted the
+        # entire entrypoint on non-zero, but the explicit ordering
+        # also documents the contract: the sentinel records SUCCESS,
+        # never the mere fact that we attempted to seed.  ``mkdir -p``
+        # tolerates the directory already existing (initial volume
+        # bring-up on a fresh deploy) without failing under set -e.
+        mkdir -p "${SEED_STATE_DIR}"
+        : >"${SEED_SENTINEL}"
+    fi
 else
     echo "SEED_USER_EMAIL not set, skipping user seed. Use /register to create your account."
 fi
+
+# ── 5b. Scrub seed credentials from the entrypoint env ──────────
+# After the seed step completes (or was skipped because the sentinel
+# was present), unset the SEED_USER_* variables so Gunicorn does not
+# inherit them in /proc/<pid>/environ.  Audit finding F-022 -- the
+# password is a one-shot bootstrapping credential; keeping it in the
+# long-running app process's env serves no operational purpose and
+# any container-escape or in-container RCE could read it back via
+# /proc.  ``unset`` removes the names from the shell's exported
+# environment list, so subsequent ``exec`` calls below pass a stripped
+# environ array to their child.
+#
+# Caveat: this scrub closes the in-process channel only.  ``docker
+# exec shekel-prod-app env`` reads from the container's stored
+# Config.Env (set at container creation time) and is NOT affected by
+# this unset.  Closing that channel requires migrating the seed
+# credential to a Docker secret or first-run env_file -- planned for
+# Commit C-38.
+unset SEED_USER_PASSWORD SEED_USER_EMAIL SEED_USER_DISPLAY_NAME
 
 # ── 6. Seed tax brackets ──────────────────────────────────────
 echo "Seeding tax configuration..."

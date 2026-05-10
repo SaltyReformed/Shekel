@@ -49,6 +49,15 @@ logs/
 # Worktrees
 .worktrees/
 
+# Per-app runtime state.  In production this lives in the
+# ``shekel-prod-app-state`` named volume mounted at
+# /home/shekel/app/state, but the dev compose bind-mounts the entire
+# repo into the container so entrypoint.sh's ``mkdir -p`` would
+# create the directory inside the host's checkout.  Ignoring it here
+# prevents the seed-complete sentinel from accidentally landing in a
+# commit.  See audit finding F-022 / Commit C-34.
+state/
+
 # Claude Code session-local state.  scheduled_tasks.lock holds the
 # active session's PID and wakeup-scheduling metadata; it is rewritten
 # every time /loop or ScheduleWakeup runs and must not be tracked.

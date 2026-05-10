@@ -9,6 +9,17 @@ minimum enforced by the application's change_password() and
 register_user() functions.  Exits with code 1 if the password is
 too short.
 
+After seeding completes (or returns early on an existing user), the
+SEED_USER_PASSWORD and SEED_USER_EMAIL values are scrubbed from
+``os.environ`` and the C-level environment.  This is defense-in-depth
+against a future caller (or a child process spawned during seeding)
+reading the credential back out of the process environment after it
+has served its one-shot purpose.  The matching scrub in
+``entrypoint.sh`` removes the same variables from the parent shell
+before exec'ing Gunicorn -- closing the ``cat /proc/<gunicorn>/environ``
+exposure called out in audit finding F-022.  See audit finding F-022
+and remediation Commit C-34.
+
 Usage:
     python scripts/seed_user.py
 
@@ -20,6 +31,18 @@ Environment variables (or .env file):
 
 import os
 import sys
+
+
+# Names of the seed-only env vars that must be scrubbed from
+# ``os.environ`` after the seed step completes.  SEED_USER_DISPLAY_NAME
+# is intentionally omitted -- the display name is not a secret, never
+# leaves the user record, and may be useful for ops queries that want
+# to identify the seeded account by name without paying the audit-log
+# cost of resolving by id.
+_SEED_SECRET_ENV_VARS: tuple[str, ...] = (
+    "SEED_USER_PASSWORD",
+    "SEED_USER_EMAIL",
+)
 
 # Add project root to path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -191,8 +214,63 @@ def _check_production_password():
         )
 
 
+def _scrub_seed_env_vars() -> None:
+    """Remove SEED_USER_PASSWORD/SEED_USER_EMAIL from this process env.
+
+    The seed credentials are needed only at one-shot invocation time.
+    Once the user row is in the database (whether created by this run
+    or already present from a prior run), the values have served their
+    purpose and should not linger in ``os.environ`` where any
+    subsequent code path -- application logging, debug introspection,
+    a child process inherited via ``subprocess.run(env=os.environ)`` --
+    could surface them.
+
+    Removal is performed at three layers for defense-in-depth:
+
+    1. ``os.environ.pop`` -- removes the key from Python's environment
+       mapping.  In CPython 3.9+ this also calls ``os.unsetenv`` under
+       the hood, so the C-level ``environ`` array is updated too.
+    2. An explicit ``os.unsetenv`` -- documents intent and protects
+       against any future change to ``os.environ.pop``'s implementation
+       that decouples it from the C-level environ.
+    3. The parent ``entrypoint.sh`` runs ``unset SEED_USER_PASSWORD ...``
+       after this script returns, scrubbing the same keys from the
+       shell that exec's Gunicorn.  Without that companion change,
+       Gunicorn would still inherit the credential in
+       ``/proc/<pid>/environ`` -- this Python-side scrub only helps
+       within this script's process tree.
+
+    DISPLAY_NAME is intentionally retained.  It is not a secret and
+    has operational value (e.g. an operator confirming they seeded
+    the right account by name).  See audit finding F-022 and
+    remediation Commit C-34.
+    """
+    for key in _SEED_SECRET_ENV_VARS:
+        # ``os.environ.pop`` is a no-op when the key is absent.  No
+        # try/except guard is needed because the default argument
+        # silences a missing key.
+        os.environ.pop(key, None)
+        # ``os.unsetenv`` is a no-op when the underlying environ entry
+        # is already absent on POSIX (Linux containers, the only
+        # production target).  Wrapped in a guard nonetheless because
+        # CPython documents the behaviour as platform-dependent and
+        # raising here would propagate as a script failure that masks
+        # the actual seed result.
+        try:
+            os.unsetenv(key)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     _check_production_password()
     app = create_app()
-    with app.app_context():
-        seed_user()
+    try:
+        with app.app_context():
+            seed_user()
+    finally:
+        # Scrub credentials regardless of the seed outcome.  A failed
+        # seed must not leave the password in os.environ for a future
+        # retry to read; the next run sources the value from the
+        # docker-compose env or the docker secret afresh.
+        _scrub_seed_env_vars()

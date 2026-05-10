@@ -172,6 +172,24 @@ services:
       # value fails the entrypoint shape check.  See audit finding
       # F-081.
       APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?Set APP_ROLE_PASSWORD in .env}
+      # Seed user credentials.  These are read by entrypoint.sh's
+      # ``python scripts/seed_user.py`` step on first start, then
+      # scrubbed from the entrypoint shell's env (and from
+      # ``os.environ`` inside the script) BEFORE Gunicorn is exec'd.
+      # The scrub means ``cat /proc/<gunicorn-pid>/environ | grep SEED_USER``
+      # returns nothing in steady state -- closing the in-process
+      # exposure called out in audit finding F-022.  See
+      # remediation Commit C-34 for the full mechanism.
+      #
+      # NOTE: ``docker exec shekel-prod-app env`` still surfaces these
+      # values because Docker stores them in ``Container.Config.Env``
+      # at container creation time, independent of any in-container
+      # ``unset``.  Migrating these to Docker secrets (Commit C-38)
+      # closes that residual channel.  In the meantime, the operator
+      # SHOULD remove the SEED_USER_* lines from .env after the first
+      # successful boot and recreate the container
+      # (``docker compose up -d --force-recreate app``) so the stored
+      # configured env no longer carries the password.
       SEED_USER_EMAIL: ${SEED_USER_EMAIL:-}
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-}
       SEED_USER_DISPLAY_NAME: ${SEED_USER_DISPLAY_NAME:-Budget Admin}
@@ -181,7 +199,17 @@ services:
       # steady state; populated transiently during key rotation.
       # See docs/runbook_secrets.md "Rotating TOTP_ENCRYPTION_KEY".
       TOTP_ENCRYPTION_KEY_OLD: ${TOTP_ENCRYPTION_KEY_OLD:-}
-      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # Public-registration toggle.  Default ``false`` in production
+      # (audit finding F-053 / Commit C-34): a personal-finance app
+      # intended for a known user set should not ship with an open
+      # registration surface.  /register returns 404 when this is
+      # false; the registration link is hidden on /login.  Operators
+      # who want to enable registration must set REGISTRATION_ENABLED=true
+      # in .env explicitly -- the docker-compose default is the safe
+      # posture, and ProdConfig at app/config.py defaults to False
+      # too (defense-in-depth against this docker default being
+      # removed).
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-500}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
@@ -201,6 +229,15 @@ services:
     volumes:
       # Shared volume: app copies static files here for Nginx to serve.
       - static_files:/var/www/static
+      # Writable per-app state (currently only the seed-complete
+      # sentinel touched by entrypoint.sh after a successful first
+      # run).  The volume is forward-compatible with the planned
+      # Commit C-35 ``read_only: true`` rootfs hardening: even when
+      # the rest of /home/shekel/app becomes immutable, this mount
+      # remains writable so the sentinel survives container restarts.
+      # The volume is internal -- nginx never reads it, so the path
+      # cannot be served as a static asset.  See audit finding F-022.
+      - shekel-prod-app-state:/home/shekel/app/state
     networks:
       - backend
     # Container logs rotate locally so the host disk cannot fill from
@@ -265,6 +302,12 @@ volumes:
     external: true
   # Static files shared between app and Nginx containers.
   static_files:
+  # App-internal mutable state (writable on a read-only rootfs).
+  # Currently holds only the seed-complete sentinel.  Compose
+  # auto-creates this volume on first ``up`` -- not external because
+  # losing the sentinel only causes the next start to re-run the
+  # idempotent seed script.  Audit finding F-022 / Commit C-34.
+  shekel-prod-app-state:
 
 networks:
   # Frontend network: Nginx only.  Externally accessible via port mapping

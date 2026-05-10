@@ -395,6 +395,17 @@ class ProdConfig(BaseConfig):
         "RATELIMIT_STORAGE_URI", "redis://redis:6379/0"
     )
 
+    # Production registration posture: defaults to disabled even when
+    # the env var is completely absent (defense-in-depth against an
+    # operator deleting the docker-compose interpolation default).
+    # BaseConfig defaults to "true" so DevConfig and TestConfig retain
+    # the open-registration ergonomics required by the test suite and
+    # by manual local exploration; ProdConfig narrows that to "false".
+    # See audit finding F-053 and remediation Commit C-34.
+    REGISTRATION_ENABLED = os.getenv(
+        "REGISTRATION_ENABLED", "false"
+    ).lower() in ("true", "1", "yes")
+
     def __init__(self):
         """Validate production-critical settings on instantiation.
 
