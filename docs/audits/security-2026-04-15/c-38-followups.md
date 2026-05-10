@@ -29,7 +29,9 @@ or replaced after the second pass:
   Neither DevConfig nor ProdConfig currently validates DATABASE_URL
   for placeholder values, so the original Approach B would have
   surfaced as a generic Postgres "authentication failed" rather than
-  an app-level error.
+  an app-level error.  **Approach C landed on 2026-05-10**; Issue 3
+  is closed.  See the Resolution block under Issue 3 below for the
+  files changed and tests added.
 
 Issue 2a was re-verified but did not reproduce on HEAD; the
 architectural concern remains and the recommended fix stands as
@@ -316,6 +318,93 @@ suite without anyone noticing.
 
 ## Issue 3: `.env.example` URI examples still embed `shekel_pass`
 
+### Status: RESOLVED 2026-05-10
+
+Approach C landed as a dedicated follow-up commit.  The original
+observations, approach analysis (A / B / C), and verification
+notes below are preserved verbatim for audit-trail continuity --
+do not rewrite them; the resolution block here is the authoritative
+"this is done" marker.
+
+**Files changed:**
+
+- `app/config.py` -- added `_DATABASE_URL_SENTINEL` constant
+  (`REPLACE-ME-WITH-YOUR-POSTGRES-PASSWORD`) and
+  `_reject_sentinel(uri, *, var_name)` helper.  Wired into
+  `_runtime_database_uri()` (covers DevConfig and ProdConfig via
+  the DATABASE_URL_APP and DATABASE_URL env vars) and
+  `TestConfig.SQLALCHEMY_DATABASE_URI` (covers TEST_DATABASE_URL).
+  The error message names the offending env var and points the
+  operator at `.env.example`, matching the C-38
+  `_KNOWN_DEFAULT_SECRETS` placeholder-rejection pattern.
+- `.env.example` -- replaced `shekel_pass` in DATABASE_URL and
+  TEST_DATABASE_URL templates with the sentinel; rewrote the
+  comment block above the URIs to document the substitution
+  requirement and reference audit finding F-109.
+- `scripts/verify_backup.sh` -- added `get_db_password()` helper
+  that returns 1 with a stderr diagnostic when POSTGRES_PASSWORD
+  is not discoverable from the live DB container.  Refactored
+  `run_integrity_checks()` to call the helper once and share
+  `${db_password}` across both the prod (in-app-container) and
+  dev (local) branches.  Removed both `shekel_pass` literals from
+  executable code; the two remaining mentions are audit-trail
+  comments naming the historical default.
+
+**Tests added (31 new, all green):**
+
+- `tests/test_config.py`:
+  - `TestRejectSentinelHelper` (8 tests) -- unit coverage of the
+    helper's success / `None` / empty / rejection paths and
+    error-message content (named env var, sentinel token,
+    `.env.example` pointer).
+  - `TestRuntimeDatabaseUriSentinelRejection` (5 tests) --
+    coverage of DATABASE_URL_APP, DATABASE_URL, empty-app
+    fall-through, and the "only the winning var is validated"
+    invariant.
+  - `TestConfigClassesRejectSentinelAtImport` (4 tests) -- reload
+    `app.config` with monkey-patched env vars and assert
+    `ValueError` fires at DevConfig / TestConfig class-body
+    evaluation time, plus a positive clean-reload assertion.
+- `tests/test_deploy/test_docker_secrets_and_env_hygiene.py`:
+  - `TestEnvExampleUriTemplatesSanitized` (5 tests, parametrized
+    over DATABASE_URL and TEST_DATABASE_URL) -- URI templates do
+    not embed `shekel_pass`, carry the sentinel, and the
+    surrounding comment names the sentinel.
+  - `TestVerifyBackupScriptCredentialHygiene` (5 tests) --
+    line-by-line scan skipping comment lines; asserts no
+    `:shekel_pass@` literal, no `|| echo "shekel_pass"` in
+    executable code, `get_db_password()` is defined, the helper
+    returns non-zero on the empty-password branch, and both
+    integrity-check branches reference `${db_password}`.
+  - `TestVerifyBackupScriptGetDbPasswordBehaviour` (4 tests) --
+    extracts the production `get_db_password()` function from
+    `verify_backup.sh`, runs it in a bash harness that stubs the
+    `docker` command, and asserts exit codes / diagnostic text
+    for the success, empty-output, and docker-exec-failure
+    scenarios.
+
+**Failure modes closed:**
+
+- An operator who copies `.env.example` to `.env` without
+  substituting now fails at app or test startup with `ValueError`
+  naming the offending env var and pointing at `.env.example`,
+  instead of a generic Postgres "password authentication failed"
+  at first connect (or, worse, a silent working connection to a
+  database whose password matches the leaked `shekel_pass`).
+- `verify_backup.sh` against a container without
+  `POSTGRES_PASSWORD` in its env channel now exits 1 with a
+  stderr diagnostic naming audit finding F-109, instead of
+  silently building a connection URL with `shekel_pass`.
+- Both regressions are now gated by tests so a future commit that
+  reintroduces `shekel_pass` in `.env.example` URI templates or
+  in executable code in `verify_backup.sh` fails the suite.
+
+**Full suite result on the resolution commit:** 4,709 tests
+across test_config / test_deploy / test_scripts / test_models /
+test_services / test_routes (4 batches) / test_integration /
+test_adversarial all green; pylint score unchanged at 9.50/10
+(no new warnings).
+
 ### Symptom
 
 `.env.example` lines 25 and 28:
@@ -520,4 +609,4 @@ this.
 | 1b (per-period materialisation merge, calendar/period-window unification) | **Do NOT extract** without a separate design discussion -- transfer invariant risk + period-vs-date-range divergence | -- | (deferred) | -- |
 | 2a (`test_429_includes_retry_after_header`) | Not reproducing on HEAD; architectural concern remains | Low (proactive) | `test(routes): reset limiter storage between tests` | 30 min |
 | 2b (`test_test_config_forces_memory_backend`) | Verified, fails in isolation | Medium | `test(integration): bind limiter to app in storage assertion` | 15 min |
-| 3 (.env.example URI + `verify_backup.sh` fallback) | Approach C recommended (was "Approach B, Low") | Medium | `chore(config): sentinel-token rejection in DATABASE_URL and TEST_DATABASE_URL` | 30-45 min (sentinel helper + DevConfig/TestConfig hookups + sentinel-rejection tests + `.env.example` edit + `verify_backup.sh` edit) |
+| 3 (.env.example URI + `verify_backup.sh` fallback) | **Done 2026-05-10** (Approach C landed; see Resolution block under Issue 3 for files changed and tests added) | Medium (was) | `chore(config): sentinel-token rejection in DATABASE_URL and TEST_DATABASE_URL` (shipped) | 30-45 min estimated; actual landed with 31 new tests across `test_config.py` and `test_deploy/test_docker_secrets_and_env_hygiene.py` |
