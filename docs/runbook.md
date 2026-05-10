@@ -775,7 +775,159 @@ sudo cp /etc/docker/daemon.json.bak.<DATE> /etc/docker/daemon.json
 sudo systemctl reload docker
 ```
 
-### 4.12 Migration to Per-Service Hardening (Commit C-35)
+### 4.12 Postgres TLS for Shared Mode (Commit C-37)
+
+The shared-mode override at `deploy/docker-compose.prod.yml` enables
+`ssl=on` on the Postgres service so the Gunicorn -> Postgres hop is
+encrypted on the wire. The base `docker-compose.yml` keeps Postgres
+on plaintext TCP for the README Quick Start, where a fresh-host
+operator does not yet have a cert generated. Audit finding F-154.
+
+**Scope.** TLS applies only when the shared-mode override is active.
+Bundled-mode deployments (the README Quick Start) intentionally skip
+this section and continue running plaintext within the internal-only
+`backend` Docker bridge.
+
+**File path.** `deploy/postgres/server.crt` and `deploy/postgres/server.key`
+on the operator's host. Both files are gitignored; the directory is
+committed empty (apart from a `README.md`) so the bind-mount source
+path resolves on a fresh clone.
+
+#### 4.12.1 Generating the certificate (one-time, before first up)
+
+```bash
+cd /opt/shekel
+sudo ./scripts/generate_pg_cert.sh
+```
+
+Sudo is required because `server.key` must be chowned to uid 70 (the
+`postgres` user inside `postgres:16-alpine`) for Postgres to accept
+it under the mandatory 0600 mode. The script:
+
+1. Generates an RSA-2048 keypair via `openssl req -x509 -nodes`.
+2. Embeds a Subject Alternative Name list covering `shekel-prod-db`,
+   `db`, and `localhost` so a future upgrade to `sslmode=verify-full`
+   works without regeneration.
+3. Sets `server.crt` to mode 0644 (root-owned, world-readable) and
+   `server.key` to mode 0600 (uid 70, group 70).
+4. Re-reads both files and verifies the cert parses cleanly, the
+   key passes `openssl rsa -check`, and the public keys match.
+5. Prints the not-after date so the operator can diary the rotation.
+
+Defaults: 825 days, CN `shekel-prod-db`. Pass `--days N`, `--cn HOSTNAME`,
+or `--output-dir DIR` to override; `--help` lists every flag.
+
+#### 4.12.2 Bringing Postgres up with TLS
+
+```bash
+cd /opt/shekel
+docker compose \
+    -f docker-compose.yml \
+    -f deploy/docker-compose.prod.yml \
+    up -d
+```
+
+The override:
+
+* Mounts the cert/key read-only into `/etc/postgresql/certs/` inside
+  the db container.
+* Adds `postgres -c ssl=on -c ssl_cert_file=... -c ssl_key_file=... -c
+  ssl_min_protocol_version=TLSv1.2 -c ssl_ciphers=...` to the db
+  service's `command` so the postgres process loads the cert at
+  startup.
+* Overrides `DATABASE_URL` on the app service with `?sslmode=require`
+  so the SQLAlchemy engine refuses any connection the server cannot
+  upgrade to TLS.
+* Sets `DB_SSLMODE=require` so `entrypoint.sh` constructs
+  `DATABASE_URL_APP` (the least-privilege `shekel_app` role's URL)
+  with the same `?sslmode=require` posture.
+* Sets `PGSSLMODE=require` so every `psql` call in `entrypoint.sh`
+  picks up the same setting via the standard libpq env var.
+
+#### 4.12.3 Verifying the TLS channel
+
+After the stack starts, confirm Postgres negotiated TLS for the app's
+connection pool:
+
+```bash
+# View the server-side ssl setting -- must report "on".
+docker exec shekel-prod-db psql -U shekel_user -d shekel \
+    -c "SHOW ssl;"
+
+# View the active TLS context for connected backends.  Shekel uses
+# 2-4 connections (Gunicorn workers + idle pool) so this lists
+# each one with its negotiated TLS version and cipher.
+docker exec shekel-prod-db psql -U shekel_user -d shekel \
+    -c "SELECT datname, usename, ssl, version, cipher
+        FROM pg_stat_ssl
+        JOIN pg_stat_activity USING (pid)
+        WHERE datname = 'shekel';"
+```
+
+Expected output:
+
+* `SHOW ssl;` returns `on`.
+* `pg_stat_ssl` rows show `ssl = t`, a `version` of `TLSv1.2` or
+  `TLSv1.3`, and a non-empty `cipher`.
+
+If `ssl = off` after the override is applied, see Troubleshooting
+§7.4 below.
+
+#### 4.12.4 Rotating the certificate
+
+The script's not-after date is the rotation trigger. Rotate well
+before expiry to avoid an outage when libssl rejects an expired cert:
+
+```bash
+cd /opt/shekel
+sudo ./scripts/generate_pg_cert.sh --force
+docker compose \
+    -f docker-compose.yml \
+    -f deploy/docker-compose.prod.yml \
+    restart db
+```
+
+A `restart db` is enough; the postgres process re-reads
+`ssl_cert_file` / `ssl_key_file` on every startup. The app does
+NOT need to be restarted -- psycopg2 transparently reconnects when
+the db comes back, and the brief 1-2s outage is well under the app's
+healthcheck `start_period`.
+
+**Rotation impact.** Active connections drop during the restart but
+the SQLAlchemy engine reconnects on the next request. Login
+sessions survive (sessions live in Flask's secure cookie, not the
+DB connection). No user-visible downtime beyond the restart window.
+
+#### 4.12.5 Cleartext fallback (emergency only)
+
+If the cert is corrupted or the operator needs to rule out TLS as a
+cause of an outage, fall back to cleartext by removing the override's
+TLS environment from a fresh shell:
+
+```bash
+# Comment out (or delete) the db.command, db.volumes mount lines,
+# and app.environment.{DATABASE_URL, DB_SSLMODE, PGSSLMODE} entries
+# in deploy/docker-compose.prod.yml on the host (NOT the repo
+# copy -- this is an emergency-only override).
+docker compose \
+    -f docker-compose.yml \
+    -f deploy/docker-compose.prod.yml \
+    up -d --force-recreate db app
+```
+
+Restore the override from the repo copy as soon as the underlying
+issue is resolved:
+
+```bash
+cd /opt/shekel
+git checkout dev -- deploy/docker-compose.prod.yml
+docker compose \
+    -f docker-compose.yml \
+    -f deploy/docker-compose.prod.yml \
+    up -d --force-recreate db app
+```
+
+### 4.13 Migration to Per-Service Hardening (Commit C-35)
 
 When bringing an existing Shekel deployment up under the C-35
 hardening (`user: postgres` on db, `user: nginx` on nginx, both
@@ -1121,6 +1273,127 @@ The new user can now authenticate via Cloudflare Access (email OTP or configured
 
 **Note:** This only grants access through the Cloudflare layer. The user still needs a Shekel account (via seed script or future registration) to log into the application.
 
+### 6.4a Attaching an Access Policy at the cloudflared Level (Commit C-37)
+
+Sections 6.4 and 6.5 cover the dashboard side of Access management.
+This subsection covers the matching `cloudflared/config.yml`
+ingress block that is required for the audit fix to take effect.
+Audit finding F-061.
+
+The committed `cloudflared/config.yml` carries an `originRequest.access`
+block:
+
+```yaml
+originRequest:
+  noTLSVerify: true
+  access:
+    required: true
+    teamName: <TEAM_NAME>
+    audTag:
+      - <AUD_TAG>
+```
+
+Before the first `cloudflared` start (or after rotating the Access
+application), replace the placeholders:
+
+1. **`<TEAM_NAME>`** -- the subdomain of `cloudflareaccess.com` for
+   your Zero Trust team. Find it under **Zero Trust** > **Settings**
+   > **Custom Pages** (top of the page) or in the URL of any Access
+   application page (`https://<TEAM>.cloudflareaccess.com/...`).
+
+2. **`<AUD_TAG>`** -- the Application Audience tag. Each Access
+   application has its own AUD. Find it under:
+   * **Zero Trust** > **Access** > **Applications** > **Shekel Budget App**
+   * Click into the application; the **Overview** tab lists
+     **Application Audience (AUD) Tag** as a 64-character hex string.
+
+3. Apply the placeholders on the host:
+
+   ```bash
+   sudo $EDITOR /etc/cloudflared/config.yml
+   # Replace <TEAM_NAME> and <AUD_TAG> with the values from steps 1 and 2.
+
+   # Validate the config syntax before reload.
+   cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+
+   # Apply.
+   sudo systemctl restart cloudflared
+   ```
+
+4. Verify the policy is enforced. From a browser without an active
+   Access session:
+
+   ```text
+   https://<DOMAIN>/health
+   ```
+
+   The expected response is the Cloudflare Access login page. A
+   direct `200 OK` with the JSON health payload would mean the
+   policy is NOT applied; recheck the AUD tag and the
+   ``required: true`` flag.
+
+**What `required: true` does.** cloudflared validates the
+`Cf-Access-Jwt-Assertion` header on every request. Without a valid
+JWT for the AUD above, cloudflared returns 403 at the edge -- the
+request never reaches Nginx. This closes the credential-stuffing
+surface on `/login`: even an attacker with a leaked Shekel password
+cannot reach the login form without a valid Access JWT first.
+
+**Operator emergency bypass.** If the Cloudflare Access dashboard is
+unreachable (rare; depends on Cloudflare's own auth chain) and you
+need to log into Shekel, use the LAN bypass:
+
+```bash
+# From a machine on the LAN, reach Nginx directly without going
+# through cloudflared.  This skips the Access check.
+curl -sI http://<LAN_HOST>/health
+```
+
+Then connect to `http://<LAN_HOST>` in a browser; you are now past
+cloudflared and only Shekel's own login + MFA stand between you and
+the app. Restore the Access posture as soon as the dashboard is
+reachable again.
+
+### 6.4b Cloudflared Metrics Endpoint Binding (Commit C-37)
+
+The committed `cloudflared/config.yml` pins the metrics endpoint to
+loopback only. Audit finding F-128.
+
+```yaml
+metrics: 127.0.0.1:2000
+```
+
+**Why this matters.** The default `cloudflared` behaviour binds the
+Prometheus metrics endpoint on `0.0.0.0:2000` inside the container,
+making it reachable from every other peer on whatever Docker bridge
+cloudflared is attached to. An attacker landing in any sibling
+container could poll `/metrics` for tunnel health, request counts,
+and connection state -- operational data that should not leak
+laterally even within the trusted homelab subnet.
+
+Pinning to `127.0.0.1` keeps the endpoint reachable only from inside
+the cloudflared container itself.
+
+**Verifying the bind.** From inside the cloudflared container, the
+endpoint must answer; from any sibling container, it must not.
+
+```bash
+# Inside cloudflared -- expect a 200 with metrics output.
+docker exec cloudflared wget -qO- http://127.0.0.1:2000/metrics | head
+
+# From the app container -- expect a connection refused.
+# (This catches an accidental rebind to 0.0.0.0.)
+docker exec shekel-prod-app sh -c \
+    'wget -qO- --timeout=2 http://cloudflared:2000/metrics' \
+    && echo "FAIL: metrics endpoint reachable from app" \
+    || echo "OK: metrics endpoint not reachable from app"
+```
+
+The second probe should print `OK:`. If it prints `FAIL:`, the
+metrics directive in `cloudflared/config.yml` is missing or has been
+overridden somewhere in the Cloudflare dashboard or the systemd
+unit file -- check those before opening an incident.
+
 ### 6.5 Removing an Authorized User
 
 1. Navigate to **Zero Trust** > **Access** > **Applications** > **Shekel Budget App**
@@ -1205,6 +1478,12 @@ curl -s https://<domain>/health
 | Database backup failed | Container down or disk full | `docker ps` to check shekel-prod-db. `df -h` to check disk space |
 | NAS backup failed | NAS not mounted | `mount \| grep nas`. Remount: `sudo mount -a` |
 | Deploy script rollback failed | No previous image tagged | Manual intervention: `docker logs shekel-prod-app` to diagnose, then fix and redeploy |
+| App fails with `connection requires SSL` | Shared-mode TLS not staged | Run `sudo ./scripts/generate_pg_cert.sh` (Commit C-37). See §4.12 Postgres TLS for the full procedure. |
+| Postgres logs `could not load private key file` | `server.key` mode not 0600 or wrong owner | Re-run `sudo ./scripts/generate_pg_cert.sh --force`; the chown step is what closes this. |
+| Postgres logs `private key file has group or world access` | Same as above | Same fix as above. |
+| `SHOW ssl;` returns `off` after override applied | db service did not pick up the override | `docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d --force-recreate db` |
+| Cloudflare Access never prompts | Missing `originRequest.access` block | See §6.4a; check that `<TEAM_NAME>` and `<AUD_TAG>` placeholders are replaced and `cloudflared --config ... ingress validate` passes. |
+| Metrics endpoint reachable from app container | Missing `metrics: 127.0.0.1:2000` directive | See §6.4b. Restart cloudflared after editing `/etc/cloudflared/config.yml`. |
 
 ### 7.2 Log Locations
 

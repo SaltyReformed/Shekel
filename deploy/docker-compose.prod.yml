@@ -148,8 +148,106 @@
 #
 # See deploy/README.md "Image digest pinning" for the full
 # rotation procedure including Cosign verify and rollback.
+#
+# POSTGRES TLS (Commit C-37 / audit finding F-154)
+# ------------------------------------------------
+# Shared-mode production enables Postgres TLS so the
+# Gunicorn -> Postgres hop is encrypted on the wire even though it
+# stays inside a single internal Docker bridge.  The base
+# ``docker-compose.yml`` keeps Postgres on plaintext TCP for the
+# README Quick Start (where a fresh-host operator does not yet
+# have a cert generated).  This override layers TLS on top:
+#
+#   1. ``services.db.command`` runs ``postgres -c ssl=on -c
+#      ssl_cert_file=... -c ssl_key_file=...`` so the postgres
+#      process loads the operator-provided cert at startup.
+#   2. ``services.db.volumes`` adds two read-only bind mounts that
+#      expose ``deploy/postgres/server.crt`` and ``server.key`` at
+#      the paths referenced above.
+#   3. ``services.app.environment`` overrides ``DATABASE_URL`` with
+#      ``?sslmode=require`` so the SQLAlchemy engine refuses any
+#      cleartext connection.  ``DB_SSLMODE=require`` and
+#      ``PGSSLMODE=require`` make the entrypoint's
+#      ``DATABASE_URL_APP`` construction and every ``psql`` call
+#      pick up the same posture.
+#
+# Operator pre-flight (one-time, before the first
+# ``docker compose up`` in shared mode):
+#
+#     # Generate the self-signed cert.  Requires sudo because
+#     # the key file must be chowned to the postgres user (uid 70
+#     # in postgres:16-alpine) for postgres to accept it.
+#     sudo ./scripts/generate_pg_cert.sh
+#
+#     # The script writes deploy/postgres/server.crt (mode 0644)
+#     # and deploy/postgres/server.key (mode 0600 owned by uid 70)
+#     # so the bind mount preserves the ownership Postgres requires.
+#
+# Cert rotation: re-run the script with ``--force`` after the
+# certificate's ``--days`` window expires.  See
+# ``scripts/generate_pg_cert.sh`` for the full lifecycle.
+#
+# Existing pgdata volume note: ``POSTGRES_INITDB_ARGS`` only
+# influences a fresh ``initdb``.  Re-using the
+# ``shekel-prod-pgdata`` volume from a pre-C-37 deployment does NOT
+# rewrite the cluster -- the TLS posture above still applies (the
+# postgres process re-reads ssl_cert_file on every restart) but
+# data checksums must be enabled offline via ``pg_checksums --enable``
+# during a planned outage if desired.  This is intentionally NOT
+# automated here: data-checksums is an opt-in operational decision.
 
 services:
+  # ── PostgreSQL with TLS enabled (Commit C-37 / F-154) ───────────
+  # Layer ``ssl=on`` plus the cert/key file directives onto the base
+  # ``postgres:16-alpine`` service.  Compose performs additive merges
+  # for ``volumes`` (the named ``shekel-prod-pgdata`` mount declared
+  # in the base file is preserved), and ``command`` is unset on the
+  # base service so the override below is the only command Postgres
+  # sees.  ``environment`` is mapping-merged so the existing
+  # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB values survive.
+  db:
+    # Postgres command-line directives.  The image's built-in
+    # ``docker-entrypoint.sh`` accepts an explicit ``postgres ...``
+    # argv and exec's it after handling the chown / initdb steps.
+    # Each ``-c`` flag becomes a runtime ``postgresql.conf`` setting
+    # so we do not need to mount or template a config file.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/postgresql/certs/server.crt
+      - -c
+      - ssl_key_file=/etc/postgresql/certs/server.key
+      # ssl_ciphers and ssl_min_protocol_version pin the cipher
+      # suite and TLS floor so a future libssl upgrade cannot
+      # silently re-enable a weaker default.  TLSv1.2+ matches
+      # ASVS L2 V9.1.2; the cipher list below is the OpenSSL
+      # MOZILLA_INTERMEDIATE preset minus 3DES / SHA1.
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - ssl_ciphers=HIGH:!aNULL:!eNULL:!MD5:!3DES:!SHA1
+    environment:
+      # Enable Postgres data checksums on FRESH cluster init only.
+      # postgres-entrypoint.sh forwards this string to ``initdb``
+      # the first time the volume is empty.  An existing
+      # ``shekel-prod-pgdata`` volume keeps its prior checksum
+      # state; the operator must run ``pg_checksums --enable``
+      # offline to retro-fit the setting on a populated cluster.
+      # See the file-level comment for the rationale.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      # Shared-mode TLS material.  Mounts the operator-generated
+      # cert and key read-only into the canonical Postgres cert
+      # path.  ``deploy/postgres/server.{crt,key}`` is gitignored
+      # (private key) and produced by ``scripts/generate_pg_cert.sh``;
+      # the script chowns the key to uid 70 so the postgres process
+      # in the container can read it under the file's mandatory
+      # 0600 mode.
+      - ./deploy/postgres/server.crt:/etc/postgresql/certs/server.crt:ro
+      - ./deploy/postgres/server.key:/etc/postgresql/certs/server.key:ro
+
   app:
     # Pin to an immutable digest sourced from .env.  ``${VAR:?...}``
     # makes the missing-variable case a hard parse failure with a
@@ -165,6 +263,31 @@ services:
       # X-Forwarded-* from any source other than the shared nginx /
       # cloudflared sidecar.  Audit finding F-015, Commit C-33.
       FORWARDED_ALLOW_IPS: 172.32.0.0/24
+      # ── Postgres TLS (Commit C-37 / F-154) ────────────────────
+      # Override the base file's plaintext DATABASE_URL with an
+      # explicit ``?sslmode=require``.  SQLAlchemy / psycopg2 honour
+      # the URL parameter and refuse any connection that the
+      # postgres server cannot upgrade to TLS.  ``sslmode=require``
+      # is the strict-but-not-cert-verifying mode appropriate for
+      # the self-signed cert generated by
+      # ``scripts/generate_pg_cert.sh``: the channel is encrypted
+      # but psycopg2 does not validate the cert chain (which would
+      # require shipping the CA pem to every client and is
+      # operationally costly for a single-host deployment).
+      DATABASE_URL: postgresql://shekel_user:${POSTGRES_PASSWORD}@db:5432/shekel?sslmode=require
+      # entrypoint.sh constructs DATABASE_URL_APP just before
+      # exec'ing Gunicorn.  Setting DB_SSLMODE here makes the
+      # constructed URL include ``?sslmode=require`` so the
+      # least-privilege ``shekel_app`` role connects under the
+      # same TLS posture as the owner role above.  See
+      # entrypoint.sh §9 for the construction.
+      DB_SSLMODE: require
+      # Standard libpq env var.  Every psql call in entrypoint.sh
+      # (init_db.sql apply, role provisioning, audit-trigger
+      # health check) reads PGSSLMODE for its connection.  Setting
+      # it here once means we do not have to thread ``--set
+      # sslmode=require`` through every psql invocation.
+      PGSSLMODE: require
     networks:
       - backend
       - shekel-frontend

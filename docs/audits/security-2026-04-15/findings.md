@@ -2985,7 +2985,25 @@ lives in the same database the attacker would be tampering with.
   `docs/audits/security-2026-04-15/scans/` on every audit
   cycle. (2) Leave `noTLSVerify: true` in place but add a
   comment citing the loopback colocation.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10).
+  `cloudflared/config.yml` now carries an
+  `originRequest.access` block with `required: true`,
+  `teamName: <TEAM_NAME>`, and `audTag: [<AUD_TAG>]`. The
+  block is documented inline with the F-061 / C-37 audit
+  pointers so a future operator who deletes the policy
+  re-introduces the finding by name in the diff. The
+  `<TEAM_NAME>` and `<AUD_TAG>` placeholders are substituted
+  on the host via the procedure documented in
+  `docs/runbook.md` §6.4a; the operator captures the AUD tag
+  from the Cloudflare Zero Trust dashboard's Access
+  application Overview tab. The audit-time `noTLSVerify:
+  true` directive is retained (cloudflared and Nginx are
+  colocated on loopback in bundled mode and on the
+  dedicated `shekel-frontend` bridge in shared mode -- the
+  cleartext hop is bounded to a single trust zone) and the
+  rationale is documented inline. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestCloudflaredAccessPolicy (5 tests).
 
 ### F-062: Two HIGH OS CVEs with no fix available in container image
 
@@ -5094,7 +5112,21 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Change to `--metrics 127.0.0.1:2000`
   so the endpoint is only locally reachable from inside the
   cloudflared container itself.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10). The committed
+  `cloudflared/config.yml` now carries a top-level
+  `metrics: 127.0.0.1:2000` directive so the binding is
+  loopback-only by configuration; a future systemd-unit or
+  dashboard override that re-introduced `0.0.0.0:2000` would
+  contradict the config file and surface in `cloudflared
+  --config /etc/cloudflared/config.yml ingress validate`. The
+  rationale comment cites F-128 / C-37 inline so a regression
+  reverts the audit pointer alongside the directive. The
+  operator-side verification procedure (probe from inside the
+  cloudflared container -- expect 200; probe from any sibling
+  container -- expect connection refused) is documented in
+  `docs/runbook.md` §6.4b. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestCloudflaredMetricsLoopback (3 tests).
 
 ### F-129: UniFi + shared nginx vhosts expand cross-service lateral movement
 
@@ -5713,7 +5745,61 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add `?sslmode=require`; enable
   Postgres TLS with self-signed cert. Benefit small on
   single-host topology.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10). Three layers of
+  TLS enforcement closed the audit gap end to end:
+  (1) Postgres server TLS. The shared-mode
+      `deploy/docker-compose.prod.yml` adds a `command:`
+      block on the db service that runs `postgres -c ssl=on
+      -c ssl_cert_file=/etc/postgresql/certs/server.crt -c
+      ssl_key_file=/etc/postgresql/certs/server.key -c
+      ssl_min_protocol_version=TLSv1.2 -c
+      ssl_ciphers=HIGH:!aNULL:!eNULL:!MD5:!3DES:!SHA1`. Two
+      additional read-only bind mounts under
+      `services.db.volumes` expose the operator-generated
+      cert and key. The cert/key live at
+      `deploy/postgres/server.{crt,key}` (gitignored) and
+      are produced by `scripts/generate_pg_cert.sh` -- a
+      sudo-required helper that generates an RSA-2048
+      keypair, sets server.crt to mode 0644 (root-owned) and
+      server.key to mode 0600 owned by uid 70 (the postgres
+      user inside `postgres:16-alpine`), and verifies the
+      cert/key parse cleanly with matching public keys.
+      `POSTGRES_INITDB_ARGS=--data-checksums` is also
+      pinned for fresh cluster initialisations.
+  (2) Owner-role TLS posture. `services.app.environment`
+      overrides `DATABASE_URL` with `?sslmode=require`,
+      forcing the SQLAlchemy engine and every
+      `init_database.py` / `seed_*.py` connection to
+      negotiate TLS or refuse the connection. `PGSSLMODE=
+      require` is also set so every `psql` call in
+      `entrypoint.sh` (init_db.sql apply, role
+      provisioning, audit-trigger health check) inherits
+      the same posture via the standard libpq env var.
+  (3) Least-privilege role TLS posture. `entrypoint.sh`'s
+      `DATABASE_URL_APP` construction now reads `DB_SSLMODE`
+      and appends `?sslmode=${DB_SSLMODE}` when set. The
+      shared-mode override sets `DB_SSLMODE=require` so the
+      runtime `shekel_app` role connects under the same TLS
+      posture as the owner role. Bundled-mode deployments
+      (the README Quick Start) leave `DB_SSLMODE` unset, so
+      the historical plaintext URL is preserved and the
+      first-time bring-up continues to work without an
+      operator-generated cert.
+  Verification: `docker exec shekel-prod-db psql -U
+  shekel_user -d shekel -c "SHOW ssl;"` returns `on`;
+  `pg_stat_ssl` rows for active connections report
+  `ssl=t`, `version=TLSv1.2` (or higher), and a non-empty
+  cipher. Cert rotation procedure documented in
+  `docs/runbook.md` §4.12.4. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestProdComposeOverridePostgresTLS (5 tests),
+  TestProdComposeOverrideAppDatabaseUrl (3),
+  TestEntrypointHonoursDbSslmode (3),
+  TestGenerateCertScript (6),
+  TestPostgresDirectoryShape (9),
+  TestGitignoreExcludesPostgresKeyAndCert (2),
+  TestMergedComposeCarriesTLS (4),
+  TestRunbookDocumentsC37Procedures (11). 51 tests total.
 
 ### F-155: No Cosign / image-signature verification
 

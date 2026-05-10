@@ -167,6 +167,13 @@ amortization-fix.patch
 # scripts/backup_retention.sh, deploy.sh, retire_stale_containers.sh
 #                 Host-side ops scripts that talk to ``docker`` from
 #                 outside the container.
+# scripts/generate_pg_cert.sh
+#                 Host-side cert generator (sudo, openssl) that
+#                 produces deploy/postgres/server.{crt,key} for the
+#                 shared-mode bind mount.  Runs once on the bare-metal
+#                 host before ``docker compose up`` -- never executed
+#                 inside the container.  Audit finding F-154 / Commit
+#                 C-37.
 scripts/audit/
 scripts/hooks/
 scripts/benchmark_triggers.py
@@ -177,3 +184,4 @@ scripts/restore.sh
 scripts/verify_backup.sh
 scripts/deploy.sh
 scripts/retire_stale_containers.sh
+scripts/generate_pg_cert.sh

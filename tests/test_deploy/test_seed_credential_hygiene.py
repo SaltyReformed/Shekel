@@ -586,6 +586,11 @@ class TestDockerignoreCoverage:
         "scripts/restore.sh",
         "scripts/deploy.sh",
         "scripts/retire_stale_containers.sh",
+        # Host-side cert generator for shared-mode Postgres TLS
+        # (audit finding F-154 / Commit C-37).  Runs once on the
+        # bare-metal host with sudo + openssl; never executed
+        # inside the app container.
+        "scripts/generate_pg_cert.sh",
     ])
     def test_dockerignore_excludes_pattern(
         self, dockerignore_lines: list[str], pattern: str,

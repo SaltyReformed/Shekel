@@ -238,7 +238,20 @@ echo "Static files ready."
 # prefers DATABASE_URL_APP over DATABASE_URL, so the gunicorn
 # process inherits least-privilege credentials while the deployment
 # scripts that already ran kept owner credentials.
-export DATABASE_URL_APP="postgresql://shekel_app:${APP_ROLE_PASSWORD}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME:-shekel}"
+#
+# DB_SSLMODE is set on the shared-mode prod override only
+# (deploy/docker-compose.prod.yml) -- audit finding F-154 / Commit
+# C-37.  Bundled mode keeps the env var unset and DATABASE_URL_APP
+# falls back to the historical plaintext form so the Quick Start
+# in the README continues to work without operator-generated
+# certs.  The value is appended verbatim as the ``sslmode``
+# query parameter; valid libpq settings are
+# disable / allow / prefer / require / verify-ca / verify-full.
+DB_SSLMODE_QUERY=""
+if [ -n "${DB_SSLMODE:-}" ]; then
+    DB_SSLMODE_QUERY="?sslmode=${DB_SSLMODE}"
+fi
+export DATABASE_URL_APP="postgresql://shekel_app:${APP_ROLE_PASSWORD}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME:-shekel}${DB_SSLMODE_QUERY}"
 
 # exec "$@" runs the Dockerfile CMD (gunicorn in production, or the
 # docker-compose command override in development).

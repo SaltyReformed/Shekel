@@ -31,6 +31,15 @@
 #   <DOMAIN>          -- Production subdomain (e.g., budget.example.com)
 #   <STAGING_DOMAIN>  -- Staging subdomain for pre-production testing
 #                       (e.g., staging-budget.example.com)
+#   <TEAM_NAME>       -- Cloudflare Zero Trust team name (the
+#                       subdomain at <TEAM>.cloudflareaccess.com).
+#                       Find it under Zero Trust > Settings > Custom
+#                       Pages or in the Access dashboard URL.
+#   <AUD_TAG>         -- Audience (AUD) tag for the Access application
+#                       protecting this tunnel.  Find it under Zero
+#                       Trust > Access > Applications > <app> >
+#                       Overview > Application Audience (AUD) Tag.
+#                       64-character hex string.
 #
 # See docs/runbook.md for the full step-by-step setup procedure.
 
@@ -41,6 +50,23 @@ tunnel: <TUNNEL_ID>
 # Path to the tunnel credentials JSON file.
 # Created automatically by `cloudflared tunnel create`.
 credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+
+# ── Metrics Endpoint ─────────────────────────────────────────────
+# Bind the cloudflared Prometheus metrics endpoint to loopback only.
+# The default behaviour binds 0.0.0.0:2000 inside the container, which
+# is reachable from every other peer on whatever Docker bridge
+# cloudflared is attached to (homelab and shekel-frontend in the
+# maintainer's deployment).  An attacker landing in any sibling
+# container could poll /metrics for tunnel health, request counts,
+# and connection state -- operational data that should not leak
+# laterally even within the trusted homelab subnet.
+#
+# Pinning to 127.0.0.1 keeps the endpoint reachable only from inside
+# the cloudflared container itself, where the operator's
+# ``docker exec cloudflared wget -qO- http://127.0.0.1:2000/metrics``
+# still works for ad-hoc inspection but no other container can
+# probe it.  Audit finding F-128, Commit C-37.
+metrics: 127.0.0.1:2000
 
 # ── Ingress Rules ────────────────────────────────────────────────
 # Ingress rules map hostnames to local services.  Rules are
@@ -87,7 +113,43 @@ ingress:
     service: http://localhost:80
     originRequest:
       # Nginx listens on plain HTTP -- no TLS on the origin.
+      # cloudflared and Nginx are colocated on loopback (bundled
+      # mode) or on the dedicated shekel-frontend bridge (shared
+      # mode), so the cleartext hop is bounded to a single trust
+      # zone -- there is no path through which a network adversary
+      # can intercept it.  Audit finding F-061 (bundled mode) /
+      # F-063 (shared mode) / Commit C-33.
       noTLSVerify: true
+      # ── Cloudflare Access policy (audit finding F-061 / C-37) ─
+      # Require that every public request first authenticate
+      # through Cloudflare Access (email-OTP minimum, identity
+      # provider preferred).  Without this block, the only gate
+      # between the public internet and Shekel is Flask's own
+      # /login form -- a credential-stuffing surface that survives
+      # rate-limit absorption because each unique IP gets a fresh
+      # 5-per-15min window.
+      #
+      # The matching Access application is configured in the
+      # Cloudflare Zero Trust dashboard:
+      #   Zero Trust > Access > Applications > Add an application
+      #   > Self-hosted > <DOMAIN>
+      # under a policy that restricts the Allowed Users list to the
+      # operator's email(s).  See docs/runbook.md §6.4 for the
+      # dashboard procedure.
+      #
+      # The ``audTag`` (Application Audience tag) is a 64-character
+      # hex string Cloudflare generates per Access application.
+      # cloudflared validates the JWT in the
+      # ``Cf-Access-Jwt-Assertion`` header against this AUD before
+      # forwarding -- a request without a valid Access JWT is
+      # rejected at the cloudflared edge before it ever reaches
+      # Nginx.  Capture the tag from the Access application's
+      # Overview tab and replace <AUD_TAG> below.
+      access:
+        required: true
+        teamName: <TEAM_NAME>
+        audTag:
+          - <AUD_TAG>
 
   # Staging: uncomment during initial setup to test with a
   # separate subdomain before cutting over to production.
@@ -100,6 +162,11 @@ ingress:
   #   service: http://localhost:80
   #   originRequest:
   #     noTLSVerify: true
+  #     access:
+  #       required: true
+  #       teamName: <TEAM_NAME>
+  #       audTag:
+  #         - <STAGING_AUD_TAG>
 
   # Catch-all (required).  Returns 404 for requests that do not
   # match any hostname above.
