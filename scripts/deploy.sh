@@ -41,9 +41,34 @@ NGINX_PORT="${NGINX_PORT:-80}"
 HEALTH_URL="http://localhost:${NGINX_PORT}/health"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.build.yml"
 
+# Image reference used by Cosign sign + verify steps.  Matches the
+# tag the local build produces (the COMPOSE_FILES merge tags the
+# image as ghcr.io/saltyreformed/shekel:latest).  Cosign signs the
+# image at the digest the local build produced; the digest itself
+# is captured at sign time and printed for the operator to paste
+# into /opt/docker/shekel/.env (SHEKEL_IMAGE_DIGEST).
+IMAGE_REF="${IMAGE_REF:-ghcr.io/saltyreformed/shekel:latest}"
+
+# Cosign integration (audit findings F-060, F-155 / Commit C-36).
+# COSIGN_PUBLIC_KEY: path to the verifier key (committed to repo at
+#   deploy/cosign.pub).  When this file exists, sign + verify run on
+#   every deploy; when it is absent, the script logs a warning and
+#   continues so a fresh checkout without a generated keypair still
+#   completes a deploy.
+# COSIGN_PRIVATE_KEY: path to the signing key.  Out of repo by
+#   default (chmod 600 in /etc/shekel/cosign.key); operators can
+#   override via .env or the host's exported env.
+# COSIGN_REQUIRED: when ``true``, missing cosign or missing key
+#   FAILS the deploy.  Default ``false`` so a first-run bring-up
+#   without cosign still completes.
+COSIGN_PUBLIC_KEY="${COSIGN_PUBLIC_KEY:-${DEPLOY_DIR}/deploy/cosign.pub}"
+COSIGN_PRIVATE_KEY="${COSIGN_PRIVATE_KEY:-/etc/shekel/cosign.key}"
+COSIGN_REQUIRED="${COSIGN_REQUIRED:-false}"
+
 # Flags (overridden by command-line options).
 SKIP_PULL=false
 SKIP_BACKUP=false
+SKIP_COSIGN=false
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -65,13 +90,16 @@ Workflow:
   2. Back up the database (optional)
   3. Tag the current Docker image for rollback
   4. Build the new Docker image
-  5. Restart the app container (migrations run automatically)
-  6. Wait for the health endpoint to report healthy
-  7. Roll back to the previous image if health check fails
+  5. Sign the new image with Cosign (audit Commit C-36)
+  6. Verify the signature before swapping the running container
+  7. Restart the app container (migrations run automatically)
+  8. Wait for the health endpoint to report healthy
+  9. Roll back to the previous image if health check fails
 
 Options:
     --skip-pull         Skip git pull (deploy from current working tree)
     --skip-backup       Skip pre-deploy database backup
+    --skip-cosign       Skip Cosign sign + verify (use only in emergencies)
     --health-timeout N  Seconds to wait for health check (default: 60)
     --health-interval N Seconds between health check retries (default: 5)
     --help              Show this help message
@@ -82,6 +110,12 @@ Environment Variables:
     HEALTH_TIMEOUT      Health check timeout in seconds (default: 60)
     HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
     NGINX_PORT          Nginx host port for health check URL (default: 80)
+    IMAGE_REF           Image reference passed to cosign sign/verify
+                        (default: ghcr.io/saltyreformed/shekel:latest)
+    COSIGN_PUBLIC_KEY   Verifier key path (default: deploy/cosign.pub)
+    COSIGN_PRIVATE_KEY  Signing key path (default: /etc/shekel/cosign.key)
+    COSIGN_REQUIRED     When 'true', missing cosign/key fails the deploy
+                        instead of warning (default: false)
 EOF
 }
 
@@ -192,6 +226,155 @@ build_image() {
     fi
 
     log "INFO" "Docker image built successfully."
+}
+
+cosign_available() {
+    # Return 0 when cosign is on PATH, 1 otherwise.  Used by the
+    # sign/verify wrappers below to decide whether to enforce or
+    # downgrade to a warning.
+    command -v cosign &>/dev/null
+}
+
+cosign_signing_key_present() {
+    # Return 0 when both the private (signing) key and public
+    # (verifier) key files exist and are readable.  We test both
+    # because signing without a matching verifier means the next
+    # deploy cannot verify; better to fail fast on the operator
+    # config gap than emit an unverifiable signature.
+    [ -f "${COSIGN_PRIVATE_KEY}" ] && [ -r "${COSIGN_PRIVATE_KEY}" ] \
+        && [ -f "${COSIGN_PUBLIC_KEY}" ] && [ -r "${COSIGN_PUBLIC_KEY}" ]
+}
+
+cosign_verifier_key_present() {
+    # Return 0 when only the verifier (public) key exists -- enough
+    # for the verify step (which never reads the private key).
+    [ -f "${COSIGN_PUBLIC_KEY}" ] && [ -r "${COSIGN_PUBLIC_KEY}" ]
+}
+
+cosign_resolve_digest() {
+    # Print the local image's digest (sha256:...) to stdout, or
+    # empty on failure.  ``docker inspect`` reads the image's
+    # RepoDigests when present (i.e. after a push); for a freshly
+    # built local image, .Id is the manifest digest the local store
+    # assigned and is what cosign will sign.
+    local digest
+    digest=$(docker inspect --format='{{.Id}}' "${IMAGE_REF}" 2>/dev/null \
+        | head -n 1)
+    # Normalise to bare ``sha256:...`` (docker may print the digest
+    # under .Id without the algorithm prefix on some versions).
+    if [ -n "$digest" ] && [[ "$digest" != sha256:* ]]; then
+        digest="sha256:${digest}"
+    fi
+    echo "$digest"
+}
+
+handle_cosign_skip() {
+    # Centralised "no cosign / no key" handler so sign and verify
+    # apply the same fail-vs-warn policy.  Emits a remediation
+    # pointer and respects COSIGN_REQUIRED + --skip-cosign.
+    local reason="$1"
+
+    if [ "${SKIP_COSIGN}" = true ]; then
+        log "WARNING" "${reason}; --skip-cosign was passed, continuing."
+        return 0
+    fi
+
+    if [ "${COSIGN_REQUIRED}" = "true" ]; then
+        log "ERROR" "${reason}; COSIGN_REQUIRED=true."
+        log "ERROR" "Install cosign and generate a keypair (see"
+        log "ERROR" "deploy/README.md \"Image digest pinning\"), or"
+        log "ERROR" "rerun with --skip-cosign to bypass for this deploy."
+        return 1
+    fi
+
+    log "WARNING" "${reason}; continuing without signature controls."
+    log "WARNING" "Set COSIGN_REQUIRED=true in .env or pass --require-cosign"
+    log "WARNING" "to promote this warning to an error in steady-state ops."
+    return 0
+}
+
+sign_image() {
+    # Sign the locally-built image with the maintainer's Cosign
+    # keypair so the verify step (and any downstream operator) can
+    # confirm the running image matches what was built on this host.
+    # Audit finding F-155 / Commit C-36.
+    log "INFO" "Signing image with Cosign..."
+
+    if ! cosign_available; then
+        handle_cosign_skip "cosign not installed (sign step)" || exit 1
+        return 0
+    fi
+
+    if ! cosign_signing_key_present; then
+        handle_cosign_skip \
+            "cosign keypair missing at COSIGN_PRIVATE_KEY=${COSIGN_PRIVATE_KEY} or COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
+            || exit 1
+        return 0
+    fi
+
+    local digest
+    digest=$(cosign_resolve_digest)
+    if [ -z "$digest" ]; then
+        log "ERROR" "Could not resolve digest for ${IMAGE_REF}; cannot sign."
+        log "ERROR" "Verify ``docker images ${IMAGE_REF}`` lists the image."
+        exit 1
+    fi
+
+    # Sign by digest (cosign best practice -- signing by tag would
+    # let a tag swap point the signature at a different image
+    # silently).  COSIGN_PASSWORD must be exported by the operator
+    # before invoking deploy.sh; the script never prompts because
+    # the deploy is intended to run unattended once initiated.
+    if ! COSIGN_PASSWORD="${COSIGN_PASSWORD:-}" cosign sign --yes \
+            --key "${COSIGN_PRIVATE_KEY}" \
+            "${IMAGE_REF}@${digest}"; then
+        log "ERROR" "cosign sign failed for ${IMAGE_REF}@${digest}."
+        log "ERROR" "Check COSIGN_PASSWORD env var (required for"
+        log "ERROR" "encrypted private keys) and the key permissions."
+        exit 1
+    fi
+
+    log "INFO" "Image signed: ${IMAGE_REF}@${digest}"
+    log "INFO" "Update SHEKEL_IMAGE_DIGEST=${digest} in /opt/docker/shekel/.env"
+    log "INFO" "(see deploy/README.md \"Image digest pinning\")."
+}
+
+verify_image_signature() {
+    # Verify the signature on the image about to be deployed.  Runs
+    # AFTER sign_image so the verifier exercises the just-produced
+    # signature -- catches a signing-key/verifier-key mismatch
+    # before the container swap.  Audit finding F-155 / Commit C-36.
+    log "INFO" "Verifying image signature with Cosign..."
+
+    if ! cosign_available; then
+        handle_cosign_skip "cosign not installed (verify step)" || exit 1
+        return 0
+    fi
+
+    if ! cosign_verifier_key_present; then
+        handle_cosign_skip \
+            "cosign verifier key missing at COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
+            || exit 1
+        return 0
+    fi
+
+    local digest
+    digest=$(cosign_resolve_digest)
+    if [ -z "$digest" ]; then
+        log "ERROR" "Could not resolve digest for ${IMAGE_REF}; cannot verify."
+        exit 1
+    fi
+
+    if ! cosign verify --key "${COSIGN_PUBLIC_KEY}" \
+            "${IMAGE_REF}@${digest}" >/dev/null 2>&1; then
+        log "ERROR" "cosign verify FAILED for ${IMAGE_REF}@${digest}."
+        log "ERROR" "The locally-built image is unsigned or its signature"
+        log "ERROR" "does not match COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}."
+        log "ERROR" "Refusing to deploy an unverifiable image."
+        exit 1
+    fi
+
+    log "INFO" "Signature verified: ${IMAGE_REF}@${digest}"
 }
 
 restart_app() {
@@ -310,6 +493,10 @@ main() {
                 SKIP_BACKUP=true
                 shift
                 ;;
+            --skip-cosign)
+                SKIP_COSIGN=true
+                shift
+                ;;
             --health-timeout)
                 HEALTH_TIMEOUT="$2"
                 shift 2
@@ -356,10 +543,21 @@ main() {
     # Step 5: Build new image.
     build_image
 
-    # Step 6: Restart app container.
+    # Step 6: Sign the new image with Cosign (audit C-36 / F-155).
+    # The sign step runs BEFORE restart_app so a signing failure
+    # aborts the deploy with the previous version still serving
+    # traffic; verify_image_signature then exercises the just-
+    # produced signature so a key/verifier mismatch surfaces here
+    # rather than after the swap.
+    sign_image
+
+    # Step 7: Verify the signature on the image about to deploy.
+    verify_image_signature
+
+    # Step 8: Restart app container.
     restart_app
 
-    # Step 7: Health check.
+    # Step 9: Health check.
     if wait_for_health; then
         log "INFO" "=== Deployment Successful ==="
         log "INFO" "Application is healthy at ${HEALTH_URL}"

@@ -108,16 +108,55 @@
 # ``cap_drop``, ``read_only``, ``tmpfs``, ``mem_limit``,
 # ``pids_limit``, ``logging``, or ``user`` settings from the base
 # docker-compose.yml.  Compose merges per-key by default for those
-# scalars; the only keys this file overrides are ``environment.*``
-# (FORWARDED_ALLOW_IPS), ``networks`` (replaces the list), and
-# ``profiles`` (adds disabled to nginx).  Every hardening field on
-# the app and db services flows through to the shared-mode runtime
-# unchanged.  Verified by ``docker compose -f docker-compose.yml
-# -f deploy/docker-compose.prod.yml config`` and by the test suite
-# under tests/test_deploy/test_container_hardening.py.
+# scalars; the only keys this file overrides are ``image`` (pin to
+# digest), ``environment.*`` (FORWARDED_ALLOW_IPS), ``networks``
+# (replaces the list), and ``profiles`` (adds disabled to nginx).
+# Every hardening field on the app and db services flows through
+# to the shared-mode runtime unchanged.  Verified by ``docker
+# compose -f docker-compose.yml -f deploy/docker-compose.prod.yml
+# config`` and by the test suite under
+# tests/test_deploy/test_container_hardening.py.
+#
+# IMAGE DIGEST PINNING (Commit C-36 / audit findings F-060, F-155)
+# ----------------------------------------------------------------
+# Shared-mode production replaces the base file's ``:latest`` tag
+# with an immutable ``@sha256:<digest>`` reference, sourced from
+# the host ``.env`` via the ``SHEKEL_IMAGE_DIGEST`` interpolation
+# below.  The ``:?`` syntax FAILS the compose parse loudly if the
+# variable is missing or empty: that is intentional -- a missing
+# digest in production would silently fall back to whatever
+# ``:latest`` resolved to at the time of pull, defeating both the
+# audit fix and any downstream Cosign verification.
+#
+# Operator workflow:
+#   1. After CI (or scripts/deploy.sh in local-build mode) builds
+#      and signs a new image, capture the digest the build emits.
+#      For CI builds the digest is in the ``Build & Publish Docker
+#      Image`` workflow's "Image digest" step output; for local
+#      builds, scripts/deploy.sh prints the digest after a
+#      successful ``cosign sign``.
+#   2. On the host, edit /opt/docker/shekel/.env and set:
+#        SHEKEL_IMAGE_DIGEST=sha256:abc123...
+#      (the value INCLUDES the ``sha256:`` prefix; the ``image:``
+#      line below already supplies the ``@`` separator).
+#   3. Re-run ``docker compose -f docker-compose.yml -f
+#      docker-compose.override.yml up -d`` to roll the app
+#      container to the new digest.
+#   4. Verify the running image via ``docker inspect
+#      shekel-prod-app --format '{{.Image}}'`` -- the output digest
+#      must match the value pinned in .env.
+#
+# See deploy/README.md "Image digest pinning" for the full
+# rotation procedure including Cosign verify and rollback.
 
 services:
   app:
+    # Pin to an immutable digest sourced from .env.  ``${VAR:?...}``
+    # makes the missing-variable case a hard parse failure with a
+    # clear remediation message, matching the rest of the compose
+    # stack's required-secret handling (SECRET_KEY, POSTGRES_PASSWORD,
+    # APP_ROLE_PASSWORD).  Audit findings F-060, F-155 / Commit C-36.
+    image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?Set SHEKEL_IMAGE_DIGEST=sha256:... in /opt/docker/shekel/.env to pin the production image (audit finding F-060). See deploy/README.md "Image digest pinning" for the procedure.}
     environment:
       # Shared mode: the in-stack ``backend`` bridge no longer carries
       # the reverse-proxy hop -- the shared /opt/docker/nginx talks to

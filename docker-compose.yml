@@ -187,9 +187,37 @@ services:
 
   # ── Flask Application (Gunicorn) ─────────────────────────────────
   app:
+    # IMAGE PINNING (audit findings F-060, F-155 / Commit C-36)
+    # ----------------------------------------------------------
+    # The base file ships ``:latest`` so the README Quick Start works
+    # for an end user copying ``docker compose up -d`` verbatim.  In
+    # PRODUCTION this MUST be overridden with an immutable
+    # ``@sha256:<digest>`` reference so:
+    #   (a) every ``docker compose up`` pulls the same bytes (audit
+    #       finding F-060: ``:latest`` + ``pull_policy: always`` lets
+    #       a single push to the tag silently swap the container image
+    #       at every restart);
+    #   (b) ``cosign verify`` can attest to the exact image bytes that
+    #       are about to run (audit finding F-155: signature
+    #       verification requires a known digest).
+    #
+    # The shared-mode override at ``deploy/docker-compose.prod.yml``
+    # carries the override -- it interpolates ``SHEKEL_IMAGE_DIGEST``
+    # from the host ``.env`` and FAILS LOUDLY (via the ``${VAR:?...}``
+    # syntax) if the operator has not pinned a digest.  See
+    # ``deploy/README.md`` -> "Image digest pinning" for the rotation
+    # workflow.
+    #
+    # End users running the bundled-mode quickstart inherit the
+    # ``:latest`` reference below; they are explicitly out of scope
+    # for the audit's production hardening but should still pin a
+    # digest by adding a sibling ``docker-compose.override.yml``
+    # (see deploy/README.md) before any non-trivial deployment.
     image: ghcr.io/saltyreformed/shekel:latest
     # Always pull the latest image -- prevents stale cached :latest tags
-    # from causing port mismatches or missing fixes.
+    # from causing port mismatches or missing fixes.  When the prod
+    # override pins a digest, this is a no-op for that pull because
+    # the digest already addresses an immutable manifest.
     pull_policy: always
     container_name: shekel-prod-app
     restart: unless-stopped

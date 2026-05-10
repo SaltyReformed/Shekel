@@ -17,6 +17,15 @@ env/
 # Environment / secrets
 .env
 
+# Cosign key material.  The PUBLIC key (deploy/cosign.pub) is
+# committed -- verifiers need it.  Every other cosign key file is a
+# private key that must never reach the repo.  Audit finding F-155 /
+# Commit C-36.
+cosign.key
+cosign.key.pub
+*.cosign.key
+**/cosign.key
+
 # IDE
 .vscode/
 .idea/

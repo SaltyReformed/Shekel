@@ -1396,7 +1396,24 @@ lives in the same database the attacker would be tampering with.
   image's Debian release) and rebuild. Pin the rebuild to a digest
   so the prod pull is deterministic (see F-060). Re-run trivy to
   confirm the HIGH CVE disappears.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two-layer remediation:
+  (a) `Dockerfile` now pins both stages to
+  `python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd`,
+  the multi-arch index for the upstream rebuild on 2026-05-08 that
+  ships libssl3t64 / openssl / openssl-provider-legacy at
+  `3.5.5-1~deb13u2` (the post-CVE-2026-28390 fix); (b) defense-in-
+  depth `apt-get upgrade -y openssl libssl3t64
+  openssl-provider-legacy` runs in BOTH the builder and runtime
+  stages so a future CVE landing in Debian's trixie repos between
+  digest refreshes is picked up automatically on the next image
+  build. Verified by an off-line build that confirmed
+  `libssl3t64 3.5.5-1~deb13u2` (and matching `openssl` and
+  `openssl-provider-legacy`) in the runtime stage. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestDockerfileDigestPin`
+  asserts both FROM lines pin by digest and share the same digest;
+  `TestDockerfileOpenSSLUpgrade` parametrizes across the three
+  package names and asserts `apt-get upgrade -y` appears in both
+  stages.
 
 ### F-026: Migration efffcf647644 adds NOT NULL column without backfill
 
@@ -2905,7 +2922,29 @@ lives in the same database the attacker would be tampering with.
   tags (`:v0.12.3`) that are never overwritten. `postgres:16-
   alpine` and `nginx:1.27-alpine` minor-pins are
   acceptable.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10).
+  `deploy/docker-compose.prod.yml` overrides the base file's
+  `image: ghcr.io/saltyreformed/shekel:latest` with
+  `image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}`.
+  The `:?` required-form interpolation FAILS `docker compose up`
+  with a clear remediation message when the variable is missing,
+  so a deployment cannot accidentally fall back to `:latest`.
+  The base `docker-compose.yml` retains `:latest` for the README
+  Quick Start (end-user bundled mode is explicitly out of scope
+  for the audit's production hardening) but carries a comment
+  block above the `image:` line directing operators to the
+  override file. `.env.example` documents `SHEKEL_IMAGE_DIGEST`
+  with the rotation procedure pointer; `deploy/README.md` adds an
+  "Image Digest Pinning" section documenting the CI digest emit
+  step (`.github/workflows/docker-publish.yml` writes the digest
+  to `GITHUB_STEP_SUMMARY`) and the local-build path via
+  `scripts/deploy.sh`. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestProdComposeOverridePinsByDigest`
+  parses the override and asserts the required-form interpolation;
+  `TestComposeOverrideRequiresDigest` runs `docker compose config`
+  end-to-end and confirms (a) missing digest fails the parse with
+  a `SHEKEL_IMAGE_DIGEST`-naming error, (b) a synthetic digest
+  succeeds and the merged image reference carries it.
 
 ### F-061: cloudflared has no Access policy and uses noTLSVerify: true
 
@@ -2973,7 +3012,43 @@ lives in the same database the attacker would be tampering with.
   publishes fixes, rebuild. Consider migrating to distroless
   or Alpine base image to eliminate the OS attack surface
   entirely (fewer packages = fewer CVEs to track).
-- **Status:** Open
+- **Status:** Accepted with monitoring (compensating controls
+  applied in C-36, 2026-05-10). The two CVEs remain present in
+  the upstream `python:3.14-slim` rebuild on 2026-05-08
+  (`ncurses 6.5+20250216-2` and `libsystemd0 257.9-1~deb13u1`,
+  unchanged from the audit-time versions): Debian has not
+  published fixes for either CVE yet. The reachability analysis
+  in the original finding still holds (no interactive terminal,
+  no systemd IPC exposure in the container). The C-36 commit
+  applies the following compensating controls so the residual
+  risk surface is bounded:
+  (1) `Dockerfile` pins both stages by sha256 digest, so the
+      operator and any downstream verifier can read the EXACT
+      package versions present from `docker buildx imagetools
+      inspect ghcr.io/saltyreformed/shekel@<digest>` -- no
+      uncertainty about which trixie packages a given deploy
+      carries.
+  (2) Both stages run `apt-get upgrade -y openssl libssl3t64
+      openssl-provider-legacy` so the moment Debian publishes a
+      fix for either CVE (or for any related transitive
+      dependency), the next image build picks it up
+      automatically. The digest pin is then refreshed on the
+      same commit cycle.
+  (3) Container hardening from C-35 (`cap_drop: ALL`,
+      `read_only: true`, `no-new-privileges: true`) bounds the
+      blast radius of any in-container exploit that did manage
+      to reach ncurses or libsystemd0.
+  (4) Cosign signing in CI (Commit C-36 / F-155) lets the
+      operator verify the running image's digest matches a
+      known-good (audited) build before each deploy.
+  Distroless / Alpine migration was evaluated and rejected for
+  this commit cycle: the runtime stage uses `psql` from
+  `postgresql-client` (entrypoint.sh) and `psycopg2` (compiled
+  against glibc), neither of which fits a distroless base
+  cleanly. Alpine would require switching to `psycopg2-binary`
+  (different package, different audit baseline). Re-evaluate
+  when Debian's no-fix backlog grows beyond compensating-control
+  coverage.
 
 ### F-063: Cloudflare Tunnel bypasses nginx on WAN path
 
@@ -4844,7 +4919,22 @@ lives in the same database the attacker would be tampering with.
   Shekel installs only from pinned `requirements.txt`.
 - **Recommendation:** Add `pip install --upgrade pip` to
   the Dockerfile before `pip install -r requirements.txt`.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two-layer remediation:
+  (a) the `python:3.14-slim` digest pinned in the C-36 Dockerfile
+  ships pip 26.0.1 by default (already past the CVE-2026-1703
+  fix); (b) defense-in-depth, both the system pip and the
+  `/opt/venv` pip are explicitly upgraded with
+  `pip install --no-cache-dir --upgrade 'pip>=26.0,<27'` BEFORE
+  the `pip install -r requirements.txt` line, so requirements
+  are resolved with the patched pip even if a future base-image
+  regression ships an older pip. The `<27` upper bound prevents
+  an unattended major-version jump that could break the venv
+  pip below. Verified by an off-line build that confirmed
+  `pip 26.1.1` in the runtime venv. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestDockerfilePipUpgrade::test_pip_upgrade_to_at_least_26`
+  asserts the upgrade constraint;
+  `test_pip_upgrade_runs_before_requirements_install` asserts
+  the source-order invariant.
 
 ### F-121: GRUB bootloader not password-protected
 
@@ -5640,7 +5730,48 @@ lives in the same database the attacker would be tampering with.
 - **Impact:** Supply-chain attack via GHCR.
 - **Recommendation:** Sign images with Cosign at build;
   verify in `entrypoint.sh`. Pair with F-060.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two signing surfaces are
+  wired:
+  (1) CI keyless OIDC.
+      `.github/workflows/docker-publish.yml` installs cosign via
+      `sigstore/cosign-installer@v3.7.0` (pinned to
+      `COSIGN_VERSION=v2.6.4`), grants `id-token: write` on the
+      build-and-push job so the workflow's OIDC identity can be
+      exchanged for a Fulcio cert, and runs `cosign sign --yes
+      ${tag}@${digest}` for every tag the metadata-action
+      produces. Signing by digest (not tag) makes the signature
+      immune to tag-swap attacks. The workflow also writes the
+      digest to `GITHUB_STEP_SUMMARY` with the `cosign verify`
+      command operators paste to verify before pinning the new
+      `SHEKEL_IMAGE_DIGEST`.
+  (2) Local-build path. `scripts/deploy.sh` adds `sign_image()`
+      and `verify_image_signature()` wrappers that sign + verify
+      the locally-built image after `docker compose build`. The
+      script defaults `COSIGN_PUBLIC_KEY=deploy/cosign.pub` (an
+      operator-committed verifier key) and
+      `COSIGN_PRIVATE_KEY=/etc/shekel/cosign.key` (out-of-repo,
+      chmod 600). `main()` calls sign_image -> verify -> restart
+      in source order so a key/verifier mismatch surfaces BEFORE
+      the container swap. `--skip-cosign` provides an emergency
+      bypass; `COSIGN_REQUIRED=true` (recommended for steady
+      state) promotes warnings to errors when cosign is not
+      installed or the keypair is missing. `.gitignore` excludes
+      `cosign.key` (root + nested + `*.cosign.key`) so the
+      private key cannot reach the repo. `deploy/README.md`
+      "Image Digest Pinning" documents the rotation procedure
+      including the `cosign generate-key-pair` setup. Tests:
+      `tests/test_deploy/test_image_supply_chain.py::TestDeployScriptCosignWrappers`
+      asserts the bash function definitions, the
+      sign-then-verify-then-restart source order in `main()`,
+      and the `--skip-cosign` / `COSIGN_REQUIRED` knobs;
+      `TestDockerPublishWorkflowSignsImage` asserts the
+      `id-token: write` permission, the cosign installer pin,
+      the `cosign sign --yes` invocation, and the
+      `GITHUB_STEP_SUMMARY` digest emit;
+      `TestGitignoreExcludesCosignKeys` asserts the private-key
+      exclusion globs;
+      `TestDeployReadmeDocumentsRotation` asserts the operator
+      workflow markers in `deploy/README.md`.
 
 ### F-156: server_tokens not explicitly disabled in nginx
 

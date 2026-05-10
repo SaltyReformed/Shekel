@@ -1,37 +1,98 @@
 # Shekel Budget App -- Multi-Stage Dockerfile
 # Stage 1: Build Python dependencies (includes gcc for psycopg2).
 # Stage 2: Slim runtime image (no build tools).
+#
+# BASE-IMAGE PINNING (audit findings F-025, F-060, F-062, F-120 / Commit C-36)
+# ---------------------------------------------------------------------------
+# Both stages pin the base image by sha256 digest, not by floating tag.
+# The digest references the multi-arch image index for ``python:3.14-slim``
+# rebuilt 2026-05-08, which carries:
+#   * Python 3.14.4 (latest 3.14.x)
+#   * Debian 13 (trixie) with libssl3t64 / openssl / openssl-provider-legacy
+#     at 3.5.5-1~deb13u2 -- the post-CVE-2026-28390 (HIGH) fix
+#     (audit F-025).
+#   * pip 26.0.1 -- past the CVE-2026-1703 path-traversal fix
+#     (audit F-120).
+#
+# The digest is the immutable identity; the ``:3.14-slim`` tag in the
+# reference is informational so a casual reader can tell the line
+# refers to the rolling 3.14.x slim variant.  When refreshing the
+# digest:
+#   1. Pull the new image:
+#        docker pull python:3.14-slim
+#   2. Capture the new index digest:
+#        docker buildx imagetools inspect python:3.14-slim
+#      The line ``Digest: sha256:...`` at the top is the OCI image
+#      index digest; that is the value to paste below.
+#   3. Verify the openssl/pip versions in the new image match or
+#      exceed the constraints documented above.
+#   4. Update the digest on BOTH FROM lines below in the same commit
+#      so the builder and runtime stages stay in lockstep.
+#
+# OPENSSL DEFENSE-IN-DEPTH
+# ------------------------
+# Even with the digest pin, both stages run ``apt-get upgrade -y
+# openssl libssl3t64 openssl-provider-legacy`` so a CVE that lands in
+# Debian's trixie repos between digest refreshes is picked up on the
+# next image build.  Belt-and-braces: the digest gives reproducibility,
+# the apt upgrade gives currency.
 
-# ── Stage 1: Builder ────────────────────────────────────────────
-# Pin to a specific patch version for reproducible builds.
-# Update this version deliberately, not by accident via
-# floating tags.  Last updated: 2026-03-22.
-FROM python:3.14.3-slim AS builder
+# -- Stage 1: Builder -------------------------------------------------
+FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd AS builder
 
+# Apply Debian security upgrades to the OpenSSL packages and install
+# the build-only deps (libpq headers + a C toolchain) psycopg2 needs
+# to compile from source.  Combined into a single RUN so the apt
+# cache is removed in the same layer.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq-dev gcc libc-dev \
+    && apt-get upgrade -y --no-install-recommends \
+        openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends \
+        libpq-dev gcc libc-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade the system pip past the CVE-2026-1703 path-traversal fix
+# (audit finding F-120).  The base image ships pip 26.0.1, but
+# explicit upgrade defends against a future base-image regression.
+# The upper bound prevents a major-version jump that could break
+# the venv pip below.
+RUN pip install --no-cache-dir --upgrade 'pip>=26.0,<27'
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# A fresh ensurepip-derived venv pip can lag the system pip by one
+# release.  Re-run the upgrade inside the venv so /opt/venv ships
+# with a CVE-fixed pip independent of the base image's pip.
+RUN pip install --no-cache-dir --upgrade 'pip>=26.0,<27'
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir gunicorn
 
-# ── Stage 2: Runtime ────────────────────────────────────────────
-FROM python:3.14.3-slim
+# -- Stage 2: Runtime -------------------------------------------------
+FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd
 
-# Runtime-only PostgreSQL client library + CLI tools for entrypoint.
+# Apply the same Debian OpenSSL upgrade to the runtime stage.  The
+# runtime image carries libssl3t64 (pulled in transitively by
+# postgresql-client below); without this upgrade the CVE-fixed
+# package would live only in the builder stage.  Runtime-only deps:
+# libpq5 (psycopg2 runtime) and postgresql-client (psql in
+# entrypoint.sh).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 postgresql-client \
+    && apt-get upgrade -y --no-install-recommends \
+        openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends \
+        libpq5 postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user.
 RUN useradd --create-home shekel
 WORKDIR /home/shekel/app
 
-# Copy virtualenv from builder.
+# Copy virtualenv from builder.  The venv carries the CVE-fixed pip
+# from stage 1 plus all production dependencies -- the runtime stage
+# never invokes pip itself.
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
