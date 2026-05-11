@@ -2,11 +2,14 @@
 
 ## Status (as of 2026-05-11)
 
-**Phases 0-4 complete; Phase 5 (CI + docs) is the only remaining
-work.**  Phases 2 through 4 landed on branch `dev` on 2026-05-11
-after the drift fix work closed.  Full suite is currently passing
-end-to-end at the new `-n 12` default in ~4 min wall-clock, down
-from ~28 min sequential pre-Phase 0.
+**All phases complete.**  Phases 0 through 4 plus the drift fix
+landed on `dev` earlier in the day; Phase 5 (CI workflow + docs)
+landed in commits `8ab5dca` (CI) and `825cfea` (docs).  Full
+suite passes end-to-end at the new `-n 12` default in ~4 min
+wall-clock, down from ~28 min sequential pre-Phase 0.  CI now
+builds `shekel_test_template` before pytest runs; concurrent
+pytest invocations are safe; `docs/testing-standards.md` and
+`CLAUDE.md` reflect the new flow.
 
 | Phase | Status | Commit | Notes |
 |---|---|---|---|
@@ -19,16 +22,22 @@ from ~28 min sequential pre-Phase 0.
 | Phase 3: conftest module-level bootstrap | **Done** | `db95461` | `tests/conftest.py` gains module-level `_bootstrap_worker_database()` (orphan cleanup via `pg_stat_activity`, template existence check, clone via `CREATE DATABASE ... TEMPLATE`, post-clone row-count verification, sets `TEST_DATABASE_URL` before app import).  `setup_database` collapsed to a ref-cache refresh.  `pytest_sessionfinish` drops the per-session DB via psycopg2 `WITH (FORCE)`.  `_db.engine.dispose()` added to per-test `db` teardown.  Full 5,148-test suite passes across 8 batches; concurrent invocations no longer deadlock.  **One deviation from spec:** `pytest_sessionfinish` does NOT call `_db.session.remove()` + `_db.engine.dispose()` because Flask-SQLAlchemy 3.x requires an app context that has already torn down at hook time; `WITH (FORCE)` is the documented safety net.  Reasoning in the hook's docstring. |
 | Phase 4: enable pytest-xdist parallelism + cluster-state markers | **Done** | `511132f` | `pytest.ini` registers `xdist_group` marker and adds `--dist=loadgroup` to `addopts` (without it the marker is a no-op under default `--dist=load`).  **One deviation from spec:** the marker moved from `TestLeastPrivilegeRole` class-level to the entire `tests/test_models/test_audit_migration.py` module via `pytestmark = pytest.mark.xdist_group("shekel_app_role")`.  Required because `TestApplyIdempotent` and `TestRoundTrip` call `apply_audit_infrastructure`, whose conditional GRANT to `shekel_app` would otherwise leak into other workers' per-session DBs and block `DROP ROLE` with `DependentObjectsStillExist`.  Multi-worker verification at `-n 4` showed ~2.2-2.6x speedup; `-n 12` showed ~7x. |
 | `-n 12` default | **Done** | `0937975` | `pytest.ini` `addopts` adds `-n 12`.  Empirically captured during Phase 4.5 profiling (1,756-test batch: 561s sequential, 218s at -n 4, 113s at -n 8, 79s at -n 12, 63s at -n 16).  Past -n 12 each doubling of workers buys roughly half the previous gain due to PG's cluster-wide WAL/fsync serialisation; CPU is not the bottleneck (24 cores, only 16 used at -n 16).  Override with `-n 0` for single-process debugging or `-n auto` on a quiet box. |
-| Phase 5: update CI workflow + docs | **Pending** | -- | The only remaining phase.  `docs/testing-standards.md` per-batch timings are ~3x stale.  `docs/testing-standards.md` / `CLAUDE.md` warnings about concurrent pytest processes and "NEVER run as one command" are obsolete (full suite at `-n 12` is ~4 min, well under the 10-min timeout).  `.github/workflows/ci.yml` still uses sequential pytest. |
+| Phase 5: update CI workflow + docs | **Done** | `8ab5dca`..`825cfea` | CI (`8ab5dca`): adds `TEST_ADMIN_DATABASE_URL` to job env, new "Build test template database" step before pytest, refreshes stale comments on the postgres service and `TEST_DATABASE_URL`.  Docs (`825cfea`): rewrites `CLAUDE.md` Tests block + Common Commands tests line for ~4 min full suite / `-n 12` default / concurrent-safe / first-time template-build setup; rewrites `docs/testing-standards.md` "Test Run Guidelines" (8-batch table reframed as optional fallback with refreshed `-n 12` / `-n 0` figures); adds "Building the test template" + "Cluster-state tests and `xdist_group`" sections.  **Two deviations from original spec:** (a) no explicit `ALTER ROLE shekel_test CREATEDB` step -- the postgres image's `POSTGRES_USER` env creates a superuser implicitly, so `CREATEDB` is already granted; (b) the CI pytest invocation stays as bare `pytest --tb=short -q`, not `-n auto`, because `pytest.ini` `addopts` already carries `-n 12 --dist=loadgroup` from commit `0937975`. |
 | Performance research follow-up | **Filed** | (no commit) | `docs/audits/security-2026-04-15/test-performance-research.md` -- profile + community research showing per-test 230ms TRUNCATE is the remaining floor (82% of fixture cost).  Tiered recommendations (DELETE-for-empty-tables + `session_replication_role = replica` trick + PG durability knobs; hybrid SAVEPOINT; PG 18 reflink clones).  Not yet acted on; operator decision pending. |
 
-**Branch state:** four commits on `dev` ahead of `origin/dev`
-(`2aa3d17`, `db95461`, `511132f`, `0937975`) plus prior drift-fix
-commits.  Not pushed.  The performance-research doc is untracked;
-no related code changes.
+**Branch state:** seven commits on `dev` ahead of `origin/dev`
+(`2aa3d17`, `db95461`, `511132f`, `0937975`, `ff57072`,
+`8ab5dca`, `825cfea`) plus prior drift-fix commits.  Not
+pushed.  All plan-related files (script, conftest, pytest.ini,
+CI workflow, docs) are committed; the performance-research
+follow-up document `test-performance-research.md` is committed
+in `ff57072` and remains a filed decision (no related code
+changes).
 
-**To resume the only remaining work (Phase 5), see "Resuming
-from a fresh session" at the bottom of this document.**
+**All phases complete.**  The "Resuming from a fresh session"
+section at the bottom of this document is preserved as a
+historical record of the hand-off point that existed while
+Phase 5 was outstanding; it is no longer load-bearing.
 
 ## Context
 
@@ -364,7 +373,84 @@ All pass. No "role already exists" or "role does not exist" errors. Per-worker D
 
 **Why fifth:** xdist is the user-visible parallelism change. Lands on its own commit.
 
-### Phase 5 -- Update CI workflow and documentation -- **BLOCKED on Phase 4**
+### Phase 5 -- Update CI workflow and documentation -- **DONE 2026-05-11 (commits `8ab5dca` (CI) + `825cfea` (docs))**
+
+**What landed (CI -- `8ab5dca`):** `.github/workflows/ci.yml`
+gains `TEST_ADMIN_DATABASE_URL` in the job env block (consumed
+by both `scripts/build_test_template.py` and the conftest
+bootstrap; points at the maintenance `postgres` DB so
+`DROP DATABASE` is not blocked by the connection being to the
+database it is trying to drop).  A new "Build test template
+database" step runs `python scripts/build_test_template.py`
+between the lint and pytest steps.  Stale comments on the
+postgres service block and on `TEST_DATABASE_URL` are refreshed
+to explain that the conftest bootstrap overrides
+`TEST_DATABASE_URL` per session at runtime.
+
+**Notable deviations from spec (CI):**
+
+* The original plan called for an explicit `ALTER ROLE
+  shekel_test CREATEDB` step (either via `POSTGRES_INITDB_ARGS`
+  or a setup `psql` step).  Skipped in the as-shipped change:
+  the postgres Docker image creates `POSTGRES_USER` as a
+  SUPERUSER by documented behaviour, so `CREATEDB` is already
+  implicit.  An `ALTER ROLE` step would be redundant (and would
+  have to connect as `shekel_test` itself, which only works
+  because of the very superuser attribute that makes the
+  explicit grant unnecessary).  A one-line comment in the env
+  block documents the reasoning.
+* The pytest invocation stays as bare `pytest --tb=short -q`
+  rather than the plan's `-n auto` -- `pytest.ini` `addopts`
+  already carries `-n 12 --dist=loadgroup` from commit
+  `0937975`, so the CLI flag would be redundant.  `-n 12` is
+  also the empirically-tuned sweet spot from Phase 4.5
+  profiling, whereas `-n auto` would scale with the runner's
+  CPU count (4 on `ubuntu-latest`); the WAL/fsync pipeline
+  serialisation that plateaus past `-n 12` means `-n 12` >=
+  `-n 4` even on a 4-core runner.
+
+**What landed (docs -- `825cfea`):**
+
+* `CLAUDE.md`: the `## Tests -- 5,100+ tests, ~28 min full
+  suite -- NEVER run as one command` block (a hard "always
+  batch, never concurrent" warning) is rewritten as `## Tests
+  -- 5,148 tests, ~4 min full suite at -n 12 (pytest-xdist
+  default)`.  New body documents the `-n 12` default + the
+  concurrent-safe bootstrap, adds a first-time-setup line for
+  `python scripts/build_test_template.py`, and cross-references
+  `docs/testing-standards.md`.  The `## Common Commands` tests
+  line is also refreshed (previously "~13 minutes (3200+
+  tests), always run in batches"; now reflects the actual ~4
+  min / 5,148 tests and surfaces the template build).
+* `docs/testing-standards.md`: `## Test Run Guidelines`
+  rewritten -- full suite ~4 min at `-n 12`, single invocation
+  viable, concurrent runs safe, override via `-n 0` / `-n auto`
+  with rationale, 30s per-test timeout note.  The 8-batch table
+  is preserved as `### Optional per-directory batching` with
+  refreshed `-n 12` and `-n 0` columns (the `-n 12` figures are
+  derived from the Phase 4.5 batch-1 measurement applied to the
+  sequential numbers; treated as ballpark, not measured per-
+  batch).  New `## Building the test template` section
+  documents the script, three rebuild triggers (migrations,
+  `app/ref_seeds.py` edits, `app/audit_infrastructure.py`
+  edits), the bootstrap error path, and the
+  `TEST_ADMIN_DATABASE_URL` environment.  New `## Cluster-state
+  tests and \`xdist_group\`` section explains the
+  per-database vs cluster-state distinction, documents the
+  module-level marker pattern from `test_audit_migration.py`,
+  notes the `--dist=loadgroup` dependency, and warns about the
+  intermittent failure modes you get without the marker.
+
+**Verification (committed evidence):**
+
+* CI YAML parsed cleanly via `python -c "import yaml;
+  yaml.safe_load(open('.github/workflows/ci.yml'))"`.
+* Pylint `app/` stayed at `9.50/10` (no code paths changed).
+* No test run -- no code paths changed, only docs + CI config.
+  CI itself will exercise the full path on the next push to
+  `origin/dev`.
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 - `.github/workflows/ci.yml`:
@@ -478,17 +564,23 @@ Each step's pass count must equal or exceed the baseline (5,131 tests). No faile
 - Phase 2: 1.5 hours -- **Done in ~1 hour; commit `2aa3d17`**
 - Phase 3: 2 hours -- **Done in ~1.5 hours including the Flask-SQLAlchemy 3.x app-context deviation; commit `db95461`**
 - Phase 4: 30 minutes -- **Done in ~45 min including the module-level marker scope-up; commits `511132f` (markers) + `0937975` (`-n 12` default + Phase 4.5 profiling)**
-- Phase 5: 1 hour -- **Pending; the only remaining work**
+- Phase 5: 1 hour -- **Done in ~45 min including the CREATEDB-grant and `-n auto` deviations; commits `8ab5dca` (CI) + `825cfea` (docs)**
 
-**Realised total so far:** ~7 hours wall-clock across two
-sessions, covering Phases 0 through 4 plus the drift fix plus the
-Phase 4.5 performance profile.  Remaining: Phase 5 (~1 hour).
+**Realised total:** ~7.75 hours wall-clock across three
+sessions, covering all phases (0 through 5) plus the drift fix
+plus the Phase 4.5 performance profile.
 
 Each phase is independently committable and revertable.  All
-changes through `0937975` live on `dev`; not yet pushed to
+changes through `825cfea` live on `dev`; not yet pushed to
 `origin/dev`.
 
-## Resuming from a fresh session
+## Resuming from a fresh session (historical)
+
+**This section is historical.  All phases are now complete (see
+the status table at the top of this document); the procedure
+below was the hand-off plan used between sessions while Phase 5
+was the outstanding work, preserved as a record of how that
+hand-off was structured.**
 
 Phases 0 through 4 are complete on `dev`.  The only remaining work
 is Phase 5 (CI workflow + docs).  Entry points:
