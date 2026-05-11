@@ -20,8 +20,11 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
-    # PostgreSQL service container for the test suite.
-    # conftest.py creates schemas, tables, and seed data automatically.
+    # PostgreSQL service container for the test suite.  Started
+    # empty; ``scripts/build_test_template.py`` (step 6 below)
+    # builds ``shekel_test_template`` with schemas, tables, audit
+    # infrastructure, and reference seed, which the conftest then
+    # clones per pytest session.
     services:
       postgres:
         image: postgres:16
@@ -41,9 +44,24 @@ jobs:
 
     # Environment variables available to all steps in this job.
     env:
-      # Connection string for the test database.  Matches the PostgreSQL
-      # service container credentials above.
+      # Connection string for the test database.  conftest.py's
+      # ``_bootstrap_worker_database`` hook overrides this per pytest
+      # session by cloning ``shekel_test_template`` into a uniquely
+      # named DB and rewriting the env var before the first ``import
+      # app``.  The value below is the legacy fallback used only if
+      # the bootstrap is skipped (it points at the original shared
+      # database, which is no longer created in CI).
       TEST_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/shekel_test
+      # Admin DSN consumed by both ``scripts/build_test_template.py``
+      # (drops and creates ``shekel_test_template``) and by
+      # ``tests/conftest.py::_bootstrap_worker_database`` (clones the
+      # template into a per-session DB and drops it at
+      # ``pytest_sessionfinish``).  Points at the maintenance
+      # ``postgres`` database -- ``DROP DATABASE`` cannot run against
+      # the connection's own database.  ``shekel_test`` is created as
+      # a superuser by the postgres image's ``POSTGRES_USER`` env, so
+      # ``CREATEDB`` is implicit and no explicit grant step is needed.
+      TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
       # TOTP_ENCRYPTION_KEY is auto-generated per test by conftest.py.
       # No need to set it here.
 
@@ -86,8 +104,29 @@ jobs:
       - name: Lint with pylint
         run: pylint app/ --fail-under=9.0 --fail-on=E,F --output-format=colorized
 
-      # ── 6. Run pytest ────────────────────────────────────────────
-      # The test suite creates schemas, tables, and seed data via
-      # conftest.py fixtures.  No manual database setup is needed.
+      # ── 6. Build the per-pytest-session template database ───────
+      # Builds ``shekel_test_template``: drops + recreates the
+      # database, runs the Alembic chain to ``head``, applies the
+      # audit infrastructure idempotently, seeds reference data,
+      # and truncates ``system.audit_log`` so the template ships
+      # with a zeroed log.  ``tests/conftest.py::_bootstrap_worker_database``
+      # then clones this template into a uniquely-named DB for
+      # every pytest session (and every pytest-xdist worker within
+      # a session) at startup, and drops the clone at
+      # ``pytest_sessionfinish``.  Without this step the bootstrap
+      # raises ``RuntimeError`` on the first test.  Inherits
+      # ``TEST_ADMIN_DATABASE_URL`` from the job env; ``SECRET_KEY``
+      # is defaulted by the script (the template DB is never reached
+      # through Gunicorn, so the value is purely scaffolding).
+      - name: Build test template database
+        run: python scripts/build_test_template.py
+
+      # ── 7. Run pytest ────────────────────────────────────────────
+      # ``pytest.ini`` carries ``-n 12 --dist=loadgroup`` in
+      # ``addopts``, so the invocation does not need an explicit
+      # parallelism flag.  Each worker's session-start hook clones
+      # ``shekel_test_template`` (built in the previous step) into a
+      # uniquely-named per-session DB and drops it at session end;
+      # no manual database setup is needed.
       - name: Run tests
         run: pytest --tb=short -q
