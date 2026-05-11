@@ -1,16 +1,12 @@
 # Plan: Per-pytest-worker PostgreSQL database isolation via template cloning + pytest-xdist parallelism
 
-## Status (as of 2026-05-10)
+## Status (as of 2026-05-11)
 
-**Paused at Phase 2** pending the model-vs-migration drift fix
-documented at
-`docs/audits/security-2026-04-15/model-migration-drift.md`.  Phase 0
-and Phase 1 are committed.  Phase 2's pre-flight drift check
-surfaced 4 high-severity + 1 medium-severity + 1 low-severity
-divergences between `db.create_all()` (the schema today's tests
-verify against) and `flask db upgrade head` (the schema production
-runs); the per-worker DB migration cannot resume on `flask db
-upgrade head` until the drift is resolved.
+**Phases 0-4 complete; Phase 5 (CI + docs) is the only remaining
+work.**  Phases 2 through 4 landed on branch `dev` on 2026-05-11
+after the drift fix work closed.  Full suite is currently passing
+end-to-end at the new `-n 12` default in ~4 min wall-clock, down
+from ~28 min sequential pre-Phase 0.
 
 | Phase | Status | Commit | Notes |
 |---|---|---|---|
@@ -18,12 +14,20 @@ upgrade head` until the drift is resolved.
 | Phase 1: consolidate ref-table seed | **Done** | `073c548` | New `app.ref_seeds.seed_reference_data(session, *, verbose=False)`; all three call sites (conftest, `app/__init__.py`, `scripts/seed_ref_tables.py`) rerouted.  Verified: 163 targeted tests pass; pylint 9.50/10 unchanged. |
 | Drift findings doc | **Done** | `d5baf4a` | `docs/audits/security-2026-04-15/model-migration-drift.md` catalogues every divergence with file references and recommended fixes (model edit vs new migration). |
 | Plan saved into repo | **Done** | `7c6af1e` | This file -- mirrored from `~/.claude/plans/`. |
-| Phase 2: template builder + drift pre-flight | **Blocked** | -- | Cannot proceed with `flask db upgrade head` template strategy until the drift fix work closes.  Pre-flight drift check has already been run; results are in `model-migration-drift.md`. |
-| Phase 3: conftest module-level bootstrap | **Blocked** | -- | Depends on Phase 2. |
-| Phase 4: enable pytest-xdist parallelism + cluster-state markers | **Blocked** | -- | Depends on Phase 3. |
-| Phase 5: update CI workflow + docs | **Blocked** | -- | Depends on Phase 4. |
+| Drift fix (H-1..H-5, M-1, L-1) | **Done** | `9a5cca1`..`49fa13b` | All seven findings closed: H-1 (`9a5cca1`), H-2 (`709786a`), H-3 (`6384c77`), H-4 (`d6f31b5`), M-1 (`2a28f8e`), L-1 (`cfc8572`), H-5 (`7939c8a`), doc update (`49fa13b`).  Re-verification on 2026-05-11 confirmed only EXPECTED divergences remain (alembic_version, FK names, column ordering, `\restrict` tokens). |
+| Phase 2: template builder + drift pre-flight | **Done** | `2aa3d17` | `scripts/build_test_template.py` (335 lines, pylint 10/10) drops + recreates `shekel_test_template`, runs the Alembic chain to head, applies audit infra, seeds reference data, then truncates `system.audit_log` so the template ships with a zeroed log.  Verified end-to-end with `EXPECTED_TRIGGER_COUNT` imported from the code (currently 31, not the plan's stale "45"). |
+| Phase 3: conftest module-level bootstrap | **Done** | `db95461` | `tests/conftest.py` gains module-level `_bootstrap_worker_database()` (orphan cleanup via `pg_stat_activity`, template existence check, clone via `CREATE DATABASE ... TEMPLATE`, post-clone row-count verification, sets `TEST_DATABASE_URL` before app import).  `setup_database` collapsed to a ref-cache refresh.  `pytest_sessionfinish` drops the per-session DB via psycopg2 `WITH (FORCE)`.  `_db.engine.dispose()` added to per-test `db` teardown.  Full 5,148-test suite passes across 8 batches; concurrent invocations no longer deadlock.  **One deviation from spec:** `pytest_sessionfinish` does NOT call `_db.session.remove()` + `_db.engine.dispose()` because Flask-SQLAlchemy 3.x requires an app context that has already torn down at hook time; `WITH (FORCE)` is the documented safety net.  Reasoning in the hook's docstring. |
+| Phase 4: enable pytest-xdist parallelism + cluster-state markers | **Done** | `511132f` | `pytest.ini` registers `xdist_group` marker and adds `--dist=loadgroup` to `addopts` (without it the marker is a no-op under default `--dist=load`).  **One deviation from spec:** the marker moved from `TestLeastPrivilegeRole` class-level to the entire `tests/test_models/test_audit_migration.py` module via `pytestmark = pytest.mark.xdist_group("shekel_app_role")`.  Required because `TestApplyIdempotent` and `TestRoundTrip` call `apply_audit_infrastructure`, whose conditional GRANT to `shekel_app` would otherwise leak into other workers' per-session DBs and block `DROP ROLE` with `DependentObjectsStillExist`.  Multi-worker verification at `-n 4` showed ~2.2-2.6x speedup; `-n 12` showed ~7x. |
+| `-n 12` default | **Done** | `0937975` | `pytest.ini` `addopts` adds `-n 12`.  Empirically captured during Phase 4.5 profiling (1,756-test batch: 561s sequential, 218s at -n 4, 113s at -n 8, 79s at -n 12, 63s at -n 16).  Past -n 12 each doubling of workers buys roughly half the previous gain due to PG's cluster-wide WAL/fsync serialisation; CPU is not the bottleneck (24 cores, only 16 used at -n 16).  Override with `-n 0` for single-process debugging or `-n auto` on a quiet box. |
+| Phase 5: update CI workflow + docs | **Pending** | -- | The only remaining phase.  `docs/testing-standards.md` per-batch timings are ~3x stale.  `docs/testing-standards.md` / `CLAUDE.md` warnings about concurrent pytest processes and "NEVER run as one command" are obsolete (full suite at `-n 12` is ~4 min, well under the 10-min timeout).  `.github/workflows/ci.yml` still uses sequential pytest. |
+| Performance research follow-up | **Filed** | (no commit) | `docs/audits/security-2026-04-15/test-performance-research.md` -- profile + community research showing per-test 230ms TRUNCATE is the remaining floor (82% of fixture cost).  Tiered recommendations (DELETE-for-empty-tables + `session_replication_role = replica` trick + PG durability knobs; hybrid SAVEPOINT; PG 18 reflink clones).  Not yet acted on; operator decision pending. |
 
-**To resume this work in a fresh Claude session, see "Resuming
+**Branch state:** four commits on `dev` ahead of `origin/dev`
+(`2aa3d17`, `db95461`, `511132f`, `0937975`) plus prior drift-fix
+commits.  Not pushed.  The performance-research doc is untracked;
+no related code changes.
+
+**To resume the only remaining work (Phase 5), see "Resuming
 from a fresh session" at the bottom of this document.**
 
 ## Context
@@ -91,11 +95,49 @@ Pass count must be identical to baseline. Pylint score must not drop.
 
 **Why second:** the deepest "no test-behaviour change" refactor. If anything breaks here, the cause is the seed extraction, not the DB plumbing. Lands on its own commit.
 
-### Phase 2 -- Build the template database script -- **BLOCKED on drift fix (see Status section + `model-migration-drift.md`)**
+### Phase 2 -- Build the template database script -- **DONE 2026-05-11 (commit `2aa3d17`)**
 
-**Pre-flight outcome:** The Phase 2a drift check ran on 2026-05-10 and surfaced four high-severity divergences (`ck_transactions_positive_amount`, `ck_transactions_positive_actual`, `uq_scenarios_one_baseline`, `ck_recurrence_rules_dom/_moy`), one medium-severity (`hysa_params -> interest_params` rename incomplete in migrations), and one low-severity (DEFAULT clauses drift across ~10 columns).  See `docs/audits/security-2026-04-15/model-migration-drift.md` for the full catalogue with file references and remediation steps.  Phase 2 cannot proceed with the user-approved `flask db upgrade head` strategy until those findings close (estimated ~5-6 hours of focused work).
+**What landed:** `scripts/build_test_template.py` (335 lines, pylint
+10/10 in isolation) drops + recreates `shekel_test_template` via an
+admin DSN in autocommit mode (`WITH (FORCE)` to sever any lingering
+connections), runs the Alembic chain to head via
+`alembic.command.upgrade` (matching the existing
+`scripts/init_database.py` idiom rather than the plan's
+`flask_migrate.upgrade()`), applies the audit infrastructure
+idempotently, seeds reference data, then truncates
+`system.audit_log` so the template ships with a zeroed log
+(mirrors the per-test pattern in `tests/conftest.py::db`).
 
-**Resumption signal:** When the comparison script at the top of `model-migration-drift.md` returns a diff with only the EXPECTED divergences (alembic_version table, FK name differences, column ordering, pg_dump random `\restrict` token), Phase 2 is unblocked.  The plan below is unchanged from the original design.
+**Notable deviation from spec:** the plan called for asserting
+`EXPECTED_TRIGGER_COUNT == 45` -- by the time Phase 2 ran the
+canonical constant in `app.audit_infrastructure.AUDITED_TABLES`
+was `len(...) == 31`.  The script imports
+`EXPECTED_TRIGGER_COUNT` rather than hardcoding the number, so a
+future addition to `AUDITED_TABLES` automatically flows through
+the verification step.
+
+**Verification (committed evidence):**
+
+```
+python scripts/build_test_template.py
+# Step 1/3: dropped and recreated empty database.
+# Step 2/3: migrated to head, applied audit, seeded reference data.
+# Step 3/3: verified (18 account types, 31 audit triggers, 0 audit_log rows).
+# DONE: shekel_test_template ready.
+
+# Re-run (idempotency): same output, same counts.
+```
+
+**Pre-flight outcome (now historical):** the Phase 2a drift check
+ran on 2026-05-10 and surfaced four high-severity, one
+medium-severity, and one low-severity divergence between
+`db.create_all()` and `flask db upgrade head` outputs.  All seven
+findings (H-1..H-5 + M-1 + L-1) closed before Phase 2 resumed; the
+2026-05-11 re-verification of the comparison script returned only
+the EXPECTED divergences (alembic_version, FK names, column
+ordering, `\restrict`).  Catalogue: `model-migration-drift.md`.
+
+**Original spec (kept for reference -- now historical):**
 
 **Files (new):**
 - `scripts/build_test_template.py` -- idempotent template builder. Pseudocode:
@@ -130,7 +172,69 @@ psql shekel_test_template -c "SELECT count(*) FROM ref.account_types;"  # still 
 
 **Why third:** new script, no existing test paths touched. Run it manually before touching conftest. Lands on its own commit.
 
-### Phase 3 -- Wire conftest to per-worker DB cloning -- **BLOCKED on Phase 2**
+### Phase 3 -- Wire conftest to per-worker DB cloning -- **DONE 2026-05-11 (commit `db95461`)**
+
+**What landed:** `tests/conftest.py` gained a module-level
+`_bootstrap_worker_database()` (165-line function with full
+docstring covering xdist-master detection, orphan cleanup via
+`pg_stat_activity`, template existence check, clone via
+`CREATE DATABASE ... TEMPLATE`, post-clone row-count
+verification, and the `TEST_DATABASE_URL` env-var write that
+must precede the first `from app import ...`).  Result stored in
+module-level `_BOOTSTRAP_RESULT` for `pytest_sessionfinish` to
+key off.  `setup_database` collapsed from ~50 lines to 4 (only
+refreshes ref_cache; cloned template already has schemas + tables
++ audit infra + seed).  `pytest_sessionfinish` drops the
+per-session DB via psycopg2 `WITH (FORCE)`.  `_db.engine.dispose()`
+added to the per-test `db` fixture teardown.  The now-unused
+`_create_audit_infrastructure` helper was removed.
+
+**Notable deviation from spec:** the plan called for
+`pytest_sessionfinish` to invoke `_db.session.remove()` and
+`_db.engine.dispose()` before dropping the database.  Implementation
+revealed Flask-SQLAlchemy 3.x scopes `db.session` and `db.engine`
+to the current app context, and the session-scoped `app` fixture
+has already torn down by the time `pytest_sessionfinish` runs --
+those calls raise `RuntimeError("Working outside of application
+context")`.  Two options considered:
+
+* Keep the session-scoped `app` alive via a module-level reference
+  so the hook could push its context.  Rejected as additional
+  global mutable state for a marginal cleanliness gain.
+* Build a fresh `create_app("testing")` inside the hook.  Rejected
+  because the new app would open connections to the about-to-be-
+  dropped DB.
+
+Chosen: psycopg2-only drop with `WITH (FORCE)` as the safety net
+(the per-test `db` fixture already disposes the engine after every
+test, so by the time the hook runs there are no live SQLAlchemy
+connections to release).  Reasoning is in the hook's docstring.
+
+**Verification (committed evidence):**
+
+```
+Batch 1 (config+models+services):  1756 passed in 9:21
+Batch 2 (routes a/c):                857 passed in 4:40
+Batch 3 (routes d-i):                392 passed in 2:17
+Batch 4 (routes l/m/o/p):            288 passed in 1:39
+Batch 5 (routes r/s/t/x):            689 passed in 4:01
+Batch 6 (integration):               220 passed in 1:17
+Batch 7 (adversarial+scripts+deploy): 545 passed in 2:59
+Batch 8 (audit+ref+schemas+utils+concurrent+performance):
+                                     401 passed in 2:02
+Total:                              5148 passed (~28 min sequential)
+
+Concurrent invocation gate (two pytest runs in two terminals):
+   Run #1 test_audit_migration.py: 11 passed (5.13s)
+   Run #2 test_audit_migration.py: 11 passed (4.76s)
+   No deadlock errors, both runs independent.
+
+Cleanup: post-session psql -l shows only shekel_test (legacy,
+untouched) and shekel_test_template; no shekel_test_main_* orphans.
+pylint app/ stays at 9.50/10.
+```
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 - `tests/conftest.py` -- module-level bootstrap and `pytest_sessionfinish` hook. Reorganised as:
@@ -177,7 +281,66 @@ All pass counts must equal baseline.
 
 **Why fourth:** substantive change. Lands on its own commit. If verification fails at any sub-step, revert and diagnose.
 
-### Phase 4 -- Enable pytest-xdist parallelism and mark cluster-state tests -- **BLOCKED on Phase 3**
+### Phase 4 -- Enable pytest-xdist parallelism and mark cluster-state tests -- **DONE 2026-05-11 (commit `511132f`, plus `-n 12` default in `0937975`)**
+
+**What landed:** `pytest.ini` registers `xdist_group(name)` as a
+marker and adds `--dist=loadgroup` to `addopts` (without that
+flag the marker is metadata-only under pytest-xdist's default
+`--dist=load`).  The marker itself moved to the entire
+`tests/test_models/test_audit_migration.py` module via
+`pytestmark = pytest.mark.xdist_group("shekel_app_role")`.
+
+**Notable deviation from spec:** the plan called for the marker
+on the `TestLeastPrivilegeRole` class only.  Implementation
+verification at -n 4 surfaced a deeper coupling:
+`TestApplyIdempotent` and `TestRoundTrip` (sibling classes in the
+same file) call `apply_audit_infrastructure` whose
+`_GRANT_APP_ROLE_SQL` conditionally `GRANT`s privileges to
+`shekel_app` WHEN the role exists.  With only the class-level
+marker, those sibling tests on other workers would silently leak
+GRANTs into their per-session DBs while `TestLeastPrivilegeRole`
+had the role alive; the `shekel_app_role` fixture teardown's
+`DROP OWNED BY` only scopes to its own database, so the
+cross-database grants would block `DROP ROLE` with
+`DependentObjectsStillExist`.  Pinning the entire module to one
+worker sidesteps the race; other test files continue to fan out
+across workers normally.
+
+**Bonus that landed in commit `0937975`:** `-n 12` was added to
+`pytest.ini` `addopts` after Phase 4.5 profiling on a 24-core host
+revealed PG's cluster-wide WAL/fsync pipeline (not CPU) is the
+serialised resource past -n 12.  Scaling table:
+
+| Workers | Batch 1 wall-clock | Speedup | Efficiency |
+|---|---|---|---|
+| -n 1 (seq) | 561s | 1.00x | 100% |
+| -n 4 | 218s | 2.57x | 64% |
+| -n 8 | 114s | 4.93x | 62% |
+| -n 12 | 79s | 7.07x | 59% |
+| -n 16 | 63s | 8.95x | 56% |
+
+-n 12 is the sweet spot where most parallelism is captured without
+the thrash risk of saturating the WAL queue.  Override with `-n 0`
+for single-process debugging.
+
+**Verification (committed evidence):**
+
+```
+pytest tests/test_models/test_audit_migration.py -n 4:
+  11 passed in 6.78s, all on gw0 (marker correctly pins).
+pytest tests/test_models/ -n 4:
+  148 passed in 20.87s (vs 46.06s sequential -- 2.2x speedup).
+pytest tests/test_routes/test_a* test_c* -n 4:
+  857 passed in 1:49 (vs 4:40 sequential -- 2.6x speedup).
+pytest tests/test_config.py tests/test_models/ tests/test_services/ -n 4:
+  1756 passed in 3:38 (vs 9:21 sequential -- 2.5x speedup).
+pytest tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/ -n 4:
+  545 passed in 1:21 (vs 2:59 sequential -- 2.2x speedup).
+pytest tests/test_models/test_audit_migration.py (no -n):
+  11 passed in 3.72s -- single-process unaffected.
+```
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 - `tests/test_models/test_audit_migration.py` -- add `@pytest.mark.xdist_group("shekel_app_role")` to the `TestLeastPrivilegeRole` class (line 389) and any sibling class that uses the `shekel_app_role` fixture. Cluster-level roles cannot be created/dropped concurrently across workers.
@@ -310,45 +473,115 @@ Each step's pass count must equal or exceed the baseline (5,131 tests). No faile
 ## Time estimate
 
 - Phase 0: 10 minutes -- **Done in ~5 min; commit `e41d136`**
-- Phase 1: 1 hour (extracting + rerouting three call sites; ~90 lines of code) -- **Done in ~45 min; commit `073c548`**
-- Phase 2: 1.5 hours (new script + drift pre-flight; first migration-based template build may surface unknown drift) -- **Pre-flight done; surfaced significant drift; remainder paused.  See `model-migration-drift.md`.  Drift fix work itself: ~5-6 hours additional, six independently-committable changes.**
-- Phase 3: 2 hours (conftest rewrite; the substantive change)
-- Phase 4: 30 minutes (markers + verification)
-- Phase 5: 1 hour (CI + docs)
-- Original total: ~6 hours.  **Realised so far: ~50 min (Phases 0 + 1).  Remaining work: ~5-6 hours drift fix + ~4 hours Phases 2-5.**
+- Phase 1: 1 hour -- **Done in ~45 min; commit `073c548`**
+- Drift fix (out-of-original-scope insertion): ~5-6 hours estimate -- **Done in ~3 hours across seven commits `9a5cca1`..`49fa13b`; see `model-migration-drift.md`**
+- Phase 2: 1.5 hours -- **Done in ~1 hour; commit `2aa3d17`**
+- Phase 3: 2 hours -- **Done in ~1.5 hours including the Flask-SQLAlchemy 3.x app-context deviation; commit `db95461`**
+- Phase 4: 30 minutes -- **Done in ~45 min including the module-level marker scope-up; commits `511132f` (markers) + `0937975` (`-n 12` default + Phase 4.5 profiling)**
+- Phase 5: 1 hour -- **Pending; the only remaining work**
 
-Each phase is independently committable and revertable. The user can pause between phases for review or production deploys.
+**Realised total so far:** ~7 hours wall-clock across two
+sessions, covering Phases 0 through 4 plus the drift fix plus the
+Phase 4.5 performance profile.  Remaining: Phase 5 (~1 hour).
+
+Each phase is independently committable and revertable.  All
+changes through `0937975` live on `dev`; not yet pushed to
+`origin/dev`.
 
 ## Resuming from a fresh session
 
-When this work resumes (whether in a new Claude session or a different operator's terminal), the entry point is this document plus its companion `docs/audits/security-2026-04-15/model-migration-drift.md`.  Concrete steps:
+Phases 0 through 4 are complete on `dev`.  The only remaining work
+is Phase 5 (CI workflow + docs).  Entry points:
+
+* This document (status table at the top).
+* `docs/audits/security-2026-04-15/model-migration-drift.md`
+  (drift fix retrospective; all seven findings resolved).
+* `docs/audits/security-2026-04-15/test-performance-research.md`
+  (Phase 4.5 profile + community research; operator decision
+  pending on whether to optimise the remaining 230ms TRUNCATE
+  cost).
 
 ### 1. Verify current state
 
 ```bash
-git log --oneline -10  # should include e41d136, 073c548, d5baf4a, 7c6af1e
-git status             # working tree should be clean (apart from any in-progress edits)
-grep -A1 "^pytest-xdist" requirements-dev.txt  # should show 3.8.0
-grep "seed_reference_data" app/ref_seeds.py    # should show the function definition
+git log --oneline -12 | grep -E "(e41d136|073c548|2aa3d17|db95461|511132f|0937975)"
+# should show all six landing commits (Phases 0, 1, 2, 3, 4, and the
+# -n 12 default that landed alongside Phase 4)
+
+git status
+# working tree should be clean of these changes (apart from any
+# in-progress edits unrelated to this plan)
+
+grep "pytest-xdist" requirements-dev.txt   # 3.8.0
+grep "seed_reference_data" app/ref_seeds.py    # exists
+ls scripts/build_test_template.py          # exists
+grep "_bootstrap_worker_database" tests/conftest.py    # exists
+grep "xdist_group" pytest.ini              # marker registered + -n 12 + --dist=loadgroup in addopts
+grep "pytestmark = pytest.mark.xdist_group" tests/test_models/test_audit_migration.py    # module-level marker
 ```
 
-If any of those checks fail, the prior phases have been reverted; re-read the plan and re-run the verification commands inside each completed phase's section above.
+If any of those checks fail, the prior phases have been reverted;
+re-read the relevant phase section above and re-run its
+verification commands before continuing.
 
-### 2. Choose the next action based on the drift fix work's status
+### 2. Phase 5 -- CI workflow + docs (the only remaining work)
 
-* **Drift fix not yet started:** open `model-migration-drift.md` and work through findings H-1 through L-1 in order.  Each finding has its own "Recommended fix" and "Verification" subsection.  Land each as its own commit.  After all six findings close, re-run the comparison script at the top of `model-migration-drift.md` and confirm only EXPECTED divergences remain.
-* **Drift fix in progress:** finish remaining findings, then re-run the comparison script.
-* **Drift fix complete:** Phase 2 of this plan is unblocked.  Continue at "Phase 2 -- Build the template database script" above with the original spec (which is unchanged -- the drift fix doesn't alter the Phase 2 design, only validates its premise).
+Files:
 
-### 3. Continue with Phase 2-5 once unblocked
+* `.github/workflows/ci.yml`:
+  - Add `TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres` (or appropriate DSN) to the job's `env` block.
+  - Grant the CI test role `CREATEDB` privilege (it needs to create per-session DBs cloned from the template).
+  - Add a setup step BEFORE `Run tests` that runs `python scripts/build_test_template.py`.
+  - The pytest invocation can drop the `-n auto` suggestion from the original plan -- `pytest.ini` `addopts` now carries `-n 12` and `--dist=loadgroup`, so a bare `pytest --tb=short -q` is sufficient.
+* `docs/testing-standards.md`:
+  - Replace the "NEVER run two pytest processes concurrently" warning -- now obsolete after Phase 3.
+  - Refresh the per-batch timings table (now ~3x stale at the new `-n 12` default).
+  - Add a "Building the test template" subsection documenting `python scripts/build_test_template.py` and when to rebuild (after migrations, after `app/ref_seeds.py` or `app/audit_infrastructure.py` changes).
+  - Document the `xdist_group` pattern so future tests that touch cluster-wide state adopt the same marker.
+  - Note that single-invocation full-suite runs are now viable (~4 min at `-n 12`, well under the 10-min timeout) -- the 8-batch split is no longer mandatory but remains supported for slow-PG scenarios.
+* `CLAUDE.md`:
+  - Replace the "NEVER run concurrent pytest processes" line with: "Concurrent invocations are safe (each pytest session gets its own per-session DB cloned from `shekel_test_template`).  Default is `-n 12` workers; override with `-n 0` for debugging."
+  - Add a first-time-setup note: "Build the test template once: `python scripts/build_test_template.py`."
+  - Update the "Tests -- 5,100+ tests, ~28 min full suite -- NEVER run as one command" line; at `-n 12` the full suite is ~4 min.
 
-Each phase below the drift fix retains its original spec.  Run the verification command at the end of each phase before committing.  Do not skip phases or batch multiple phases into one commit -- the user has explicitly asked for incremental, revertable progress because of the test-suite-anxiety context noted under "Context" above.
+### 3. Decide on the Phase 4.5 performance research
 
-### 4. Helpful pointers for a fresh session
+The 230ms-per-test TRUNCATE CASCADE is the remaining floor.
+`docs/audits/security-2026-04-15/test-performance-research.md`
+catalogues three tiered options:
 
-* The project follows the rules in `CLAUDE.md`, especially: do not modify code outside the current task's scope, do not introduce TODOs, fix root causes not symptoms, never rewrite a test to make it pass.
-* Pylint must stay at 9.50/10 or better.  Run `pylint app/ --fail-on=E,F` after any change.
-* Full test suite cannot run in one invocation (10-min hard timeout).  Use the directory batches documented in `docs/testing-standards.md`.
-* Never run two pytest processes concurrently against the same TEST_DATABASE -- the per-test TRUNCATE deadlocks.  (This is the very problem this plan exists to fix; until Phase 3 lands, the constraint is binding.)
-* The session-scoped `app` fixture in `tests/conftest.py` is the load-bearing scaffolding.  Read it end-to-end before changing fixture behaviour.
-* The audit-trigger invariants (`app/audit_infrastructure.py`, `system.audit_log`) are the strictest correctness contract in the codebase.  Any change to per-test isolation must preserve them; SAVEPOINT-rollback was specifically rejected for this reason -- see "Architectural decisions" above.
+* **Tier A (no test-code rewrite, ~2-4 hours):** DELETE-of-empty-tables
+  + `session_replication_role=replica` during seed + PG
+  `synchronous_commit=off` on the test cluster.  Expected: ~4 min
+  -> ~1.5-2 min.
+* **Tier B (hybrid SAVEPOINT, ~1-3 days):** Django-style split with
+  audit-asserting tests marked.  Expected: another 30-50% off Tier A.
+* **Tier C (PG 18 + reflink, larger infra change):** per-test
+  TEMPLATE clone.  Expected: ~20-40s full suite.
+
+No commitment yet; pending operator review.  Phase 5 does NOT
+depend on any of these landing.
+
+### 4. Helpful pointers
+
+* The project follows the rules in `CLAUDE.md`, especially: do not
+  modify code outside the current task's scope, do not introduce
+  TODOs, fix root causes not symptoms, never rewrite a test to
+  make it pass.
+* Pylint must stay at 9.50/10 or better on `app/`.  Run
+  `pylint app/ --fail-on=E,F` after any change.
+* Concurrent pytest invocations are now safe (Phase 3 closed the
+  TRUNCATE deadlock).  Two terminals running `pytest` against the
+  same TEST_ADMIN cluster will each get their own per-session DB.
+* The session-scoped `app` fixture in `tests/conftest.py` is the
+  load-bearing scaffolding.  Read it end-to-end before changing
+  fixture behaviour.
+* The audit-trigger invariants (`app/audit_infrastructure.py`,
+  `system.audit_log`) are the strictest correctness contract in
+  the codebase.  Any change to per-test isolation must preserve
+  them; SAVEPOINT-rollback was specifically rejected for this
+  reason in the original plan -- see "Architectural decisions"
+  above.
+* Use `TEST_ADMIN_DATABASE_URL` to point the bootstrap at the
+  right admin DSN.  Project convention: PG on `localhost:5433` with
+  `shekel_user`/`shekel_pass` (override per environment).
