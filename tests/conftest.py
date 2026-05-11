@@ -11,12 +11,27 @@ of nested-transaction rollback with SQLAlchemy 2.0.
 """
 
 # pylint: disable=wrong-import-position,wrong-import-order
-# Imports below are intentionally ordered so SECRET_KEY is set in the
-# environment BEFORE any ``app`` module is imported.
+# Imports below are intentionally ordered so the SECRET_KEY env var
+# is set AND the per-pytest-worker database is cloned from
+# ``shekel_test_template`` BEFORE any ``app`` module is imported.
+# Two class-body reads at first-app-import time depend on this:
+#
+# * ``app.config.TestConfig.SQLALCHEMY_DATABASE_URI`` reads
+#   ``TEST_DATABASE_URL`` -- ``_bootstrap_worker_database`` below
+#   sets it to the per-session DSN.
+# * Production / ``_reject_sentinel`` defends read ``SECRET_KEY``
+#   with no fallback (audit finding F-016).
+#
+# Setting either env var after the first ``from app import ...``
+# would leave the app pointed at a stale value.
 
 import os
 from datetime import date, timedelta
 from decimal import Decimal
+from urllib.parse import urlparse, urlunparse
+
+import psycopg2
+from psycopg2 import sql
 
 # IMPORTANT: SECRET_KEY must be set in the environment BEFORE the
 # ``app`` package is imported, because ``app/config.py`` reads it at
@@ -31,6 +46,185 @@ os.environ.setdefault(
     "SECRET_KEY",
     "test-suite-fixed-key-not-used-in-production-do-not-deploy",
 )
+
+
+# Name of the PostgreSQL template database the bootstrap clones from.
+# Built by ``scripts/build_test_template.py``.
+_TEST_TEMPLATE_DATABASE = "shekel_test_template"
+# Default admin DSN (peer auth) -- overridable via env so CI and
+# developer laptops that need TCP + password can point at their own
+# admin DB without code change.  Must NOT be the template DB itself:
+# ``CREATE DATABASE`` and ``DROP DATABASE`` cannot run against the
+# connection's own database.
+_DEFAULT_ADMIN_URL = "postgresql:///postgres"
+# Expected ``ref.account_types`` row count in a freshly-cloned per-
+# session DB.  Sourced from ``app.ref_seeds.ACCT_TYPE_SEEDS``; any
+# mismatch indicates the template is corrupt and needs a rebuild.
+_EXPECTED_ACCOUNT_TYPE_COUNT = 18
+
+
+def _bootstrap_worker_database():
+    """Create a per-pytest-worker database cloned from the test template.
+
+    Called once at conftest module-load time, BEFORE any ``app``
+    import.  Each pytest invocation (and each pytest-xdist worker
+    within an invocation) gets its own database; concurrent
+    invocations cannot deadlock on the per-test ``TRUNCATE CASCADE``
+    because each operates on its own DB.
+
+    Master-vs-worker detection:
+        Under pytest-xdist the master process imports conftest for
+        test collection but does not run tests.  It sets
+        ``PYTEST_XDIST_TESTRUNUID`` but NOT ``PYTEST_XDIST_WORKER``
+        (only the workers carry the latter).  The master must skip
+        the bootstrap -- otherwise it would leave a per-PID DB that
+        nothing uses and is never dropped.  Single-process pytest
+        (no ``-n`` flag) has neither variable set and runs the
+        bootstrap as ``worker_id="main"``.
+
+    Orphan cleanup:
+        On startup the function drops any leftover
+        ``shekel_test_{worker_id}_*`` DBs that have no active
+        connections in ``pg_stat_activity``.  This handles the
+        case where a previous pytest run crashed (SIGKILL, kernel
+        OOM, ...) before ``pytest_sessionfinish`` could drop its
+        DB.  Filtering by ``pg_stat_activity`` rather than name
+        alone defends against the PID-reuse trap: a freshly-
+        started worker that happens to be assigned the same PID
+        as a previous crashed worker would see its own (about-to-
+        be-created) DB name in the orphan list; checking active
+        connections avoids dropping a sibling worker's live DB.
+
+    Template existence:
+        The bootstrap fails fast with an actionable
+        ``RuntimeError`` if ``shekel_test_template`` does not
+        exist.  The fix is documented in the error message:
+        ``python scripts/build_test_template.py``.
+
+    Clone verification:
+        After the clone, a fresh psycopg2 connection counts rows
+        in ``ref.account_types``.  Anything other than the
+        expected 18 means the template was corrupt at clone time
+        and needs to be rebuilt; another actionable error message
+        steers the operator to the fix.
+
+    Side effects:
+        Sets ``os.environ["TEST_DATABASE_URL"]`` to the per-
+        session DSN.  ``app.config.TestConfig`` reads this at
+        class-body evaluation time during the next ``from app
+        import ...``; the env var write must precede that import.
+
+    Returns:
+        ``None`` when bootstrap is skipped (xdist master).
+        ``(db_name, admin_url)`` otherwise; ``pytest_sessionfinish``
+        uses these to DROP the per-session DB after the suite ends.
+
+    Raises:
+        RuntimeError: When the template DB is missing, or when
+            the freshly-cloned per-session DB carries a row count
+            that disagrees with the seed list size.  Both errors
+            include the recovery command in the message.
+    """
+    # xdist master: TESTRUNUID set, WORKER not set.  Skip entirely
+    # so the master process does not create a DB that nothing uses.
+    if (os.environ.get("PYTEST_XDIST_TESTRUNUID")
+            and not os.environ.get("PYTEST_XDIST_WORKER")):
+        return None
+
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    db_name = f"shekel_test_{worker_id}_{os.getpid()}"
+    admin_url = os.environ.get(
+        "TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL
+    )
+
+    admin_conn = psycopg2.connect(admin_url)
+    try:
+        admin_conn.autocommit = True
+        with admin_conn.cursor() as cur:
+            # Orphan cleanup -- name pattern match, then exclude
+            # any DB with live connections (a sibling worker, or
+            # the unlikely case of our own about-to-be-created
+            # name carrying a stale tuple).
+            cur.execute(
+                "SELECT datname FROM pg_database WHERE datname LIKE %s",
+                (f"shekel_test_{worker_id}_%",),
+            )
+            candidate_orphans = [row[0] for row in cur.fetchall()]
+            if candidate_orphans:
+                cur.execute(
+                    "SELECT DISTINCT datname FROM pg_stat_activity "
+                    "WHERE datname = ANY(%s)",
+                    (candidate_orphans,),
+                )
+                active = {row[0] for row in cur.fetchall()}
+                for orphan in candidate_orphans:
+                    if orphan not in active:
+                        cur.execute(
+                            sql.SQL(
+                                "DROP DATABASE IF EXISTS {} WITH (FORCE)"
+                            ).format(sql.Identifier(orphan))
+                        )
+
+            # Template existence -- fail fast with a recovery hint.
+            cur.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s",
+                (_TEST_TEMPLATE_DATABASE,),
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError(
+                    f"Test template database "
+                    f"{_TEST_TEMPLATE_DATABASE!r} not found.  "
+                    "Run: python scripts/build_test_template.py"
+                )
+
+            # Clone the template into the per-session DB.  This is
+            # an O(seconds) file-copy by PostgreSQL, vs. the
+            # O(minutes) cost of rerunning migrations + audit +
+            # seed for every pytest session.
+            cur.execute(
+                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                    sql.Identifier(db_name),
+                    sql.Identifier(_TEST_TEMPLATE_DATABASE),
+                )
+            )
+    finally:
+        admin_conn.close()
+
+    # Verify the clone is intact -- a fresh psycopg2 connection
+    # bypasses any SQLAlchemy pool state from the admin connection
+    # above.  A row count mismatch means the template itself was
+    # corrupt; the message names the fix.
+    per_session_url = urlunparse(
+        urlparse(admin_url)._replace(path=f"/{db_name}")
+    )
+    verify_conn = psycopg2.connect(per_session_url)
+    try:
+        with verify_conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM ref.account_types")
+            account_type_count = cur.fetchone()[0]
+            if account_type_count != _EXPECTED_ACCOUNT_TYPE_COUNT:
+                raise RuntimeError(
+                    f"Per-session DB {db_name!r} appears corrupted "
+                    f"(ref.account_types count={account_type_count}, "
+                    f"expected {_EXPECTED_ACCOUNT_TYPE_COUNT}).  "
+                    "Rebuild the template: "
+                    "python scripts/build_test_template.py"
+                )
+    finally:
+        verify_conn.close()
+
+    # Point the app's TestConfig at the per-session DB.  Must
+    # precede the first ``from app import ...`` below.
+    os.environ["TEST_DATABASE_URL"] = per_session_url
+
+    return (db_name, admin_url)
+
+
+# Execute the bootstrap at module load time.  ``None`` when the xdist
+# master skipped; ``pytest_sessionfinish`` keys off this to decide
+# whether to drop the per-session DB.
+_BOOTSTRAP_RESULT = _bootstrap_worker_database()
+
 
 import pytest
 
@@ -115,52 +309,27 @@ def app():
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_database(app):
-    """One-time database setup: create schemas and tables.
+    """One-time per-session prep: refresh the in-process ref cache.
 
-    Runs once at the start of the test session.  Tables are truncated
-    between individual tests by the 'db' fixture.
+    The per-session PostgreSQL database was cloned from
+    ``shekel_test_template`` at conftest module-load time (see
+    :func:`_bootstrap_worker_database`).  Schemas, tables, audit
+    infrastructure, indexes, and reference seed data are therefore
+    already present in the database when this fixture runs; the only
+    Python-side initialisation remaining is the in-process ref_cache
+    and the Jinja globals that mirror the seeded IDs (the templates
+    read these at render time -- a missing entry would break every
+    page that references one).
+
+    Database teardown happens in :func:`pytest_sessionfinish` at the
+    bottom of this module: ``DROP DATABASE ... WITH FORCE`` removes
+    the whole per-session DB rather than table-by-table -- faster
+    and less brittle than the previous ``drop_all`` + per-schema
+    cascade.
     """
     with app.app_context():
-        # Create schemas.
-        # DDL identifiers cannot use bind parameters.  Schema names
-        # are from a hardcoded tuple -- not user input.
-        for schema_name in ("ref", "auth", "budget", "salary", "system"):
-            _db.session.execute(
-                _db.text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-            )
-        _db.session.commit()
-
-        # Create all tables from model metadata.
-        _db.create_all()
-
-        # Create audit log infrastructure (not managed by SQLAlchemy models).
-        _create_audit_infrastructure()
-        _db.session.commit()
-
-        # Seed reference data (these persist across tests since they're
-        # read-only lookup tables).
-        _seed_ref_tables()
-        _db.session.commit()
-
-        # Re-initialize ref_cache now that ref tables are seeded.
-        # create_app() tries to init the cache, but the ref tables may
-        # not exist yet at that point (the broad except in create_app
-        # silently swallows the failure).  Re-init here so that
-        # services using ref_cache work correctly in tests.
         _refresh_ref_cache_and_jinja_globals(app)
-
     yield
-
-    # Teardown: drop all tables after the session.
-    with app.app_context():
-        _db.drop_all()
-        # DDL identifiers cannot use bind parameters.  Schema names
-        # are from a hardcoded tuple -- not user input.
-        for schema_name in ("ref", "auth", "budget", "salary", "system"):
-            _db.session.execute(
-                _db.text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
-            )
-        _db.session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +430,13 @@ def db(app, setup_database):
         # remove() instead of just rollback() ensures cleanup even
         # when nested app_context() blocks already called remove().
         _db.session.remove()
+        # Defensive: release any pool connection a previous test
+        # might have leaked.  Belt-and-braces protection so per-test
+        # isolation cannot be subtly compromised by connection-pool
+        # state -- the per-session DB cleanup in
+        # ``pytest_sessionfinish`` issues ``DROP DATABASE WITH
+        # (FORCE)`` and a held connection would race that drop.
+        _db.engine.dispose()
 
 
 @pytest.fixture()
@@ -1121,32 +1297,6 @@ def _refresh_ref_cache_and_jinja_globals(app):
     app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
 
 
-def _create_audit_infrastructure():
-    """Create system.audit_log table, trigger function, and triggers.
-
-    Delegates to ``app.audit_infrastructure.apply_audit_infrastructure``
-    so the Alembic migration, ``scripts/init_database.py`` (fresh-DB
-    bootstrap), and the test-session setup all materialise the same
-    schema.  The previous in-line copy of the SQL drifted six tables
-    behind the production migration before this consolidation; the
-    shared module is the only way to keep the three call sites in
-    lock-step.
-
-    Called once during test-session setup because ``create_all()``
-    only knows about SQLAlchemy models and the audit infrastructure
-    is raw SQL (PL/pgSQL function, row-level triggers, JSONB
-    columns) outside the model registry.
-    """
-    # pylint: disable=import-outside-toplevel  -- avoid pulling app
-    # imports at conftest module-load time so SECRET_KEY can be set
-    # via os.environ.setdefault() before the first ``app`` import.
-    from app.audit_infrastructure import apply_audit_infrastructure
-
-    apply_audit_infrastructure(
-        lambda sql: _db.session.execute(_db.text(sql))
-    )
-
-
 def _seed_ref_tables():
     """Populate reference tables for the test database.
 
@@ -1158,10 +1308,76 @@ def _seed_ref_tables():
     eliminates the drift hazard where a future migration could add
     a ref row in one call site but be forgotten in the other two.
 
-    Does NOT commit; the caller (``setup_database`` at session start
-    or the per-test ``db`` fixture) owns the transaction boundary.
+    After the per-pytest-worker DB isolation change (Phase 3 of
+    ``docs/audits/security-2026-04-15/per-worker-database-plan.md``)
+    only the per-test ``db`` fixture calls this -- the session-
+    start path no longer runs a seed because the per-session DB is
+    cloned from ``shekel_test_template`` which already carries the
+    seed.
+
+    Does NOT commit; the caller (the per-test ``db`` fixture)
+    owns the transaction boundary.
     """
     # pylint: disable=import-outside-toplevel
     from app.ref_seeds import seed_reference_data
 
     seed_reference_data(_db.session)
+
+
+def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argument
+    """Drop the per-pytest-worker database after the session ends.
+
+    Pytest invokes this hook at the end of every session -- including
+    failed sessions -- so the per-session DB is cleaned up regardless
+    of pass/fail.  No-op when the xdist master process skipped the
+    bootstrap (``_BOOTSTRAP_RESULT`` is ``None``); only worker
+    processes own a DB to drop.
+
+    Why psycopg2 directly (not SQLAlchemy):
+        Flask-SQLAlchemy 3.x scopes ``db.session`` and ``db.engine``
+        to the current app context, and the
+        ``pytest_sessionfinish`` hook runs AFTER the session-scoped
+        ``app`` fixture has torn down -- there is no active app
+        context to bind to.  Wrapping the cleanup in a fresh app
+        context would require either keeping the session-scoped app
+        alive via module-level state or building a new app, both
+        of which add complexity for the same end state.  The per-
+        test ``db`` fixture already calls ``_db.session.remove`` and
+        ``_db.engine.dispose`` inside its app context after every
+        test, so by the time this hook runs there are no live
+        SQLAlchemy connections to release -- and the
+        ``WITH (FORCE)`` clause severs any backend that did
+        escape, at the protocol level.  See
+        ``docs/audits/security-2026-04-15/per-worker-database-plan.md``
+        Phase 3 for the broader context.
+
+    Survives SIGKILL imperfectly: a process killed before this hook
+    runs leaves an orphan DB.  The next session's bootstrap drops it
+    via the ``shekel_test_{worker_id}_*`` cleanup pass (see
+    :func:`_bootstrap_worker_database`), so the orphan is at worst
+    a temporary disk-space cost between runs.
+
+    Args:
+        session (pytest.Session): pytest Session object (required
+            by the hook signature; unused here -- the cleanup keys
+            off the module-level ``_BOOTSTRAP_RESULT`` instead).
+        exitstatus (int): Session exit code.  Unused: we drop the
+            per-session DB regardless of pass / fail because it is
+            throwaway.
+    """
+    if _BOOTSTRAP_RESULT is None:
+        return
+
+    db_name, admin_url = _BOOTSTRAP_RESULT
+
+    admin_conn = psycopg2.connect(admin_url)
+    try:
+        admin_conn.autocommit = True
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                    sql.Identifier(db_name)
+                )
+            )
+    finally:
+        admin_conn.close()
