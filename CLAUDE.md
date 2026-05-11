@@ -160,12 +160,14 @@ Detailed standards are in these files. Read them when working on code, tests, or
 - Coding standards (Python, SQL, HTML/Jinja, JS, CSS, shell): @docs/coding-standards.md
 - Testing standards and problem reporting: @docs/testing-standards.md
 
-## Tests -- NEVER run the full suite in one command (hard 10-min timeout)
+## Tests -- 5,100+ tests, ~28 min full suite -- NEVER run as one command
 
-## Always split by directory. Each group finishes well under 10 minutes
-
-pytest tests/test_services/ -v --tb=short
-pytest tests/test_routes/ -v --tb=short
+A single `pytest` invocation against the full suite exceeds the 10-min hard
+timeout. The `tests/test_routes/` directory alone is ~12 min and MUST be
+split into 4 batches (a/c, d-i, l-p, r-x). NEVER run concurrent pytest
+processes against the same TEST_DATABASE -- they deadlock on the per-test
+TRUNCATE in `tests/conftest.py`. See `docs/testing-standards.md` "Test Run
+Guidelines" for the canonical directory batches and per-batch timings.
 
 ## Single file or single test for fast feedback
 

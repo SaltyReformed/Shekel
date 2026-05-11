@@ -18,11 +18,39 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 
 ## Test Run Guidelines
 
-- **Full suite:** ~12 minutes (3100+ tests). Always use `timeout 720`.
-- **During development:** Run only relevant test files. Typically under 30 seconds.
-- **Before reporting done:** Full suite once: `timeout 720 pytest -v --tb=short`.
-- **If tests appear stuck:** Wait for the full timeout. The slowest test is ~3 seconds.
-- **MFA/auth tests are slow** (~1-3s each) due to bcrypt hashing. This is expected.
+- **Full suite:** ~28 minutes, ~5,100 tests as of 2026-05-10.  CANNOT run in
+  one invocation -- the 10-minute hard timeout aborts.  Split by directory
+  and run sequentially.  The `tests/test_routes/` directory alone is ~12
+  minutes and MUST be split into 4 sub-batches:
+
+  | Batch | Tests | Time |
+  |---|---|---|
+  | `tests/test_config.py tests/test_models/ tests/test_services/` | ~1,740 | ~9 min |
+  | `tests/test_routes/test_a* tests/test_routes/test_c*` (includes test_auth.py, slowest single file) | ~860 | ~4:35 |
+  | `tests/test_routes/test_d* tests/test_routes/test_e* tests/test_routes/test_g* tests/test_routes/test_h* tests/test_routes/test_i*` | ~390 | ~2:15 |
+  | `tests/test_routes/test_l* tests/test_routes/test_m* tests/test_routes/test_o* tests/test_routes/test_p*` | ~290 | ~1:40 |
+  | `tests/test_routes/test_r* tests/test_routes/test_s* tests/test_routes/test_t* tests/test_routes/test_x*` | ~690 | ~4 min |
+  | `tests/test_integration/` | ~220 | ~1:15 |
+  | `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | ~3 min |
+  | `tests/test_audit_fixes.py tests/test_ref_cache.py tests/test_schemas/ tests/test_utils/ tests/test_concurrent/ tests/test_performance/` | ~400 | ~2 min |
+
+  Total: ~5,131 tests across ~28 minutes wall-clock when run sequentially.
+- **NEVER run two pytest processes concurrently against the same
+  TEST_DATABASE.**  They deadlock on the per-test `TRUNCATE ... CASCADE`
+  in `tests/conftest.py::db`; the symptom is a flood of
+  `OperationalError: deadlock detected (psycopg2.errors.DeadlockDetected)`
+  errors in both runs, which look like a real test failure but are a
+  scheduling artifact.  Wait for one batch to finish before starting
+  the next.
+- **During development:** Run only relevant test files.  Typically under
+  30 seconds.
+- **Before reporting done:** Run all the directory batches above
+  sequentially.  Every batch must end in `<N> passed`; any `failed`,
+  `errors`, or `xfailed` lines block the "done" report.
+- **If tests appear stuck:** Wait for the full timeout.  The slowest test
+  is ~3 seconds.
+- **MFA/auth tests are slow** (~1-3s each) due to bcrypt hashing.  This
+  is expected.
 
 ## Zero Tolerance for Failing Tests
 
