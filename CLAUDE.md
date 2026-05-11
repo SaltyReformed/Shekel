@@ -71,7 +71,9 @@ These are requirements, not suggestions. Violating them is never acceptable.
 # Dev server
 flask run
 
-# Tests -- full suite: ~13 minutes (3200+ tests), always run in batches
+# Tests -- full suite: ~4 min at -n 12 default (5,148 tests); single invocation OK
+python scripts/build_test_template.py         # first-time setup; rebuild after migrations
+pytest                                        # full suite with pytest.ini's -n 12
 pytest tests/path/test_file.py -v             # single file (fast feedback)
 pytest tests/path/test_file.py::test_name -v  # single test
 
@@ -160,14 +162,26 @@ Detailed standards are in these files. Read them when working on code, tests, or
 - Coding standards (Python, SQL, HTML/Jinja, JS, CSS, shell): @docs/coding-standards.md
 - Testing standards and problem reporting: @docs/testing-standards.md
 
-## Tests -- 5,100+ tests, ~28 min full suite -- NEVER run as one command
+## Tests -- 5,148 tests, ~4 min full suite at -n 12 (pytest-xdist default)
 
-A single `pytest` invocation against the full suite exceeds the 10-min hard
-timeout. The `tests/test_routes/` directory alone is ~12 min and MUST be
-split into 4 batches (a/c, d-i, l-p, r-x). NEVER run concurrent pytest
-processes against the same TEST_DATABASE -- they deadlock on the per-test
-TRUNCATE in `tests/conftest.py`. See `docs/testing-standards.md` "Test Run
-Guidelines" for the canonical directory batches and per-batch timings.
+A single `pytest` invocation completes well under the 10-min hard
+timeout. `pytest.ini` carries `-n 12 --dist=loadgroup` in `addopts`,
+so the bare command runs the full suite across 12 parallel workers.
+Concurrent pytest invocations are safe: each session (and each xdist
+worker within a session) clones its own per-session DB from
+`shekel_test_template` via `tests/conftest.py::_bootstrap_worker_database`.
+Override with `-n 0` for single-process debugging (the full suite is
+~28 min sequentially).
+
+First-time setup: build the template once with
+`python scripts/build_test_template.py`. Rebuild after migrations or
+after edits to `app/ref_seeds.py` / `app/audit_infrastructure.py` --
+the template carries the seeded reference data and the audit
+triggers, and clones do not pick up source changes without a rebuild.
+See `docs/testing-standards.md` "Test Run Guidelines" and "Building
+the test template" for the full workflow and the per-directory batch
+fallback (still supported for slow-PG environments and sequential
+debugging).
 
 ## Single file or single test for fast feedback
 

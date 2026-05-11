@@ -18,39 +18,175 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 
 ## Test Run Guidelines
 
-- **Full suite:** ~28 minutes, ~5,100 tests as of 2026-05-10.  CANNOT run in
-  one invocation -- the 10-minute hard timeout aborts.  Split by directory
-  and run sequentially.  The `tests/test_routes/` directory alone is ~12
-  minutes and MUST be split into 4 sub-batches:
-
-  | Batch | Tests | Time |
-  |---|---|---|
-  | `tests/test_config.py tests/test_models/ tests/test_services/` | ~1,740 | ~9 min |
-  | `tests/test_routes/test_a* tests/test_routes/test_c*` (includes test_auth.py, slowest single file) | ~860 | ~4:35 |
-  | `tests/test_routes/test_d* tests/test_routes/test_e* tests/test_routes/test_g* tests/test_routes/test_h* tests/test_routes/test_i*` | ~390 | ~2:15 |
-  | `tests/test_routes/test_l* tests/test_routes/test_m* tests/test_routes/test_o* tests/test_routes/test_p*` | ~290 | ~1:40 |
-  | `tests/test_routes/test_r* tests/test_routes/test_s* tests/test_routes/test_t* tests/test_routes/test_x*` | ~690 | ~4 min |
-  | `tests/test_integration/` | ~220 | ~1:15 |
-  | `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | ~3 min |
-  | `tests/test_audit_fixes.py tests/test_ref_cache.py tests/test_schemas/ tests/test_utils/ tests/test_concurrent/ tests/test_performance/` | ~400 | ~2 min |
-
-  Total: ~5,131 tests across ~28 minutes wall-clock when run sequentially.
-- **NEVER run two pytest processes concurrently against the same
-  TEST_DATABASE.**  They deadlock on the per-test `TRUNCATE ... CASCADE`
-  in `tests/conftest.py::db`; the symptom is a flood of
-  `OperationalError: deadlock detected (psycopg2.errors.DeadlockDetected)`
-  errors in both runs, which look like a real test failure but are a
-  scheduling artifact.  Wait for one batch to finish before starting
-  the next.
-- **During development:** Run only relevant test files.  Typically under
-  30 seconds.
-- **Before reporting done:** Run all the directory batches above
-  sequentially.  Every batch must end in `<N> passed`; any `failed`,
+- **Full suite:** ~4 min wall-clock, ~5,148 tests at the default
+  `-n 12` parallelism (set in `pytest.ini` `addopts`).  A single
+  `pytest` invocation completes well under the 10-min timeout
+  that previously forced per-directory batching.
+- **Concurrent invocations are safe.**  `tests/conftest.py`'s
+  `_bootstrap_worker_database` clones `shekel_test_template` into
+  a uniquely-named per-session DB for every pytest session (and
+  every pytest-xdist worker within a session), rewriting
+  `TEST_DATABASE_URL` before the first `import app`.  Two
+  terminals running `pytest` against the same PostgreSQL cluster
+  get independent databases; the per-test `TRUNCATE ... CASCADE`
+  no longer deadlocks across invocations as it did pre-Phase-3.
+- **First-time setup:** build the template once with
+  `python scripts/build_test_template.py`; see "Building the test
+  template" below for when to rebuild.
+- **Before reporting done:** every batch (or the single full-
+  suite invocation) must end in `<N> passed`; any `failed`,
   `errors`, or `xfailed` lines block the "done" report.
-- **If tests appear stuck:** Wait for the full timeout.  The slowest test
-  is ~3 seconds.
-- **MFA/auth tests are slow** (~1-3s each) due to bcrypt hashing.  This
-  is expected.
+- **During development:** run only relevant test files; targeted
+  runs typically finish in seconds.
+- **Override parallelism:** `-n 0` for single-process debugging,
+  `-n auto` to match the host CPU count, or any specific number.
+  The CLI flag overrides `pytest.ini`'s default.  Past `-n 12`
+  the marginal speedup falls off because PostgreSQL's cluster-wide
+  WAL/fsync pipeline (not CPU) is the serialised resource; see
+  `docs/audits/security-2026-04-15/test-performance-research.md`
+  for the full profile.
+- **Test timeout:** 30s per test, configured in `pytest.ini`.
+  Slowest known test is ~3s (bcrypt-bound MFA/auth tests; ~1-3s
+  each is expected).  Anything past 30s raises a timeout error
+  rather than hanging the suite.
+
+### Optional per-directory batching
+
+The 8-batch split below was required when the suite was ~28 min
+sequentially and the 10-min CI timeout forced sub-batches.  At
+the new `-n 12` default it is no longer required, but the table
+remains documented for three scenarios:
+
+1. **Slow-PG environments** where `-n 12` saturates the WAL queue
+   and batches at `-n 4` are more reliable than the full suite at
+   `-n 4`.
+2. **Sequential debugging (`-n 0`):** the full suite is ~28 min
+   sequentially; batched output makes failures easier to triage
+   and lets you re-run a single batch after a fix.
+3. **Bisecting a regression** -- one batch finishes faster than
+   the whole suite.
+
+| Batch | Tests | `-n 12` | `-n 0` |
+|---|---|---|---|
+| `tests/test_config.py tests/test_models/ tests/test_services/` | ~1,740 | ~1:20 | ~9:21 |
+| `tests/test_routes/test_a* tests/test_routes/test_c*` (includes `test_auth.py`, slowest single file) | ~860 | ~0:45 | ~4:40 |
+| `tests/test_routes/test_d* test_e* test_g* test_h* test_i*` | ~390 | ~0:25 | ~2:17 |
+| `tests/test_routes/test_l* test_m* test_o* test_p*` | ~290 | ~0:20 | ~1:39 |
+| `tests/test_routes/test_r* test_s* test_t* test_x*` | ~690 | ~0:40 | ~4:01 |
+| `tests/test_integration/` | ~220 | ~0:15 | ~1:17 |
+| `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | ~0:30 | ~2:59 |
+| `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | ~0:25 | ~2:02 |
+
+Totals: ~5,148 tests / ~4 min at `-n 12` / ~28 min at `-n 0`.
+`tests/test_performance/` is excluded from the default `addopts`
+and must be invoked explicitly: `pytest tests/test_performance
+-v -s`.
+
+The `-n 12` column is derived from the Phase 4.5 profile of
+Batch 1 (measured: 79s at `-n 12`, 561s sequential, 7.07x
+speedup) applied to the sequential numbers, with a small-batch
+floor for pytest startup + 12-worker bootstrap overhead.  Treat
+the figures as ballpark, not measured per-batch.
+
+## Building the test template
+
+`shekel_test_template` is the PostgreSQL template database that
+`tests/conftest.py::_bootstrap_worker_database` clones into a
+uniquely-named per-session DB at the start of every pytest
+invocation (and every pytest-xdist worker within a session).
+Cloning a populated template is roughly two orders of magnitude
+faster than running migrations + audit infrastructure + reference
+seed per session, which is what unlocks the parallel and
+concurrent-safe test runs documented above.
+
+**First-time build:**
+
+```bash
+python scripts/build_test_template.py
+```
+
+The script is idempotent: it drops and recreates the template on
+every run, so re-running is the recovery path for any template-
+corruption symptom.  Three steps print progress: drop+create,
+populate (Alembic chain to `head` + audit infrastructure +
+reference seed + `TRUNCATE system.audit_log`), verify (account-
+type count, audit trigger count, `system.audit_log` row count).
+
+**When to rebuild:**
+
+- **After a migration** (`flask db migrate` + `flask db upgrade`).
+  The template runs `alembic.command.upgrade(..., 'head')` at
+  build time; per-test clones do not pick up new migrations
+  without a template rebuild.
+- **After editing `app/ref_seeds.py`.**  Reference data lives in
+  the template; per-test fixtures re-seed against the existing
+  schema but do not pick up new ref tables or changed seed
+  contents without a rebuild.
+- **After editing `app/audit_infrastructure.py`,** particularly
+  additions to `AUDITED_TABLES`.  The template carries the audit
+  triggers; new triggers attach only after a rebuild.
+- **If the bootstrap raises `RuntimeError`** complaining the
+  template is missing or has the wrong row/trigger count.  The
+  error message names the offending count and the most likely
+  root cause.
+
+**Environment:**
+
+The script reads `TEST_ADMIN_DATABASE_URL` for the admin DSN
+(default `postgresql:///postgres`).  Local development
+convention is
+`postgresql://shekel_user:shekel_pass@localhost:5433/postgres`
+(matching the local PG container); CI uses
+`postgresql://shekel_test:shekel_test@localhost:5432/postgres`.
+`SECRET_KEY` is defaulted by the script -- the template DB is
+never reachable through Gunicorn so the value is purely
+scaffolding for app construction.
+
+## Cluster-state tests and `xdist_group`
+
+PostgreSQL has two kinds of state.  Per-database state (rows,
+indexes, triggers, schemas) is isolated by the per-session DB
+clone: two xdist workers writing to `budget.transactions` cannot
+collide because each writes to its own database.  Cluster-scoped
+state (`CREATE ROLE`, replication slots, `pg_advisory_lock`) is
+shared across all databases in the cluster; two workers racing on
+the same cluster-level operation will collide.
+
+The only test file in the current suite that mutates cluster
+state is `tests/test_models/test_audit_migration.py`: the
+`shekel_app_role` fixture executes `CREATE ROLE shekel_app` and
+`DROP ROLE shekel_app`, and `apply_audit_infrastructure` (called
+from sibling test classes in the same file) conditionally
+`GRANT`s to the role when it exists.  Both touch the cluster.
+
+**Pattern:** pin all tests that touch cluster state to one
+pytest-xdist worker via `@pytest.mark.xdist_group("name")`:
+
+```python
+import pytest
+
+# Module-level marker pins every test in this file to a single
+# pytest-xdist worker.  pytest.ini's --dist=loadgroup is what
+# makes the marker actually serialise (under the default
+# --dist=load the marker is metadata only).
+pytestmark = pytest.mark.xdist_group("shekel_app_role")
+```
+
+Use a **module-level** marker when sibling classes share the
+cluster-state coupling (as in `test_audit_migration.py`).  Use a
+**class-level** or **test-level** marker when only some tests in
+the file are affected.
+
+The marker **name** must be unique per cluster-state resource:
+tests sharing a name run on the same worker, so two unrelated
+cluster-state tests with the same name would unnecessarily
+serialise.  Prefer distinct names per resource.
+
+If you add a new test that mutates cluster state, add the marker
+and a comment naming the resource.  Without it the test will
+race across workers and produce intermittent failures like
+`role "X" already exists` or `DependentObjectsStillExist` on
+`DROP ROLE`.
 
 ## Zero Tolerance for Failing Tests
 
