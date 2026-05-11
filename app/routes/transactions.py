@@ -37,6 +37,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.entry_service import build_entry_sums_dict
+from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
@@ -809,11 +810,7 @@ def get_quick_create():
         return "Not found", 404
 
     # Look up the baseline scenario for hidden fields.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return "No baseline scenario", 400
 
@@ -855,11 +852,7 @@ def get_full_create():
     if not acct or acct.user_id != current_user.id:
         return "Not found", 404
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return "No baseline scenario", 400
 
@@ -1104,11 +1097,7 @@ def _resolve_carry_forward_context(period_id):
     if current_period is None:
         return None, ("No current period found", 400)
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return None, ("No baseline scenario", 400)
 

@@ -21,7 +21,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, TransactionType
 from app import ref_cache
@@ -29,6 +28,7 @@ from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
+from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import RecurrenceConflict
 
 logger = logging.getLogger(__name__)
@@ -240,11 +240,7 @@ def create_template():
 
     # Auto-generate transactions from the rule into future periods.
     if rule:
-        scenario = (
-            db.session.query(Scenario)
-            .filter_by(user_id=current_user.id, is_baseline=True)
-            .first()
-        )
+        scenario = get_baseline_scenario(current_user.id)
         if scenario:
             periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
@@ -418,11 +414,7 @@ def update_template(template_id):
         ).update({"name": template.name}, synchronize_session="fetch")
 
     # Regenerate future transactions.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if scenario and template.recurrence_rule:
         periods = pay_period_service.get_all_periods(current_user.id)
         try:
@@ -533,11 +525,7 @@ def unarchive_template(template_id):
 
     # Regenerate to fill in any missing future periods.
     if template.recurrence_rule:
-        scenario = (
-            db.session.query(Scenario)
-            .filter_by(user_id=current_user.id, is_baseline=True)
-            .first()
-        )
+        scenario = get_baseline_scenario(current_user.id)
         if scenario:
             periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(

@@ -38,7 +38,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.models.ref import (
     CalcMethod,
     DeductionTiming,
@@ -66,6 +65,7 @@ from app.schemas.validation import (
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
 from app.services.calibration_service import derive_effective_rates
+from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.utils.db_errors import is_unique_violation
 
@@ -159,11 +159,7 @@ def create_profile():
     data = _create_schema.load(request.form)
 
     # Get baseline scenario
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         flash(Markup(
             "No baseline scenario found. Please "
@@ -1314,11 +1310,7 @@ def _regenerate_salary_transactions(profile):
     if not profile.template:
         return
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return
 

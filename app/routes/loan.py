@@ -24,7 +24,6 @@ from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
-from app.models.scenario import Scenario
 from app.models.transfer_template import TransferTemplate
 from app.schemas.validation import (
     EscrowComponentSchema,
@@ -52,6 +51,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
     prepare_payments_for_engine,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 from app.utils.formatting import pct_to_decimal
 from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
@@ -360,11 +360,7 @@ def _load_loan_context(account, params):
         account: Account model instance.
         params: LoanParams model instance.
     """
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
 
     ctx = load_loan_context(account.id, scenario_id, params)
@@ -1278,11 +1274,7 @@ def create_payment_transfer(account_id):
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
     # Generate transfers for existing pay periods.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if scenario:
         periods = pay_period_service.get_all_periods(current_user.id)
         transfer_recurrence.generate_for_template(

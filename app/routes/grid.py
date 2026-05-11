@@ -27,6 +27,7 @@ from app import ref_cache
 from app.services import balance_calculator, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -173,11 +174,7 @@ def index():
     user_id = current_user.id
 
     # Get the baseline scenario.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return render_template("grid/no_setup.html")
 
@@ -373,11 +370,7 @@ def create_baseline():
     Idempotent: if a baseline already exists, redirects without
     creating a duplicate.
     """
-    existing = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    existing = get_baseline_scenario(current_user.id)
     if existing:
         return redirect(url_for("grid.index"))
 
@@ -404,11 +397,7 @@ def balance_row():
     """HTMX partial: recalculate and return the balance summary row."""
     user_id = current_user.id
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
     account = resolve_grid_account(
         user_id, current_user.settings,
         request.args.get("account_id", type=int),
