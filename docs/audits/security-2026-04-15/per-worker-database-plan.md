@@ -1,5 +1,31 @@
 # Plan: Per-pytest-worker PostgreSQL database isolation via template cloning + pytest-xdist parallelism
 
+## Status (as of 2026-05-10)
+
+**Paused at Phase 2** pending the model-vs-migration drift fix
+documented at
+`docs/audits/security-2026-04-15/model-migration-drift.md`.  Phase 0
+and Phase 1 are committed.  Phase 2's pre-flight drift check
+surfaced 4 high-severity + 1 medium-severity + 1 low-severity
+divergences between `db.create_all()` (the schema today's tests
+verify against) and `flask db upgrade head` (the schema production
+runs); the per-worker DB migration cannot resume on `flask db
+upgrade head` until the drift is resolved.
+
+| Phase | Status | Commit | Notes |
+|---|---|---|---|
+| Phase 0: add pytest-xdist dependency | **Done** | `e41d136` | `pytest-xdist==3.8.0` in `requirements-dev.txt`.  Verified: `tests/test_config.py` 55 passed. |
+| Phase 1: consolidate ref-table seed | **Done** | `073c548` | New `app.ref_seeds.seed_reference_data(session, *, verbose=False)`; all three call sites (conftest, `app/__init__.py`, `scripts/seed_ref_tables.py`) rerouted.  Verified: 163 targeted tests pass; pylint 9.50/10 unchanged. |
+| Drift findings doc | **Done** | `d5baf4a` | `docs/audits/security-2026-04-15/model-migration-drift.md` catalogues every divergence with file references and recommended fixes (model edit vs new migration). |
+| Plan saved into repo | **Done** | `7c6af1e` | This file -- mirrored from `~/.claude/plans/`. |
+| Phase 2: template builder + drift pre-flight | **Blocked** | -- | Cannot proceed with `flask db upgrade head` template strategy until the drift fix work closes.  Pre-flight drift check has already been run; results are in `model-migration-drift.md`. |
+| Phase 3: conftest module-level bootstrap | **Blocked** | -- | Depends on Phase 2. |
+| Phase 4: enable pytest-xdist parallelism + cluster-state markers | **Blocked** | -- | Depends on Phase 3. |
+| Phase 5: update CI workflow + docs | **Blocked** | -- | Depends on Phase 4. |
+
+**To resume this work in a fresh Claude session, see "Resuming
+from a fresh session" at the bottom of this document.**
+
 ## Context
 
 The Shekel test suite currently shares a single PostgreSQL test database (`shekel_test`) across all pytest invocations. `tests/conftest.py::db` runs `TRUNCATE TABLE ... CASCADE` between every test, which requires `AccessExclusiveLock` on every named table. Two concurrent pytest processes deadlock by design on that lock. Beyond the deadlock, the architecture forbids `pytest-xdist` parallelism for the same reason -- the suite has grown to ~5,131 tests / ~28 min sequential wall-clock, and the user wants the option to run faster batches concurrently or in parallel without losing test isolation.
@@ -30,7 +56,7 @@ The user has chosen `flask db upgrade head` for the template build (validates th
 
 Each phase ends with a single verification command. Each phase is independently committable. If verification fails at any phase, revert that phase's commit and diagnose before continuing.
 
-### Phase 0 -- Add pytest-xdist dependency (no behaviour change)
+### Phase 0 -- Add pytest-xdist dependency (no behaviour change) -- **DONE 2026-05-10 (commit `e41d136`)**
 
 **Files:**
 - `requirements-dev.txt` -- add `pytest-xdist==3.7.0` (latest stable)
@@ -44,7 +70,11 @@ Pass count must be identical to baseline.
 
 **Why first:** dependency exists before any conftest code reads `PYTEST_XDIST_WORKER`. Reversible (single-line revert).
 
-### Phase 1 -- Consolidate the reference-data seed into one function
+### Phase 1 -- Consolidate the reference-data seed into one function -- **DONE 2026-05-10 (commit `073c548`)**
+
+**What landed:** `app/ref_seeds.py` gained `seed_reference_data(session, *, verbose=False)` (the canonical idempotent seed for every ref-schema table).  All three pre-existing call sites now delegate to it: `tests/conftest.py::_seed_ref_tables` (the per-test path), `app/__init__.py::_seed_ref_tables` (the dev/test factory eager seed, wrapped in a `try/except ProgrammingError` for the boot-time-before-tables case), and `scripts/seed_ref_tables.py::seed_ref_tables` (the production deploy path; passes `verbose=True`).  The function does not commit; callers own the transaction boundary.  Verified: 163 targeted tests passed in 51.75s; pylint score 9.50/10 unchanged.
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 - `app/ref_seeds.py` -- add `seed_reference_data(session)` function. Pure, idempotent. Body extracted from `tests/conftest.py::_seed_ref_tables` (the canonical version -- mirrors production seed semantics). Takes a SQLAlchemy session, returns None. Uses existing `ACCT_TYPE_SEEDS` constant.
@@ -61,7 +91,11 @@ Pass count must be identical to baseline. Pylint score must not drop.
 
 **Why second:** the deepest "no test-behaviour change" refactor. If anything breaks here, the cause is the seed extraction, not the DB plumbing. Lands on its own commit.
 
-### Phase 2 -- Build the template database script
+### Phase 2 -- Build the template database script -- **BLOCKED on drift fix (see Status section + `model-migration-drift.md`)**
+
+**Pre-flight outcome:** The Phase 2a drift check ran on 2026-05-10 and surfaced four high-severity divergences (`ck_transactions_positive_amount`, `ck_transactions_positive_actual`, `uq_scenarios_one_baseline`, `ck_recurrence_rules_dom/_moy`), one medium-severity (`hysa_params -> interest_params` rename incomplete in migrations), and one low-severity (DEFAULT clauses drift across ~10 columns).  See `docs/audits/security-2026-04-15/model-migration-drift.md` for the full catalogue with file references and remediation steps.  Phase 2 cannot proceed with the user-approved `flask db upgrade head` strategy until those findings close (estimated ~5-6 hours of focused work).
+
+**Resumption signal:** When the comparison script at the top of `model-migration-drift.md` returns a diff with only the EXPECTED divergences (alembic_version table, FK name differences, column ordering, pg_dump random `\restrict` token), Phase 2 is unblocked.  The plan below is unchanged from the original design.
 
 **Files (new):**
 - `scripts/build_test_template.py` -- idempotent template builder. Pseudocode:
@@ -96,7 +130,7 @@ psql shekel_test_template -c "SELECT count(*) FROM ref.account_types;"  # still 
 
 **Why third:** new script, no existing test paths touched. Run it manually before touching conftest. Lands on its own commit.
 
-### Phase 3 -- Wire conftest to per-worker DB cloning
+### Phase 3 -- Wire conftest to per-worker DB cloning -- **BLOCKED on Phase 2**
 
 **Files:**
 - `tests/conftest.py` -- module-level bootstrap and `pytest_sessionfinish` hook. Reorganised as:
@@ -143,7 +177,7 @@ All pass counts must equal baseline.
 
 **Why fourth:** substantive change. Lands on its own commit. If verification fails at any sub-step, revert and diagnose.
 
-### Phase 4 -- Enable pytest-xdist parallelism and mark cluster-state tests
+### Phase 4 -- Enable pytest-xdist parallelism and mark cluster-state tests -- **BLOCKED on Phase 3**
 
 **Files:**
 - `tests/test_models/test_audit_migration.py` -- add `@pytest.mark.xdist_group("shekel_app_role")` to the `TestLeastPrivilegeRole` class (line 389) and any sibling class that uses the `shekel_app_role` fixture. Cluster-level roles cannot be created/dropped concurrently across workers.
@@ -167,7 +201,7 @@ All pass. No "role already exists" or "role does not exist" errors. Per-worker D
 
 **Why fifth:** xdist is the user-visible parallelism change. Lands on its own commit.
 
-### Phase 5 -- Update CI workflow and documentation
+### Phase 5 -- Update CI workflow and documentation -- **BLOCKED on Phase 4**
 
 **Files:**
 - `.github/workflows/ci.yml`:
@@ -275,12 +309,46 @@ Each step's pass count must equal or exceed the baseline (5,131 tests). No faile
 
 ## Time estimate
 
-- Phase 0: 10 minutes
-- Phase 1: 1 hour (extracting + rerouting three call sites; ~90 lines of code)
-- Phase 2: 1.5 hours (new script + drift pre-flight; first migration-based template build may surface unknown drift)
+- Phase 0: 10 minutes -- **Done in ~5 min; commit `e41d136`**
+- Phase 1: 1 hour (extracting + rerouting three call sites; ~90 lines of code) -- **Done in ~45 min; commit `073c548`**
+- Phase 2: 1.5 hours (new script + drift pre-flight; first migration-based template build may surface unknown drift) -- **Pre-flight done; surfaced significant drift; remainder paused.  See `model-migration-drift.md`.  Drift fix work itself: ~5-6 hours additional, six independently-committable changes.**
 - Phase 3: 2 hours (conftest rewrite; the substantive change)
 - Phase 4: 30 minutes (markers + verification)
 - Phase 5: 1 hour (CI + docs)
-- Total: ~6 hours of focused work, plus drift-detection time if Phase 2 surfaces existing migration drift.
+- Original total: ~6 hours.  **Realised so far: ~50 min (Phases 0 + 1).  Remaining work: ~5-6 hours drift fix + ~4 hours Phases 2-5.**
 
 Each phase is independently committable and revertable. The user can pause between phases for review or production deploys.
+
+## Resuming from a fresh session
+
+When this work resumes (whether in a new Claude session or a different operator's terminal), the entry point is this document plus its companion `docs/audits/security-2026-04-15/model-migration-drift.md`.  Concrete steps:
+
+### 1. Verify current state
+
+```bash
+git log --oneline -10  # should include e41d136, 073c548, d5baf4a, 7c6af1e
+git status             # working tree should be clean (apart from any in-progress edits)
+grep -A1 "^pytest-xdist" requirements-dev.txt  # should show 3.8.0
+grep "seed_reference_data" app/ref_seeds.py    # should show the function definition
+```
+
+If any of those checks fail, the prior phases have been reverted; re-read the plan and re-run the verification commands inside each completed phase's section above.
+
+### 2. Choose the next action based on the drift fix work's status
+
+* **Drift fix not yet started:** open `model-migration-drift.md` and work through findings H-1 through L-1 in order.  Each finding has its own "Recommended fix" and "Verification" subsection.  Land each as its own commit.  After all six findings close, re-run the comparison script at the top of `model-migration-drift.md` and confirm only EXPECTED divergences remain.
+* **Drift fix in progress:** finish remaining findings, then re-run the comparison script.
+* **Drift fix complete:** Phase 2 of this plan is unblocked.  Continue at "Phase 2 -- Build the template database script" above with the original spec (which is unchanged -- the drift fix doesn't alter the Phase 2 design, only validates its premise).
+
+### 3. Continue with Phase 2-5 once unblocked
+
+Each phase below the drift fix retains its original spec.  Run the verification command at the end of each phase before committing.  Do not skip phases or batch multiple phases into one commit -- the user has explicitly asked for incremental, revertable progress because of the test-suite-anxiety context noted under "Context" above.
+
+### 4. Helpful pointers for a fresh session
+
+* The project follows the rules in `CLAUDE.md`, especially: do not modify code outside the current task's scope, do not introduce TODOs, fix root causes not symptoms, never rewrite a test to make it pass.
+* Pylint must stay at 9.50/10 or better.  Run `pylint app/ --fail-on=E,F` after any change.
+* Full test suite cannot run in one invocation (10-min hard timeout).  Use the directory batches documented in `docs/testing-standards.md`.
+* Never run two pytest processes concurrently against the same TEST_DATABASE -- the per-test TRUNCATE deadlocks.  (This is the very problem this plan exists to fix; until Phase 3 lands, the constraint is binding.)
+* The session-scoped `app` fixture in `tests/conftest.py` is the load-bearing scaffolding.  Read it end-to-end before changing fixture behaviour.
+* The audit-trigger invariants (`app/audit_infrastructure.py`, `system.audit_log`) are the strictest correctness contract in the codebase.  Any change to per-test isolation must preserve them; SAVEPOINT-rollback was specifically rejected for this reason -- see "Architectural decisions" above.
