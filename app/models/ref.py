@@ -119,11 +119,26 @@ class AccountType(db.Model):
         db.ForeignKey("ref.account_type_categories.id"),
         nullable=False,
     )
-    has_parameters = db.Column(db.Boolean, nullable=False, default=False)
-    has_amortization = db.Column(db.Boolean, nullable=False, default=False)
-    has_interest = db.Column(db.Boolean, nullable=False, default=False)
-    is_pretax = db.Column(db.Boolean, nullable=False, default=False)
-    is_liquid = db.Column(db.Boolean, nullable=False, default=False)
+    has_parameters = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_amortization = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_interest = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_pretax = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_liquid = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     icon_class = db.Column(db.String(30), nullable=True)
     max_term_months = db.Column(db.Integer, nullable=True)
     # NULL -> seeded built-in row, read-only to every owner.  Non-NULL
@@ -180,9 +195,18 @@ class Status(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(15), unique=True, nullable=False)
-    is_settled = db.Column(db.Boolean, nullable=False, default=False)
-    is_immutable = db.Column(db.Boolean, nullable=False, default=False)
-    excludes_from_balance = db.Column(db.Boolean, nullable=False, default=False)
+    is_settled = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_immutable = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    excludes_from_balance = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
 
     def __repr__(self):
         return f"<Status {self.name}>"

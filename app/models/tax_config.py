@@ -41,11 +41,19 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
     )
     tax_year = db.Column(db.Integer, nullable=False)
     standard_deduction = db.Column(db.Numeric(12, 2), nullable=False)
+    # server_default uses the bare string "0" (not db.text("0")) so
+    # pg_dump renders the default as 'DEFAULT '0'::numeric' -- matching
+    # the form materialised by migration b4c7d8e9f012's
+    # ``server_default='0'``.  db.text("0") would render as
+    # ``DEFAULT 0`` (literal), functionally identical but a pg_dump
+    # diff against the migration-built schema.
     child_credit_amount = db.Column(
-        db.Numeric(12, 2), nullable=False, default=0
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default="0",
     )  # Per qualifying child under 17
     other_dependent_credit_amount = db.Column(
-        db.Numeric(12, 2), nullable=False, default=0
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default="0",
     )  # Per other dependent
     description = db.Column(db.String(200))
 

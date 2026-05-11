@@ -87,7 +87,10 @@ class PaycheckDeduction(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200), nullable=False)
     amount = db.Column(db.Numeric(12, 4), nullable=False)
-    deductions_per_year = db.Column(db.Integer, default=26, nullable=False)
+    deductions_per_year = db.Column(
+        db.Integer, default=26, nullable=False,
+        server_default=db.text("26"),
+    )
     annual_cap = db.Column(db.Numeric(12, 2))
     inflation_enabled = db.Column(
         db.Boolean, nullable=False, default=False,

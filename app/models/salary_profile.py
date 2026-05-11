@@ -55,7 +55,10 @@ class SalaryProfile(TimestampMixin, db.Model):
     filing_status_id = db.Column(
         db.Integer, db.ForeignKey("ref.filing_statuses.id"), nullable=False
     )
-    name = db.Column(db.String(200), nullable=False)
+    name = db.Column(
+        db.String(200), nullable=False,
+        server_default=db.text("'Primary'"),
+    )
     annual_salary = db.Column(db.Numeric(12, 2), nullable=False)
     state_code = db.Column(
         db.String(2), nullable=False, default="NC",
