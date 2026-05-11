@@ -26,7 +26,6 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
@@ -41,6 +40,7 @@ from app.services.investment_projection import (
     adapt_deductions,
     calculate_investment_inputs,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -325,11 +325,7 @@ def _project_retirement_accounts(
         )
 
     # Compute actual current balances via balance calculator.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
     acct_balance_map = {}
     if scenario and period_ids:
         for acct in accounts:

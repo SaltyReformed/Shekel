@@ -51,6 +51,7 @@ from app.services.investment_projection import (
     calculate_investment_inputs,
 )
 from app.services.loan_payment_service import load_loan_context
+from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def compute_year_end_summary(user_id: int, year: int) -> dict:
         transfers_summary, net_worth, debt_progress,
         savings_progress, payment_timeliness.
     """
-    scenario = _get_baseline_scenario(user_id)
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return _full_empty_summary()
 
@@ -1711,15 +1712,6 @@ def _build_investment_balance_map(
 
 
 # ── Internal Helpers ──────────────────────────────────────────────
-
-
-def _get_baseline_scenario(user_id: int) -> Scenario | None:
-    """Return the baseline scenario for the user, or None."""
-    return (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
 
 
 def _get_primary_checking_id(accounts: list) -> int | None:

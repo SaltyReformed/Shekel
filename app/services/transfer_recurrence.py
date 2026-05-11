@@ -20,16 +20,17 @@ from app.extensions import db
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
+from app.services._recurrence_common import (
+    log_resource_access_denied,
+    log_template_cross_user_blocked,
+)
 from app.services.recurrence_engine import _match_periods
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.utils.log_events import (
-    ACCESS,
     BUSINESS,
-    EVT_ACCESS_DENIED_CROSS_USER,
-    EVT_CROSS_USER_BLOCKED,
     EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_TRANSFER_RECURRENCE_GENERATED,
     EVT_TRANSFER_RECURRENCE_REGENERATED,
@@ -57,9 +58,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # silently create transfers in another user's scenario (IDOR).
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(
-            logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
-            "Blocked cross-user transfer recurrence generation",
+        log_template_cross_user_blocked(
+            logger,
+            message="Blocked cross-user transfer recurrence generation",
             template_id=template.id,
             template_user_id=template.user_id,
             scenario_id=scenario_id,
@@ -155,9 +156,9 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     # Defense-in-depth: verify ownership before deleting and regenerating.
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(
-            logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
-            "Blocked cross-user transfer recurrence regeneration",
+        log_template_cross_user_blocked(
+            logger,
+            message="Blocked cross-user transfer recurrence regeneration",
             template_id=template.id,
             template_user_id=template.user_id,
             scenario_id=scenario_id,
@@ -260,10 +261,8 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
 
             # Ownership check: Transfer has a direct user_id column.
             if xfer.user_id != user_id:
-                log_event(
-                    logger, logging.WARNING,
-                    EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
-                    "Cross-user resource access blocked",
+                log_resource_access_denied(
+                    logger,
                     user_id=user_id,
                     model="Transfer",
                     pk=xfer_id,

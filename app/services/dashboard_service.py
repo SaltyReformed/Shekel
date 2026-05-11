@@ -27,6 +27,7 @@ from app.models.user import UserSettings
 from app.services import balance_calculator, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def compute_dashboard_data(user_id: int) -> dict:
     if account is None:
         return _empty_dashboard(has_default_account=False)
 
-    scenario = _get_baseline_scenario(user_id)
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return _empty_dashboard(has_default_account=True)
 
@@ -651,15 +652,6 @@ def _get_user_settings(user_id: int) -> UserSettings | None:
     return (
         db.session.query(UserSettings)
         .filter_by(user_id=user_id)
-        .first()
-    )
-
-
-def _get_baseline_scenario(user_id: int) -> Scenario | None:
-    """Load the user's baseline scenario."""
-    return (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
         .first()
     )
 

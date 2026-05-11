@@ -60,3 +60,43 @@ class CreatedAtMixin:
     created_at = db.Column(
         db.DateTime(timezone=True), nullable=False, server_default=db.func.now(),
     )
+
+
+class SoftDeleteOverridableMixin:
+    """Override and soft-delete flags for canonical/shadow rows.
+
+    Adds two columns -- both ``BOOLEAN NOT NULL DEFAULT FALSE``:
+
+      ``is_override`` -- True when the row was manually edited and
+                         must NOT be regenerated/overwritten by the
+                         recurrence engine.
+      ``is_deleted``  -- True when the row was soft-deleted by the
+                         user; remains in the table so historical
+                         queries and audit triggers see the full
+                         lifecycle, but ``effective_amount`` and
+                         balance-relevant queries treat it as
+                         absent.
+
+    Used by :class:`Transaction` and :class:`Transfer`.  The columns
+    are declared at class level (NOT via ``@declared_attr``) so the
+    SQLAlchemy DDL is byte-identical to the pre-mixin inline
+    declarations; ``flask db migrate --autogenerate`` against a
+    migrated schema must produce an empty diff.
+
+    Do NOT apply this mixin to (Transaction|Transfer)Template -- the
+    template tables have ``is_active`` instead, with semantics that
+    differ from soft-delete (an inactive template stops generating
+    new rows but its historical rows remain valid).  Adding
+    ``is_override`` / ``is_deleted`` to the template tables would be
+    a schema change, not a refactor, and is out of scope for the
+    duplicate-code cleanup the audit's Issue 1 names.
+    """
+
+    is_override = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_deleted = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )

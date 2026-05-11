@@ -8,10 +8,10 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
 
 
-class Transfer(TimestampMixin, db.Model):
+class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     """A transfer between two accounts within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -120,14 +120,7 @@ class Transfer(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200))
     amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_override = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
-    is_deleted = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
+    # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
