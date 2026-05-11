@@ -1,5 +1,17 @@
 # Model-vs-migration drift findings
 
+**Status (2026-05-10):** RESOLVED.  All six original findings closed,
+plus one additional finding (H-5) that surfaced during the L-1
+verification sweep.  Seven commits landed on the `dev` branch
+(`9a5cca1`, `709786a`, `6384c77`, `d6f31b5`, `2a28f8e`, `cfc8572`,
+`7939c8a`).  The comparison script's diff now contains only the
+EXPECTED divergences listed at the bottom of this document.  Phase 2
+of the per-worker DB isolation work is unblocked.  See per-finding
+"Resolution" subsections for what was actually done -- several
+findings were closed with a different approach than originally
+recommended once the verification step revealed the doc's diagnosis
+was incomplete or stale.
+
 **Origin:** Surfaced during pre-flight Phase 2a of the per-pytest-
 worker database isolation work (`docs/audits/security-2026-04-15/
 c-38-followups.md` Issue 2 follow-up; user-approved plan
@@ -136,6 +148,38 @@ already exists in production.
    `Transaction(estimated_amount=Decimal("-1"))` raises
    `IntegrityError` at commit time.  This locks the contract.
 
+### Resolution (2026-05-10, commit `9a5cca1`)
+
+**The doc's diagnosis was inaccurate.**  Verification before
+implementation revealed:
+
+* `app/models/transaction.py` already declared the constraints, but
+  with different names (`ck_transactions_estimated_amount` and
+  `ck_transactions_actual_amount`) -- materialised by the later
+  migration `dc46e02d15b4_add_check_constraints_to_loan_params_.py`.
+* The migration `c5d6e7f8a901_add_positive_amount_check_constraints.py`
+  added an older pair (`ck_transactions_positive_amount` /
+  `ck_transactions_positive_actual`) that was never declared on the
+  model.
+
+A fresh-from-migrations DB ended up with FOUR transaction CHECK
+constraints (two functional pairs, identical predicates).  The model
+side had only two; production (bootstrapped via `db.create_all()` +
+`stamp head`) also had only two.  Real drift: the migration chain
+materialised duplicate constraints that the model never declared.
+
+**Actual fix:** new migration
+`migrations/versions/724d21236759_drop_redundant_transaction_check_.py`
+drops `ck_transactions_positive_amount` and
+`ck_transactions_positive_actual` with `ALTER TABLE ... DROP
+CONSTRAINT IF EXISTS` guards (no-op against production / dev which
+never carried them; real cleanup against fresh-from-migrations DBs).
+Surviving model-named pair continues to enforce non-negative amounts.
+
+**Regression test:** `tests/test_models/test_transaction_constraints.py`
+asserts negative `estimated_amount` and `actual_amount` raise
+`IntegrityError` and confirms NULL `actual_amount` remains allowed.
+
 ---
 
 ## H-2: `budget.scenarios` partial unique index missing from model
@@ -194,6 +238,24 @@ schema as migrations.  No new migration needed.
 2. Add a test in `tests/test_models/test_scenario.py` (or wherever
    the existing scenario tests live) that asserts a second
    `Scenario(user_id=u, is_baseline=True)` raises `IntegrityError`.
+
+### Resolution (2026-05-10, commit `709786a`)
+
+Diagnosis accurate.  Implemented as recommended: model-only edit to
+`app/models/scenario.py` adding the partial unique index to
+`__table_args__`.  No new migration -- production already carries
+the index from `c5d6e7f8a901`.
+
+**Regression test:** `tests/test_models/test_scenario_constraints.py`
+asserts (a) a second baseline for the same user raises
+`IntegrityError`, (b) many non-baseline scenarios may coexist with
+the baseline, (c) two separate users each carry their own baseline
+simultaneously (the partial index is per-user-scoped).
+
+**Fixture audit:** verified all 26 `is_baseline=True` references in
+the test suite are either fixture creates (one baseline per
+distinct user) or `filter_by(...is_baseline=True)` query filters --
+no test relies on creating two baselines for the same user.
 
 ---
 
@@ -261,6 +323,37 @@ worth a quick sanity check).
 3. Re-run the comparison script; confirm the constraints exist on
    both sides.
 
+### Resolution (2026-05-10, commit `6384c77`)
+
+Diagnosis correct in spirit but wrong on two details:
+
+* The table is in the `budget` schema, not `ref` (the doc heading
+  was misleading; the doc's recommended `op.create_check_constraint`
+  call already used the correct `schema="budget"`).
+* The model declares THREE inline column-level CHECK constraints:
+  `ck_recurrence_rules_dom`, `ck_recurrence_rules_due_dom`, and
+  `ck_recurrence_rules_moy`.  The doc only mentioned two.
+  Verification revealed `ck_recurrence_rules_due_dom` was already
+  added by migration `f15a72a3da6c_add_due_date_paid_at_to_transactions_.py`
+  (the only one of the three the migration chain ever materialised),
+  so only two constraints were missing.
+
+**Actual fix:** new migration
+`migrations/versions/1702cadcae54_add_recurrence_rules_dom_moy_check_.py`
+adds `ck_recurrence_rules_dom` and `ck_recurrence_rules_moy` only.
+Pre-flight detection refuses the upgrade on any pre-existing
+violator (zero in dev/prod; defensive per the
+`b71c4a8f5d3e_c24_marshmallow_range_check_sweep` precedent).
+DDL phase uses `_constraint_exists` guards so the migration is
+idempotent against the test path that already materialises the
+constraints from the inline model declarations.
+
+**Regression test:** `tests/test_models/test_recurrence_rule_constraints.py`
+six tests exercise day_of_month above 31, day_of_month below 1,
+due_day_of_month above 31 (uses the existing constraint),
+month_of_year above 12, month_of_year below 1, and the NULL-allowed
+case.
+
 ---
 
 ## H-4: `system.audit_log.executed_at` NOT NULL discrepancy
@@ -318,6 +411,35 @@ def upgrade():
 1. Migration upgrade: confirms no `NULL` rows reject (should be
    none).
 2. Re-run the comparison script.
+
+### Resolution (2026-05-10, commit `d6f31b5`)
+
+Diagnosis correct.  Implementation also surfaced and closed an
+ADDITIONAL drift on the same table that the doc did not mention:
+
+* `app/audit_infrastructure.py:_CREATE_AUDIT_LOG_TABLE_SQL` declares
+  `CONSTRAINT ck_audit_log_operation CHECK (operation IN ('INSERT',
+  'UPDATE', 'DELETE'))`.  This constraint never reached the
+  migration-built `system.audit_log` table because the original
+  `a8b1c2d3e4f5` migration predated it and the rebuild migration
+  `a5be2a99ea14` uses `CREATE TABLE IF NOT EXISTS` so leaves an
+  existing table untouched.
+
+Confirmed `8a21d16c9bde_tighten_audit_timestamp_nullability_`
+deliberately skipped `system` schema (its docstring says "across
+user-facing schemas") and so did not address either drift.
+
+**Actual fix:** new migration
+`migrations/versions/b2b1ff4c3cea_audit_log_executed_at_not_null.py`
+runs two pre-flight checks (NULL `executed_at`, off-trigger
+`operation` values) then ALTERs the column to NOT NULL and adds the
+CHECK constraint.  `_constraint_exists` guard makes the CHECK add
+idempotent against the test path.
+
+**Regression test:** none added -- the existing
+`tests/test_models/test_audit_migration.py` and
+`tests/test_integration/test_audit_triggers.py` exercise the
+round-trip and pass against the tightened schema.
 
 ---
 
@@ -382,6 +504,52 @@ the table appears there -- otherwise the next
 2. Confirm the audit trigger count is exactly
    `EXPECTED_TRIGGER_COUNT` (no extras from the rename).
 
+### Resolution (2026-05-10, commit `2a28f8e`)
+
+Diagnosis covered four artifacts (PK, FK, sequence, separate index
+`idx_hysa_params_account`).  Verification revealed a fifth artifact
+the doc missed AND a more severe problem than "cosmetic":
+
+* The original `a8b1c2d3e4f5` migration created `audit_hysa_params`
+  on `budget.hysa_params`.  PostgreSQL leaves triggers attached to
+  the renamed table when ALTER TABLE RENAME runs, so the trigger
+  followed the table to its new `interest_params` name without
+  itself being renamed.
+* The rebuild migration `a5be2a99ea14` then created
+  `audit_interest_params` via `apply_audit_infrastructure` (which
+  loops over `AUDITED_TABLES` carrying the new name) WITHOUT
+  dropping the orphan.
+* Result: every `interest_params` write on a fresh-from-migrations
+  DB fired BOTH triggers, double-writing into `system.audit_log`
+  -- a real correctness bug for the forensic trail, not cosmetic.
+
+Production was bootstrapped via `db.create_all()` + `stamp head`
+per the rebuild migration's docstring, so prod likely never carried
+the orphan; the double-write hazard manifested only in fresh-from-
+migrations builds (the per-pytest-worker template path).
+
+Also note: `app/audit_infrastructure.py::AUDITED_TABLES` already
+correctly named `interest_params` -- the doc's note about updating
+that list was already done in a prior commit.
+
+**Actual fix:** new migration
+`migrations/versions/44893a9dbcc3_finish_hysa_to_interest_params_rename.py`
+renames PK, FK, and sequence; drops the redundant
+`idx_hysa_params_account` (account_id is already covered by the
+unique index `interest_params_account_id_key`); and drops the
+orphan `audit_hysa_params` trigger.  Every operation is wrapped in
+`DO $$` blocks checking `pg_constraint` (for PK/FK renames -- no
+`IF EXISTS` form for ALTER TABLE RENAME CONSTRAINT) or `IF EXISTS`
+guards (sequence rename, index drop, trigger drop) so the migration
+is a no-op on databases that don't carry the legacy artifacts.
+
+**Regression test:** `tests/test_models/test_interest_params_naming.py`
+asserts every artifact carries the new name (PK, FK, sequence) and
+the legacy `idx_hysa_params_account` is absent.  Most importantly,
+asserts `pg_trigger` shows EXACTLY `["audit_interest_params"]` on
+`budget.interest_params` -- if a future regression re-introduces
+the orphan, the test turns red.
+
 ---
 
 ## L-1: DEFAULT clauses on many columns differ
@@ -431,6 +599,96 @@ could break existing INSERT paths.
 Re-run the comparison script; confirm DEFAULT clauses match on
 both sides.
 
+### Resolution (2026-05-10, commit `cfc8572`)
+
+Diagnosis correct except for one example:
+
+* `accounts.name DEFAULT 'Primary'` is wrong -- `accounts.name` has
+  NO server_default in either the model OR any migration.  The
+  `'Primary'` default actually lives on `salary_profiles.name`
+  (added by `22b3dd9d9ed3_add_salary_schema_tables.py`), where the
+  model omitted it.
+
+Confirmed all other examples and ran a comprehensive sweep
+(authoritative-from-migration direction per the doc's
+recommendation).  Thirteen columns across five models updated:
+
+| Model file (column) | server_default added |
+|---|---|
+| `app/models/user.py::UserSettings.safe_withdrawal_rate` | `0.0400` |
+| `app/models/salary_profile.py::SalaryProfile.name` | `'Primary'` |
+| `app/models/paycheck_deduction.py::PaycheckDeduction.deductions_per_year` | `26` |
+| `app/models/tax_config.py::TaxBracketSet.child_credit_amount` | `'0'` (string) |
+| `app/models/tax_config.py::TaxBracketSet.other_dependent_credit_amount` | `'0'` (string) |
+| `app/models/ref.py::AccountType.has_parameters` | `false` |
+| `app/models/ref.py::AccountType.has_amortization` | `false` |
+| `app/models/ref.py::AccountType.has_interest` | `false` |
+| `app/models/ref.py::AccountType.is_pretax` | `false` |
+| `app/models/ref.py::AccountType.is_liquid` | `false` |
+| `app/models/ref.py::Status.is_settled` | `false` |
+| `app/models/ref.py::Status.is_immutable` | `false` |
+| `app/models/ref.py::Status.excludes_from_balance` | `false` |
+
+The two `tax_config` columns use bare-string `server_default="0"`
+(not `db.text("0")`) so pg_dump renders the default as
+`DEFAULT '0'::numeric` -- matching the form materialised by the
+`b4c7d8e9f012` migration's `server_default='0'`.  `db.text("0")`
+would have rendered as `DEFAULT 0` (functionally identical but a
+pg_dump diff against the migration-built schema).
+
+Comparison script after the sweep confirmed zero DEFAULT-clause
+divergences remain.
+
+---
+
+## H-5: `salary.salary_raises` `ck_salary_raises_one_method` missing from migrations
+
+### Severity
+**High.**  Surfaced during the L-1 verification sweep, not in the
+original drift catalogue.  Same shape as H-3 (model declares CHECK
+constraint, migration chain never materialised it).  Direct line
+of paycheck-correctness exposure -- a `SalaryRaise` row with both
+`percentage` and `flat_amount` populated would silently apply only
+the percentage path, drifting projected gross pay.
+
+### Symptom
+
+`db.create_all()` output contains:
+
+```sql
+CONSTRAINT ck_salary_raises_one_method CHECK (
+    (percentage IS NOT NULL AND flat_amount IS NULL) OR
+    (percentage IS NULL AND flat_amount IS NOT NULL)
+)
+```
+
+Migration-built database lacks the constraint.
+
+### Where it lives
+
+* Model: `app/models/salary_raise.py` -- the `SalaryRaise` class.
+  Has the constraint inline in `__table_args__`.
+* Migration: no migration adds it.  The Marshmallow schema in
+  `app/schemas/validation.py` rejects violator rows at the API
+  tier, so the runtime never produced a violator -- which is why
+  the storage-tier gap went unnoticed.
+
+### Resolution (2026-05-10, commit `7939c8a`)
+
+New migration
+`migrations/versions/2109f7a490e7_add_ck_salary_raises_one_method.py`
+adds the CHECK constraint with pre-flight detection of any pre-
+existing XOR violator (zero in dev/prod thanks to schema-layer
+rejection; defensive).  `_constraint_exists` guard makes the
+migration idempotent against the test path (db.create_all() already
+materialises the constraint from the inline declaration).
+
+No new test added: existing salary tests
+(`tests/test_routes/test_salary.py`,
+`tests/test_services/test_paycheck_calculator.py`) exercise the
+percentage-vs-flat split and pass against the tightened storage
+tier.
+
 ---
 
 ## EXPECTED divergences (no fix required)
@@ -457,20 +715,20 @@ These appear in the diff but are not drift:
 
 ## Tracking
 
-| Finding | Severity | Recommended commit | Estimated effort |
+| Finding | Severity | Resolution commit | Notes |
 |---|---|---|---|
-| H-1 (`budget.transactions` CHECK constraints in migrations not models) | High | `fix(models): add ck_transactions_positive_amount/_actual to Transaction.__table_args__` (model-only, no new migration) | 30 min |
-| H-2 (`budget.scenarios` partial unique index in migrations not model) | High | `fix(models): add uq_scenarios_one_baseline partial unique index to Scenario` (model-only, no new migration) | 30 min |
-| H-3 (`ref.recurrence_rules` CHECK constraints in model not migrations) | High | `feat(migrations): add ck_recurrence_rules_dom/_moy CHECK constraints` (new migration; production data audit before upgrade) | 1 hr |
-| H-4 (`system.audit_log.executed_at` NOT NULL) | Medium | `feat(migrations): set system.audit_log.executed_at NOT NULL` (new migration) | 30 min |
-| M-1 (`hysa_params` rename incomplete) | Medium | `feat(migrations): finish hysa_params -> interest_params rename for sequence + trigger + index + constraints` (new migration) | 1 hr |
-| L-1 (DEFAULT clause drift across ~10 columns) | Low | `fix(models): align server_default declarations with production migrations` (model-only sweep) | 2 hr |
+| H-1 (`budget.transactions` CHECK constraints) | High | `9a5cca1` `feat(migrations): drop redundant ck_transactions_positive_* constraints (H-1)` | Doc diagnosis was wrong: model already had the constraints under different names; real drift was duplicates in migration chain.  New migration drops them with `IF EXISTS` guards. |
+| H-2 (`budget.scenarios` partial unique index) | High | `709786a` `fix(models): declare uq_scenarios_one_baseline partial unique index (H-2)` | Model-only edit as recommended. |
+| H-3 (`recurrence_rules` CHECK constraints) | High | `6384c77` `feat(migrations): add ck_recurrence_rules_dom and ck_recurrence_rules_moy (H-3)` | Table is in `budget` schema (not `ref`).  Model declared 3 constraints; migration chain already had `due_dom` (via f15a72a3da6c), so only 2 needed. |
+| H-4 (`system.audit_log.executed_at` NOT NULL) | Medium | `d6f31b5` `feat(migrations): align system.audit_log with canonical schema (H-4)` | Closed two drifts on the same table: NOT NULL on `executed_at` AND `ck_audit_log_operation` CHECK constraint that the doc didn't mention. |
+| M-1 (`hysa_params` rename incomplete) | Medium -> High | `2a28f8e` `feat(migrations): finish hysa_params -> interest_params rename + drop orphan trigger (M-1)` | Doc missed the `audit_hysa_params` orphan trigger that double-fired into `system.audit_log` on every `interest_params` write in fresh-from-migrations DBs.  Severity higher than catalogued. |
+| L-1 (DEFAULT clause drift) | Low | `cfc8572` `fix(models): align server_default declarations with production migrations (L-1)` | 13 columns aligned across 5 model files.  Doc's `accounts.name` example was wrong -- the `'Primary'` default is on `salary_profiles.name`. |
+| H-5 (`salary.salary_raises` `ck_salary_raises_one_method`) | High | `7939c8a` `feat(migrations): add ck_salary_raises_one_method CHECK constraint` | Surfaced during L-1 verification, not in original catalogue. |
 
-**Total estimated effort:** ~5-6 hours of focused work.  Each
-finding lands on its own commit so progress is incremental and
-revertable.  After all six findings close, re-run the comparison
-script and confirm zero meaningful drift remains, then resume
-Phase 2 of the per-worker DB isolation work (see
-`docs/audits/security-2026-04-15/c-38-followups.md` follow-up
-plan and `/home/josh/.claude/plans/changing-my-tests-makes-
-luminous-newell.md`).
+**Realised effort:** ~3 hours including planning, verification,
+implementation, regression tests, and full-suite verification across
+8 directory batches (5,148 tests, all passed).  Pylint `app/` held
+at 9.50/10 throughout.  Phase 2 of the per-worker DB isolation work
+is unblocked; resume per
+`docs/audits/security-2026-04-15/per-worker-database-plan.md` and
+`/home/josh/.claude/plans/changing-my-tests-makes-luminous-newell.md`.
