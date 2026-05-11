@@ -16,7 +16,8 @@ templates) is the smallest but the most security-adjacent.
 **Re-verified on 2026-05-10.**  Verification notes are inlined per
 issue below; the original observations are preserved so the audit
 trail remains coherent.  Two issues' recommendations were narrowed
-or replaced after the second pass:
+or replaced after the second pass, and Issues 2 and 3 are now
+closed:
 
 - Issue 1's per-period materialisation extraction was found to
   violate transfer invariant #4 ("All mutations go through the
@@ -24,6 +25,17 @@ or replaced after the second pass:
   scope.  The `budget_variance ↔ calendar_service` period-scan
   pairing was also over-claimed -- period-id and date-range scoping
   don't share a clean helper shape.
+- Issue 2b's original recommendation (call `limiter.init_app(app)`
+  inside the test body using the session-level `app` fixture) was
+  found incorrect on a final read of
+  `flask_limiter._extension.py:333-334` -- `init_app` short-circuits
+  when `RATELIMIT_ENABLED=False`, which TestConfig sets, so the
+  session-level `app` cannot be used to materialise storage.  The
+  fix uses the existing `_enable_limiter_on_fresh_app()` helper
+  which flips `RATELIMIT_ENABLED=True` on a fresh app and forces
+  `init_app` past the short-circuit.  **Issue 2 landed on
+  2026-05-10**; see the Resolution block under Issue 2 below for
+  the files changed.
 - Issue 3's Approach B was replaced with a stronger Approach C
   (sentinel token + app-level rejection in `_runtime_database_uri()`).
   Neither DevConfig nor ProdConfig currently validates DATABASE_URL
@@ -34,9 +46,10 @@ or replaced after the second pass:
   files changed and tests added.
 
 Issue 2a was re-verified but did not reproduce on HEAD; the
-architectural concern remains and the recommended fix stands as
-proactive hardening.  See each issue's "Verification (2026-05-10)"
-inline note for details.
+architectural concern was real and the proactive
+`limiter.reset()` hardening landed alongside the Issue 2b fix.
+See each issue's "Verification (2026-05-10)" inline note for
+details.
 
 ---
 
@@ -192,6 +205,131 @@ re-verification ruled out as unsafe.)
 ---
 
 ## Issue 2: Test isolation regressions
+
+### Status: RESOLVED 2026-05-10
+
+Both sub-issues landed in a single dedicated follow-up commit.  The
+original observations, hypothesis traces, and verification notes
+below are preserved verbatim for audit-trail continuity -- do not
+rewrite them; the resolution block here is the authoritative "this
+is done" marker.
+
+**Root-cause re-verification before the fix.**  The doc's Issue 2b
+recommendation (`limiter.init_app(app)` inside the test body using
+the session-level ``app`` fixture) was found to be **incorrect** on
+a final read of ``flask_limiter._extension.py``.  The
+``init_app`` method short-circuits at lines 333-334 when
+``app.config["RATELIMIT_ENABLED"]`` is falsy -- BEFORE ``_storage``
+is constructed at line 371.  The session-level ``app`` fixture is
+built from TestConfig, where ``RATELIMIT_ENABLED = False`` (audit
+finding F-034 / Commit C-06's hermetic-suite posture).  So
+``limiter.init_app(app)`` inside the test body would short-circuit
+identically to the session-start ``init_app`` call and leave
+``_storage`` at ``None``.  The proper fix has to enable the
+limiter (``rate_app.config["RATELIMIT_ENABLED"] = True`` AND
+``limiter.enabled = True``) on a fresh app, exactly what the
+existing ``_enable_limiter_on_fresh_app()`` helper already
+encapsulates.  Issue 2b's resolution therefore reuses that helper
+instead of adding new infrastructure.
+
+**Files changed:**
+
+- ``tests/test_integration/test_rate_limiter.py``:
+  - ``test_test_config_forces_memory_backend`` now uses
+    ``_enable_limiter_on_fresh_app()`` + ``_disable_limiter()`` in
+    a try/finally so the test sets up its own preconditions.  The
+    test verifies what its name and docstring claim --
+    ``TestConfig.RATELIMIT_STORAGE_URI = "memory://"`` produces a
+    ``MemoryStorage`` after ``init_app`` runs -- without relying
+    on sibling-test side effects to leave ``_storage`` populated.
+    The new docstring explicitly cites ``flask_limiter._extension
+    .py`` line 333-334 as the reason the fresh-app pattern is
+    structurally required, so a future reader who sees the helper
+    boilerplate knows why it cannot be reduced to a one-line
+    ``init_app(app)`` call.
+  - ``_disable_limiter()`` now calls ``limiter.reset()`` (guarded
+    by an ``if limiter._storage is not None`` check that mirrors
+    the assert inside Flask-Limiter's own ``storage`` property)
+    after the engine dispose and before flipping ``enabled =
+    False``.  Closes the architectural concern Issue 2a
+    identifies: a future test that flipped ``limiter.enabled =
+    True`` without calling ``init_app`` would otherwise inherit
+    non-zero counters from the previous fresh-app test's
+    MemoryStorage.
+
+- ``tests/test_routes/test_errors.py``:
+  - All three fresh-app teardowns
+    (``test_429_renders_custom_page``,
+    ``test_429_includes_retry_after_header``,
+    ``test_429_emits_rate_limit_exceeded_event``) now call
+    ``limiter.reset()`` before disabling the limiter.  The
+    teardowns inline the fresh-app pattern rather than going
+    through the helper, so the hardening is applied per-test.
+    Each call site carries a comment pointing at this
+    follow-up's Issue 2a so a future reader can trace the
+    rationale.
+
+- ``tests/test_routes/test_auth.py``:
+  - All three fresh-app teardowns
+    (``test_rate_limiting_after_5_attempts``,
+    ``test_register_post_rate_limited``,
+    ``test_mfa_verify_rate_limiting``) received the same
+    ``limiter.reset()`` hardening, for consistency with
+    ``test_errors.py``.  Out of strict scope per the Issue 2a
+    text (which named only ``test_429_includes_retry_after_
+    header``) but added because (a) the pattern is identical,
+    (b) leaving one file's teardowns un-hardened while
+    others are hardened would be inconsistent technical debt,
+    and (c) the per-teardown comment block makes the rationale
+    explicit at the call site so future readers do not have to
+    rediscover it.
+
+**Tests:**
+
+Both pre-existing tests pass with the new code:
+
+- ``tests/test_integration/test_rate_limiter.py::
+  TestStorageBackendIsConfigDriven::
+  test_test_config_forces_memory_backend`` passes in isolation
+  (was failing with ``limiter._storage is NoneType``).
+- ``tests/test_routes/test_errors.py::TestErrorPages::
+  test_429_includes_retry_after_header`` passes both in isolation
+  and inside the cited
+  ``tests/test_routes/test_d* test_e* test_g* test_h* test_i*``
+  batch (392 tests green).
+
+No NEW tests were added because the changes are test-infrastructure
+hardening, not new behaviour.  The pre-existing tests are the
+correct gate: their pass/fail status under the cited isolation +
+batch invocations is exactly the regression check the original
+issue describes.
+
+**Failure modes closed:**
+
+- An operator who runs ``pytest tests/test_integration/
+  test_rate_limiter.py::TestStorageBackendIsConfigDriven::
+  test_test_config_forces_memory_backend`` alone (or as the first
+  test in a re-ordered batch) no longer hits the
+  ``AssertionError: limiter._storage is NoneType`` from sibling-
+  test order dependence.
+- A future test that flips ``limiter.enabled = True`` mid-suite
+  without calling ``init_app(rate_app)`` -- the failure mode
+  Issue 2a's architectural concern names -- inherits a
+  ``limiter._storage`` whose counters are zero (reset by the prior
+  fresh-app test's hardened teardown) rather than non-zero (the
+  pre-fix posture).  The session-level limiter's ``_storage`` is
+  whatever the most recent ``init_app`` left it as, but its
+  counter contents are clean.
+
+**Full suite result on the resolution commit:** 5,131 tests
+across test_config / test_models / test_services /
+test_routes (4 batches: a/c, d-i, l-p, r-x) / test_integration /
+test_adversarial / test_scripts / test_deploy / test_audit_fixes /
+test_ref_cache / test_schemas / test_utils / test_concurrent /
+test_performance all green; pylint score unchanged at 9.50/10
+(no new warnings).
+
+### Original observations
 
 Two tests pass in isolation but fail in the broader test suite (or
 the reverse).  Both reproduced consistently when first observed
@@ -607,6 +745,6 @@ this.
 |---|---|---|---|---|
 | 1a (cross-user defense helper + budget-schema mixin + soft-delete column mixin) | Verified safe to extract | Medium | `refactor(services): extract cross-user defense helper + budget-schema mixin + soft-delete column mixin` | ~1.5-2 hr (services) + 1-2 hr (models mixin) |
 | 1b (per-period materialisation merge, calendar/period-window unification) | **Do NOT extract** without a separate design discussion -- transfer invariant risk + period-vs-date-range divergence | -- | (deferred) | -- |
-| 2a (`test_429_includes_retry_after_header`) | Not reproducing on HEAD; architectural concern remains | Low (proactive) | `test(routes): reset limiter storage between tests` | 30 min |
-| 2b (`test_test_config_forces_memory_backend`) | Verified, fails in isolation | Medium | `test(integration): bind limiter to app in storage assertion` | 15 min |
+| 2a (`test_429_includes_retry_after_header`) | **Done 2026-05-10** (proactive `limiter.reset()` hardening landed in test_errors.py / test_auth.py / test_rate_limiter.py teardowns; see Resolution block under Issue 2 for files changed) | Low (was) | `test(routes): reset limiter storage between tests` (shipped) | 30 min estimated; actual landed alongside Issue 2b in one commit |
+| 2b (`test_test_config_forces_memory_backend`) | **Done 2026-05-10** (fresh-app helper pattern + try/finally; the doc's original `limiter.init_app(app)` recommendation was found incorrect on re-read of flask_limiter._extension.py:333-334 -- see Resolution block under Issue 2) | Medium (was) | `test(integration): rebuild storage in TestConfig backend assertion via fresh-app helper` (shipped) | 15 min estimated; actual landed alongside Issue 2a in one commit |
 | 3 (.env.example URI + `verify_backup.sh` fallback) | **Done 2026-05-10** (Approach C landed; see Resolution block under Issue 3 for files changed and tests added) | Medium (was) | `chore(config): sentinel-token rejection in DATABASE_URL and TEST_DATABASE_URL` (shipped) | 30-45 min estimated; actual landed with 31 new tests across `test_config.py` and `test_deploy/test_docker_secrets_and_env_hygiene.py` |

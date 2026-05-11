@@ -182,10 +182,16 @@ class TestLogin:
                 assert response.status_code == 429
 
             # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
+            # connections, clear the rate-limit storage's counters (so
+            # a future test that flips ``limiter.enabled = True``
+            # without calling ``init_app`` cannot inherit non-zero
+            # counts from this test -- see c-38-followups.md Issue 2a),
+            # and reset limiter for other tests.
             with rate_app.app_context():
                 from app.extensions import db as _db
                 _db.engine.dispose()
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
     def test_login_nonexistent_email(self, app, client):
@@ -2055,10 +2061,17 @@ class TestRegistration:
                 })
                 assert response.status_code == 429
 
-            # Clean up.
+            # Clean up: dispose the secondary app's engine to release
+            # connections, clear the rate-limit storage's counters (so
+            # a future test that flips ``limiter.enabled = True``
+            # without calling ``init_app`` cannot inherit non-zero
+            # counts from this test -- see c-38-followups.md Issue 2a),
+            # and reset limiter for other tests.
             with rate_app.app_context():
                 from app.extensions import db as _db
                 _db.engine.dispose()
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
 
@@ -2137,10 +2150,16 @@ class TestMfaVerifySecurity:
                 assert response.status_code == 429
 
             # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
+            # connections, clear the rate-limit storage's counters (so
+            # a future test that flips ``limiter.enabled = True``
+            # without calling ``init_app`` cannot inherit non-zero
+            # counts from this test -- see c-38-followups.md Issue 2a),
+            # and reset limiter for other tests.
             with rate_app.app_context():
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
     def test_mfa_verify_idor_other_users_pending_session(self, app, client, seed_user):

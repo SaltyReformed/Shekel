@@ -80,14 +80,39 @@ def _disable_limiter(limiter, rate_app):
     """Tear down the per-test limiter / app state.
 
     Disposes the secondary app's SQLAlchemy engine to release database
-    connections, then resets the module-level limiter so the *next*
-    test starts with rate-limiting off (TestConfig default).
+    connections, clears the rate-limit storage's counter state so a
+    later test cannot inherit stale counts via the module-level
+    singleton, then disables the limiter so the *next* test starts
+    with rate-limiting off (TestConfig default).
+
+    Counter reset rationale: ``limiter.init_app(rate_app)`` set
+    ``limiter._storage`` to a fresh MemoryStorage for the test's
+    rate_app.  Calling ``init_app`` again on a *different* fresh app
+    in a later test would build a brand-new MemoryStorage, so the
+    counters do not normally bleed across tests.  But the module-
+    level limiter is a singleton, and a future test that flipped
+    ``limiter.enabled = True`` *without* calling ``init_app`` would
+    inherit the storage left here -- including any non-zero counters
+    from this test's requests.  ``limiter.reset()`` clears those
+    counters defensively so that pattern (currently unused but
+    architecturally possible) cannot reintroduce the order-dependent
+    false-confidence failure mode the testing-standards "zero
+    tolerance for failing tests" rule is designed to prevent.  See
+    docs/audits/security-2026-04-15/c-38-followups.md Issue 2a.
     """
     with rate_app.app_context():
         # pylint: disable=import-outside-toplevel
         from app.extensions import db as _db
 
         _db.engine.dispose()
+    # ``limiter.reset()`` asserts ``_storage is not None`` internally;
+    # the helper is only ever called after ``_enable_limiter_on_fresh_
+    # app`` has run ``init_app`` (which populates ``_storage``), so the
+    # invariant holds.  Guard explicitly anyway so an accidental call
+    # from a teardown that did not run init_app would not crash the
+    # test runner -- a clean no-op is the right defensive posture.
+    if limiter._storage is not None:  # pylint: disable=protected-access
+        limiter.reset()
     limiter.enabled = False
 
 
@@ -444,28 +469,43 @@ class TestStorageBackendIsConfigDriven:
         )
 
     def test_test_config_forces_memory_backend(self):
-        """The active app's storage is the in-memory backend in tests.
+        """TestConfig.RATELIMIT_STORAGE_URI=memory:// yields MemoryStorage.
 
-        TestConfig.RATELIMIT_STORAGE_URI = "memory://" means the test
-        session's limiter must have a MemoryStorage (or
-        MovingWindowMemoryStorage) instance.  Asserting on the storage
-        type is more meaningful than asserting on the URI string -- the
-        URI is config plumbing, the storage class is the actual runtime
-        behavior.
+        Asserts that ``init_app`` on a fresh app built from TestConfig
+        produces a MemoryStorage instance.  This is the storage-class-
+        level assertion that complements the URI-level test above.
+
+        The fresh-app pattern is required because TestConfig sets
+        ``RATELIMIT_ENABLED=False`` and Flask-Limiter's ``init_app``
+        short-circuits at the head of the method when ``enabled=False``
+        (see flask_limiter/_extension.py ``init_app`` second ``if``
+        block).  The short-circuit returns BEFORE storage is
+        constructed, so the session-level limiter has ``_storage=None``
+        in isolation.  Asserting on the session limiter's ``_storage``
+        would therefore pass only when a sibling test had previously
+        flipped ``enabled=True`` and triggered a populating
+        ``init_app`` call -- an order dependency that
+        ``testing-standards.md`` forbids ("Tests must be independent").
+
+        The helper below builds a fresh app with ``RATELIMIT_ENABLED
+        =True`` so ``init_app`` proceeds past the short-circuit and
+        constructs storage from the TestConfig URI.  The test then
+        verifies what its name claims: that the URI string the test
+        config dictates resolves to a MemoryStorage instance.
         """
         # pylint: disable=import-outside-toplevel,protected-access
         from limits.storage import MemoryStorage
 
-        from app.extensions import limiter
-
-        # The session-level test app initializes the limiter with the
-        # TestConfig URI.  The storage class must be MemoryStorage (or
-        # a subclass for the moving-window strategy).
-        assert isinstance(limiter._storage, MemoryStorage), (
-            f"limiter._storage is {type(limiter._storage).__name__}; "
-            "TestConfig.RATELIMIT_STORAGE_URI=memory:// should produce "
-            "a MemoryStorage instance."
-        )
+        rate_app, _rate_client, limiter_inst = _enable_limiter_on_fresh_app()
+        try:
+            assert isinstance(limiter_inst._storage, MemoryStorage), (
+                f"limiter._storage is "
+                f"{type(limiter_inst._storage).__name__}; "
+                "TestConfig.RATELIMIT_STORAGE_URI=memory:// should produce "
+                "a MemoryStorage instance."
+            )
+        finally:
+            _disable_limiter(limiter_inst, rate_app)
 
 
 # Pytest module marker -- conftest.py's seed_user fixture is required

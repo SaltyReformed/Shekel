@@ -55,10 +55,16 @@ class TestErrorPages:
                 assert "Too Many Requests" in html
 
             # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
+            # connections, clear the rate-limit storage's counters (so
+            # a future test that flips ``limiter.enabled = True``
+            # without calling ``init_app`` cannot inherit non-zero
+            # counts from this test -- see c-38-followups.md Issue 2a),
+            # and reset limiter for other tests.
             with rate_app.app_context():
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
     def test_429_includes_retry_after_header(self, app, seed_user):
@@ -84,10 +90,16 @@ class TestErrorPages:
                 assert response.headers["Retry-After"] == "900"
 
             # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
+            # connections, clear the rate-limit storage's counters (so
+            # a future test that flips ``limiter.enabled = True``
+            # without calling ``init_app`` cannot inherit non-zero
+            # counts from this test -- see c-38-followups.md Issue 2a),
+            # and reset limiter for other tests.
             with rate_app.app_context():
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
     def test_429_emits_rate_limit_exceeded_event(self, app, seed_user):
@@ -142,6 +154,12 @@ class TestErrorPages:
             with rate_app.app_context():
                 from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
                 _db.engine.dispose()
+            # Clear counters before disabling so a future test that
+            # flips ``limiter.enabled = True`` without calling
+            # ``init_app`` cannot inherit non-zero counts from this
+            # test -- see c-38-followups.md Issue 2a.
+            if limiter._storage is not None:  # pylint: disable=protected-access
+                limiter.reset()
             limiter.enabled = False
 
         # Filter to the rate-limit events.  ``log_event`` annotates
