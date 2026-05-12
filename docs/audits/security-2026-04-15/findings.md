@@ -3813,7 +3813,40 @@ lives in the same database the attacker would be tampering with.
   plain_password, str) or not plain_password: return False`.
   Protects against future callers passing non-string by
   mistake.
-- **Status:** Open
+- **Status:** Fixed in C-44 (2026-05-12).
+  `app/services/auth_service.py:verify_password` now rejects
+  every non-string and every empty-string input on both the
+  ``plain_password`` and ``password_hash`` sides before
+  reaching ``.encode("utf-8")``.  Implementation extends the
+  plan's recommendation in three ways:
+  (a) symmetric guard -- ``password_hash`` is also checked for
+  ``isinstance(str)`` and non-empty, not just type;
+  (b) ``bcrypt.checkpw`` ``ValueError`` ("Invalid salt") is
+  caught explicitly so a corrupted DB row or a hash from an
+  older incompatible scheme returns ``False`` rather than
+  propagating as a Flask 500; and (c) every failure mode
+  converges on the same ``False`` sentinel so an attacker
+  probing with exotic payloads cannot fingerprint caller-side
+  bugs via response shape.  Eight new tests in
+  ``tests/test_services/test_auth_service.py::TestVerifyPasswordC44Hardening``
+  pin the contract -- non-string plaintext (``None``, ``bytes``,
+  ``int``, ``Decimal``, ``list``, ``dict``, ``object``), empty
+  plaintext, non-string hash (same set), empty hash, malformed
+  hash (non-bcrypt prefixes including legacy MD5-crypt and
+  SHA-crypt formats, truncated ``$2b$``, bad cost factor,
+  all-whitespace, wrong-content right-length), the
+  ``authenticate`` end-to-end case where bytes credentials now
+  raise ``AuthError`` instead of crashing with a 500, and a
+  round-trip regression guard with single-character / 72-byte
+  ceiling / non-ASCII / supplementary-plane Unicode coverage.
+  The pre-existing ``test_hash_password_empty_string`` was
+  updated in the same commit: ``hash_password`` still accepts
+  the empty plaintext (the test stays self-contained) but the
+  matching ``verify_password`` call now asserts ``False``,
+  documenting the deliberate post-C-44 asymmetry between the
+  hash and verify sides at the service layer.  Pylint
+  ``app/ --fail-on=E,F`` score 9.52/10 (unchanged).  Full
+  suite 5,269 passed in 4:22.
 
 ### F-084: _assert_blocked test helper accepts 302 alongside 404
 
