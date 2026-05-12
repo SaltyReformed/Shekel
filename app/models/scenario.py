@@ -44,7 +44,18 @@ class Scenario(TimestampMixin, db.Model):
         server_default=db.text("false"),
     )
     cloned_from_id = db.Column(
-        db.Integer, db.ForeignKey("budget.scenarios.id", ondelete="SET NULL")
+        db.Integer,
+        # F-137 / C-42: explicit FK name follows the project's ``fk_*``
+        # convention documented in ``docs/coding-standards.md``.  Earlier
+        # the self-referential FK carried the Alembic-default
+        # ``scenarios_cloned_from_id_fkey`` name; this declaration keeps
+        # ``db.create_all()`` aligned with the post-C-42 migrated state.
+        # SET NULL semantics preserved.
+        db.ForeignKey(
+            "budget.scenarios.id",
+            name="fk_scenarios_cloned_from",
+            ondelete="SET NULL",
+        ),
     )
 
     def __repr__(self):

@@ -80,6 +80,18 @@ class TaxBracket(db.Model):
             name="ck_tax_brackets_income_order",
         ),
         db.CheckConstraint("rate >= 0 AND rate <= 1", name="ck_tax_brackets_valid_rate"),
+        # F-071 / F-079 / C-42: child-FK index restored after the
+        # 22b3dd9d9ed3 migration dropped it without restoration.  The
+        # tax calculator queries
+        # ``WHERE bracket_set_id = ? ORDER BY sort_order`` to
+        # materialise the bracket ladder for a year + filing status;
+        # without this composite index the ORDER BY requires a sort
+        # step over a sequential scan and the cost grows with the
+        # total bracket-row count across all bracket sets.
+        db.Index(
+            "idx_tax_brackets_bracket_set",
+            "bracket_set_id", "sort_order",
+        ),
         {"schema": "salary"},
     )
 

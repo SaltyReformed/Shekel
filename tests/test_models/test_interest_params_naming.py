@@ -58,12 +58,27 @@ class TestInterestParamsNaming:
             assert new == 1, "interest_params_pkey is missing"
             assert old is None, "legacy hysa_params_pkey still present"
 
-    def test_fk_constraint_named_interest_params_account_id_fkey(
+    def test_fk_constraint_named_fk_interest_params_account(
         self, app, db
     ):
-        """The account_id FK is named ``interest_params_account_id_fkey``."""
+        """The account_id FK is named ``fk_interest_params_account``.
+
+        Migration ``c42b1d9a4e8f`` advanced this constraint through
+        two renames -- the original ``hysa_params_account_id_fkey``
+        (from the hysa_params CREATE TABLE), then
+        ``interest_params_account_id_fkey`` (from the 44893a9dbcc3
+        finish-rename), and finally ``fk_interest_params_account``
+        (the project's ``fk_*`` convention).  This test asserts the
+        post-C-42 state and refuses any of the three prior names.
+        """
         with app.app_context():
             new = db.session.execute(text(
+                "SELECT 1 FROM pg_constraint c "
+                "JOIN pg_namespace n ON c.connamespace = n.oid "
+                "WHERE c.conname = 'fk_interest_params_account' "
+                "AND n.nspname = 'budget'"
+            )).scalar()
+            mid = db.session.execute(text(
                 "SELECT 1 FROM pg_constraint c "
                 "JOIN pg_namespace n ON c.connamespace = n.oid "
                 "WHERE c.conname = 'interest_params_account_id_fkey' "
@@ -75,7 +90,11 @@ class TestInterestParamsNaming:
                 "WHERE c.conname = 'hysa_params_account_id_fkey' "
                 "AND n.nspname = 'budget'"
             )).scalar()
-            assert new == 1, "interest_params_account_id_fkey is missing"
+            assert new == 1, "fk_interest_params_account is missing"
+            assert mid is None, (
+                "intermediate interest_params_account_id_fkey still "
+                "present -- C-42 rename did not run"
+            )
             assert old is None, "legacy hysa_params_account_id_fkey still present"
 
     def test_sequence_named_interest_params_id_seq(self, app, db):

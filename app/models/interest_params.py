@@ -40,7 +40,20 @@ class InterestParams(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(
         db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        # F-072 / F-138 / C-42: explicit FK name follows the project's
+        # ``fk_*`` convention documented in ``docs/coding-standards.md``.
+        # Earlier the constraint carried the Alembic-default
+        # ``interest_params_account_id_fkey`` name (renamed by
+        # 44893a9dbcc3 from the deeper-legacy
+        # ``hysa_params_account_id_fkey``); this declaration keeps
+        # ``db.create_all()`` aligned with the post-C-42 migrated
+        # state so the test-template path and the production
+        # migration chain converge on the same name.
+        db.ForeignKey(
+            "budget.accounts.id",
+            name="fk_interest_params_account",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         unique=True,
     )

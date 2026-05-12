@@ -41,6 +41,22 @@ class PensionProfile(TimestampMixin, db.Model):
             "user_id", "name",
             name="uq_pension_profiles_user_name",
         ),
+        # F-140 / C-42: FK-column indexes.  Both ``user_id`` and
+        # ``salary_profile_id`` are filtered by the retirement
+        # dashboard and the pension gap-analysis service on every
+        # request; without dedicated indexes the queries fall back to
+        # sequential scans that scale with the global pension-profile
+        # count.  Two single-column indexes (not one composite) so
+        # the planner can use either independently -- queries on
+        # user_id alone (the dashboard listing) and queries on
+        # salary_profile_id alone (the gap-analysis join) appear in
+        # equal measure.
+        db.Index(
+            "idx_pension_profiles_user", "user_id",
+        ),
+        db.Index(
+            "idx_pension_profiles_salary_profile", "salary_profile_id",
+        ),
         {"schema": "salary"},
     )
 

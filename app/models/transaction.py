@@ -164,7 +164,17 @@ class Transaction(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     )
     credit_payback_for_id = db.Column(
         db.Integer,
-        db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
+        # F-137 / C-42: explicit FK name follows the project's ``fk_*``
+        # convention documented in ``docs/coding-standards.md``.
+        # Earlier the self-referential FK carried the Alembic-default
+        # ``transactions_credit_payback_for_id_fkey`` name; this
+        # declaration keeps ``db.create_all()`` aligned with the
+        # post-C-42 migrated state.  SET NULL semantics preserved.
+        db.ForeignKey(
+            "budget.transactions.id",
+            name="fk_transactions_credit_payback_for",
+            ondelete="SET NULL",
+        ),
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)

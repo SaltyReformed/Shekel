@@ -70,6 +70,15 @@ class PaycheckDeduction(TimestampMixin, db.Model):
             "salary_profile_id", "name",
             name="uq_paycheck_deductions_profile_name",
         ),
+        # F-071 / F-079 / C-42: child-FK index restored after the
+        # 22b3dd9d9ed3 migration dropped it without restoration.  The
+        # paycheck calculator joins paycheck_deductions to its parent
+        # salary_profile on every projection; without this index the
+        # join is a sequential scan that scales linearly with the
+        # total deduction-row count across all users.
+        db.Index(
+            "idx_deductions_profile", "salary_profile_id",
+        ),
         {"schema": "salary"},
     )
 
