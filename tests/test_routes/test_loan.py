@@ -20,7 +20,7 @@ from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
 from app.services.transfer_service import create_transfer
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, select_option_values
 
 
 @pytest.fixture(autouse=True)
@@ -1403,14 +1403,37 @@ class TestTransferPrompt:
     def test_source_accounts_exclude_debt_account(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Source accounts dropdown does not include the current debt account."""
+        """Source accounts dropdown does not include the current debt account.
+
+        Scopes the assertion to the ``source_account_id`` select.  A
+        naive ``f'value="{acct.id}" not in html`` check would falsely
+        match the loan account's id when it appears in any unrelated
+        attribute on the page (e.g., the dashboard's hidden form
+        carrying ``value="N"`` for some other model whose id happens
+        to equal the loan account's id).  The OR with ``"No recurring
+        payment" not in html`` papered over collisions when the
+        prompt was hidden, but failed deterministically when the
+        prompt was shown AND ``acct.id`` collided with another
+        element's value.
+        """
         acct = _create_mortgage(seed_user, db.session)
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The prompt's <select> should not have the mortgage as an option.
-        assert f'value="{acct.id}"' not in html or "No recurring payment" not in html
+
+        source_options = select_option_values(html, "source_account_id")
+        # When the prompt is shown, ``source_options`` carries the
+        # eligible source accounts and the loan account itself must
+        # not be among them.  When the prompt is hidden (no source
+        # accounts available, e.g. the user has no non-loan
+        # accounts), ``source_options`` is the empty list and the
+        # assertion is vacuously true.
+        assert str(acct.id) not in source_options, (
+            f"Loan account {acct.id} ({acct.name}) is listed as a "
+            f"source-account option on its own loan dashboard; got "
+            f"source_account_id options {source_options!r}"
+        )
 
 
 # ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
