@@ -7,7 +7,7 @@ and retirement planning settings.
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -349,7 +349,13 @@ def update_settings():
         if field in form_data and form_data[field]:
             try:
                 form_data[field] = str(Decimal(form_data[field]) / Decimal("100"))
-            except Exception:
+            except InvalidOperation:
+                # Narrow catch (C-46 / F-145): a non-numeric string
+                # (e.g. "abc") raises ``decimal.InvalidOperation``.
+                # Leave the raw value in place so the Marshmallow
+                # schema rejects it with a field-level "Not a valid
+                # number." message and the user sees the 422 form
+                # re-render rather than a silent normalisation.
                 pass
 
     errors = _settings_schema.validate(form_data)

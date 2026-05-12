@@ -794,6 +794,11 @@ def _convert_percentage_inputs(form):
         if field in data and data[field]:
             try:
                 data[field] = str(Decimal(data[field]) / Decimal("100"))
-            except Exception:
+            except InvalidOperation:
+                # Narrow catch (C-46 / F-145): a non-numeric string
+                # (e.g. "abc") raises ``decimal.InvalidOperation``.
+                # Leave the raw value in place so the Marshmallow
+                # schema rejects it with a field-level "Not a valid
+                # number." message rather than a silent normalisation.
                 pass
     return data
