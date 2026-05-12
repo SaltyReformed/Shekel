@@ -114,9 +114,21 @@ class AccountType(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(30), nullable=False)
+    # F-073 / C-43: ondelete=RESTRICT closes the audit gap where the
+    # nine ref-table FKs default to PostgreSQL's implicit NO ACTION.
+    # RESTRICT raises immediately on the offending statement (vs. NO
+    # ACTION which defers to commit), giving a clean error message at
+    # the point of the violating DELETE; the name follows the
+    # SHEKEL_NAMING_CONVENTION ("fk": "fk_<table>_<column_0_name>")
+    # so the model rendering and the live-DB rendering converge on
+    # the same string.
     category_id = db.Column(
         db.Integer,
-        db.ForeignKey("ref.account_type_categories.id"),
+        db.ForeignKey(
+            "ref.account_type_categories.id",
+            name="fk_account_types_category_id",
+            ondelete="RESTRICT",
+        ),
         nullable=False,
     )
     has_parameters = db.Column(

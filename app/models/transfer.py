@@ -101,8 +101,28 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # F-136 / C-43: ondelete=CASCADE replaces the historical RESTRICT
+    # so the FK matches the sibling tables (``budget.transactions``
+    # and ``budget.account_anchor_history`` both CASCADE on
+    # ``pay_period_id``).  The asymmetry was an unintentional drift:
+    # PostgreSQL evaluates every referential action for a single
+    # DELETE in one pass, so a user-cascade that fans out into
+    # ``pay_periods`` and ``transfers`` simultaneously would
+    # previously have raised a RESTRICT error even though every
+    # row was destined for deletion.  CASCADE also keeps the
+    # transfer invariant intact: the transfer + its two shadow
+    # transactions + their pay period all disappear together
+    # rather than leaving the parent transfer orphaned after the
+    # shadows cascade away through ``transactions.pay_period_id``.
+    # Name follows the SHEKEL_NAMING_CONVENTION (see
+    # app/extensions.py).
     pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="RESTRICT"),
+        db.Integer,
+        db.ForeignKey(
+            "budget.pay_periods.id",
+            name="fk_transfers_pay_period_id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
     )
     scenario_id = db.Column(

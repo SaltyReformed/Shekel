@@ -82,16 +82,34 @@ class SavingsGoal(TimestampMixin, db.Model):
 
     # Income-relative goal columns (5.4-2).
     # goal_mode_id defaults to Fixed (ID 1) so existing goals are unaffected.
+    # F-073 / C-43: ondelete=RESTRICT was missing on these ref-table
+    # FKs.  The 4f2d894216ad migration created the constraints with
+    # the convention-matching ``fk_savings_goals_<column>`` names but
+    # left the ondelete clause unset (PostgreSQL implicit NO ACTION).
+    # The C-43 migration recreates each FK with ondelete=RESTRICT so
+    # the catalog enforces the same "ref rows can never be deleted
+    # while in use" invariant the application layer already relies
+    # on; the model declarations below render the same shape so
+    # ``db.create_all()`` paths (test bootstrap, sandbox tooling)
+    # converge on the post-C-43 schema.
     goal_mode_id = db.Column(
         db.Integer,
-        db.ForeignKey("ref.goal_modes.id"),
+        db.ForeignKey(
+            "ref.goal_modes.id",
+            name="fk_savings_goals_goal_mode_id",
+            ondelete="RESTRICT",
+        ),
         nullable=False,
         default=1,
         server_default="1",
     )
     income_unit_id = db.Column(
         db.Integer,
-        db.ForeignKey("ref.income_units.id"),
+        db.ForeignKey(
+            "ref.income_units.id",
+            name="fk_savings_goals_income_unit_id",
+            ondelete="RESTRICT",
+        ),
         nullable=True,
     )
     income_multiplier = db.Column(

@@ -88,11 +88,26 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* names on the
+    # two ref-table FKs.  See app/extensions.py for the full
+    # SHEKEL_NAMING_CONVENTION rationale.
     deduction_timing_id = db.Column(
-        db.Integer, db.ForeignKey("ref.deduction_timings.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.deduction_timings.id",
+            name="fk_paycheck_deductions_deduction_timing_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     calc_method_id = db.Column(
-        db.Integer, db.ForeignKey("ref.calc_methods.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.calc_methods.id",
+            name="fk_paycheck_deductions_calc_method_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     name = db.Column(db.String(200), nullable=False)
     amount = db.Column(db.Numeric(12, 4), nullable=False)

@@ -93,8 +93,17 @@ class SalaryRaise(CreatedAtMixin, db.Model):
         db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name.  See
+    # app/extensions.py for the full SHEKEL_NAMING_CONVENTION
+    # rationale and the close-out story for finding F-078.
     raise_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.raise_types.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.raise_types.id",
+            name="fk_salary_raises_raise_type_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     effective_month = db.Column(db.Integer, nullable=False)
     effective_year = db.Column(db.Integer, nullable=True)

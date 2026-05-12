@@ -36,8 +36,17 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
         db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
+    # filing-status ref-table FK.  See app/extensions.py for the
+    # full SHEKEL_NAMING_CONVENTION rationale.
     filing_status_id = db.Column(
-        db.Integer, db.ForeignKey("ref.filing_statuses.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.filing_statuses.id",
+            name="fk_tax_bracket_sets_filing_status_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     tax_year = db.Column(db.Integer, nullable=False)
     standard_deduction = db.Column(db.Numeric(12, 2), nullable=False)
@@ -149,8 +158,17 @@ class StateTaxConfig(CreatedAtMixin, db.Model):
         db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
+    # tax-type ref-table FK.  See app/extensions.py for the full
+    # SHEKEL_NAMING_CONVENTION rationale.
     tax_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.tax_types.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.tax_types.id",
+            name="fk_state_tax_configs_tax_type_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     state_code = db.Column(db.String(2), nullable=False)
     tax_year = db.Column(db.Integer, nullable=False)
