@@ -5,6 +5,37 @@ Core Phase 2 service: calculates net biweekly paycheck amounts from a
 salary profile including raises, deductions, and taxes.
 
 All functions are pure (no DB access) -- data is passed in as arguments.
+
+Biweekly rounding residue -- accepted simplification
+----------------------------------------------------
+
+``gross_biweekly`` is computed as ``annual_salary / pay_periods_per_year``
+quantised to two decimal places with ``ROUND_HALF_UP``.  Because $0.01
+is the smallest representable currency unit and most annual salaries
+do not divide evenly by 26 (or 24 / 12), the sum of the quantised
+biweekly checks does not always match the input annual salary
+exactly.  At 26 pay periods the residue is bounded by 26 * $0.005 =
+$0.13 per year (rounding direction depends on the salary's tail).
+
+Examples:
+
+- $50,000 / 26 = $1,923.0769... -> $1,923.08 * 26 = $50,000.08
+  (+$0.08 over the year).
+- $75,000 / 26 = $2,884.6153... -> $2,884.62 * 26 = $75,000.12
+  (+$0.12 over the year).
+- $100,000 / 26 = $3,846.1538... -> $3,846.15 * 26 = $99,999.90
+  ($-0.10 under the year).
+
+This residue mirrors how real US payroll systems (ADP, Paychex,
+Gusto, Workday) issue biweekly paychecks: each pay stub is rounded to
+the cent, and W-2 box 1 is the sum of the rounded checks rather than
+the contract salary.  Distributing the residue across the 26 checks
+(or absorbing it into one "true-up" check) would diverge from
+real-payroll behaviour and break user reconciliation against actual
+deposits, so F-127 of the 2026-04-15 security audit classified this
+as an accepted simplification.  The error is bounded, signed in a
+predictable direction by the salary's fractional cent, and
+self-cancelling against future inflation-adjusted salaries.
 """
 
 import logging
@@ -62,6 +93,14 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
                        *, calibration=None):
     """Calculate a single paycheck for a given period.
 
+    The gross biweekly amount is computed by dividing the (post-raise)
+    annual salary by ``pay_periods_per_year`` and quantising to two
+    decimal places.  This is the canonical real-payroll behaviour and
+    leaves a bounded year-end residue (~$0.13 max, signed by the
+    salary's fractional cent); see the module docstring section
+    "Biweekly rounding residue -- accepted simplification" for the
+    full rationale (F-127).
+
     Args:
         profile:      SalaryProfile with loaded raises and deductions.
         period:       The PayPeriod for this paycheck.
@@ -86,7 +125,10 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     annual_salary = _apply_raises(profile, period)
     raise_event = _get_raise_event(profile, period)
 
-    # Step 2: Gross biweekly
+    # Step 2: Gross biweekly.  Quantising here is the source of the
+    # ~$0.13/year rounding residue documented at the module level
+    # (F-127, 2026-04-15 audit); mirrors real-payroll behaviour and
+    # is intentional rather than a defect.
     pay_periods_per_year = profile.pay_periods_per_year or 26
     gross_biweekly = (annual_salary / pay_periods_per_year).quantize(
         TWO_PLACES, rounding=ROUND_HALF_UP

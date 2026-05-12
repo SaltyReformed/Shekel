@@ -2893,3 +2893,48 @@ class TestCalibrationIntegration:
             assert cb.federal_tax == Decimal("230.77"), (
                 f"Period {i}: expected 230.77 (2307.69 * 0.10)"
             )
+
+
+class TestBiweeklyResidueDocstring:
+    """Verify the $0.13 biweekly rounding residue is documented in docstrings.
+
+    F-127 of the 2026-04-15 security audit classified the biweekly
+    quantisation residue as an accepted simplification (real-payroll
+    parity > residue elimination).  The closure condition is that the
+    residue is acknowledged in module- and function-level docstrings so
+    a future reader does not file a duplicate "bug" against
+    well-understood behaviour, and so reconciliation work against W-2
+    Box 1 has a discoverable explanation.
+
+    Arithmetic context: $75,000 / 26 = $2,884.6153... -> $2,884.62
+    (rounded half-up) * 26 = $75,000.12.  The residue (+$0.12) is
+    bounded by 26 * $0.005 = $0.13/year.
+    """
+
+    def test_module_docstring_acknowledges_biweekly_residue(self):
+        """Module docstring names the residue, its bound, and the audit ID.
+
+        Asserts the literal phrase ``accepted simplification`` plus the
+        ``$0.13`` bound plus the audit identifier ``F-127`` so wording
+        drift breaks the test (the audit-closure language uses this
+        exact phrasing).
+        """
+        from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
+
+        doc = paycheck_calculator.__doc__ or ""
+        assert "accepted simplification" in doc.lower()
+        assert "$0.13" in doc
+        assert "F-127" in doc
+
+    def test_calculate_paycheck_docstring_references_residue(self):
+        """Function docstring on ``calculate_paycheck`` points at the residue.
+
+        The function-level docstring must reference the rounding
+        residue so a caller reading only the function signature in an
+        IDE tooltip learns about the behaviour; relying solely on the
+        module docstring leaves the discoverability gap that F-127
+        flagged.
+        """
+        doc = calculate_paycheck.__doc__ or ""
+        assert "residue" in doc.lower()
+        assert "F-127" in doc

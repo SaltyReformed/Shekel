@@ -394,10 +394,21 @@ def create_baseline():
 @login_required
 @require_owner
 def balance_row():
-    """HTMX partial: recalculate and return the balance summary row."""
+    """HTMX partial: recalculate and return the balance summary row.
+
+    Returns 204 No Content when the user has no baseline scenario or no
+    current pay period.  The grid index route renders ``no_setup.html``
+    / ``no_periods.html`` for those cases, so the HTMX partial swap on
+    this endpoint has nothing to render -- returning 204 leaves the
+    existing DOM untouched and avoids the ``AttributeError`` that
+    dereferencing the missing scenario would have raised (F-099).
+    """
     user_id = current_user.id
 
     scenario = get_baseline_scenario(user_id)
+    if scenario is None:
+        return "", 204
+
     account = resolve_grid_account(
         user_id, current_user.settings,
         request.args.get("account_id", type=int),

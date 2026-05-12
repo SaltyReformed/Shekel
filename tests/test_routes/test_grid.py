@@ -240,6 +240,40 @@ class TestBalanceRow:
             assert resp.status_code == 204
             assert resp.data == b""
 
+    def test_balance_row_no_baseline_scenario(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /grid/balance-row returns 204 when the user has no baseline scenario.
+
+        Regression test for F-099 (C-45 of the 2026-04-15 security
+        audit).  Before the fix, ``balance_row`` dereferenced
+        ``scenario.id`` to build the transaction query filter; when
+        ``get_baseline_scenario`` returned ``None`` (orphaned test
+        fixture or a freshly-deleted user mid-cascade in production)
+        the route raised ``AttributeError: 'NoneType' object has no
+        attribute 'id'`` and returned HTTP 500 via the unhandled-
+        exception handler.
+
+        The fix short-circuits with HTTP 204 No Content, matching the
+        existing ``not current_period`` branch -- HTMX leaves the
+        existing DOM untouched, the grid index route renders
+        ``no_setup.html`` separately, and the user sees a coherent
+        empty state instead of a stack trace.
+
+        Asserts both the status code AND empty body to pin the
+        contract; a future change that returns 200 with a rendered
+        template would silently regress the HTMX partial-swap UX.
+        """
+        with app.app_context():
+            db.session.query(Scenario).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            db.session.commit()
+
+            resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
+            assert resp.status_code == 204
+            assert resp.data == b""
+
     def test_balance_row_custom_offset(self, app, auth_client, seed_user, seed_periods_today):
         """GET /grid/balance-row with offset shifts the visible window."""
         with app.app_context():

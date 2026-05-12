@@ -281,3 +281,53 @@ class TestRounding:
             period_end=date(2026, 1, 15),
         )
         assert result == Decimal("0.00")
+
+
+class TestDayCountConventionDocstring:
+    """Verify the 365-day-year accepted-simplification docstring is in place.
+
+    F-126 of the 2026-04-15 security audit classified the actual/365
+    day-count convention as an accepted simplification rather than a
+    code change.  The closure condition for that audit item is that
+    the convention is documented in a discoverable docstring (module
+    + function), so callers reasoning about leap-year accuracy do not
+    have to grep the constant definition to find the rationale.
+
+    These tests pin the docstring content.  They fail if a future
+    refactor strips the acknowledgement; the audit then reopens.
+    """
+
+    def test_module_docstring_acknowledges_365_day_convention(self):
+        """The module docstring names the 365-day actual/365 convention.
+
+        Asserts both the convention name (``actual/365``) and the
+        explicit acknowledgement keyword (``accepted simplification``)
+        are present so that wording drift -- e.g. someone rewording
+        the docstring to say "approximation" instead of
+        "simplification" -- breaks the test.  The audit-closure language
+        is "accepted simplification"; that exact phrase must survive.
+        """
+        from app.services import interest_projection  # pylint: disable=import-outside-toplevel
+
+        doc = interest_projection.__doc__ or ""
+        assert "actual/365" in doc
+        assert "accepted simplification" in doc.lower()
+        assert "F-126" in doc
+
+    def test_calculate_interest_docstring_acknowledges_leap_year(self):
+        """The function docstring names the leap-year behaviour for callers.
+
+        A caller reading only the function docstring (the common case
+        in editors / API docs) must learn that leap years use the
+        365-day divisor.  Asserts both ``leap year`` and ``365`` are
+        named in the function-level docstring (separate from the
+        module-level rationale) so the docstring stays self-sufficient.
+        """
+        from app.services.interest_projection import (  # pylint: disable=import-outside-toplevel
+            calculate_interest,
+        )
+
+        doc = calculate_interest.__doc__ or ""
+        assert "leap year" in doc.lower()
+        assert "365" in doc
+        assert "F-126" in doc
