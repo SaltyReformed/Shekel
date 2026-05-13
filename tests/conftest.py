@@ -1672,33 +1672,6 @@ def _refresh_ref_cache_and_jinja_globals(app):
     app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
 
 
-def _seed_ref_tables():
-    """Populate reference tables for the test database.
-
-    Thin wrapper around ``app.ref_seeds.seed_reference_data`` which
-    is the single source of truth for ref-table seeding across the
-    application factory (dev/test convenience seed), the production
-    deploy script, the test fixture stack (this function), and the
-    test-template builder.  See audit finding H-002 -- consolidation
-    eliminates the drift hazard where a future migration could add
-    a ref row in one call site but be forgotten in the other two.
-
-    After the per-pytest-worker DB isolation change (Phase 3 of
-    ``docs/audits/security-2026-04-15/per-worker-database-plan.md``)
-    only the per-test ``db`` fixture calls this -- the session-
-    start path no longer runs a seed because the per-session DB is
-    cloned from ``shekel_test_template`` which already carries the
-    seed.
-
-    Does NOT commit; the caller (the per-test ``db`` fixture)
-    owns the transaction boundary.
-    """
-    # pylint: disable=import-outside-toplevel
-    from app.ref_seeds import seed_reference_data
-
-    seed_reference_data(_db.session)
-
-
 def _profile_step_stats(values):
     """Compute summary statistics for a list of float milliseconds.
 
