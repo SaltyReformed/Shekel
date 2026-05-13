@@ -78,33 +78,56 @@ services:
       # the db service above for the full rationale; the test DB has
       # the same exposure profile and the same fix.
       - "127.0.0.1:5433:5432"
-    volumes:
-      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    # tmpfs-backed PGDATA: the test cluster's data directory lives
-    # entirely in RAM, eliminating filesystem I/O on the per-test
-    # TRUNCATE+reseed cycle.  Pairs with the ``fsync=off`` /
-    # ``synchronous_commit=off`` / ``full_page_writes=off`` flags in
-    # the command list below; together they implement the
-    # "Non-Durable Settings" recipe from the PG 18 manual chapter
-    # 30.4 (https://www.postgresql.org/docs/18/non-durability.html).
-    # Safe here because ``scripts/build_test_template.py`` rebuilds
-    # the cluster on demand -- a crash that loses the last committed
-    # transactions is recovered by re-running the test, not by
-    # replaying WAL.  DO NOT copy any of these settings to the ``db``
-    # service above; that cluster holds development data that must
-    # survive a host reboot.
+    # btrfs-backed PGDATA: the test cluster's data directory lives
+    # on a host btrfs subvolume bind-mounted into the container so
+    # PostgreSQL 18's ``CREATE DATABASE ... TEMPLATE ... STRATEGY
+    # FILE_COPY`` can use the kernel's ``FICLONE`` reflink ioctl to
+    # clone the template's data files as a constant-time metadata
+    # copy.  Pairs with the ``file_copy_method=clone`` GUC at the
+    # bottom of the command: list below; both must be in place for
+    # the reflink path to engage.  Replaces the Phase 1a tmpfs mount
+    # (Phase 3a of
+    # docs/audits/test_improvements/test-performance-implementation-plan.md);
+    # see boringSQL's instant-clone benchmark for the order-of-
+    # magnitude effect (6 GB clones in ~212 ms on a reflink
+    # filesystem vs ~67 s on PG 17 without the path):
+    # https://boringsql.com/posts/instant-database-clones/.
+    #
+    # The subvolume MUST be a btrfs subvolume (not a Docker named
+    # volume or a tmpfs).  Docker's overlay2 storage driver does
+    # NOT preserve ``FICLONE`` through its copy-on-write layer, so
+    # a named volume would silently fall back to byte-by-byte copy
+    # (seconds per clone, not milliseconds).  Verify the subvolume
+    # is on btrfs with ``stat -f /var/lib/shekel-test-pgdata``
+    # reporting ``Type: btrfs``.
+    #
+    # Operator setup (one-time, requires sudo on the host):
+    #
+    #   sudo btrfs subvolume create /var/lib/shekel-test-pgdata
+    #   sudo chown 70:70 /var/lib/shekel-test-pgdata
     #
     # ``uid=70``/``gid=70`` matches the ``postgres`` user inside the
     # alpine image (verified via
     # ``docker run --rm postgres:18-alpine id postgres``); postgres
     # refuses to start when PGDATA is owned by anyone else.
     #
-    # ``size=2g`` is a deliberate guardrail, not a tuning knob.  A
-    # full-suite run consumes well under 1 GB across
-    # ``shekel_test_template`` plus 12 per-worker clones plus the
-    # in-test audit-log growth.  Hitting the cap is a signal of
-    # unexpected test-data growth, not a number to bump -- raise it
-    # only after a measurement confirms the data is legitimate.
+    # Trade-offs vs the Phase 1a tmpfs mount this replaces:
+    #
+    #   * Data persists across container restarts (and host reboots).
+    #     A developer can inspect ``pg_data`` after a crash without
+    #     losing it; removing the cluster's state requires
+    #     ``sudo btrfs subvolume delete /var/lib/shekel-test-pgdata``.
+    #   * Reads and writes go to disk rather than RAM, but the
+    #     reflink-backed ``CREATE DATABASE`` path is strictly faster
+    #     than the TRUNCATE+reseed cycle it supersedes (constant-
+    #     time clone vs O(catalog rewrite per table)).
+    #   * ``fsync=off`` / ``synchronous_commit=off`` /
+    #     ``full_page_writes=off`` remain correct -- the cluster is
+    #     still throwaway; a crash that loses the last committed
+    #     transactions is recovered by re-running the test, not by
+    #     replaying WAL.  DO NOT copy any of these settings to the
+    #     ``db`` service above; that cluster holds development data
+    #     that must survive a host reboot.
     #
     # Mount target is the PARENT directory ``/var/lib/postgresql``,
     # not the legacy ``/var/lib/postgresql/data`` path used under
@@ -116,16 +139,25 @@ services:
     # entrypoint actively refuses to start when a legacy mount
     # exists at ``/var/lib/postgresql/data``.  Mounting the parent
     # path lets the per-major-version subdirectory live inside the
-    # tmpfs without the legacy-layout guard rail firing, and stays
-    # correct across future major-version bumps (PG 19, PG 20...)
-    # without another mount-path edit.
-    tmpfs:
-      - /var/lib/postgresql:rw,uid=70,gid=70,size=2g
+    # subvolume without the legacy-layout guard rail firing, and
+    # stays correct across future major-version bumps (PG 19, PG
+    # 20...) without another mount-path edit.
+    volumes:
+      - /var/lib/shekel-test-pgdata:/var/lib/postgresql
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     # First triplet: kill zombie transactions from crashed test runs
     # after 30s, prevent infinite lock/statement waits, and keep TCP
-    # connections alive so the OS detects dead clients.  Trailing
-    # ``fsync``/``synchronous_commit``/``full_page_writes`` are the
-    # non-durable knobs documented in the tmpfs comment above.
+    # connections alive so the OS detects dead clients.  Middle
+    # triplet (``fsync`` / ``synchronous_commit`` / ``full_page_writes``)
+    # are the non-durable knobs documented in the volumes comment
+    # above.  Trailing ``file_copy_method=clone`` (Phase 3a) makes
+    # PG 18's ``CREATE DATABASE ... STRATEGY FILE_COPY`` use the
+    # kernel ``FICLONE`` reflink ioctl on btrfs-backed PGDATA; the
+    # conftest's per-test drop+reclone helper (Phase 3b) issues
+    # ``STRATEGY FILE_COPY`` explicitly so the GUC is consumed.
+    # GUC is per-cluster -- adding it to the ``db`` service above
+    # would be inert (that cluster never invokes
+    # ``CREATE DATABASE TEMPLATE``) and is intentionally omitted.
     command:
       - postgres
       - -c
@@ -146,6 +178,8 @@ services:
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+      - -c
+      - file_copy_method=clone
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel_test"]
       interval: 10s
