@@ -2,11 +2,12 @@
 
 ## Status (as of 2026-05-12)
 
-**Phase 0 + Phase 1 (1a + 1b + 1c + 1d) + Phase 2 (2a test-db slice + 2b + 2e) implemented (pending
-commit); Phase 2c + Phase 2d PROPOSED awaiting developer go; Phase 3 pending.** This plan
-implements the recommendations in `test-performance-research.md` (filed 2026-05-11) and supersedes
-its "Phase A / Phase B / Phase C" framing with a four-phase sequential plan plus measurement gates
-plus a coordinated PG 16 -> 18 upgrade across test, dev, CI, and production clusters.
+**Phase 0 + Phase 1 (1a + 1b + 1c + 1d) committed 2026-05-13; Phase 2 (2a + 2b + 2c + 2d + 2e)
+implemented (Phase 2a + 2b + plan retrospective committed 2026-05-13; Phase 2c + 2d executed
+2026-05-13 pending commit); Phase 3 pending.** This plan implements the recommendations in
+`test-performance-research.md` (filed 2026-05-11) and supersedes its "Phase A / Phase B / Phase C"
+framing with a four-phase sequential plan plus measurement gates plus a coordinated PG 16 -> 18
+upgrade across test, dev, CI, and production clusters.
 
 The plan document itself landed on `dev` in commit `d781334` ("moved testing documents and added
 improvement plan"). Phase 0 modifies four files on `dev` (working tree, uncommitted as of this
@@ -37,8 +38,8 @@ on the PG 18.3 test cluster is **deterministically clean at `-n 12` over 3 / 3 c
 | Phase 1d: Flake resolution | **Implemented (pending commit)** | -- | Both failure shapes root-caused as pre-existing test-isolation bugs that Phase 1a's faster execution exposed by changing the pytest-xdist scheduling timing landscape (`--dist=loadgroup` distributes ungrouped tests INDIVIDUALLY across workers when no `xdist_group` marker is present).  **Shape #1** (HTTP 429 cluster) -- five rate-limit tests in `test_errors.py` and `test_auth.py` had cleanup outside a `try`/`finally`; when one test's assertion failed (specifically `Retry-After == "900"` rounding to 899 under WAL contention), the cleanup was skipped and the Limiter singleton was left `enabled=True` with a populated bucket, breaking every downstream `auth_client.post("/login", ...)` on the same xdist worker.  Fix: wrap cleanup in `try`/`finally`; relax `Retry-After` assertion to `895 <= retry_after <= 900` to absorb the integer-rounding window.  **Shape #2** (`uq_scenarios_one_baseline` UniqueViolation) -- `tests/test_models/test_c41_baseline_unique_migration.py::TestAssertIndexShapeRejectsMalformedIndex::test_assert_index_shape_raises_on_non_partial_index` intentionally created a malformed (non-partial) version of the index inside its body to verify the migration's shape check rejects it; the `restore_baseline_index` cleanup fixture used `CREATE UNIQUE INDEX IF NOT EXISTS` which is a no-op when ANY index of that name exists -- malformed shape leaked across worker tests.  Fix: change cleanup to `DROP INDEX IF EXISTS` + `CREATE UNIQUE INDEX` (drop-then-create rather than `IF NOT EXISTS`) in both the fixture and the `_recreate_canonical_index` helper.  Verification: 10 / 10 consecutive full-suite runs clean at `-n 12 --dist=loadgroup` on the Phase 1a cluster; deterministic two-test reproducer (test 14 + the three vulnerable scenario tests in sequence) passes after fix.  Pylint app/: 9.52/10 unchanged (no app/ changes).  Full investigation evidence in [`phase1-flake-investigation.md`](phase1-flake-investigation.md). |
 | Phase 2a: PG 18 upgrade -- test cluster | **Implemented (pending commit) -- test-db slice only; dev `db` deferred to 2c** | -- | `docker-compose.dev.yml` `test-db` image: postgres:16-alpine -> postgres:18-alpine.  **Deviates from spec:** the dev `db` service stays on PG 16 because the populated `shekel-dev_pgdata` volume (auth=3 / budget=17 / ref=13 / salary=10 tables, 813 transactions, 2 users) cannot survive an in-place major-version restart -- PG 18 binaries refuse to read PG 16 files.  The `db` swap moves to Phase 2c's dump/restore.  Second spec deviation: PG 18's docker-library image (PR docker-library/postgres#1259) changed PGDATA from `/var/lib/postgresql/data` to `/var/lib/postgresql/$PG_MAJOR/docker` and refuses to start when a legacy mount sits at the old path; the Phase 1a tmpfs mount target was moved from `/var/lib/postgresql/data` to the parent `/var/lib/postgresql` so PG 18 places its per-major-version subdir inside the tmpfs.  uid 70 verified for postgres:18-alpine (`docker run --rm postgres:18-alpine id postgres` returns `uid=70(postgres) gid=70(postgres)`); existing `uid=70,gid=70` tmpfs entry stays correct.  Template rebuild + 32-test smoke + Phase 2e sanity pass clean. |
 | Phase 2b: PG 18 upgrade -- CI | **Implemented (pending commit)** | -- | `.github/workflows/ci.yml`: postgres service `image: postgres:16` -> `image: postgres:18`; header comment refreshed from "PostgreSQL 16" to "PostgreSQL 18" with a back-reference to Phase 2.  No other CI changes -- the runner starts every job with an empty pgdata, so the docker-library/postgres#1259 layout change cannot fire the legacy-mount guard rail.  Not pushed to a feature branch in this session (the developer owns the CI verify loop). |
-| Phase 2c: PG 18 upgrade -- dev (pg_dumpall + restore) | **PROPOSED, awaiting "execute Phase 2c"** | -- | Operational migration -- procedure drafted with three corrections vs spec: (a) plan's `python scripts/init_database.py --check` call cited in the verification step does NOT exist (the script accepts no arguments; the read-only substitute `flask db current` + row-count smokes is used instead); (b) plan's `docker volume rm shekel-dev_pgdata` is the correct name as written (verified via `docker volume inspect`); (c) the `db` service's volume mount needs the same path migration as Phase 2a's tmpfs (`/var/lib/postgresql/data` -> `/var/lib/postgresql`) so PG 18 can use its new layout inside the named volume.  Dump captured BEFORE the volume drop is the load-bearing recovery anchor.  Procedure printed in this turn; no edits applied until developer types "execute Phase 2c". |
-| Phase 2d: PG 18 upgrade -- production (planned window) | **PROPOSED, awaiting "execute Phase 2d on <date>" -- 25-30 min downtime** | -- | Operational migration -- procedure drafted with four corrections vs spec: (a) volume name is `shekel-prod-pgdata` (declared `external: true` in `docker-compose.yml:499-500`, so the project prefix is stripped), NOT the plan's `shekel_pgdata`; (b) the same PG 18 layout-change YAML edit applies to the `db` volume mount in `docker-compose.yml`; (c) `deploy/docker-compose.prod.yml` requires NO change (image flows through inheritance); (d) btrfs snapshot is conditional on `/var/lib/docker/volumes/` actually living on a btrfs subvolume on the production host -- pg_dumpall is the load-bearing anchor regardless.  `POSTGRES_INITDB_ARGS=--data-checksums` (set in deploy/docker-compose.prod.yml:321) will fire on the fresh PG 18 initdb -- the intended Commit C-37 posture.  No execution until developer types "execute Phase 2d on <date>". |
+| Phase 2c: PG 18 upgrade -- dev (pg_dump from prod + restore on PG 18 + MFA reset) | **Implemented (pending commit) 2026-05-13** | -- | Executed end-to-end on 2026-05-13.  pg_dumpall of dev captured as rollback anchor (~/Shekel-pg16-dev-pre-prod-restore-2026-05-13.sql, 520 KB); pg_dump -d shekel of prod (~/Shekel-prod-data-2026-05-13.sql, 584 KB, 7617 lines); dev container stopped and removed, `shekel-dev_pgdata` volume dropped; docker-compose.dev.yml `db` service edited (image -> postgres:18-alpine; volume mount target -> `/var/lib/postgresql`); PG 18.3 dev cluster brought up empty with PGDATA at `/var/lib/postgresql/18/docker`; prod dump restored (GRANT-to-shekel_app errors expected because shekel_app role didn't exist yet at restore time -- all schema + data restored cleanly); shekel_app role + table grants provisioned via `scripts/init_db_role.sql` piped through psql; system.audit_log GRANTs to shekel_app applied via the canonical block from `app/audit_infrastructure.py`; MFA disabled for `josh@saltyreformed.com` via `scripts/reset_mfa.py --force` (audit `mfa_reset` event logged into system.audit_log -- count went from 385 to 386); lockout UPDATE ran (0 rows affected, prod was clean).  Post-migration verification: 2 users / 1 mfa_config / 815 transactions / 8 accounts / 1 salary_profile / 386 audit_log rows / 31 audit triggers, all matching prod's pre-flight snapshot.  **Discovered post-restore:** the prod cluster's alembic head is `d477228fee56` (C-28 era) but the dev codebase's head is `b4b588a49a0c` (C-43) -- the dev DB is 8 migrations behind the codebase.  `flask db upgrade` is the operator's next step to catch dev up to head; deferred to the developer, not auto-executed by Phase 2c. |
+| Phase 2d: PG 18 upgrade -- production | **Implemented (pending commit) 2026-05-13 -- minimal scope, ~5 min downtime** | -- | Executed on 2026-05-13 with developer's "execute Phase 2d now" trigger.  **Significant plan-vs-reality gap surfaced and adapted before destructive action:** the drafted procedure assumed the project tree's `docker-compose.yml` + `deploy/docker-compose.prod.yml` controlled production; in reality the runtime compose lives at `/opt/docker/shekel/docker-compose.yml` + `/opt/docker/shekel/docker-compose.override.yml`, hand-synced copies that have diverged from the project tree (older base + thinner override + missing the project's C-37 TLS / C-38 secrets / C-33 final networking additions).  Developer chose the **minimal scope**: PG version bump only on the runtime base compose, leave the divergence as-is for a separate sync session.  Image preserved digest-pinned posture (audit C-36): `postgres:16-alpine@sha256:4e6e670b...` -> `postgres:18-alpine@sha256:54451ecb...` (digest captured via `docker image inspect`).  Volume mount edited from `/var/lib/postgresql/data` to `/var/lib/postgresql` (PG 18 layout per docker-library/postgres#1259) with a new comment block explaining the rationale.  Backup pre-edit: pg_dumpall at `/opt/docker/shekel/backups/pg16-prod-pre-pg18-upgrade-2026-05-13.sql` (561 KB / 7415 lines, cluster-level dump including the shekel_app role), plus `docker-compose.yml.bak.20260513-002801`.  Restore was clean (pg_dumpall captured shekel_app role + grants, so no GRANT errors -- unlike Phase 2c's single-DB pg_dump path).  Post-execution verification: same row counts as pre-dump (2/1/815/8/1/385), alembic head `d477228fee56` unchanged, 31 audit triggers, both `shekel_user` and `shekel_app` roles restored with correct DML grants, app entrypoint completed cleanly with "Audit trigger health OK: 31 triggers", app reports healthy after 1s.  **Benign upgrade-side change to flag:** `SHOW data_checksums` is now `on` (PG 18 changed its initdb default to enable checksums; PG 16 cluster had it off). |
 | Phase 2e: PG 18 sanity measurement | **Implemented (pending commit)** | -- | Phase 0 harness re-run on PG 18.3 test cluster.  **Single-process (`-n 0`, 253 tests):** fixture total 34.5 ms (Phase 1) -> 35.7 ms (+3.5 %, well inside the spec's ~5 % parity bound); wall-clock 13.53 s -> 13.97 s.  **xdist (`-n 12`, 253 tests):** fixture total 53.4 ms -> 53.9 ms (+0.9 %); wall-clock 3.54 s -> 3.57 s.  **Full suite (`-n 12`):** 3 / 3 consecutive runs `5276 passed, 3 warnings in 52.75 / 53.59 / 52.91 s` -- pass count matches Phase 1d, no flake regression, same three pre-existing flask_login DeprecationWarnings.  Pylint app/: 9.52/10 unchanged.  PG 18 image swap delivers parity; reflink wins are Phase 3. |
 | Phase 3a: btrfs subvolume + bind mount + `file_copy_method=clone` | **Not started** | -- | `/var/lib/shekel-test-pgdata` btrfs subvolume; bind-mount replaces Phase 1a's tmpfs; PG configured for reflink-backed `STRATEGY FILE_COPY`. |
 | Phase 3b: Conftest rewrite -- per-test drop+reclone | **Not started** | -- | Replace per-test TRUNCATE+reseed+audit_log-truncate at `tests/conftest.py:363-413` with `DROP DATABASE ... WITH (FORCE)` + `CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY` using a stable per-worker DB name (avoids Flask-SQLAlchemy engine-rebinding). |
@@ -976,17 +977,21 @@ as it grows past 10,000 tests, proceed to Phase 2.
 **Why second:** maximises the win available without a PG upgrade. If anything goes wrong, the worst
 case is reverting one docker-compose edit and one conftest edit.
 
-### Phase 2 -- PostgreSQL 16 -> 18 upgrade (test + dev + CI + prod) -- **Implemented in part (2a test-db slice + 2b + 2e); 2c + 2d PROPOSED**
+### Phase 2 -- PostgreSQL 16 -> 18 upgrade (test + dev + CI + prod) -- **Implemented across two sessions (2026-05-12 + 2026-05-13)**
 
 Preserves test-prod parity by upgrading all four clusters together. Unlocks Phase 3's
 `file_copy_method = clone`.
 
-The 2026-05-12 second session landed Phase 2a's test-db slice + Phase 2b + Phase 2e. The dev `db`
-service stays on PG 16 until Phase 2c's dump/restore migration runs; the production cluster waits
-for Phase 2d's planned downtime window. Phase 2e's measurement gate confirmed the PG 18 image
-delivers parity with PG 16 (fixture total +0.9 % at `-n 12`, full suite 52-53 s deterministically
-clean across 3 / 3 consecutive runs) -- as the plan predicted, PG 18 alone does not materially
-speed up TRUNCATE; the architectural win is Phase 3's reflink-backed cloning.
+The 2026-05-12 second session landed Phase 2a's test-db slice + Phase 2b + Phase 2e (all
+committed 2026-05-13). The 2026-05-13 session executed Phase 2c (dev pg_dump-from-prod restore +
+MFA reset + lockout cleanup) and Phase 2d (production PG 16 -> 18 upgrade with ~5 min downtime,
+minimal scope, digest pinning preserved).  Both 2c and 2d are pending commit at session end.
+Phase 2e's measurement gate confirmed the PG 18 image delivers parity with PG 16 (fixture total
++0.9 % at `-n 12`, full suite 52-53 s deterministically clean across 3 / 3 consecutive runs) --
+as the plan predicted, PG 18 alone does not materially speed up TRUNCATE; the architectural win is
+Phase 3's reflink-backed cloning.  Production cluster's PGDATA volume is on btrfs (verified during
+Phase 2d via `df -hT /var/lib/postgresql` showing `/dev/nvme0n1p2 btrfs`), so Phase 3's reflink
+prerequisite is satisfied on prod once a Phase 3 design lands.
 
 **A non-spec gap that surfaced during Phase 2a and propagates through 2c and 2d:** PG 18's
 docker-library image (PR docker-library/postgres#1259) switched the default `PGDATA` from the
@@ -1261,88 +1266,374 @@ persistent data; every run starts from a fresh container.
 
 **Verification:** push the change to a feature branch; confirm the CI workflow goes green.
 
-#### Phase 2c -- Dev cluster pg_dumpall + restore -- **PROPOSED, awaiting "execute Phase 2c"**
+#### Phase 2c -- Dev cluster pg_dump from prod + restore on PG 18 + MFA reset -- **Implemented (pending commit) 2026-05-13**
 
-**What landed:** nothing on the filesystem yet. The Phase 2c session captured pre-flight facts about
-the dev cluster (PG 16.13, populated `shekel-dev_pgdata` volume carrying 813 transactions across
-six schemas, two users in `auth.users`) and drafted the migration procedure with three corrections
-vs the original spec. The procedure is printed in the 2026-05-12 second session's transcript and
-embedded below in the "Proposed procedure" block; no command from that procedure has been executed
-in this session and no edits to `docker-compose.dev.yml`'s `db` service have been applied.
+**What landed:** executed end-to-end on 2026-05-13. The 2026-05-12 second session originally drafted
+Phase 2c as a dump-dev / restore-dev path (mirroring the plan's spec); the developer redirected on
+2026-05-13 to dump **production's** `shekel` database into dev for manual testing.  Procedure ran
+on the host (no app container required) in three stages:
+
+1.  **Backups + prod dump:** pg_dumpall of dev as a rollback anchor (520 KB at
+    `~/Shekel-pg16-dev-pre-prod-restore-2026-05-13.sql`) and pg_dump -d shekel of prod (584 KB
+    / 7617 lines at `~/Shekel-prod-data-2026-05-13.sql`).
+2.  **Volume migration:** dev `db` container stopped + removed; `shekel-dev_pgdata` Docker volume
+    dropped; `docker-compose.dev.yml` `db` service edited (`image: postgres:16-alpine` ->
+    `postgres:18-alpine`; `volumes: - pgdata:/var/lib/postgresql/data` ->
+    `volumes: - pgdata:/var/lib/postgresql`; expanded comment block citing PR
+    docker-library/postgres#1259); fresh PG 18 dev cluster brought up; restore ran into the
+    empty `shekel` database.
+3.  **Role + MFA + lockout cleanup:** `scripts/init_db_role.sql` piped through psql to
+    provision `shekel_app` with the dev password and DML grants on the restored tables; the
+    canonical `_GRANT_APP_ROLE_SQL` block from `app/audit_infrastructure.py` (3-line GRANT
+    USAGE/SELECT/INSERT/SEQUENCE on system schema) applied so shekel_app can read/write the
+    restored `system.audit_log`; `scripts/reset_mfa.py --force josh@saltyreformed.com` cleared
+    the MFA config row + logged a `mfa_reset` AUTH audit event; the lockout-cleanup UPDATE on
+    `auth.users` ran (0 rows affected -- prod had no users in a locked state at dump time).
+
+**Migration head gap surfaced post-execution:** the prod cluster's alembic head is
+`d477228fee56` (the C-28 "ref.account_types user_id + per-user partial uniqueness + audit
+trigger" migration), but the dev codebase's head is `b4b588a49a0c` (C-43, "ref-FK
+ondelete=RESTRICT sweep").  The dev DB now has prod's schema state, which is 8 migrations
+behind the codebase: `724d21236759` (drop redundant CHECK), `1702cadcae54`
+(ck_recurrence_rules_dom/moy), `b2b1ff4c3cea` (system.audit_log NOT NULL alignment),
+`44893a9dbcc3` (hysa_params -> interest_params rename), `2109f7a490e7`
+(ck_salary_raises_one_method), `a80c3447c153` (C-41 uq_scenarios_one_baseline in prod),
+`c42b1d9a4e8f` (C-42 salary indexes + FK naming), `b4b588a49a0c` (C-43 ref-FK
+ondelete=RESTRICT).  Running `flask db upgrade` from the dev `app` (or `python
+scripts/init_database.py` via the entrypoint) brings dev forward to head.  Deferred to the
+developer as a deliberate hand-off -- the head-catch-up is an independent decision (the
+developer may want to verify the prod-restored state first against the prod schema before
+moving dev forward, since some downstream tests assume the dev codebase's schema rather than
+prod's).
 
 **Notable design choices (drafted, not yet executed):**
 
-- **Plan's `python scripts/init_database.py --check` substituted with `flask db current`.** The
-  script accepts no arguments (verified: its `__main__` block is
-  `if __name__ == "__main__": flask_app = create_app(); with flask_app.app_context(): ...`); the
-  read-only Alembic `flask db current` reports the head revision without mutating the database, and
-  pairs with row-count smokes (`auth.users == 2`, `budget.transactions == 813`, full schema list
-  from `pg_tables`) to confirm the restore captured everything the dump should have. Substituted
-  verification is strictly stronger than the plan's `--check` would have been (had it existed):
-  Alembic's revision check + table row counts catches dumps that completed partially.
-- **`db` service volume mount target moves from `/var/lib/postgresql/data` to
-  `/var/lib/postgresql`** in the same Phase 2c YAML edit that swaps the image. Mirrors Phase 2a's
-  tmpfs migration; the rationale (docker-library/postgres#1259 layout change) is identical.
-- **`docker compose stop db` + `rm -f db` instead of `down db`.** The plan's `down db` syntax mixes
-  the project-level `down` command with a service argument -- some Docker Compose versions
-  interpret it as `docker compose down` (project-wide) followed by ignoring the `db` argument,
-  which would tear down every service in the file. `stop` + `rm` is the surgical equivalent and is
-  unambiguous across compose versions.
-- **Off-`/tmp` backup of the dump.** The procedure includes `cp /tmp/pg16-dev-backup.sql ~/Shekel-pg16-dev-backup-$(date -I).sql` because some Arch / systemd configurations mount `/tmp` as
-  tmpfs (so the dump evaporates on reboot). The home-directory copy is the durable anchor.
+- **`pg_dump -d shekel` (single-DB), not `pg_dumpall` (cluster + roles).** Production's
+  `shekel_user` role has the production password (real secret in `/opt/docker/shekel/.env`);
+  `pg_dumpall` would emit `ALTER ROLE shekel_user PASSWORD '<prod-hash>'`, and replaying that
+  on the dev cluster overwrites dev's `shekel_pass` password.  The dev compose hard-codes
+  `DB_PASSWORD: shekel_pass` and `DATABASE_URL: postgresql://shekel_user:shekel_pass@db:5432/
+  shekel` (`docker-compose.dev.yml:144,148`), so a password change would break dev app startup.
+  `pg_dump -d shekel` captures schema + data of the named database only, no role passwords.
+  Same set of roles exist on both sides (`shekel_user`, `shekel_app`) because both clusters
+  provision them via `scripts/init_db.sql` / `entrypoint.sh`, so the dump's `OWNER TO
+  shekel_user` and `GRANT ... TO shekel_app` statements apply cleanly against dev.
+- **MFA disable via `scripts/reset_mfa.py --force <email>` is the official path.** The script
+  (`scripts/reset_mfa.py:33-69`) clears `mfa_configs.totp_secret_encrypted = NULL`,
+  `is_enabled = false`, `backup_codes = NULL`, `confirmed_at = NULL`, and
+  `last_totp_timestep = NULL` for the named user, logs a `mfa_reset` AUTH audit event, and
+  exits cleanly.  The login MFA gate at `app/routes/auth.py:392-397` redirects to `/mfa/verify`
+  if and only if a `mfa_configs` row with `is_enabled = true` exists for the user; clearing
+  `is_enabled` is sufficient.  Running through the official tool (rather than crafting raw
+  SQL) preserves the audit-trail row that documents the reset, matching the script's documented
+  emergency-recovery role.
+- **TOTP_ENCRYPTION_KEY mismatch is why MFA must be disabled, not preserved.** Dev's
+  `TOTP_ENCRYPTION_KEY` (in dev `.env`, typically a developer-chosen sentinel) differs from
+  production's (the real Fernet key in `/opt/docker/shekel/.env` or the
+  `totp_encryption_key` Docker secret in shared mode).  If the prod-encrypted
+  `totp_secret_encrypted` blob restored cleanly into dev's `auth.mfa_configs.totp_secret_encrypted`,
+  the dev app's `mfa_service.decrypt_secret()` call at `/mfa/verify` would raise
+  `cryptography.fernet.InvalidToken`; the route at `app/routes/auth.py:827-848` catches that
+  and renders "MFA verification failed. The encryption key may have been changed or removed."
+  The developer would be locked out.  Disabling MFA bypasses both the verify call and the
+  decrypt; the user re-enrolls (or stays disabled) under the dev key going forward.
+- **Lockout state clearing is a parallel cleanup.** `auth.users.failed_login_count` (NOT NULL,
+  default 0) and `auth.users.locked_until` (nullable timestamptz) gate
+  `auth_service.authenticate()` at `app/services/auth_service.py:653`: if `locked_until > now()`,
+  login is rejected before the password is even checked.  Production may have been in a
+  partially-locked state at dump time (e.g. several recent failed login attempts that hadn't
+  hit the 5-attempt lockout threshold yet, or an active lockout window).  No existing script
+  clears these columns -- raw SQL is the cleanest path.  Also clear
+  `session_invalidated_at` (cosmetic but unsightly: the prod row's value is stale in dev).
+- **Optional pre-migration `pg_dumpall` of dev** as a rollback anchor only.  The developer
+  has explicitly said the dev data carries nothing they care about, so the dump-of-dev step
+  is OPTIONAL.  If included, the dump goes to `~/Shekel-pg16-dev-pre-prod-restore-$(date -I).sql`
+  -- it's the recovery anchor if the prod restore fails mid-flight in a way that leaves dev in
+  an unbootable state.  The developer can skip it without loss.
+- **`pg_dump` uses `--clean --if-exists`** so the restore drops and recreates each prod table
+  inside dev's empty `shekel` database.  `--no-owner` is intentionally NOT used: both clusters
+  have the same `shekel_user` / `shekel_app` role pair so `OWNER TO shekel_user` and
+  `GRANT TO shekel_app` apply cleanly.  Migrations + audit infra come along with the dump
+  (schema + DDL); a follow-up `flask db current` confirms head matches.
+- **`docker compose stop db` + `rm -f db` instead of `down db`.** Same rationale as the
+  original Phase 2c draft -- `down db` is ambiguous across compose versions.
 
-**Notable deviation from spec:** the entire phase is a deviation in two senses.
+**Notable deviation from spec:** the original plan's Phase 2c was a dev-self-dump-and-restore;
+this is a prod-to-dev data refresh plus an MFA reset and lockout clear.  Six material deviations:
 
-1. **Plan's `python scripts/init_database.py --check` does not exist.** The script accepts no
-   arguments. The procedure substitutes `flask db current` + row-count smokes; see "Notable
-   design choices" above.
-2. **PG 18 docker-image PGDATA layout change** requires a YAML edit in `docker-compose.dev.yml`'s
-   `db` service in addition to the image swap. Plan called for image swap only.
+1. **Data direction reversed.** Spec dumped dev, restored dev. New direction dumps prod, restores
+   into dev.  Developer-driven (2026-05-13): the dev data is throwaway, prod data is what they
+   want for manual testing.
+2. **`pg_dump -d shekel`** (single-DB), not `pg_dumpall` (cluster + roles).  Avoids overwriting
+   the dev `shekel_user` password.
+3. **MFA disable step** via `scripts/reset_mfa.py --force <email>`.  Not in the original spec
+   because the original spec restored dev's own dump (no foreign MFA secrets, no key mismatch).
+4. **Lockout cleanup SQL block** for `auth.users.failed_login_count`, `locked_until`,
+   `session_invalidated_at`.  Not in the original spec for the same reason.
+5. **Plan's `python scripts/init_database.py --check`** still does not exist (carried over
+   from the 2026-05-12 draft); substitute `flask db current` + row-count smokes.
+6. **PG 18 docker-image PGDATA layout change** still requires the YAML mount-path edit on the
+   dev `db` service (carried over from the 2026-05-12 draft).
 
-**Verification (captured evidence):**
+**Proposed procedure (printed for the developer; no command executed in this turn):**
 
-PROPOSED, not yet executed -- awaiting developer "execute Phase 2c". The full procedure (T-0 through
-verification) and the rollback path live in the 2026-05-12 second session's transcript; when
-executed, this section will be updated with actual `pg_dumpall` byte sizes, `SELECT version()`
-outputs, row counts before vs after, and `flask db current` revisions.
+```bash
+# ---- Pre-flight, host shell ----------------------------------------
+PROD_DUMP=~/Shekel-prod-data-$(date -I).sql
+DEV_DUMP=~/Shekel-pg16-dev-pre-prod-restore-$(date -I).sql
 
-```text
-Pre-flight evidence (captured 2026-05-12 second session, BEFORE the migration runs):
+# (Optional) Capture dev's pre-migration state as a rollback anchor.
+# Skip if the developer truly does not care about a dev rollback option.
+docker exec shekel-dev-db pg_dumpall -U shekel_user > "$DEV_DUMP"
+ls -la "$DEV_DUMP"
 
-$ docker volume inspect shekel-dev_pgdata --format '{{.Name}} {{.Mountpoint}}'
-shekel-dev_pgdata /var/lib/docker/volumes/shekel-dev_pgdata/_data
+# ---- Step 1: dump production's shekel database (not pg_dumpall) ----
+# Runs against the running shekel-prod-db container via docker exec.
+# --clean --if-exists adds DROP TABLE statements so the restore is
+# idempotent into a non-empty target; here dev will be empty, but the
+# flags are harmless and forward-compatible if the procedure is re-run.
+docker exec shekel-prod-db pg_dump -U shekel_user -d shekel \
+    --clean --if-exists > "$PROD_DUMP"
+ls -la "$PROD_DUMP"
 
-$ docker exec shekel-dev-db psql -U shekel_user -d shekel -c "SELECT version()"
- PostgreSQL 16.13 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+# ---- Step 2: stop and remove the PG 16 dev db (preserves the volume) ----
+docker compose -f docker-compose.dev.yml stop db
+docker compose -f docker-compose.dev.yml rm -f db
 
-$ docker exec shekel-dev-db psql -U shekel_user -d shekel -c \
+# ---- Step 3: drop the volume.  DESTRUCTIVE -- this is the irreversible step ----
+docker volume rm shekel-dev_pgdata
+
+# ---- Step 4: apply the docker-compose.dev.yml db-service YAML edits ----
+#   * services.db.image: postgres:16-alpine -> postgres:18-alpine
+#   * services.db.volumes:
+#       - pgdata:/var/lib/postgresql/data
+#     becomes:
+#       - pgdata:/var/lib/postgresql
+#   (Mirrors Phase 2a's tmpfs path migration on test-db.)
+
+# ---- Step 5: bring up the empty PG 18 dev cluster ----
+# init_db.sql runs via entrypoint and creates shekel_user with the dev
+# shekel_pass password + the empty shekel database.
+docker compose -f docker-compose.dev.yml up -d db
+until docker exec shekel-dev-db pg_isready -U shekel_user -d shekel; do sleep 1; done
+docker exec shekel-dev-db psql -U shekel_user -d shekel -c "SELECT version()"
+# Must report PG 18.x.
+
+# ---- Step 6: restore prod's dump INTO the dev shekel database ----
+docker exec -i shekel-dev-db psql -U shekel_user -d shekel < "$PROD_DUMP" 2>&1 | tail -50
+# Watch for ERROR lines.  Expected non-fatal warnings:
+#   * "table X does not exist, skipping" -- from --clean --if-exists DROP
+#     against an empty target.  Cosmetic; the CREATE that follows succeeds.
+#   * NOTICE / WARNING about constraint names or sequence ownership --
+#     usually benign.  Any ERROR (not NOTICE / WARNING) on a CREATE or
+#     INSERT statement halts the procedure.
+
+# ---- Step 7: disable MFA on the restored production user(s) ----
+# Use the docker app container so DATABASE_URL is already pointed at the
+# dev shekel DB; reset_mfa.py reads it via create_app().
+docker compose -f docker-compose.dev.yml run --rm app \
+    python scripts/reset_mfa.py --force <prod_user_email>
+# Repeat for every user that had MFA enabled in prod (look up via
+# `docker exec shekel-dev-db psql -U shekel_user -d shekel -c
+#    "SELECT u.email FROM auth.users u JOIN auth.mfa_configs m
+#       ON m.user_id = u.id WHERE m.is_enabled = true"`).
+
+# ---- Step 8: clear lockout state on all restored users ----
+docker exec -i shekel-dev-db psql -U shekel_user -d shekel <<'SQL'
+UPDATE auth.users
+   SET failed_login_count = 0,
+       locked_until = NULL,
+       session_invalidated_at = NULL
+ WHERE failed_login_count > 0 OR locked_until IS NOT NULL OR session_invalidated_at IS NOT NULL;
+SQL
+
+# ---- Step 9: read-only verification ----
+docker compose -f docker-compose.dev.yml run --rm app flask db current
+# Must report the same head revision as the prod cluster (and the dev
+# code's migrations directory).
+
+docker exec shekel-dev-db psql -U shekel_user -d shekel -c \
+    "SELECT email, locked_until, failed_login_count FROM auth.users"
+# locked_until is NULL and failed_login_count is 0 for every row.
+
+docker exec shekel-dev-db psql -U shekel_user -d shekel -c \
+    "SELECT u.email, m.is_enabled, (m.totp_secret_encrypted IS NOT NULL) AS has_secret \
+       FROM auth.users u LEFT JOIN auth.mfa_configs m ON m.user_id = u.id"
+# is_enabled is false (or row absent) for every user; has_secret is false
+# (because reset_mfa.py NULLed the secret).
+
+docker exec shekel-dev-db psql -U shekel_user -d shekel -c \
     "SELECT schemaname, count(*) FROM pg_tables \
      WHERE schemaname NOT IN ('pg_catalog','information_schema') \
      GROUP BY schemaname ORDER BY schemaname"
- schemaname | count
-------------+-------
- auth       |     3
- budget     |    17
- public     |     1
- ref        |    13
- salary     |    10
- system     |     1
+# 6 schemas with row counts matching prod's pre-dump counts.
+
+# ---- Step 10: smoke - log in via the dev app ----
+# 1. Bring up the dev app: docker compose -f docker-compose.dev.yml up -d
+# 2. Open http://localhost:5000.
+# 3. Log in with the production user's email + the production password
+#    (the password hash came along with the restore).  No MFA prompt.
+# 4. Spot-check the dashboard, a couple of transactions, and the audit
+#    log: docker exec shekel-dev-db psql ... -c "SELECT count(*) FROM system.audit_log"
+#    -- should have grown by exactly the login+session events.
+```
+
+**Rollback path (if Step 6 or 7 fails):**
+
+```bash
+# Path A: re-restore dev's own dump on a PG 18 cluster.  Cheapest --
+# the YAML edits stay in place; only the volume is rebuilt.
+docker compose -f docker-compose.dev.yml stop db
+docker compose -f docker-compose.dev.yml rm -f db
+docker volume rm shekel-dev_pgdata
+docker compose -f docker-compose.dev.yml up -d db
+until docker exec shekel-dev-db pg_isready -U shekel_user -d shekel; do sleep 1; done
+docker exec -i shekel-dev-db psql -U shekel_user -d postgres < "$DEV_DUMP"
+# Dev cluster is back to its pre-migration state on PG 18 with the
+# developer's original (throwaway) data.
+
+# Path B: revert to PG 16 with dev's original data.  Roll back the
+# YAML edits and start over.  Same as Path A but pre-undoing the
+# docker-compose changes.
+
+# Path C: skip the rollback and proceed.  If the dev data is truly
+# throwaway, an empty dev DB on PG 18 (just init_db.sql's shell) is
+# acceptable -- the developer re-seeds with seed_*.py or manually
+# creates the data they need for testing.
+```
+
+**Verification (captured evidence):**
+
+```text
+Pre-flight (captured 2026-05-13 before execution):
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT version()"
+ PostgreSQL 16.13 on x86_64-pc-linux-musl
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
+    "SELECT u.email, m.is_enabled, m.confirmed_at IS NOT NULL AS confirmed \
+       FROM auth.users u LEFT JOIN auth.mfa_configs m ON m.user_id = u.id"
+         email          | is_enabled | confirmed
+------------------------+------------+-----------
+ josh@saltyreformed.com | t          | t
+ klgrubb@pm.me          |            | f
+(One MFA-enabled user.)
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
+    "SELECT 'auth.users' AS t, count(*) FROM auth.users
+     UNION ALL SELECT 'auth.mfa_configs', count(*) FROM auth.mfa_configs
+     UNION ALL SELECT 'budget.transactions', count(*) FROM budget.transactions
+     UNION ALL SELECT 'budget.accounts', count(*) FROM budget.accounts
+     UNION ALL SELECT 'salary.salary_profiles', count(*) FROM salary.salary_profiles
+     UNION ALL SELECT 'system.audit_log', count(*) FROM system.audit_log"
+ auth.users             |     2
+ auth.mfa_configs       |     1
+ budget.transactions    |   815
+ budget.accounts        |     8
+ salary.salary_profiles |     1
+ system.audit_log       |   385
+
+Execution evidence (2026-05-13):
+
+$ ls -la ~/Shekel-prod-data-2026-05-13.sql
+.rw-r--r-- 584 KB ... (7617 lines)
+
+$ docker exec shekel-dev-db psql -U shekel_user -d postgres -c "SELECT version()"
+ PostgreSQL 18.3 on x86_64-pc-linux-musl
+$ docker exec shekel-dev-db sh -c 'echo $PGDATA; df -hT /var/lib/postgresql'
+PGDATA=/var/lib/postgresql/18/docker
+Filesystem  Type   Size  Used Available Use%  Mounted on
+/dev/nvme0n1p2  btrfs  1.8T  ...  /etc/resolv.conf
+
+$ docker exec -i shekel-dev-db psql -U shekel_user -d shekel < ~/Shekel-prod-data-2026-05-13.sql 2>&1 | tail
+... (GRANT-to-shekel_app errors on every grant statement because role
+     didn't exist yet at restore time -- all schema + data restored
+     cleanly via the SET/CREATE/COPY paths, only the GRANTs failed)
+
+$ docker exec -i shekel-dev-db psql ... < scripts/init_db_role.sql
+SET / DO / RESET / GRANT x4 / ALTER DEFAULT PRIVILEGES x4 / GRANT x1
+
+$ docker exec -i shekel-dev-db psql -U shekel_user -d shekel <<'SQL'
+GRANT USAGE ON SCHEMA system TO shekel_app;
+GRANT SELECT, INSERT ON system.audit_log TO shekel_app;
+GRANT USAGE ON SEQUENCE system.audit_log_id_seq TO shekel_app;
+SQL
+GRANT / GRANT / GRANT
+
+$ .venv/bin/python scripts/reset_mfa.py --force josh@saltyreformed.com
+[2026-05-13 00:12:20] INFO  Shekel app created with config=development
+[2026-05-13 00:12:20] WARN  event=mfa_reset category=auth user_email=josh@saltyreformed.com
+MFA has been disabled for josh@saltyreformed.com.
+
+$ docker exec -i shekel-dev-db psql -U shekel_user -d shekel <<'SQL'
+UPDATE auth.users SET failed_login_count = 0, locked_until = NULL, session_invalidated_at = NULL
+ WHERE failed_login_count > 0 OR locked_until IS NOT NULL OR session_invalidated_at IS NOT NULL;
+SQL
+UPDATE 0    (prod was already clean)
+
+Post-execution verification:
+
+$ docker exec shekel-dev-db psql -U shekel_user -d shekel -tA -c "SELECT version()"
+PostgreSQL 18.3 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
 
 $ docker exec shekel-dev-db psql -U shekel_user -d shekel \
-    -c "SELECT count(*) FROM auth.users" \
-    -c "SELECT count(*) FROM budget.transactions"
- count: 2 (auth.users)
- count: 813 (budget.transactions)
+    -c "SELECT email, locked_until, failed_login_count FROM auth.users ORDER BY email"
+         email          | locked_until | failed_login_count
+------------------------+--------------+--------------------
+ josh@saltyreformed.com |              |                  0
+ klgrubb@pm.me          |              |                  0
 
-$ python -c "import sys; sys.argv = ['init_database.py', '--check']; exec(open('scripts/init_database.py').read())"
-# (Confirms the script does not accept --check; argparse not used.)
+$ docker exec shekel-dev-db psql -U shekel_user -d shekel \
+    -c "SELECT u.email, m.is_enabled, (m.totp_secret_encrypted IS NOT NULL) AS has_secret
+          FROM auth.users u LEFT JOIN auth.mfa_configs m ON m.user_id = u.id ORDER BY u.email"
+         email          | is_enabled | has_secret
+------------------------+------------+------------
+ josh@saltyreformed.com | f          | f
+ klgrubb@pm.me          |            | f
+
+$ docker exec shekel-dev-db psql -U shekel_user -d shekel -c \
+    "SELECT 'auth.users' AS t, count(*) FROM auth.users
+     UNION ALL SELECT 'auth.mfa_configs', count(*) FROM auth.mfa_configs
+     UNION ALL SELECT 'budget.transactions', count(*) FROM budget.transactions
+     UNION ALL SELECT 'budget.accounts', count(*) FROM budget.accounts
+     UNION ALL SELECT 'salary.salary_profiles', count(*) FROM salary.salary_profiles
+     UNION ALL SELECT 'system.audit_log', count(*) FROM system.audit_log"
+ auth.users             |     2
+ auth.mfa_configs       |     1
+ budget.transactions    |   815
+ budget.accounts        |     8
+ salary.salary_profiles |     1
+ system.audit_log       |   386      (was 385 in prod + 1 from the mfa_reset event)
+
+$ docker exec shekel-dev-db psql -tAc "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'audit_%' AND NOT tgisinternal"
+31         (matches EXPECTED_TRIGGER_COUNT)
+
+Migration head gap:
+
+$ docker exec shekel-dev-db psql -U shekel_user -d shekel -tA -c "SELECT version_num FROM public.alembic_version"
+d477228fee56    (C-28 era -- prod's head at dump time)
+
+$ docker exec shekel-dev-test-db psql -U shekel_user -d shekel_test_template -tA -c \
+    "SELECT version_num FROM public.alembic_version"
+b4b588a49a0c    (C-43 -- the dev codebase's head, captured in the test template)
+
+8 missing migrations.  Developer must run `flask db upgrade` to bring dev to head before the
+dev app can use the latest schema (see "Migration head gap surfaced post-execution" in the
+"What landed" section above for the explicit migration list and rationale for not auto-running).
 ```
 
 **Why third:** Phase 2c is independently committable but operationally destructive (drops the
-`shekel-dev_pgdata` volume between the dump and the restore). The order vs Phase 2a/2b is irrelevant
-to the developer's local workflow -- Phase 2a's tmpfs swap already gave the test cluster PG 18,
-so the developer can use `pytest` against the new test cluster while the dev `db` stays on PG 16
-indefinitely until they choose to run Phase 2c.
+`shekel-dev_pgdata` volume between the dump and the restore).  The order vs Phase 2a / 2b is
+irrelevant to the developer's local workflow -- Phase 2a's tmpfs swap already gave the test
+cluster PG 18, so the developer can use `pytest` against the new test cluster while the dev `db`
+stays on PG 16 indefinitely until they choose to run Phase 2c.
+
+The redirected prod-to-dev direction also serves as a load-bearing dress rehearsal for Phase 2d
+(production downtime window): the same `pg_dump` / `psql` restore mechanics, the same PG 18
+docker-image PGDATA layout edit on `docker-compose.yml`, and the same role-existence assumptions
+all get exercised against the dev cluster before production sees them.  A Phase 2c failure
+discovered here is recoverable in minutes; the same failure in Phase 2d is a production-downtime
+extension.
 
 **Original spec (kept for reference -- now historical):**
 
@@ -1366,12 +1657,83 @@ indefinitely until they choose to run Phase 2c.
 
 **Reversibility:** restore the backup against a PG 16 volume by rolling back Phase 2a first.
 
-#### Phase 2d -- Production upgrade window -- **PROPOSED, awaiting "execute Phase 2d on <date>"**
+#### Phase 2d -- Production upgrade -- **Implemented (pending commit) 2026-05-13 -- minimal scope, ~5 min downtime**
 
-**What landed:** nothing on the filesystem. Phase 2d is the planned ~25-30 min production downtime
-window. The 2026-05-12 second session drafted the full procedure with four corrections vs the
-original spec; no production command has been run, no production YAML edit applied, no production
-container stopped.
+**What landed:** executed on 2026-05-13 with the developer's "execute Phase 2d now" trigger.
+Actual downtime ~5 min (app stop -> db stop -> volume drop -> compose edit -> volume recreate ->
+db up -> restore -> app up -> healthy), well under the drafted procedure's 25-30 min estimate.
+Production currently runs PG 18.3 with all data intact.
+
+**Significant plan-vs-reality gap surfaced before destructive action.** Pre-flight discovery:
+the runtime compose at `/opt/docker/shekel/docker-compose.yml` + `docker-compose.override.yml` is
+NOT the project tree's `docker-compose.yml` + `deploy/docker-compose.prod.yml`. The runtime is a
+hand-synced copy that has diverged in load-bearing ways:
+
+- Runtime base has a digest-pinned image (`postgres:16-alpine@sha256:4e6e670b...`) + custom
+  `deploy.resources` + `ulimits`; project base does not.
+- Project base has the `user: postgres` + `cap_drop: ALL` + `read_only: true` audit-hardening
+  block; runtime does not (the runtime predates that hardening).
+- Runtime override is 775 bytes (a 15-line file with `FORWARDED_ALLOW_IPS: 172.18.0.0/16` for
+  homelab, marked TEMPORARY); project override is 22 KB with the canonical post-C-33
+  `shekel-frontend` network, the C-37 PG TLS command + cert mounts, and the C-38 Docker secrets
+  block.
+- Runtime override has **no** `POSTGRES_INITDB_ARGS=--data-checksums` (the project's C-37
+  posture).  Pre-upgrade `SHOW data_checksums` returned `off` on the running PG 16 cluster.
+
+Three remediations (C-37 TLS, C-38 Docker secrets, C-33 final shekel-frontend network) exist in
+the project tree but have NOT yet been synced to production.  Developer was offered three
+adaptation paths (minimal / full sync / abort) and chose **minimal**: PG version bump only,
+preserving digest pinning, leaving the runtime-vs-project drift to a separate sync session.
+
+**Notable design choices:**
+
+- **Edited the runtime base compose at `/opt/docker/shekel/docker-compose.yml`** -- the
+  authoritative compose for the running shekel-prod project (verified via `docker compose ls`
+  showing `shekel-prod: /opt/docker/shekel/docker-compose.yml,/opt/docker/shekel/docker-compose.override.yml`).
+  The project tree was NOT edited in Phase 2d -- a sync session is the right place to bring those
+  changes into runtime alongside C-37/C-38/C-33.
+- **Pre-edit compose backup** at `/opt/docker/shekel/docker-compose.yml.bak.20260513-002801`
+  follows the operator's established pattern (a previous `.bak.20260506-063209` exists in the
+  same directory).
+- **Image digest pinning preserved.** New digest captured via
+  `docker image inspect postgres:18-alpine --format '{{index .RepoDigests 0}}'` ->
+  `postgres@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7`.  Maintains
+  audit C-36 immutability posture against `:latest` re-tag attacks.
+- **pg_dumpall, not pg_dump -d shekel.** Phase 2c used single-DB `pg_dump` to avoid overwriting
+  dev's shekel_user password; Phase 2d is dump-and-restore in the SAME cluster (just a
+  major-version bump), so the shekel_user password being captured + restored is exactly what we
+  want -- it's the same password before and after.  `pg_dumpall` ALSO captures the shekel_app
+  role + its grants, so the restore is self-contained: no manual `init_db_role.sql` step needed,
+  no GRANT-on-system.audit_log step needed, no MFA reset step needed.
+- **No btrfs snapshot.** `sudo btrfs subvolume show /var/lib/docker` required an interactive
+  sudo password.  pg_dumpall is the sole backup anchor (which the drafted procedure flagged was
+  acceptable).
+- **Volume drop -> recreate sequence respects `external: true`.** The
+  `shekel-prod-pgdata` volume is declared `external: true` in the runtime compose (line 330),
+  meaning compose does not manage it.  `docker volume rm` followed by `docker volume create`
+  preserves the external declaration -- the freshly-created volume is empty and PG 18's
+  initdb runs into it cleanly.
+
+**Notable deviation from spec (vs the 2026-05-12 drafted procedure):**
+
+1. **Runtime compose path** -- `/opt/docker/shekel/docker-compose.yml`, not the project tree.
+   Drafted procedure was wrong.
+2. **No override edit needed.** Runtime override has no db service block; the base compose's
+   image swap propagates through.
+3. **Scope reduced to minimal.** No C-37 / C-38 / C-33 sync.  No data-checksums INITDB_ARG
+   (PG 18 enables checksums by default anyway -- see "Benign upgrade-side change" below).
+4. **5 min downtime, not 25-30 min.** The drafted timing was conservative; without TLS cert
+   setup, secrets file setup, or smoke-test latency it's just stop -> dump -> swap -> restore ->
+   start.
+
+**Benign upgrade-side change to flag:** `SHOW data_checksums` returned `off` on the pre-upgrade
+PG 16 cluster and `on` on the post-upgrade PG 18 cluster.  PG 18 changed its `initdb` default to
+enable data checksums (one of the "breaking changes" the plan audited as not-applying-to-Shekel
+because nothing in Shekel touches the checksum flag at runtime).  Data integrity improvement; no
+operational change required.  The pre-existing C-37 plan to enable checksums via
+`POSTGRES_INITDB_ARGS=--data-checksums` is now effectively redundant (the default already does it
+on fresh PG 18 inits); the C-37 line in `deploy/docker-compose.prod.yml:321` can stay as
+defensive belt-and-braces or be removed in the eventual sync session.
 
 **Notable design choices (drafted, not yet executed):**
 
@@ -1407,31 +1769,113 @@ container stopped.
 
 **Verification (captured evidence):**
 
-PROPOSED, not yet executed -- awaiting developer "execute Phase 2d on <date>". The full procedure
-(T-0 pre-flight through T+30 smoke test) and the three rollback paths (Path A: PG 16 + dump
-restore; Path B: btrfs snapshot restore; Path C: fresh PG 16 cluster + dump restore) live in the
-2026-05-12 second session's transcript; on execution day this section will be updated with the
-actual dump size, the `SHOW data_checksums` output (expected `on` because
-`POSTGRES_INITDB_ARGS=--data-checksums` from Commit C-37 fires on the fresh PG 18 initdb), the
-`flask db current` revision, post-restore row counts, and the smoke-test outcome.
-
 ```text
-Pre-flight evidence (captured 2026-05-12 second session, BEFORE the window):
+Pre-flight discovery (2026-05-13 -- BEFORE destructive action):
 
-$ docker ps -a --filter "name=shekel-prod" --format "{{.Names}}: {{.Image}}: {{.Status}}"
-shekel-prod-app: ghcr.io/saltyreformed/shekel:latest: Up 4 hours (healthy)
-shekel-prod-db: postgres:16-alpine: Up 4 hours (healthy)
-shekel-prod-redis: redis:7.4-alpine: Up 4 hours (healthy)
+$ docker compose ls
+NAME           STATUS              CONFIG FILES
+shekel-prod    running(3)          /opt/docker/shekel/docker-compose.yml,/opt/docker/shekel/docker-compose.override.yml
 
-$ docker volume ls --filter "name=shekel-prod-pgdata"
-DRIVER    VOLUME NAME
-local     shekel-prod-pgdata
+(Runtime compose is at /opt/docker/shekel/, NOT the project tree.  Adapted procedure.)
 
-$ grep -n "shekel-prod-pgdata\|external:" docker-compose.yml | head -5
-53:      - shekel-prod-pgdata:/var/lib/postgresql/data
-499:  shekel-prod-pgdata:
-500:    external: true
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT version()"
+ PostgreSQL 16.13 on x86_64-pc-linux-musl
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -tA -c "SHOW data_checksums"
+off
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
+    "SELECT 'auth.users' AS t, count(*) FROM auth.users UNION ALL ... "
+ auth.users             |     2
+ auth.mfa_configs       |     1
+ budget.transactions    |   815
+ budget.accounts        |     8
+ salary.salary_profiles |     1
+ system.audit_log       |   385
+
+$ docker image inspect postgres:18-alpine --format '{{index .RepoDigests 0}}'
+postgres@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7
+
+Execution evidence (2026-05-13):
+
+$ cp /opt/docker/shekel/docker-compose.yml \
+     /opt/docker/shekel/docker-compose.yml.bak.20260513-002801
+$ docker exec shekel-prod-db pg_dumpall -U shekel_user > \
+     /opt/docker/shekel/backups/pg16-prod-pre-pg18-upgrade-2026-05-13.sql
+ls -la /opt/docker/shekel/backups/pg16-prod-pre-pg18-upgrade-2026-05-13.sql
+.rw-r--r-- 561 KB    (7415 lines, ends with "PostgreSQL database cluster dump complete")
+
+$ docker compose -p shekel-prod ... stop app
+$ docker compose -p shekel-prod ... stop db
+$ docker compose -p shekel-prod ... rm -f db
+$ docker volume rm shekel-prod-pgdata    # DESTRUCTIVE
+$ # Edit /opt/docker/shekel/docker-compose.yml:
+$ #   image: postgres:16-alpine@sha256:4e6e670b... -> postgres:18-alpine@sha256:54451ecb...
+$ #   volumes: shekel-prod-pgdata:/var/lib/postgresql/data -> shekel-prod-pgdata:/var/lib/postgresql
+$ docker volume create shekel-prod-pgdata
+$ docker compose -p shekel-prod ... up -d db
+# Healthy on first pg_isready poll.
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT version()"
+ PostgreSQL 18.3 on x86_64-pc-linux-musl
+$ docker exec shekel-prod-db sh -c 'echo PGDATA=$PGDATA; df -hT /var/lib/postgresql'
+PGDATA=/var/lib/postgresql/18/docker
+/dev/nvme0n1p2  btrfs  1.8T ...    (named volume on btrfs subvolume -- ready for Phase 3 reflink)
+
+$ docker exec -i shekel-prod-db psql -U shekel_user -d postgres < ${DUMP} 2>&1 | tail
+... GRANT x20+ / ALTER DEFAULT PRIVILEGES x10+ -- no errors
+
+Post-execution verification (2026-05-13):
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -c "SELECT 'auth.users' AS t, count(*) FROM auth.users UNION ALL ..."
+ auth.users             |     2     (match pre-dump)
+ auth.mfa_configs       |     1     (match)
+ budget.transactions    |   815     (match)
+ budget.accounts        |     8     (match)
+ salary.salary_profiles |     1     (match)
+ system.audit_log       |   385     (match)
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -tA -c "SELECT version_num FROM public.alembic_version"
+d477228fee56                          (unchanged)
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -tA -c \
+    "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'audit_%' AND NOT tgisinternal"
+31                                     (matches EXPECTED_TRIGGER_COUNT)
+
+$ docker exec shekel-prod-db psql -U shekel_user -d postgres -c \
+    "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname IN ('shekel_user','shekel_app')"
+shekel_app  | t
+shekel_user | t                       (both roles restored by pg_dumpall cluster-level)
+
+$ docker exec shekel-prod-db psql -U shekel_user -d shekel -tA -c "SHOW data_checksums"
+on                                     (PG 18 initdb default; was off in PG 16 cluster)
+
+$ docker compose -p shekel-prod ... up -d app
+# App healthy after 1s.
+
+$ docker logs shekel-prod-app --tail
+...
+Audit trigger health OK: 31 triggers (expected >= 31).
+Copying static files to shared volume...
+=== Starting Application ===
+[INFO] Starting gunicorn 26.0.0
+[INFO] Listening at: http://0.0.0.0:8000 (1)
+[INFO] Booting worker with pid: 19
+[INFO] Booting worker with pid: 26
+{"timestamp": "2026-05-13T04:30:06.909451Z", "level": "INFO", "message": "Shekel app created with config=production"}
+
+$ docker ps --filter "name=shekel-prod" --format "{{.Names}}: {{.Image}}: {{.Status}}"
+shekel-prod-db: postgres:18-alpine: Up (healthy)
+shekel-prod-redis: redis:7.4-alpine: Up (healthy)
+shekel-prod-app: ghcr.io/saltyreformed/shekel:latest: Up (healthy)
 ```
+
+**Rollback path remains available:** the `/opt/docker/shekel/docker-compose.yml.bak.20260513-002801`
+file preserves the pre-upgrade compose, and the pg_dumpall at
+`/opt/docker/shekel/backups/pg16-prod-pre-pg18-upgrade-2026-05-13.sql` is a
+format-portable logical backup.  To roll back: `docker compose stop app db; docker volume rm
+shekel-prod-pgdata; cp ...bak... docker-compose.yml; docker volume create shekel-prod-pgdata;
+docker compose up -d db; docker exec -i shekel-prod-db psql ... < ...dump...; docker compose up -d
+app`.  Same shape as the forward path with the compose revert and the dump replay.
 
 **Why fourth:** Phase 2d is the only step with downtime and the only step that touches the
 production stack. It runs LAST so every dependency (test cluster verified PG 18-compatible in 2a,
