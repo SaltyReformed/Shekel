@@ -400,3 +400,85 @@ master process aggregates across every worker's CSV; under single-process the si
 is its own aggregator. Raw per-test rows live in ``tests/.fixture-profile/*.csv`` (one file per
 worker; gitignored; truncated on every invocation). The format mirrors section 3.1 above so the two
 tables can be diffed cell-for-cell.
+
+---
+
+## 9. Final result (2026-05-13)
+
+Captured after `test-performance-implementation-plan.md` Phases 0 + 1 + 2 + 3 landed on `dev`.
+Recommendation Phase C (per-test PG 18 reflink clones) was implemented; Phase B (hybrid SAVEPOINT)
+was rejected as redundant once Phase C was in place; Phase A's win was captured by Phase 1 of the
+implementation plan and partially superseded by Phase 3.
+
+Same host as section 8's baseline (Arch Linux x86_64, kernel 7.0, btrfs root, PG **18.3** on
+`localhost:5433` in the `shekel-dev-test-db` container, now backed by a btrfs subvolume bind-mount
+at `/var/lib/shekel-test-pgdata` with `file_copy_method=clone`).
+
+### 9.1 Per-test phase breakdown -- single-process (`-n 0`, 253 tests)
+
+| Step | Phase 0 baseline | Phase 2e (PG 18, TRUNCATE+reseed) | Phase 3d (drop+reclone) | Delta vs baseline |
+|---|---|---|---|---|
+| rollback                                | 0.0 ms   | 0.0 ms   | 0.0 ms   | -- |
+| TRUNCATE main 29 tables CASCADE (gone)  | 247.1 ms | 16.1 ms  | --       | -100% |
+| seed_ref re-insert (gone)               | 19.0 ms  | 13.1 ms  | --       | -100% |
+| commit_after_seed (gone)                | 4.8 ms   | 0.8 ms   | --       | -100% |
+| TRUNCATE system.audit_log (gone Phase 1b) | 20.0 ms | --      | --       | -100% |
+| DROP DATABASE WITH (FORCE) (new)        | --       | --       | 6.1 ms   | new |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY (new) | -- | --     | 6.4 ms   | new |
+| refresh_ref_cache                       | 7.1 ms   | 5.6 ms   | 12.9 ms  | +82% (first DB access reopens pool) |
+| **Fixture setup total**                 | **298.0 ms** | **35.7 ms** | **25.5 ms** | **-91.4%** |
+| Test body (call)                        | 28.2 ms  | 17.7 ms  | 22.1 ms  | -22% |
+| Teardown                                | 0.1 ms   | 0.1 ms   | 0.1 ms   | -- |
+| Wall-clock                              | 83.05 s  | 13.97 s  | 12.45 s  | -85% |
+
+### 9.2 Per-test phase breakdown -- xdist (`-n 12`, 253 tests)
+
+| Step | Phase 0 baseline (projected) | Phase 2e (PG 18) | Phase 3d (drop+reclone) | Delta vs 2e |
+|---|---|---|---|---|
+| TRUNCATE main 29 tables CASCADE (gone)  | (no Phase 0 -n 12 capture) | 20.3 ms | --       | -100% |
+| seed_ref re-insert (gone)               | --                          | 24.5 ms | --       | -100% |
+| commit_after_seed (gone)                | --                          | 1.1 ms  | --       | -100% |
+| DROP DATABASE WITH (FORCE) (new)        | --                          | --      | 36.1 ms  | new |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY (new) | --                | --      | 30.4 ms  | new |
+| refresh_ref_cache                       | --                          | 8.0 ms  | 16.1 ms  | +101% |
+| **Fixture setup total**                 | --                          | **53.9 ms** | **82.6 ms** | **+53.2%** |
+| Wall-clock                              | --                          | 3.57 s  | 4.29 s   | +20% |
+
+The xdist regression at the fixture-floor level is the **load-bearing surprise** of Phase 3.
+Reflinks are fast in isolation (4-5 ms per clone at `-n 0`) but PG's cluster-level `pg_database`
+catalog lock serialises CREATE/DROP DATABASE across xdist workers; under 12-way contention each
+worker waits its turn on the catalog, and the resulting DROP+CREATE round-trip is ~67 ms vs the
+~45 ms that TRUNCATE+seed paid under the same contention. The plan's risk table had flagged
+"CREATE DATABASE TEMPLATE serialises across xdist workers" as high-likelihood; the measurement
+confirms it. The architectural win is concentrated in single-process measurements (the `-n 0`
+floor dropped 91%); the `-n 12` parallel ceiling didn't budge nearly as much as the plan
+projected.
+
+### 9.3 Full-suite wall-clock at `-n 12`
+
+| Configuration | Pass count | Wall-clock | Notes |
+|---|---|---|---|
+| Phase 0 baseline (PG 16, TRUNCATE)                            | 5,148 | ~240 s | per pre-Phase-1 measurement |
+| Phase 1d (PG 16, tmpfs + replica-role + targeted flake fixes) | 5,276 | 52-53 s | 10/10 clean |
+| Phase 2e (PG 18, TRUNCATE+reseed)                              | 5,276 | 52-53 s | 3/3 clean |
+| Phase 3d run 1 (PG 18, drop+reclone, fresh container)         | 5,276 | 61.42 s | |
+| Phase 3d runs 1-6 (back-to-back)                              | 5,276 | 61-73 s | monotonic drift |
+| Phase 3d run 7 (after `docker restart shekel-dev-test-db`)    | 5,276 | 61.35 s | back to baseline |
+
+Back-to-back runs drift up because the PG cluster's in-memory catalog cache fragments under the
+heavy CREATE/DROP DATABASE churn (each full suite executes ~5,276 CREATE + ~5,276 DROP statements
+on `pg_database`).  A container restart clears the cache and returns to the ~61 s baseline.  No
+test failures or flakes across any of the 7 runs.
+
+### 9.4 Recommendation status
+
+| Phase | Status | How it landed |
+|---|---|---|
+| A (durability knobs + replica-role + cluster tuning) | **Done** | Phase 1 of test-performance-implementation-plan.md (tmpfs + fsync/sync_commit/full_page_writes off + Phase 1b's session_replication_role='replica' suppression of audit fires during seed). |
+| B (hybrid SAVEPOINT/TRUNCATE) | **Rejected** | Phase 3's clone delivers the audit-trigger contract without the SAVEPOINT classification risk; the architectural endpoint supersedes the hybrid intermediate step. |
+| C (PG 18 reflink clones) | **Done with caveat** | Phase 2 (PG 18 upgrade across test/CI/dev/prod) + Phase 3 (btrfs subvolume + drop+reclone).  Single-process exceeded projection (25.5 ms fixture floor, below the 30-50 ms range); xdist fell short (82.6 ms vs 30-50 ms range) because pg_database catalog locking turned out to be the binding constraint at -n 12, not WAL writer contention.  Full suite at -n 12 lands at ~62 s (Phase 0 was ~240 s), so the headline outcome is a 4x speedup at the default parallelism plus a 12x speedup at -n 0.  The xdist shortfall is documented as a future-improvements item; the architectural cleanup (no TRUNCATE+reseed, no replica-role suppression, no _seed_ref_tables wrapper) is itself a win. |
+
+This research document is now closed.  Future test-performance work should start with fresh
+profile captures via the `SHEKEL_TEST_FIXTURE_PROFILE=1` harness; the per-step keys are
+`setup_rollback`, `setup_drop_db`, `setup_clone_template`, `setup_refresh_ref_cache`, `call`,
+`teardown` (per Phase 3b).

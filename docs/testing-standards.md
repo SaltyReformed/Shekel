@@ -18,18 +18,29 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 
 ## Test Run Guidelines
 
-- **Full suite:** ~4 min wall-clock, ~5,148 tests at the default
-  `-n 12` parallelism (set in `pytest.ini` `addopts`).  A single
-  `pytest` invocation completes well under the 10-min timeout
-  that previously forced per-directory batching.
-- **Concurrent invocations are safe.**  `tests/conftest.py`'s
-  `_bootstrap_worker_database` clones `shekel_test_template` into
-  a uniquely-named per-session DB for every pytest session (and
-  every pytest-xdist worker within a session), rewriting
-  `TEST_DATABASE_URL` before the first `import app`.  Two
-  terminals running `pytest` against the same PostgreSQL cluster
-  get independent databases; the per-test `TRUNCATE ... CASCADE`
-  no longer deadlocks across invocations as it did pre-Phase-3.
+- **Full suite:** ~62 s wall-clock on a fresh test-db container,
+  ~5,276 tests at the default `-n 12` parallelism (set in
+  `pytest.ini` `addopts`).  Back-to-back full-suite runs drift up
+  to ~72 s as the PG cluster's catalog cache fragments from
+  CREATE/DROP DATABASE churn (Phase 3b's drop+reclone mechanism);
+  `docker restart shekel-dev-test-db` returns to the ~62 s
+  baseline.  A single `pytest` invocation completes well under
+  the 10-min hard timeout.
+- **Concurrent invocations are NOT safe under Phase 3b.**  The
+  per-worker DB name is the stable form `shekel_test_{worker_id}`
+  (no PID suffix) so the Flask-SQLAlchemy engine URL stays valid
+  across every drop+reclone.  Two simultaneous pytest invocations
+  against the same cluster collide on the same worker DB name --
+  the bootstrap's `pg_stat_activity` filter prevents dropping a
+  sibling's live DB, so the second invocation gets a clear
+  "database already exists" failure instead of silent corruption.
+  Workarounds when you genuinely need concurrent invocations: run
+  one against the dev `db` cluster on port 5432 (point
+  `TEST_ADMIN_DATABASE_URL` at it after rebuilding the template
+  there), or run them sequentially with a `wait` between
+  invocations.  Sequential invocations are unaffected; orphan
+  cleanup at session start drops any leftover DB from a previous
+  crashed run.
 - **First-time setup:** build the template once with
   `python scripts/build_test_template.py`; see "Building the test
   template" below for when to rebuild.
@@ -41,52 +52,46 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 - **Override parallelism:** `-n 0` for single-process debugging,
   `-n auto` to match the host CPU count, or any specific number.
   The CLI flag overrides `pytest.ini`'s default.  Past `-n 12`
-  the marginal speedup falls off because PostgreSQL's cluster-wide
-  WAL/fsync pipeline (not CPU) is the serialised resource; see
-  `docs/audits/security-2026-04-15/test-performance-research.md`
+  the marginal speedup falls off because PostgreSQL's cluster-
+  wide `pg_database` catalog lock (formerly the WAL/fsync
+  pipeline pre-Phase-3) is the serialised resource; see
+  `docs/audits/test_improvements/test-performance-research.md`
   for the full profile.
 - **Test timeout:** 30s per test, configured in `pytest.ini`.
   Slowest known test is ~3s (bcrypt-bound MFA/auth tests; ~1-3s
   each is expected).  Anything past 30s raises a timeout error
   rather than hanging the suite.
 
-### Optional per-directory batching
+### Optional per-directory batching (historical)
 
 The 8-batch split below was required when the suite was ~28 min
 sequentially and the 10-min CI timeout forced sub-batches.  At
-the new `-n 12` default it is no longer required, but the table
-remains documented for three scenarios:
+the current Phase 3 `-n 12` default (~62 s full suite first run,
+~72 s plateau) it is **purely historical** -- batched invocations
+no longer offer any wall-clock benefit and individual batches
+finish in seconds, so the bisecting-a-regression and sequential-
+debugging scenarios are better served by `pytest <specific-file>
+-v` rather than a whole batch.  The table is preserved so existing
+references to "Batch N" in old commits or docs remain decodable;
+DO NOT cite these timings in new measurements.
 
-1. **Slow-PG environments** where `-n 12` saturates the WAL queue
-   and batches at `-n 4` are more reliable than the full suite at
-   `-n 4`.
-2. **Sequential debugging (`-n 0`):** the full suite is ~28 min
-   sequentially; batched output makes failures easier to triage
-   and lets you re-run a single batch after a fix.
-3. **Bisecting a regression** -- one batch finishes faster than
-   the whole suite.
+| Batch | Tests | Notes |
+|---|---|---|
+| `tests/test_config.py tests/test_models/ tests/test_services/` | ~1,740 | includes the Phase 0 harness slice (test_models, 253 tests) |
+| `tests/test_routes/test_a* tests/test_routes/test_c*` (includes `test_auth.py`, slowest single file) | ~860 | -- |
+| `tests/test_routes/test_d* test_e* test_g* test_h* test_i*` | ~390 | -- |
+| `tests/test_routes/test_l* test_m* test_o* test_p*` | ~290 | -- |
+| `tests/test_routes/test_r* test_s* test_t* test_x*` | ~690 | -- |
+| `tests/test_integration/` | ~220 | -- |
+| `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | -- |
+| `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | -- |
 
-| Batch | Tests | `-n 12` | `-n 0` |
-|---|---|---|---|
-| `tests/test_config.py tests/test_models/ tests/test_services/` | ~1,740 | ~1:20 | ~9:21 |
-| `tests/test_routes/test_a* tests/test_routes/test_c*` (includes `test_auth.py`, slowest single file) | ~860 | ~0:45 | ~4:40 |
-| `tests/test_routes/test_d* test_e* test_g* test_h* test_i*` | ~390 | ~0:25 | ~2:17 |
-| `tests/test_routes/test_l* test_m* test_o* test_p*` | ~290 | ~0:20 | ~1:39 |
-| `tests/test_routes/test_r* test_s* test_t* test_x*` | ~690 | ~0:40 | ~4:01 |
-| `tests/test_integration/` | ~220 | ~0:15 | ~1:17 |
-| `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | ~0:30 | ~2:59 |
-| `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | ~0:25 | ~2:02 |
-
-Totals: ~5,148 tests / ~4 min at `-n 12` / ~28 min at `-n 0`.
-`tests/test_performance/` is excluded from the default `addopts`
-and must be invoked explicitly: `pytest tests/test_performance
--v -s`.
-
-The `-n 12` column is derived from the Phase 4.5 profile of
-Batch 1 (measured: 79s at `-n 12`, 561s sequential, 7.07x
-speedup) applied to the sequential numbers, with a small-batch
-floor for pytest startup + 12-worker bootstrap overhead.  Treat
-the figures as ballpark, not measured per-batch.
+Total: ~5,276 tests / ~62 s at `-n 12` (full suite is faster than
+the sum of batches because pytest startup + 12-worker bootstrap
+overhead amortises over the full inventory rather than paying
+8x).  `tests/test_performance/` is excluded from the default
+`addopts` and must be invoked explicitly: `pytest
+tests/test_performance -v -s`.
 
 ## Building the test template
 

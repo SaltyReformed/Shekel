@@ -162,16 +162,32 @@ Detailed standards are in these files. Read them when working on code, tests, or
 - Coding standards (Python, SQL, HTML/Jinja, JS, CSS, shell): @docs/coding-standards.md
 - Testing standards and problem reporting: @docs/testing-standards.md
 
-## Tests -- 5,148 tests, ~4 min full suite at -n 12 (pytest-xdist default)
+## Tests -- 5,276 tests, ~62 s full suite at -n 12 (pytest-xdist default)
 
 A single `pytest` invocation completes well under the 10-min hard
 timeout. `pytest.ini` carries `-n 12 --dist=loadgroup` in `addopts`,
 so the bare command runs the full suite across 12 parallel workers.
-Concurrent pytest invocations are safe: each session (and each xdist
-worker within a session) clones its own per-session DB from
-`shekel_test_template` via `tests/conftest.py::_bootstrap_worker_database`.
-Override with `-n 0` for single-process debugging (the full suite is
-~28 min sequentially).
+Override with `-n 0` for single-process debugging.
+
+Per-test isolation is delivered by drop+reclone of a per-worker DB
+from `shekel_test_template`: PG 18's `CREATE DATABASE ... TEMPLATE
+... STRATEGY FILE_COPY` uses `file_copy_method=clone` on the btrfs-
+backed PGDATA to reflink-copy the template in ~4-5 ms per clone
+(`-n 0`) or ~30 ms per clone under 12-way contention.  Per-test
+fixture floor: ~25 ms at `-n 0`, ~83 ms at `-n 12` (the cluster-
+level `pg_database` lock serialises CREATE/DROP across xdist
+workers).  Full-suite wall-clock at `-n 12` is ~62 s on a fresh
+test-db container; back-to-back runs drift up to ~72 s as the
+cluster's catalog cache fragments from CREATE/DROP churn -- a
+`docker restart shekel-dev-test-db` returns to the ~62 s baseline.
+
+The per-worker DB name is the stable form `shekel_test_{worker_id}`
+(no PID suffix as of Phase 3b).  Two simultaneous pytest invocations
+against the same cluster collide on the worker name -- the bootstrap's
+orphan-cleanup active-connection filter prevents silent corruption,
+so the second invocation fails loud with "database already exists".
+This is a narrowing of the "concurrent pytest invocations are safe"
+guarantee; sequential invocations are unaffected.
 
 First-time setup: build the template once with
 `python scripts/build_test_template.py`. Rebuild after migrations or

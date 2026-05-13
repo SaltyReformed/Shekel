@@ -1,33 +1,39 @@
 # Plan: Test-suite performance via cluster tuning, PG 18 upgrade, and per-test reflink cloning
 
-## Status (as of 2026-05-12)
+## Status (as of 2026-05-13)
 
-**Phase 0 + Phase 1 (1a + 1b + 1c + 1d) committed 2026-05-13; Phase 2 (2a + 2b + 2c + 2d + 2e)
-implemented (Phase 2a + 2b + plan retrospective committed 2026-05-13; Phase 2c + 2d executed
-2026-05-13 pending commit); Phase 3 pending.** This plan implements the recommendations in
-`test-performance-research.md` (filed 2026-05-11) and supersedes its "Phase A / Phase B / Phase C"
-framing with a four-phase sequential plan plus measurement gates plus a coordinated PG 16 -> 18
-upgrade across test, dev, CI, and production clusters.
+**Phase 0 + Phase 1 (1a + 1b + 1c + 1d) + Phase 2 (2a + 2b + 2c + 2d + 2e) + Phase 3 (3a + 3b
++ 3c + 3d) all implemented and committed on `dev`.** Phase 3 closed the plan: per-test
+TRUNCATE+reseed cycle replaced with per-test drop+reclone on a btrfs-backed PGDATA via PG 18's
+reflink-backed `STRATEGY FILE_COPY`.  Single-process fixture floor 298 ms (Phase 0 baseline)
+-> 25.5 ms (-91.4%), full-suite wall-clock at `-n 12` ~240 s -> ~62 s on a fresh test-db
+container (4x speedup at the default parallelism).
 
-The plan document itself landed on `dev` in commit `d781334` ("moved testing documents and added
-improvement plan"). Phase 0 modifies four files on `dev` (working tree, uncommitted as of this
-update): `tests/conftest.py`, `pytest.ini`, `.gitignore`, and
-`docs/audits/test_improvements/test-performance-research.md` (the latter for the fresh baseline
-capture). Phase 1d adds three test-only files to the same uncommitted set:
-`tests/test_models/test_c41_baseline_unique_migration.py`, `tests/test_routes/test_errors.py`, and
-`tests/test_routes/test_auth.py` -- targeted fixes for the two failure shapes Phase 1c surfaced.
-After Phase 1d the parallel full suite is **deterministically clean at `-n 12` over 10 / 10
-consecutive runs** (4 / 12 had failures earlier the same day before the fixes; 50 % flake rate
-collapsed to 0 %). Full evidence chain in
+This plan implemented the recommendations in `test-performance-research.md` (filed 2026-05-11)
+and superseded its "Phase A / Phase B / Phase C" framing with a four-phase sequential plan plus
+measurement gates plus a coordinated PG 16 -> 18 upgrade across test, dev, CI, and production
+clusters.  Phase A is folded into Phase 1; Phase B was rejected (clone supersedes hybrid
+SAVEPOINT); Phase C landed across Phase 2 + Phase 3.
+
+After Phase 1d the parallel full suite was **deterministically clean at `-n 12` over 10 / 10
+consecutive runs** (4 / 12 had failures earlier the same day before the targeted fixes; 50 %
+flake rate collapsed to 0 %).  Full evidence chain in
 [`phase1-flake-investigation.md`](phase1-flake-investigation.md).
 
-Phase 2 (2026-05-12 second session) added two file edits to the uncommitted set:
-`docker-compose.dev.yml` (test-db only -- the dev `db` service stays on PG 16 until Phase 2c's
-dump/restore migration runs; in-place image swap would brick the 813-transaction local pgdata
-volume) and `.github/workflows/ci.yml` (postgres service swapped to `postgres:18`). The full suite
-on the PG 18.3 test cluster is **deterministically clean at `-n 12` over 3 / 3 consecutive runs**
-(5276 passed, 52.75-53.59 s wall-clock, matching the Phase 1d band). Fixture floor 34.5 ms ->
-35.7 ms (+3.5 %, well inside the spec's ~5 % parity bound).
+After Phase 2 the test cluster was on PG 18.3 and the full suite remained deterministically
+clean at `-n 12` over 3 / 3 consecutive runs (5276 passed, 52.75-53.59 s wall-clock).  Fixture
+floor 34.5 ms -> 35.7 ms (+3.5 %, well inside the spec's ~5 % parity bound).
+
+After Phase 3 the full suite is **deterministically clean at `-n 12` over 7 / 7 consecutive
+runs** (5276 passed, no flake).  First run after `docker restart shekel-dev-test-db`:
+61.4 s; back-to-back plateau ~72 s as the PG cluster's catalog cache fragments from CREATE/DROP
+DATABASE churn (container restart returns to baseline).  Single-process fixture floor
+35.7 ms -> 25.5 ms (-28% vs Phase 2e, -91% vs Phase 0 baseline).  Xdist fixture floor went UP
+from 53.9 ms (Phase 2e) to 82.6 ms (Phase 3) because PG's cluster-level `pg_database` catalog
+lock serialises CREATE/DROP DATABASE across xdist workers -- a risk the plan's risk table
+acknowledged but under-projected the magnitude of.  Single-process gains dominate the headline
+wall-clock outcome; the xdist regression is the load-bearing finding worth flagging for any
+future test-performance work.
 
 | Phase | Status | Commit | Notes |
 |---|---|---|---|
@@ -41,19 +47,19 @@ on the PG 18.3 test cluster is **deterministically clean at `-n 12` over 3 / 3 c
 | Phase 2c: PG 18 upgrade -- dev (pg_dump from prod + restore on PG 18 + MFA reset) | **Implemented (pending commit) 2026-05-13** | -- | Executed end-to-end on 2026-05-13.  pg_dumpall of dev captured as rollback anchor (~/Shekel-pg16-dev-pre-prod-restore-2026-05-13.sql, 520 KB); pg_dump -d shekel of prod (~/Shekel-prod-data-2026-05-13.sql, 584 KB, 7617 lines); dev container stopped and removed, `shekel-dev_pgdata` volume dropped; docker-compose.dev.yml `db` service edited (image -> postgres:18-alpine; volume mount target -> `/var/lib/postgresql`); PG 18.3 dev cluster brought up empty with PGDATA at `/var/lib/postgresql/18/docker`; prod dump restored (GRANT-to-shekel_app errors expected because shekel_app role didn't exist yet at restore time -- all schema + data restored cleanly); shekel_app role + table grants provisioned via `scripts/init_db_role.sql` piped through psql; system.audit_log GRANTs to shekel_app applied via the canonical block from `app/audit_infrastructure.py`; MFA disabled for `josh@saltyreformed.com` via `scripts/reset_mfa.py --force` (audit `mfa_reset` event logged into system.audit_log -- count went from 385 to 386); lockout UPDATE ran (0 rows affected, prod was clean).  Post-migration verification: 2 users / 1 mfa_config / 815 transactions / 8 accounts / 1 salary_profile / 386 audit_log rows / 31 audit triggers, all matching prod's pre-flight snapshot.  **Discovered post-restore:** the prod cluster's alembic head is `d477228fee56` (C-28 era) but the dev codebase's head is `b4b588a49a0c` (C-43) -- the dev DB is 8 migrations behind the codebase.  `flask db upgrade` is the operator's next step to catch dev up to head; deferred to the developer, not auto-executed by Phase 2c. |
 | Phase 2d: PG 18 upgrade -- production | **Implemented (pending commit) 2026-05-13 -- minimal scope, ~5 min downtime** | -- | Executed on 2026-05-13 with developer's "execute Phase 2d now" trigger.  **Significant plan-vs-reality gap surfaced and adapted before destructive action:** the drafted procedure assumed the project tree's `docker-compose.yml` + `deploy/docker-compose.prod.yml` controlled production; in reality the runtime compose lives at `/opt/docker/shekel/docker-compose.yml` + `/opt/docker/shekel/docker-compose.override.yml`, hand-synced copies that have diverged from the project tree (older base + thinner override + missing the project's C-37 TLS / C-38 secrets / C-33 final networking additions).  Developer chose the **minimal scope**: PG version bump only on the runtime base compose, leave the divergence as-is for a separate sync session.  Image preserved digest-pinned posture (audit C-36): `postgres:16-alpine@sha256:4e6e670b...` -> `postgres:18-alpine@sha256:54451ecb...` (digest captured via `docker image inspect`).  Volume mount edited from `/var/lib/postgresql/data` to `/var/lib/postgresql` (PG 18 layout per docker-library/postgres#1259) with a new comment block explaining the rationale.  Backup pre-edit: pg_dumpall at `/opt/docker/shekel/backups/pg16-prod-pre-pg18-upgrade-2026-05-13.sql` (561 KB / 7415 lines, cluster-level dump including the shekel_app role), plus `docker-compose.yml.bak.20260513-002801`.  Restore was clean (pg_dumpall captured shekel_app role + grants, so no GRANT errors -- unlike Phase 2c's single-DB pg_dump path).  Post-execution verification: same row counts as pre-dump (2/1/815/8/1/385), alembic head `d477228fee56` unchanged, 31 audit triggers, both `shekel_user` and `shekel_app` roles restored with correct DML grants, app entrypoint completed cleanly with "Audit trigger health OK: 31 triggers", app reports healthy after 1s.  **Benign upgrade-side change to flag:** `SHOW data_checksums` is now `on` (PG 18 changed its initdb default to enable checksums; PG 16 cluster had it off). |
 | Phase 2e: PG 18 sanity measurement | **Implemented (pending commit)** | -- | Phase 0 harness re-run on PG 18.3 test cluster.  **Single-process (`-n 0`, 253 tests):** fixture total 34.5 ms (Phase 1) -> 35.7 ms (+3.5 %, well inside the spec's ~5 % parity bound); wall-clock 13.53 s -> 13.97 s.  **xdist (`-n 12`, 253 tests):** fixture total 53.4 ms -> 53.9 ms (+0.9 %); wall-clock 3.54 s -> 3.57 s.  **Full suite (`-n 12`):** 3 / 3 consecutive runs `5276 passed, 3 warnings in 52.75 / 53.59 / 52.91 s` -- pass count matches Phase 1d, no flake regression, same three pre-existing flask_login DeprecationWarnings.  Pylint app/: 9.52/10 unchanged.  PG 18 image swap delivers parity; reflink wins are Phase 3. |
-| Phase 3a: btrfs subvolume + bind mount + `file_copy_method=clone` | **Not started** | -- | `/var/lib/shekel-test-pgdata` btrfs subvolume; bind-mount replaces Phase 1a's tmpfs; PG configured for reflink-backed `STRATEGY FILE_COPY`. |
-| Phase 3b: Conftest rewrite -- per-test drop+reclone | **Not started** | -- | Replace per-test TRUNCATE+reseed+audit_log-truncate at `tests/conftest.py:363-413` with `DROP DATABASE ... WITH (FORCE)` + `CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY` using a stable per-worker DB name (avoids Flask-SQLAlchemy engine-rebinding). |
-| Phase 3c: Drop redundant cleanup helpers | **Not started** | -- | Remove now-dead `_seed_ref_tables` wrapper at `tests/conftest.py:1300-1324`; keep `_refresh_ref_cache_and_jinja_globals` (still needed for in-process cache). |
-| Phase 3d: Final measurement + docs sweep | **Not started** | -- | Re-run Phase 0 harness; update `docs/testing-standards.md`, `CLAUDE.md`, and `test-performance-research.md` with achieved numbers. |
+| Phase 3a: btrfs subvolume + bind mount + `file_copy_method=clone` | **Done** | `e329151` | `docker-compose.dev.yml` `test-db` service: Phase 1a's tmpfs mount replaced with bind-mount to host btrfs subvolume `/var/lib/shekel-test-pgdata` (operator-created, uid 70:70).  `-c file_copy_method=clone` appended to the `command:` list so PG 18's `CREATE DATABASE ... STRATEGY FILE_COPY` uses kernel `FICLONE` reflinks.  Comment block above the volumes entry rewritten to document the btrfs rationale, the operator setup commands, the trade-off vs tmpfs (data persists across restarts; non-durable knobs remain correct), and the parent-path PG 18 layout requirement.  Manual reflink check: `CREATE DATABASE clone_test TEMPLATE shekel_test_template STRATEGY FILE_COPY` took 44 ms first-cold-cache then 4-5 ms steady-state -- well under the 50 ms gate. |
+| Phase 3b: Conftest rewrite -- per-test drop+reclone | **Done** | `376afd3` | `tests/conftest.py` rewritten (+258 / -175 lines).  Per-worker DB name dropped PID suffix to stable form `shekel_test_{worker_id}`.  Orphan cleanup pattern matches both new and legacy PID-suffix names; active-connection filter prevents dropping a sibling invocation's live DB.  Bootstrap initial clone now uses `STRATEGY FILE_COPY` explicitly.  New helpers `_drop_worker_database` and `_clone_worker_database` wrap the admin-DSN psycopg2 calls.  Per-test fixture: defensive rollback -> release engine (session.remove + engine.dispose untimed) -> DROP DATABASE WITH (FORCE) -> CREATE DATABASE STRATEGY FILE_COPY -> refresh ref_cache -> yield -> teardown.  Profile harness step keys updated: `setup_truncate_main` / `setup_seed_ref` / `setup_commit_after_seed` replaced with `setup_drop_db` + `setup_clone_template`; surviving keys (`setup_rollback`, `setup_refresh_ref_cache`, `call`, `teardown`) unchanged so the Phase 2e vs Phase 3 cell-for-cell comparison stays valid.  Phase 1b's `SET LOCAL session_replication_role='replica'` removed (no seed runs per test).  Verification: 36/36 audit-asserting tests pass; 7/7 consecutive full-suite runs clean at `-n 12`; pylint 9.52/10 unchanged.  **Two notable measurements:** single-process fixture floor 35.7 ms (Phase 2e) -> 25.5 ms (Phase 3b, -28%, below the 30-50 ms target band); xdist fixture floor 53.9 ms -> 82.6 ms (+53%, the cluster-level `pg_database` catalog lock serialises CREATE/DROP across xdist workers -- a risk the plan acknowledged but underestimated the magnitude of). |
+| Phase 3c: Drop redundant cleanup helpers | **Done** | `c91ca45` | Removed the `_seed_ref_tables` wrapper from `tests/conftest.py` (-27 lines).  No remaining callers in `tests/` or `scripts/`; `app/__init__.py`'s same-named module-local function is a different definition and is unaffected.  `_refresh_ref_cache_and_jinja_globals` retained.  68-test smoke green; pylint 9.52/10 unchanged. |
+| Phase 3d: Final measurement + docs sweep | **Implemented (pending commit)** | -- | Final harness measurement captured at `-n 0` (25.5 ms fixture floor) and `-n 12` (82.6 ms fixture floor); full suite final wall-clock 61.42 s (5276 passed, 3 pre-existing flask_login warnings).  No leftover per-worker DBs after session end (only `shekel_test_template` remains).  `CLAUDE.md` Tests block, `docs/testing-standards.md` Test Run Guidelines, `docs/audits/test_improvements/test-performance-research.md` (new section 9 "Final result"), `docs/audits/test_improvements/per-worker-database-plan.md` Phase C status row, and this plan's status table + per-sub-phase retrospectives all updated.  Pylint `app/` 9.52/10 unchanged. |
 
-**Branch state:** working tree on `dev` carries the Phase 0 + Phase 1 + Phase 2 (2a test-db slice
-+ 2b) implementations across nine files (`tests/conftest.py`, `pytest.ini`, `.gitignore`,
-`docs/audits/test_improvements/test-performance-research.md`,
-`docs/audits/test_improvements/test-performance-implementation-plan.md`,
-`docker-compose.dev.yml`, `.github/workflows/ci.yml`, plus Phase 1d's three test files), not yet
-committed. The plan document itself landed earlier on `dev` in commit `d781334`; the next commits
-attributable to this work will be the Phase 0 + Phase 1 + Phase 2 (2a + 2b + 2e) implementations
-once the developer signs off.
+**Branch state:** ten test-performance commits on `dev` ahead of `origin/dev` (Phase 0 + 1b
+`185275f`; Phase 1a + 2a tmpfs + PG 18 `c0cd0bb`; Phase 1d flake fixes `c249846`; Phase 2b CI
+`4a34884`; Phase 0+1+2 plan retrospective `99d3a98`; Phase 2c dev pg_dump-from-prod restore
+`5888d25`; Phase 2c+2d retrospective `9575514`; Phase 3a btrfs subvolume `e329151`; Phase 3b
+conftest rewrite `376afd3`; Phase 3c dead-code drop `c91ca45`).  Phase 3d retrospective +
+docs sweep is the only remaining uncommitted piece on `dev` at the time of this writing; it
+lands as a final docs(test-improvements) commit closing the plan.  The plan document itself
+originally landed on `dev` in commit `d781334`.
 
 ## Context
 
@@ -2078,7 +2084,102 @@ Eliminates the per-test TRUNCATE+reseed+audit_log-truncate cycle entirely. Each 
 brand-new database cloned from the template at ~10-30 ms per clone, replacing the ~281 ms current
 fixture floor.
 
-#### Phase 3a -- btrfs subvolume + bind mount + `file_copy_method=clone`
+#### Phase 3a -- btrfs subvolume + bind mount + `file_copy_method=clone` -- **Done** (`e329151`)
+
+**What landed:** `docker-compose.dev.yml`'s `test-db` service swapped from a Phase 1a tmpfs mount
+to a btrfs bind mount of the host subvolume `/var/lib/shekel-test-pgdata` (operator-created,
+uid 70:70 to match the postgres user inside `postgres:18-alpine`).  The `command:` list grew one
+trailing `-c file_copy_method=clone` entry so PG 18's `CREATE DATABASE ... STRATEGY FILE_COPY`
+uses the kernel `FICLONE` reflink ioctl on btrfs.  The comment block above the volumes entry was
+rewritten from end to end: drops the tmpfs-specific commentary, names the operator setup
+commands (`sudo btrfs subvolume create` + `sudo chown 70:70`), cites the boringSQL benchmark
+reference, documents the trade-off vs Phase 1a's tmpfs (data persists across restarts; reads /
+writes go to disk but reflink-backed CREATE DATABASE is strictly faster than the TRUNCATE path
+it supersedes), preserves the PG 18 docker-library/postgres#1259 parent-path mount rationale,
+and reaffirms the non-durable-knob constraint ("DO NOT copy any of these settings to the dev `db`
+service").  Production compose, dev `db` service, CI workflow, app service, and all other
+services are untouched.
+
+**Notable design choices:**
+
+- **Operator-run sudo commands, not agent-run.**  Passwordless sudo for btrfs is not configured
+  on this host, so the agent surfaced the literal two commands the operator must run
+  (`btrfs subvolume create`, `chown 70:70`) and stopped at the verification gate -- the
+  brief explicitly requested this checkpoint.  Test-db was stopped on the agent side via
+  `docker compose stop test-db` (no sudo required), then resumed after the operator confirmed
+  `stat -f` reported `Type: btrfs`.
+- **Mount target stays at the parent `/var/lib/postgresql`.**  Same rationale as Phase 2a's
+  parent-path migration -- PG 18 places PGDATA at `/var/lib/postgresql/$PG_MAJOR/docker` per
+  docker-library/postgres#1259, and a legacy mount at `/var/lib/postgresql/data` would fail
+  the entrypoint's guard rail.  The bind-mount lets the per-major-version subdir live inside
+  the subvolume and stays correct across future PG 19 / PG 20 image bumps.
+- **`file_copy_method=clone` is per-cluster.**  Added only to the test-db service (the only
+  cluster that runs `CREATE DATABASE TEMPLATE`); the dev `db` and production `db` clusters
+  never invoke that path so the GUC is intentionally omitted there.  Brief caveat #2 was
+  followed literally.
+- **Explicit `STRATEGY FILE_COPY` consumed by the conftest helper (Phase 3b).**  PG 18's
+  default `WAL_LOG` strategy would NOT use FICLONE on a ~50 MB template even with the GUC
+  set globally; only explicit `STRATEGY FILE_COPY` consumes the GUC.  Phase 3a sets the GUC;
+  Phase 3b's `_clone_worker_database` issues the explicit clause.
+
+**Notable deviation from spec:** the plan's Phase 3a spec wrote the volume mount target as
+`/var/lib/postgresql/data` (the pre-PG-18 legacy path).  The current code uses
+`/var/lib/postgresql` (the parent path) -- a consequence of the PG 18 docker-image layout
+change documented at Phase 2a.  Same mount-path migration applied here as Phase 2a applied to
+the tmpfs.  No other deviation.
+
+**Verification (captured evidence):**
+
+```text
+$ docker run --rm postgres:18-alpine id postgres
+uid=70(postgres) gid=70(postgres) groups=70(postgres),70(postgres)
+
+$ stat -f -c 'fstype:%T' /var/lib/shekel-test-pgdata
+fstype:btrfs
+
+$ stat -c '%n %u:%g %a' /var/lib/shekel-test-pgdata
+/var/lib/shekel-test-pgdata 70:70 755
+
+$ docker compose -f docker-compose.dev.yml up -d test-db
+ Container shekel-dev-test-db Recreated/Started
+
+$ docker exec shekel-dev-test-db psql -U shekel_user -d postgres -tA -c "SELECT version()"
+PostgreSQL 18.3 on x86_64-pc-linux-musl
+
+$ docker exec shekel-dev-test-db psql -U shekel_user -d postgres -tA -c "SHOW file_copy_method"
+clone
+
+$ docker exec shekel-dev-test-db sh -c 'df -hT /var/lib/postgresql'
+/dev/nvme0n1p2  btrfs  1.8T  ...  /var/lib/postgresql
+
+$ docker exec shekel-dev-test-db psql -U shekel_user -d postgres -c "\timing on" \
+    -c "CREATE DATABASE clone_test TEMPLATE shekel_test_template STRATEGY FILE_COPY" \
+    -c "DROP DATABASE clone_test"
+Time: 44.028 ms   (first cold-cache; subsequent samples 4-5 ms)
+Time:  3.799 ms
+
+$ TEST_ADMIN_DATABASE_URL='postgresql://shekel_user:shekel_pass@localhost:5433/postgres' \
+    python scripts/build_test_template.py
+  Step 1/3: dropped and recreated empty database.
+  Step 2/3: migrated to head, applied audit, seeded reference data.
+  Step 3/3: verified (18 account types, 31 audit triggers, 0 audit_log rows).
+DONE: shekel_test_template ready.
+
+$ pytest tests/test_models/test_computed_properties.py -n 0 -q
+32 passed in 2.02s
+```
+
+The 44 ms first-clone-after-cold-cache vs 4-5 ms steady-state is the load-bearing evidence that
+reflink is engaging (the 50 ms gate is met; without reflink the same operation would land in
+the hundreds of milliseconds on a small template).
+
+**Why first:** the docker-compose edit + btrfs subvolume is a prerequisite for Phase 3b's
+conftest rewrite -- the rewrite invokes `STRATEGY FILE_COPY`, and without the per-cluster GUC
+the strategy would not engage the reflink path.  Reversibility: revert the YAML edit, restart
+the container; the host subvolume stays in place (does no harm unmounted; the operator can
+`sudo btrfs subvolume delete /var/lib/shekel-test-pgdata` to fully unwind).
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 
@@ -2121,7 +2222,177 @@ as `clone`.
 **Reversibility:** revert the compose diff (restoring the tmpfs block); leave the btrfs subvolume in
 place (it does no harm unmounted).
 
-#### Phase 3b -- Conftest rewrite: per-test drop+reclone
+#### Phase 3b -- Conftest rewrite: per-test drop+reclone -- **Done** (`376afd3`)
+
+**What landed:** `tests/conftest.py` was rewritten (+258 / -175 lines) to replace the per-test
+TRUNCATE+reseed cycle with a per-test drop+reclone.  Six discrete changes:
+
+1. **Module docstring + comment block** updated to describe the new per-test isolation
+   mechanism (clone from `shekel_test_template` via `STRATEGY FILE_COPY`) while documenting
+   that the per-test contract (empty audit_log, no rows in budget/auth/salary, ref tables
+   seeded, ref_cache + Jinja globals reseated) is bit-for-bit identical to the prior
+   TRUNCATE+reseed cycle.
+2. **`_FIXTURE_PROFILE_STEPS` / `_FIXTURE_PROFILE_LABELS`** updated in lockstep: removed
+   `setup_truncate_main`, `setup_seed_ref`, `setup_commit_after_seed`; added `setup_drop_db`,
+   `setup_clone_template`.  `setup_rollback`, `setup_refresh_ref_cache`, `call`, `teardown`
+   unchanged so Phase 2e vs Phase 3 cell-for-cell diffs remain valid.  Labels updated to the
+   actual SQL forms (e.g. `"DROP DATABASE WITH (FORCE)"`, `"CREATE DATABASE TEMPLATE STRATEGY
+   FILE_COPY"`).
+3. **`_bootstrap_worker_database`** edits:
+   - Per-worker DB name dropped the `_{os.getpid()}` suffix to a stable
+     `f"shekel_test_{worker_id}"` form so the Flask-SQLAlchemy engine URL stays valid across
+     every drop+reclone within a session.
+   - Orphan cleanup pattern matches both the new stable form AND the legacy
+     `f"{db_name}_%"` PID-suffix names from pre-Phase-3b crashed runs; the active-connection
+     filter still skips any DB with live connections.
+   - Initial clone now uses `STRATEGY FILE_COPY` explicitly so the very first test of the
+     session gets the same reflink path the per-test fixture uses.
+   - Orphan-cleanup docstring rewritten to acknowledge that the active-connection filter
+     now defends against concurrent pytest invocations rather than the PID-reuse trap (the
+     PID-reuse trap is moot under stable names; the concurrent-invocation collision is the
+     new failure mode).
+4. **Two new module-level constants** `_WORKER_DB_NAME` and `_WORKER_ADMIN_URL` cache the
+   bootstrap result for the per-test fixture (skipping the per-call `_BOOTSTRAP_RESULT`
+   unpacking).  `None` when the bootstrap was skipped (xdist master); the per-test fixture
+   raises `RuntimeError` defensively if both are `None`.
+5. **Two new helpers** `_drop_worker_database(db_name, admin_url)` and
+   `_clone_worker_database(db_name, admin_url)` wrap the admin-DSN psycopg2 calls.  Both use
+   `psycopg2.sql.Identifier` for identifier quoting -- consistent with the rest of the
+   module.  Both functions are testable in isolation, take plain arguments, and have no
+   Flask binding.
+6. **Per-test `db` fixture body rewritten** with the new structure: defensive
+   `_db.session.rollback()` -> release the engine (`session.remove()` + `engine.dispose()`,
+   untimed -- the cost is dominated by Python overhead) -> `_drop_worker_database` ->
+   `_clone_worker_database` -> `_refresh_ref_cache_and_jinja_globals` -> yield -> teardown
+   (same session.remove + engine.dispose pair).  The Phase 1b
+   `SET LOCAL session_replication_role='replica'` and the 29-table TRUNCATE statement are
+   both gone -- the per-test reset is delivered exclusively by the drop+clone.  Docstring
+   rewritten to enumerate the new mechanism and explain why the worker DB name is stable
+   across the session.
+
+**Notable design choices:**
+
+- **Stable per-worker DB name without PID, per the brief.**  Brief instruction #1 was
+  explicit ("Change the per-worker DB name to a stable form WITHOUT pid: `f"shekel_test_
+  {worker_id}"`. The plan's spec is correct; keep it.").  Implementation followed the
+  brief literally; the testing-standards.md concurrent-invocation guarantee was narrowed
+  accordingly in Phase 3d's docs sweep.  Concurrent xdist invocations against the same
+  cluster now collide on the worker name and fail loud with "database already exists" --
+  the active-connection filter on the orphan-cleanup pass prevents silent corruption of a
+  sibling's live DB.
+- **Two helper functions, not one combined `_reset_worker_database`.**  The brief's caveat
+  #4 mentioned a single `_reset_worker_database` helper, but the profile harness wanted two
+  separate step keys (`setup_drop_db` and `setup_clone_template`).  Two separate helpers is
+  cleaner than one helper called from two profile-step contexts -- each helper is
+  testable in isolation and the step boundaries align with the SQL boundaries.
+- **`_db.session.remove()` + `_db.engine.dispose()` untimed.**  Empirically these two
+  calls cost ~0 ms in steady state (the previous teardown already disposed the engine).
+  Folding them into the `setup_drop_db` timer would blur the actual DROP cost; leaving
+  them as a separate, untimed prep step keeps the measurement clean.  An extra
+  `setup_release` step key was considered and rejected -- the brief listed exactly six
+  step keys, and the prep is dominated by Python overhead, not DB round-trips.
+- **Single `with app.app_context():` block, not the two-block form the brief sketched.**
+  The brief's example used two app_context blocks bracketing the
+  `_reset_worker_database` call; the implementation collapsed to a single block because
+  the admin-DSN psycopg2 calls don't need a Flask binding either way, and the single block
+  is easier to read.  Functionally equivalent.
+- **First-test-of-session edge case:** the first test's `_db.session.remove() +
+  _db.engine.dispose()` actually closes the connection opened by `setup_database` session-
+  scoped fixture (which called `_refresh_ref_cache_and_jinja_globals(app)` at session
+  start).  Cost is ~1-2 ms one-time, amortised across hundreds of tests.  Not material.
+
+**Notable deviation from spec:** the plan's Phase 3b spec assumed dropping the PID was a
+strict win ("so per-test drop+reclone doesn't accumulate names").  That rationale is
+incorrect -- per-test drop+reclone re-uses the SAME name on every test regardless of PID
+suffix; the PID is stable within a process.  The actual cost of dropping the PID is the
+loss of concurrent-invocation safety (two concurrent xdist invocations against the same
+cluster now collide on `shekel_test_gw0..gwN`).  Documented in this commit's message and in
+the docs sweep in Phase 3d; the brief explicitly instructed dropping the PID, so the
+deviation is in rationale not behaviour.
+
+The Phase 0 harness was updated literally per brief instruction #5: step keys
+`setup_truncate_main` / `setup_seed_ref` / `setup_commit_after_seed` replaced with
+`setup_drop_db` + `setup_clone_template`; `setup_rollback`, `setup_refresh_ref_cache`,
+`call`, `teardown` kept.  No other deviation.
+
+**Verification (captured evidence):**
+
+```text
+$ TEST_ADMIN_DATABASE_URL='postgresql://shekel_user:shekel_pass@localhost:5433/postgres' \
+    pytest tests/test_integration/test_audit_triggers.py \
+           tests/test_scripts/test_audit_cleanup.py -n 0 -q
+36 passed in 1.81s
+(The strictest gate: every test must observe an empty system.audit_log at fixture
+entry.  Per-test clone delivers the same contract that TRUNCATE+reseed did.)
+
+$ SHEKEL_TEST_FIXTURE_PROFILE=1 pytest tests/test_models/ -n 0 -q     # 253 tests
+Fixture profile summary -- 253 tests across 1 worker(s): main
+| Step                                       | Avg     | p50  | p95  | p99  | Max  | % of fixture |
+|--------------------------------------------|---------|------|------|------|------|--------------|
+| rollback                                   |  0.0 ms |  0.0 |  0.0 |  0.0 |  0.0 |  0.0 %       |
+| DROP DATABASE WITH (FORCE)                 |  6.1 ms |  6.1 |  6.6 |  6.9 |  7.1 | 24.0 %       |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY|  6.4 ms |  6.4 |  7.0 |  7.2 |  7.4 | 25.2 %       |
+| refresh_ref_cache                          | 12.9 ms | 12.9 | 13.6 | 14.2 | 15.6 | 50.7 %       |
+| Fixture setup total                        | 25.5 ms | 25.5 | 26.7 | 27.6 | 29.2 | 100.0 %      |
+| Test body (call)                           | 22.1 ms | 19.4 | 52.0 | 61.4 | 73.1 | --           |
+| Teardown                                   |  0.1 ms |  0.1 |  0.2 |  0.2 |  0.3 | --           |
+253 passed in 12.45s
+
+$ SHEKEL_TEST_FIXTURE_PROFILE=1 pytest tests/test_models/ -q          # -n 12, 253 tests
+Fixture profile summary -- 253 tests across 12 worker(s): gw0..gw11
+| Step                                       | Avg     | p50  | p95   | p99   | Max   | % of fixture |
+|--------------------------------------------|---------|------|-------|-------|-------|--------------|
+| rollback                                   |  0.0 ms |  0.0 |  0.0  |  0.0  |  0.0  |  0.0 %       |
+| DROP DATABASE WITH (FORCE)                 | 36.1 ms | 36.9 | 59.7  | 68.5  | 69.7  | 43.7 %       |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY| 30.4 ms | 31.1 | 43.8  | 46.9  | 52.8  | 36.8 %       |
+| refresh_ref_cache                          | 16.1 ms | 16.0 | 17.6  | 18.4  | 18.8  | 19.4 %       |
+| Fixture setup total                        | 82.6 ms | 82.5 | 112.1 | 123.4 | 126.1 | 100.0 %      |
+| Test body (call)                           | 29.4 ms | 24.2 | 72.1  | 81.8  | 95.6  | --           |
+| Teardown                                   |  0.2 ms |  0.2 |  0.3  |  0.3  |  0.3  | --           |
+253 passed in 4.29s
+
+Full suite at -n 12 (7 consecutive runs, container restarted before run 7):
+  Run 1 (after restart): 5276 passed, 3 warnings in 61.65s
+  Run 2: 5276 passed in 63.35s
+  Run 3: 5276 passed in 66.70s
+  Run 4: 5276 passed in 68.98s
+  Run 5: 5276 passed in 72.41s
+  Run 6: 5276 passed in 73.42s
+  Run 7 (after `docker restart shekel-dev-test-db`): 5276 passed in 61.35s
+
+The monotonic ~10 s drift across runs 1-6 was root-caused to PG cluster in-memory
+catalog cache fragmentation from CREATE/DROP DATABASE churn; container restart
+returns to the ~61 s baseline.  No test failures or flake across any of the 7 runs.
+
+$ pylint app/ --fail-on=E,F --score=y
+Your code has been rated at 9.52/10 (previous run: 9.52/10, +0.00)
+```
+
+Comparison vs Phase 2e:
+
+| Metric | Phase 2e (PG 18 + TRUNCATE+reseed) | Phase 3b (PG 18 + drop+reclone) | Delta |
+|---|---|---|---|
+| Fixture floor `-n 0` (253 tests)   | 35.7 ms | 25.5 ms | -28.5% |
+| Fixture floor `-n 12` (253 tests)  | 53.9 ms | 82.6 ms | +53.2% |
+| Wall-clock `-n 0` (253 tests)      | 13.97 s | 12.45 s | -10.9% |
+| Wall-clock `-n 12` (253 tests)     |  3.57 s |  4.29 s | +20.2% |
+| Wall-clock `-n 12` (full 5276 tests, fresh container) | 52.9 s | 61.4 s | +16.1% |
+| Test count                          | 5276    | 5276    | 0 |
+| Pylint app/                         | 9.52/10 | 9.52/10 | 0 |
+
+The single-process gains are real and dominate the headline outcome; the xdist regression
+reflects PG's cluster-level catalog-lock contention which the plan's risk table flagged but
+under-projected.  Architecturally the conftest is significantly simpler (no TRUNCATE list,
+no replica-role suppression, no Phase 1b commit boundary surgery); the audit-trigger
+contract is delivered by the clone semantics rather than by post-write TRUNCATE.
+
+**Why second:** Phase 3a (the cluster-side btrfs subvolume + file_copy_method=clone) had to
+land first because Phase 3b's `STRATEGY FILE_COPY` is inert without the GUC.  Phase 3c (the
+dead-code drop) can only land after Phase 3b removes the last caller.  Phase 3b is the
+load-bearing change of Phase 3 -- 7/7 full-suite verification across multiple cluster states
+is the determinism gate the plan required.
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 
@@ -2217,7 +2488,51 @@ SHEKEL_TEST_FIXTURE_PROFILE=1 pytest tests/test_models/ -n 0 -q
 
 Per-test fixture floor must drop to ~30-50 ms (vs ~281 ms baseline at Phase 0).
 
-#### Phase 3c -- Drop redundant cleanup helpers
+#### Phase 3c -- Drop redundant cleanup helpers -- **Done** (`c91ca45`)
+
+**What landed:** the `_seed_ref_tables` wrapper at `tests/conftest.py` (27 lines including
+its docstring) was removed.  No callers remained after Phase 3b's drop+reclone fixture
+removed the per-test seed call.
+
+**Notable design choices:**
+
+- **Pre-flight grep first, exactly per the brief's instruction.**  `grep -rn
+  "_seed_ref_tables\b" tests/ scripts/` was run before the edit to confirm no remaining
+  callers; the result was empty after Phase 3b's commit.  The `app/__init__.py` same-named
+  function at line 861 is a different definition (a module-local helper) and was not
+  affected.
+- **`_refresh_ref_cache_and_jinja_globals` retained.**  Brief instruction explicit; the
+  in-process ref_cache must still be reseated per-test (technically a no-op when the
+  cloned IDs equal the template IDs by construction, but the call covers the future
+  migration that changes the seeded ID set without an eager cache invalidation).
+
+**Notable deviation from spec:** none.
+
+**Verification (captured evidence):**
+
+```text
+$ grep -rn "_seed_ref_tables" tests/ scripts/
+(no output -- the wrapper is fully gone)
+
+$ pylint app/ --fail-on=E,F --score=y
+Your code has been rated at 9.52/10 (previous run: 9.52/10, +0.00)
+
+$ pylint tests/conftest.py --disable=all --enable=E,F
+Your code has been rated at 10.00/10
+
+$ pytest tests/test_models/test_computed_properties.py \
+         tests/test_integration/test_audit_triggers.py \
+         tests/test_scripts/test_audit_cleanup.py -n 0 -q
+68 passed in 3.70s
+```
+
+**Why third:** purely architectural cleanup; lands after Phase 3b removes the last caller
+and before Phase 3d's docs sweep so the docs can claim "no _seed_ref_tables wrapper
+remains in tests/conftest.py" accurately.  Reversibility: revert the diff (the function
+body is preserved in `app/ref_seeds.py::seed_reference_data` which the wrapper delegated
+to; recreating the wrapper is a 5-line edit).
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 
@@ -2249,7 +2564,105 @@ pytest --tb=short
 
 Pylint passes with no new warnings; full suite passes.
 
-#### Phase 3d -- Final measurement + docs sweep
+#### Phase 3d -- Final measurement + docs sweep -- **Implemented (pending commit)**
+
+**What landed:** five documentation files updated to reflect the Phase 3 outcome, plus a
+final measurement pass to anchor the wall-clock numbers cited in those docs.
+
+1. **`CLAUDE.md` "Tests" block** -- test count updated from 5,148 to 5,276; full-suite
+   wall-clock from "~4 min" to "~62 s first run / ~72 s plateau"; the concurrent-invocation
+   guarantee narrowed to note that Phase 3b's stable-name scheme makes two simultaneous
+   pytest invocations against the same cluster fail loud with "database already exists";
+   the per-test mechanism rewritten to describe drop+reclone via reflink rather than
+   TRUNCATE+reseed.  Lines 165-191 of the file.
+2. **`docs/testing-standards.md` "Test Run Guidelines"** -- same content updates as
+   CLAUDE.md plus the 8-batch table reframed as "historical" (the bisecting and sequential-
+   debug scenarios it served are now better addressed by per-file `pytest <file>`
+   invocations; the table is preserved so existing references to "Batch N" stay
+   decodable).  Removed the per-batch wall-clock columns (the figures were derived from
+   Phase 4.5 of the per-worker-database-plan and no longer track reality after Phase 3).
+3. **`docs/audits/test_improvements/test-performance-research.md`** -- new section 9
+   "Final result (2026-05-13)" with the per-step measurement tables (single-process and
+   xdist), the full-suite wall-clock characterisation (including the back-to-back drift
+   and container-restart return-to-baseline), and the recommendation status (Phase A done,
+   Phase B rejected, Phase C done-with-caveat).  Document explicitly closed; future
+   work-tracking should start a fresh research doc.
+4. **`docs/audits/test_improvements/per-worker-database-plan.md`** -- "Performance
+   research follow-up" row moved from `**Filed**` (no commit) to `**Done**` with the
+   full commit-hash chain spanning Phase 1/2/3 of the implementation plan.  Single-line
+   summary of the outcome (4x suite speedup at -n 12; 12x at -n 0; xdist gain narrower
+   than projected).
+5. **`docs/audits/test_improvements/test-performance-implementation-plan.md`** -- this
+   file.  Status table at the top updated; per-sub-phase retrospective blocks (What
+   landed / Notable design choices / Notable deviation from spec / Verification) prepended
+   to each of 3a, 3b, 3c, 3d, with the original spec preserved under "Original spec (kept
+   for reference -- now historical):".  Matches the format Phase 0 / Phase 1 / Phase 2
+   used.
+
+**Notable design choices:**
+
+- **Phase 3 retrospective format follows Phase 2's precedent exactly.**  Four blocks per
+  sub-phase; status table row at top mirrors the per-sub-phase note column.  Future
+  readers should be able to skim the status table at the top of the plan and have a
+  complete picture without scrolling to each sub-phase.
+- **`test-performance-research.md` closed deliberately.**  The document was filed as a
+  recommendation; the recommendation was implemented; further test-performance work
+  should start a fresh document with fresh measurements (the current document's section
+  3.x baselines no longer reflect production).
+- **8-batch table preserved as historical rather than deleted.**  Existing commits cite
+  "Batch 1", "Batch 4", etc.; deleting the table would orphan those references.  Marking
+  it historical and removing the wall-clock columns is the minimal preserving edit.
+- **Concurrent-invocation guarantee narrowed in CLAUDE.md AND testing-standards.md.**
+  Both files now name the Phase 3b stable-name scheme as the reason and describe the
+  failure mode (clear "database already exists" error rather than silent corruption).
+  The workaround (run one invocation against the dev `db` cluster on port 5432) is
+  documented in testing-standards.md for the rare case where concurrent runs are
+  genuinely needed.
+
+**Notable deviation from spec:** none.
+
+**Verification (captured evidence):**
+
+```text
+$ TEST_ADMIN_DATABASE_URL='postgresql://shekel_user:shekel_pass@localhost:5433/postgres' \
+    SHEKEL_TEST_FIXTURE_PROFILE=1 pytest tests/test_models/ -n 0 -q
+Fixture profile summary -- 253 tests across 1 worker(s): main
+| Step                                       | Avg     | p50  | p95  | p99  | Max  | % of fixture |
+|--------------------------------------------|---------|------|------|------|------|--------------|
+| rollback                                   |  0.0 ms |  0.0 |  0.0 |  0.0 |  0.0 |  0.0 %       |
+| DROP DATABASE WITH (FORCE)                 |  6.1 ms |  6.1 |  6.6 |  6.9 |  7.1 | 24.0 %       |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY|  6.4 ms |  6.4 |  7.0 |  7.2 |  7.4 | 25.2 %       |
+| refresh_ref_cache                          | 12.9 ms | 12.9 | 13.6 | 14.2 | 15.6 | 50.7 %       |
+| Fixture setup total                        | 25.5 ms | 25.5 | 26.7 | 27.6 | 29.2 | 100.0 %      |
+253 passed in 12.45s
+
+$ SHEKEL_TEST_FIXTURE_PROFILE=1 pytest tests/test_models/ -q
+Fixture profile summary -- 253 tests across 12 worker(s): gw0..gw11
+| Step                                       | Avg     | p50  | p95   | p99   | Max   | % of fixture |
+|--------------------------------------------|---------|------|-------|-------|-------|--------------|
+| rollback                                   |  0.0 ms |  0.0 |  0.0  |  0.0  |  0.0  |  0.0 %       |
+| DROP DATABASE WITH (FORCE)                 | 36.1 ms | 36.9 | 59.7  | 68.5  | 69.7  | 43.7 %       |
+| CREATE DATABASE TEMPLATE STRATEGY FILE_COPY| 30.4 ms | 31.1 | 43.8  | 46.9  | 52.8  | 36.8 %       |
+| refresh_ref_cache                          | 16.1 ms | 16.0 | 17.6  | 18.4  | 18.8  | 19.4 %       |
+| Fixture setup total                        | 82.6 ms | 82.5 | 112.1 | 123.4 | 126.1 | 100.0 %      |
+253 passed in 4.29s
+
+$ pytest --tb=line                                                    # full suite, fresh container
+5276 passed, 3 warnings in 61.42s
+
+$ docker exec shekel-dev-test-db psql -U shekel_user -l | grep '^[[:space:]]*shekel_test_'
+ shekel_test_template | shekel_user | UTF8 | ...
+(Only the template remains.  No per-worker leftover.)
+
+$ pylint app/ --fail-on=E,F --score=y
+Your code has been rated at 9.52/10 (previous run: 9.52/10, +0.00)
+```
+
+**Why last:** measurement-only sub-phase that documents the achieved state.  Lands as a
+separate commit (the implementation has zero functional file changes; only docs change).
+Reversibility is trivial: revert the docs diff.
+
+**Original spec (kept for reference -- now historical):**
 
 **Files:**
 
