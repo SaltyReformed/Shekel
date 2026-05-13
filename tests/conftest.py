@@ -2,12 +2,21 @@
 Shekel Budget App -- Test Fixtures
 
 Provides reusable pytest fixtures for the test suite: a configured
-test app, a clean database session, an authenticated client, and
-factory helpers for creating test data.
+test app, a freshly-cloned per-test database, an authenticated
+client, and factory helpers for creating test data.
 
-Strategy: each test gets a fully clean database by truncating all
-tables between tests.  This is reliable and avoids the complexity
-of nested-transaction rollback with SQLAlchemy 2.0.
+Strategy: each test gets a brand-new database cloned from
+``shekel_test_template`` via PG 18's reflink-backed
+``CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY`` path
+(Phase 3b of
+``docs/audits/test_improvements/test-performance-implementation-plan.md``).
+Replaces the prior per-test TRUNCATE+reseed cycle with a constant-
+time metadata copy on btrfs-backed PGDATA; the per-test isolation
+contract (empty ``system.audit_log``, no rows in ``budget.*`` /
+``auth.*`` / ``salary.*``, full ref-data seed, in-process
+``ref_cache`` matching the seeded IDs) is bit-for-bit identical
+between the two mechanisms -- only the underlying delivery
+changes.
 """
 
 # pylint: disable=wrong-import-position,wrong-import-order
@@ -106,9 +115,8 @@ _FIXTURE_PROFILE_DIR = pathlib.Path(__file__).parent / ".fixture-profile"
 # diff the two tables cell-for-cell.
 _FIXTURE_PROFILE_STEPS = (
     "setup_rollback",
-    "setup_truncate_main",
-    "setup_seed_ref",
-    "setup_commit_after_seed",
+    "setup_drop_db",
+    "setup_clone_template",
     "setup_refresh_ref_cache",
     "call",
     "teardown",
@@ -116,13 +124,18 @@ _FIXTURE_PROFILE_STEPS = (
 
 # Pretty labels for each step, used only by the aggregator's print
 # pass.  Kept beside _FIXTURE_PROFILE_STEPS so future edits stay in
-# sync.  The wording mirrors test-performance-research.md section 3.1
-# so the two tables can be visually compared.
+# sync.  Phase 3b replaced ``setup_truncate_main`` /
+# ``setup_seed_ref`` / ``setup_commit_after_seed`` with
+# ``setup_drop_db`` + ``setup_clone_template``; the published
+# baseline comparison in
+# ``docs/audits/test_improvements/test-performance-implementation-plan.md``
+# remains diff-able per-step because the surviving step keys
+# (``setup_rollback``, ``setup_refresh_ref_cache``, ``call``,
+# ``teardown``) and their labels are unchanged.
 _FIXTURE_PROFILE_LABELS = {
     "setup_rollback": "rollback",
-    "setup_truncate_main": "TRUNCATE main 29 tables CASCADE",
-    "setup_seed_ref": "seed_ref re-insert (replica role)",
-    "setup_commit_after_seed": "commit_after_seed",
+    "setup_drop_db": "DROP DATABASE WITH (FORCE)",
+    "setup_clone_template": "CREATE DATABASE TEMPLATE STRATEGY FILE_COPY",
     "setup_refresh_ref_cache": "refresh_ref_cache",
     "call": "Test body (call)",
     "teardown": "Teardown",
@@ -302,17 +315,23 @@ def _bootstrap_worker_database():
         bootstrap as ``worker_id="main"``.
 
     Orphan cleanup:
-        On startup the function drops any leftover
-        ``shekel_test_{worker_id}_*`` DBs that have no active
-        connections in ``pg_stat_activity``.  This handles the
-        case where a previous pytest run crashed (SIGKILL, kernel
-        OOM, ...) before ``pytest_sessionfinish`` could drop its
-        DB.  Filtering by ``pg_stat_activity`` rather than name
-        alone defends against the PID-reuse trap: a freshly-
-        started worker that happens to be assigned the same PID
-        as a previous crashed worker would see its own (about-to-
-        be-created) DB name in the orphan list; checking active
-        connections avoids dropping a sibling worker's live DB.
+        On startup the function drops any leftover database that
+        matches the worker's name (the Phase 3b stable form
+        ``shekel_test_{worker_id}`` AND the legacy PID-suffix form
+        ``shekel_test_{worker_id}_*`` from pre-Phase-3b runs) and
+        has no active connections in ``pg_stat_activity``.  Handles
+        the case where a previous pytest run crashed (SIGKILL,
+        kernel OOM, ...) before ``pytest_sessionfinish`` could
+        drop its DB.  Filtering by ``pg_stat_activity`` rather than
+        name alone defends against the dropping-of-sibling trap: a
+        concurrent pytest invocation (rare but documented in
+        testing-standards.md) whose worker happens to share this
+        worker_id would have its own live DB in the match list;
+        the active-connection filter skips dropping it.  CREATE
+        DATABASE later in this function will then fail with
+        "database already exists" -- the right fail-loud signal
+        that two concurrent invocations cannot share a cluster
+        under Phase 3b's stable-name scheme.
 
     Template existence:
         The bootstrap fails fast with an actionable
@@ -351,7 +370,14 @@ def _bootstrap_worker_database():
         return None
 
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    db_name = f"shekel_test_{worker_id}_{os.getpid()}"
+    # Phase 3b: stable per-worker DB name (no PID suffix).  Per-test
+    # drop+reclone re-uses the SAME name on every test so the
+    # Flask-SQLAlchemy engine's URL stays valid across test boundaries
+    # -- only the underlying database is swapped atomically by
+    # DROP+CREATE.  The PID-bearing form (legacy) leaked into the
+    # cluster's DB list whenever a previous run crashed; orphan
+    # cleanup below catches both forms.
+    db_name = f"shekel_test_{worker_id}"
     admin_url = os.environ.get(
         "TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL
     )
@@ -360,13 +386,14 @@ def _bootstrap_worker_database():
     try:
         admin_conn.autocommit = True
         with admin_conn.cursor() as cur:
-            # Orphan cleanup -- name pattern match, then exclude
-            # any DB with live connections (a sibling worker, or
-            # the unlikely case of our own about-to-be-created
-            # name carrying a stale tuple).
+            # Orphan cleanup -- match the Phase 3b stable name AND
+            # legacy PID-suffix names from pre-Phase-3b runs, then
+            # exclude any DB with live connections (a concurrent
+            # pytest invocation against the same cluster).
             cur.execute(
-                "SELECT datname FROM pg_database WHERE datname LIKE %s",
-                (f"shekel_test_{worker_id}_%",),
+                "SELECT datname FROM pg_database "
+                "WHERE datname = %s OR datname LIKE %s",
+                (db_name, f"{db_name}_%"),
             )
             candidate_orphans = [row[0] for row in cur.fetchall()]
             if candidate_orphans:
@@ -396,12 +423,19 @@ def _bootstrap_worker_database():
                     "Run: python scripts/build_test_template.py"
                 )
 
-            # Clone the template into the per-session DB.  This is
-            # an O(seconds) file-copy by PostgreSQL, vs. the
-            # O(minutes) cost of rerunning migrations + audit +
-            # seed for every pytest session.
+            # Phase 3b: initial clone uses STRATEGY FILE_COPY so PG
+            # 18's file_copy_method=clone GUC engages the kernel
+            # FICLONE reflink ioctl on the btrfs-backed PGDATA from
+            # Phase 3a.  The default WAL_LOG strategy would NOT use
+            # FICLONE for the ~50 MB template even with the GUC set
+            # globally -- explicit STRATEGY FILE_COPY is the only
+            # form that consumes the GUC.  Steady-state ~4-5 ms per
+            # clone on btrfs (vs ~10 ms for the WAL_LOG default and
+            # ~seconds without reflink).
             cur.execute(
-                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                sql.SQL(
+                    "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY"
+                ).format(
                     sql.Identifier(db_name),
                     sql.Identifier(_TEST_TEMPLATE_DATABASE),
                 )
@@ -443,6 +477,91 @@ def _bootstrap_worker_database():
 # master skipped; ``pytest_sessionfinish`` keys off this to decide
 # whether to drop the per-session DB.
 _BOOTSTRAP_RESULT = _bootstrap_worker_database()
+
+
+# Pull the worker DB name and admin DSN into module-level constants so
+# the per-test ``db`` fixture (Phase 3b) can drop+reclone without
+# unpacking ``_BOOTSTRAP_RESULT`` on every call.  ``None`` when the
+# bootstrap was skipped (xdist master), in which case the per-test
+# fixture will refuse to run -- the master never executes tests so
+# this branch should be unreachable in practice; the defensive check
+# inside the fixture surfaces a clear error if it ever fires.
+if _BOOTSTRAP_RESULT is not None:
+    _WORKER_DB_NAME, _WORKER_ADMIN_URL = _BOOTSTRAP_RESULT
+else:
+    _WORKER_DB_NAME = None
+    _WORKER_ADMIN_URL = None
+
+
+def _drop_worker_database(db_name, admin_url):
+    """Drop the per-worker test database via an admin psycopg2 connection.
+
+    Phase 3b helper.  Called once per test by the ``db`` fixture
+    (before ``_clone_worker_database`` re-creates it) and at session
+    end by ``pytest_sessionfinish``.
+
+    ``WITH (FORCE)`` (PostgreSQL 13+) terminates any leftover backend
+    that escaped the previous test's ``_db.engine.dispose()``;
+    without it a stuck transaction would block the drop.  Identifier
+    interpolation goes through :mod:`psycopg2.sql` so the
+    ``shekel_test_*`` name stays safely quoted even though it comes
+    from a controlled f-string at module load time -- consistent
+    with the rest of this module's admin-DSN access pattern.
+
+    Args:
+        db_name: Name of the per-worker DB to drop.
+        admin_url: Admin DSN (must NOT point at ``db_name`` itself
+            -- ``DROP DATABASE`` cannot run against the connection's
+            own database).
+    """
+    admin_conn = psycopg2.connect(admin_url)
+    try:
+        admin_conn.autocommit = True
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "DROP DATABASE IF EXISTS {} WITH (FORCE)"
+                ).format(sql.Identifier(db_name))
+            )
+    finally:
+        admin_conn.close()
+
+
+def _clone_worker_database(db_name, admin_url):
+    """Re-create the per-worker test DB by cloning ``shekel_test_template``.
+
+    Phase 3b helper.  Called once per test by the ``db`` fixture
+    (immediately after ``_drop_worker_database``) to give every test
+    the same start state the prior TRUNCATE+reseed cycle provided:
+    empty ``system.audit_log``, no rows in ``budget.*`` / ``auth.*`` /
+    ``salary.*``, full ref-data seed in ``ref.*``.  The template's
+    contents come from ``scripts/build_test_template.py``.
+
+    Explicit ``STRATEGY FILE_COPY`` engages PG 18's reflink path
+    under ``file_copy_method=clone`` (Phase 3a's GUC) -- the default
+    ``WAL_LOG`` strategy would NOT use ``FICLONE`` on a ~50 MB
+    template even with the GUC set globally; the explicit form is
+    the only one that consumes the GUC.  Steady-state ~4-5 ms per
+    clone on btrfs PGDATA.
+
+    Args:
+        db_name: Name of the per-worker DB to create.
+        admin_url: Admin DSN (must NOT point at ``db_name`` itself).
+    """
+    admin_conn = psycopg2.connect(admin_url)
+    try:
+        admin_conn.autocommit = True
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY"
+                ).format(
+                    sql.Identifier(db_name),
+                    sql.Identifier(_TEST_TEMPLATE_DATABASE),
+                )
+            )
+    finally:
+        admin_conn.close()
 
 
 import pytest
@@ -553,31 +672,79 @@ def setup_database(app):
 
 @pytest.fixture(autouse=True)
 def db(app, setup_database, request):
-    """Provide a clean database for each test.
+    """Provide a freshly-cloned database for each test.
 
-    Truncates all non-ref tables before each test so tests don't
-    interfere with each other.  Reference tables are preserved
-    EXCEPT for ``ref.account_types``, which carries an
-    ``ON DELETE RESTRICT`` foreign key to ``auth.users`` after
-    commit C-28 / F-044 (the column scopes per-user custom types).
-    PostgreSQL ``TRUNCATE ... CASCADE`` follows every FK reference
-    regardless of ondelete, so truncating ``auth.users`` wipes
-    ``ref.account_types`` too -- including the seeded built-ins
-    every test relies on.  After the truncate the helper
-    ``_seed_ref_tables`` runs again to restore the built-ins
-    (idempotent: existing rows are updated in place, missing rows
-    inserted; no duplicates because the seed contains 18 unique
-    names).  The same problem will affect any future ref-schema
-    table that gains a per-user FK; see
-    ``app/audit_infrastructure.py`` for the registry side.
+    Drops the per-worker DB and re-clones it from
+    ``shekel_test_template`` via PG 18's reflink-backed
+    ``CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY``
+    (Phase 3b of test-performance-implementation-plan.md).  Each
+    test gets bit-for-bit the same start state the prior
+    TRUNCATE+reseed cycle provided:
+
+      * ``system.audit_log`` empty -- the template carries zero
+        rows by construction; ``scripts/build_test_template.py``
+        truncates the log after the seed commits.
+      * No rows in ``budget.*`` / ``auth.*`` / ``salary.*`` -- the
+        template is freshly migrated and seeded with reference
+        data only.
+      * Full ref-data seed in ``ref.*`` including the 18
+        ``ref.account_types`` built-ins.
+      * In-process ``ref_cache`` and Jinja globals re-seated to
+        match the cloned DB's row IDs (which equal the template's
+        IDs because ``CREATE DATABASE TEMPLATE`` preserves them).
+
+    Mechanism, in order:
+
+      1. ``setup_rollback`` -- defensive ``session.rollback()`` in
+         case a prior test left a stale transaction.  Empirically
+         a no-op (Phase 0 measured ~0.0 ms).
+      2. Release the engine: ``session.remove()`` detaches the
+         scoped session; ``engine.dispose()`` closes every pooled
+         connection.  Prerequisites for ``DROP DATABASE WITH
+         (FORCE)`` -- the FORCE clause severs leftover backends at
+         the protocol level, but disposing here avoids the race
+         and keeps the engine pool aligned with the freshly-cloned
+         DB on the next session access.  Untimed because the
+         steady-state cost is ~0 ms (the previous test's teardown
+         already disposed).
+      3. ``setup_drop_db`` -- admin-DSN ``DROP DATABASE IF EXISTS
+         {worker_db} WITH (FORCE)``.
+      4. ``setup_clone_template`` -- admin-DSN ``CREATE DATABASE
+         {worker_db} TEMPLATE shekel_test_template STRATEGY
+         FILE_COPY``.  Reflink-backed on btrfs PGDATA with
+         ``file_copy_method=clone`` set on the cluster (Phase 3a);
+         steady-state ~4-5 ms.
+      5. ``setup_refresh_ref_cache`` -- re-seat the in-process
+         ref_cache and Jinja globals against the cloned DB.  The
+         row IDs are identical to the template's (CLONE preserves
+         them), but reseating costs ~5-7 ms and covers the edge
+         case where a future migration changes the seeded ID set
+         without anyone updating the in-process cache eagerly.
+
+    Why the worker DB name is stable across the session: the URL
+    the Flask-SQLAlchemy engine binds to at app-creation time is
+    derived from ``TEST_DATABASE_URL`` set by
+    ``_bootstrap_worker_database``; that URL remains valid across
+    every drop+reclone because only the underlying database is
+    swapped, never the URL.  ``engine.dispose()`` between tests
+    forces the pool to reconnect on the next session access, and
+    the connection re-establishes against the cloned DB at the
+    same URL.
 
     The ``_profile_step`` wrappers below are no-ops when
     ``SHEKEL_TEST_FIXTURE_PROFILE`` is unset; when set they capture
     per-step elapsed time for the Phase 0 harness (see the block
     comment near ``_FIXTURE_PROFILE_ENABLED`` at the top of this
-    module).  Each step's wrapper is positioned so the timer covers
-    exactly the work that contributes to the published baseline row.
+    module).
     """
+    if _WORKER_DB_NAME is None or _WORKER_ADMIN_URL is None:
+        raise RuntimeError(
+            "db fixture invoked from a process that skipped "
+            "_bootstrap_worker_database (xdist master?).  The "
+            "master should not run tests; check pytest-xdist's "
+            "scheduling configuration."
+        )
+
     timings = _profile_new_timings()
     # nodeid is only used by the profile CSV writer; skip the
     # attribute lookup when profiling is disabled so the default
@@ -588,117 +755,37 @@ def db(app, setup_database, request):
         with _profile_step(timings, "setup_rollback"):
             # Clear any stale transaction state from a prior test
             # that raised an exception without committing or
-            # rolling back.
+            # rolling back.  Defensive; empirically a no-op since
+            # the previous teardown's session.remove() detaches
+            # any session and engine.dispose() closes its pool.
             _db.session.rollback()
 
-        with _profile_step(timings, "setup_truncate_main"):
-            # Truncate budget, auth, salary, and system.audit_log
-            # together (order is by FK dependency; CASCADE through
-            # ``ref.account_types`` is intentional and is repaired
-            # below by the ref re-seed).  Bundling
-            # ``system.audit_log`` here -- rather than the standalone
-            # ``TRUNCATE system.audit_log`` block this fixture used
-            # to run after ``_seed_ref_tables`` -- is the Phase 1b
-            # win: a single TRUNCATE statement saves the second
-            # commit roundtrip AND lets the session-replication-role
-            # suppression below take credit for the seed's audit
-            # firings being skipped entirely.  Ordering rationale:
-            # the OLD model needed ``system.audit_log`` truncated
-            # AFTER the seed to wipe the 18 audit rows the seed
-            # fired; under Phase 1b the seed no longer writes audit
-            # rows (replica role suppresses the trigger), so
-            # truncating audit_log BEFORE the seed is correct and
-            # cheaper.  Cross-test isolation is preserved because
-            # this single TRUNCATE wipes every audit row written by
-            # the previous test's body.  TRUNCATE itself does not
-            # fire row-level triggers (PostgreSQL documents this
-            # explicitly), so the audit_log inclusion does not
-            # recurse.
-            _db.session.execute(_db.text(
-                "TRUNCATE TABLE "
-                "salary.calibration_deduction_overrides, "
-                "salary.calibration_overrides, "
-                "salary.pension_profiles, "
-                "salary.paycheck_deductions, "
-                "salary.salary_raises, "
-                "salary.salary_profiles, "
-                "salary.fica_configs, "
-                "salary.state_tax_configs, "
-                "salary.tax_brackets, "
-                "salary.tax_bracket_sets, "
-                "budget.escrow_components, "
-                "budget.rate_history, "
-                "budget.loan_params, "
-                "budget.investment_params, "
-                "budget.interest_params, "
-                "budget.savings_goals, "
-                "budget.transfers, "
-                "budget.transfer_templates, "
-                "budget.transaction_entries, "
-                "budget.transactions, "
-                "budget.transaction_templates, "
-                "budget.recurrence_rules, "
-                "budget.scenarios, "
-                "budget.categories, "
-                "budget.account_anchor_history, "
-                "budget.accounts, "
-                "budget.pay_periods, "
-                "auth.mfa_configs, "
-                "auth.user_settings, "
-                "auth.users, "
-                "system.audit_log "
-                "CASCADE"
-            ))
+        # Release the engine fully so the DROP below cannot race a
+        # held connection.  session.remove() detaches the scoped
+        # session; engine.dispose() closes every pooled connection.
+        # Untimed -- the work is essentially constant and dominated
+        # by Python overhead, not DB round-trips; folding it into
+        # setup_drop_db's timer would blur the DROP measurement.
+        _db.session.remove()
+        _db.engine.dispose()
 
-        with _profile_step(timings, "setup_seed_ref"):
-            # Restore the seeded built-ins that the CASCADE wiped
-            # from ``ref.account_types``.  ``_seed_ref_tables`` is
-            # idempotent so the call is also a no-op for the other
-            # ref tables that the truncate did not touch (the
-            # helper short-circuits on rows that already exist).
-            #
-            # ``SET LOCAL session_replication_role = 'replica'``
-            # suppresses the 18 audit-trigger fires the
-            # ``ref.account_types`` inserts would otherwise write
-            # into ``system.audit_log``.  Under "replica" mode
-            # PostgreSQL only fires triggers explicitly enabled with
-            # ``ENABLE REPLICA TRIGGER`` -- the project's audit
-            # triggers in ``app/audit_infrastructure.py`` use
-            # default enablement (verified by grep at Phase 1b
-            # planning time) so all 18 fires are skipped.
-            #
-            # ``LOCAL`` scopes the SET to this transaction; the
-            # commit at ``setup_commit_after_seed`` below drops it
-            # so the test body runs with the default ``origin``
-            # role and audit triggers fire normally on test-body
-            # writes (the contract every audit-asserting test
-            # depends on).  See
-            # docs/audits/test_improvements/test-performance-implementation-plan.md
-            # Phase 1b for the rationale.
-            _db.session.execute(_db.text(
-                "SET LOCAL session_replication_role = 'replica'"
-            ))
-            _seed_ref_tables()
+        with _profile_step(timings, "setup_drop_db"):
+            _drop_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
 
-        with _profile_step(timings, "setup_commit_after_seed"):
-            # Commit drops the SET LOCAL session_replication_role
-            # above so audit triggers re-enable for the test body.
-            # Without the previous ``TRUNCATE system.audit_log`` +
-            # second commit (removed in Phase 1b -- seed no longer
-            # writes through the audit trigger), this is the single
-            # commit boundary between fixture setup and test body.
-            _db.session.commit()
+        with _profile_step(timings, "setup_clone_template"):
+            _clone_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
 
         with _profile_step(timings, "setup_refresh_ref_cache"):
-            # The ref_cache is keyed by name -> id but the IDs are
-            # stable only for the rows that survived; after a
-            # CASCADE-truncate of account_types the seed re-inserts
-            # assign fresh IDs.  Re-init so cached enum-to-id
-            # resolution matches the new row IDs and refresh the
-            # Jinja globals that mirror them (the templates read
-            # these at render time -- a stale value would point at
-            # a deleted ID and break every page that references
-            # one).
+            # Re-seat the in-process ref_cache and Jinja globals
+            # against the cloned DB.  The cloned IDs equal the
+            # template IDs (CREATE DATABASE TEMPLATE preserves
+            # them) so the cache is normally a no-op refresh, but
+            # the explicit reseat covers the edge case where a
+            # future migration changes the seeded ID set and an
+            # unaware test would otherwise hit a Jinja Undefined.
+            # First access to _db.session here triggers a fresh
+            # pool connection to the cloned DB at the (unchanged)
+            # URL the engine has been bound to since app-create.
             _refresh_ref_cache_and_jinja_globals(app)
 
         # ``try``/``finally`` so the teardown timer and the CSV row
@@ -714,19 +801,15 @@ def db(app, setup_database, request):
                 yield _db
         finally:
             with _profile_step(timings, "teardown"):
-                # Clean up after each test: rollback any uncommitted
-                # work, then close the session and return the
-                # connection.  Using remove() instead of just
-                # rollback() ensures cleanup even when nested
-                # app_context() blocks already called remove().
+                # Clean up after each test: detach the scoped
+                # session and close the engine pool so the next
+                # test's DROP DATABASE has a clean slate.
+                # Belt-and-braces with the WITH (FORCE) in
+                # _drop_worker_database -- one or the other would
+                # suffice, but both together make the per-test
+                # contract impossible to violate via a leaked
+                # connection.
                 _db.session.remove()
-                # Defensive: release any pool connection a previous
-                # test might have leaked.  Belt-and-braces protection
-                # so per-test isolation cannot be subtly compromised
-                # by connection-pool state -- the per-session DB
-                # cleanup in ``pytest_sessionfinish`` issues ``DROP
-                # DATABASE WITH (FORCE)`` and a held connection would
-                # race that drop.
                 _db.engine.dispose()
             _profile_write_row(nodeid, timings)
 
