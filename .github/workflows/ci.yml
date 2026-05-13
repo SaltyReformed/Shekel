@@ -1,8 +1,11 @@
 # Shekel Budget App -- Continuous Integration
 #
 # Runs linting (pylint) and the full test suite (pytest) on every push
-# to main and on pull requests.  Uses a PostgreSQL 16 service container
-# to match the production database version.
+# to main and on pull requests.  Uses a PostgreSQL 18 service container
+# to match the production database version (upgraded from PG 16 to
+# PG 18 in Phase 2 of docs/audits/test_improvements/
+# test-performance-implementation-plan.md to enable Phase 3's reflink-
+# backed CREATE DATABASE TEMPLATE clones).
 #
 # Python version matches the production Dockerfile (3.14).
 
@@ -27,7 +30,7 @@ jobs:
     # clones per pytest session.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: shekel_test
           POSTGRES_PASSWORD: shekel_test
