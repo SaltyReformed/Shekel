@@ -139,9 +139,22 @@ def _recreate_canonical_index(session) -> None:
     ``Scenario.__table_args__`` partial-index entry so subsequent
     tests see the same constraint they would see in production after
     the migration ran successfully.
+
+    DROP before CREATE rather than ``CREATE IF NOT EXISTS``:
+    PostgreSQL only checks the index NAME on ``IF NOT EXISTS``, not
+    the definition.  If a prior caller left a malformed index of the
+    same name in place (e.g. a non-partial unique index created by
+    ``TestAssertIndexShapeRejectsMalformedIndex::test_assert_index_
+    shape_raises_on_non_partial_index``), an ``IF NOT EXISTS``
+    create would be a no-op and the malformed shape would survive
+    the cleanup.  See ``phase1-flake-investigation.md`` for the full
+    failure mode this guards against.
     """
     session.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_scenarios_one_baseline "
+        "DROP INDEX IF EXISTS budget.uq_scenarios_one_baseline"
+    ))
+    session.execute(text(
+        "CREATE UNIQUE INDEX uq_scenarios_one_baseline "
         "ON budget.scenarios (user_id) "
         "WHERE is_baseline = true"
     ))
@@ -180,13 +193,24 @@ def restore_baseline_index(db):
     ``test_scenario_constraints.py``) running in the same per-worker
     DB would silently pass against a degraded schema.
 
-    Cleanup is two-stage:
+    Cleanup is three-stage:
 
       1. ``DELETE FROM budget.scenarios WHERE ... `` removes any
          duplicate baselines the test inserted so the next stage's
          ``CREATE UNIQUE INDEX`` does not collide with the dirty data.
-      2. ``CREATE UNIQUE INDEX IF NOT EXISTS`` recreates the index
-         using the canonical partial-WHERE shape.
+      2. ``DROP INDEX IF EXISTS`` removes any index of the same name,
+         malformed or canonical.  This is the load-bearing step: a
+         prior ``CREATE UNIQUE INDEX IF NOT EXISTS`` form would skip
+         when ANY index of that name existed regardless of its
+         definition, so a test body that installed a malformed
+         (non-partial) shape (e.g.
+         ``TestAssertIndexShapeRejectsMalformedIndex::test_assert_index_
+         shape_raises_on_non_partial_index``) would leak the broken
+         shape across worker tests and break every subsequent
+         scenario-baseline test on the same per-worker DB.  See
+         ``phase1-flake-investigation.md`` for the failure mode.
+      3. ``CREATE UNIQUE INDEX`` recreates the index using the
+         canonical partial-WHERE shape against the now-empty name slot.
     """
     yield
     db.session.rollback()
@@ -195,8 +219,14 @@ def restore_baseline_index(db):
         "DELETE FROM budget.scenarios "
         "WHERE name LIKE 'C41 Duplicate%'"
     ))
+    # Drop-then-create so a malformed shape from the test body cannot
+    # survive the cleanup -- see the docstring above for the failure
+    # mode that motivated this pattern.
     db.session.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_scenarios_one_baseline "
+        "DROP INDEX IF EXISTS budget.uq_scenarios_one_baseline"
+    ))
+    db.session.execute(text(
+        "CREATE UNIQUE INDEX uq_scenarios_one_baseline "
         "ON budget.scenarios (user_id) "
         "WHERE is_baseline = true"
     ))

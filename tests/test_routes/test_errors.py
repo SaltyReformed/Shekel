@@ -28,7 +28,16 @@ class TestErrorPages:
         assert "Back to Budget Grid" in html
 
     def test_429_renders_custom_page(self, app, seed_user):
-        """Rate-limited request returns 429 with custom template."""
+        """Rate-limited request returns 429 with custom template.
+
+        ``try``/``finally`` cleanup: the limiter is reset and disabled
+        even when the assertions below fail.  Without this guard a
+        failed assertion would leave ``limiter.enabled = True`` and a
+        populated rate-limit bucket on the Limiter singleton, which
+        every subsequent test on the same xdist worker would
+        inherit -- see ``phase1-flake-investigation.md`` failure
+        shape #1 for the full failure mode.
+        """
         with app.app_context():
             # Create a fresh app with rate limiting enabled
             # (TestConfig disables it).
@@ -39,36 +48,57 @@ class TestErrorPages:
             limiter.enabled = True
             limiter.init_app(rate_app)
 
-            rate_client = rate_app.test_client()
+            try:
+                rate_client = rate_app.test_client()
 
-            with rate_app.app_context():
-                # Exceed the 5-per-15-minutes login rate limit.
-                for _ in range(6):
-                    response = rate_client.post("/login", data={
-                        "email": "test@shekel.local",
-                        "password": "wrongpassword",
-                    })
+                with rate_app.app_context():
+                    # Exceed the 5-per-15-minutes login rate limit.
+                    for _ in range(6):
+                        response = rate_client.post("/login", data={
+                            "email": "test@shekel.local",
+                            "password": "wrongpassword",
+                        })
 
-                # The last response is guaranteed to be rate-limited.
-                assert response.status_code == 429
-                html = response.data.decode()
-                assert "Too Many Requests" in html
-
-            # Clean up: dispose the secondary app's engine to release
-            # connections, clear the rate-limit storage's counters (so
-            # a future test that flips ``limiter.enabled = True``
-            # without calling ``init_app`` cannot inherit non-zero
-            # counts from this test -- see c-38-followups.md Issue 2a),
-            # and reset limiter for other tests.
-            with rate_app.app_context():
-                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
-                _db.engine.dispose()
-            if limiter._storage is not None:  # pylint: disable=protected-access
-                limiter.reset()
-            limiter.enabled = False
+                    # The last response is guaranteed to be rate-limited.
+                    assert response.status_code == 429
+                    html = response.data.decode()
+                    assert "Too Many Requests" in html
+            finally:
+                # Clean up: dispose the secondary app's engine to
+                # release connections, clear the rate-limit storage's
+                # counters (so a future test that flips
+                # ``limiter.enabled = True`` without calling
+                # ``init_app`` cannot inherit non-zero counts from
+                # this test -- see c-38-followups.md Issue 2a), and
+                # reset limiter for other tests.  The ``finally``
+                # guarantees this runs even if an assertion above
+                # raised.
+                with rate_app.app_context():
+                    from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                    _db.engine.dispose()
+                if limiter._storage is not None:  # pylint: disable=protected-access
+                    limiter.reset()
+                limiter.enabled = False
 
     def test_429_includes_retry_after_header(self, app, seed_user):
-        """429 response includes Retry-After header set to 900."""
+        """429 response includes a Retry-After header near 15 minutes.
+
+        The header is computed by Flask-Limiter as
+        ``int(reset_at - time.time())`` where ``reset_at`` is the
+        oldest hit timestamp plus 900 seconds (the 15-minute window
+        for ``5 per 15 minutes``).  In isolation the six wrong-password
+        logins below complete in well under a second and the integer
+        rounds to 900, but under heavy ``-n 12`` parallel load the
+        per-request latency can stretch and the value occasionally
+        rounds to 899.  The tolerance below (``895..900``) is generous
+        enough that no plausible timing pressure flakes the test and
+        narrow enough that a real regression (e.g. the window
+        downgraded to a few seconds) would still fire.  See
+        ``phase1-flake-investigation.md`` failure shape #1.
+
+        ``try``/``finally`` cleanup mirrors ``test_429_renders_custom_page``;
+        see that test's docstring for the rationale.
+        """
         with app.app_context():
             rate_app = create_app("testing")
             rate_app.config["RATELIMIT_ENABLED"] = True
@@ -77,30 +107,29 @@ class TestErrorPages:
             limiter.enabled = True
             limiter.init_app(rate_app)
 
-            rate_client = rate_app.test_client()
+            try:
+                rate_client = rate_app.test_client()
 
-            with rate_app.app_context():
-                for _ in range(6):
-                    response = rate_client.post("/login", data={
-                        "email": "test@shekel.local",
-                        "password": "wrongpassword",
-                    })
+                with rate_app.app_context():
+                    for _ in range(6):
+                        response = rate_client.post("/login", data={
+                            "email": "test@shekel.local",
+                            "password": "wrongpassword",
+                        })
 
-                assert response.status_code == 429
-                assert response.headers["Retry-After"] == "900"
-
-            # Clean up: dispose the secondary app's engine to release
-            # connections, clear the rate-limit storage's counters (so
-            # a future test that flips ``limiter.enabled = True``
-            # without calling ``init_app`` cannot inherit non-zero
-            # counts from this test -- see c-38-followups.md Issue 2a),
-            # and reset limiter for other tests.
-            with rate_app.app_context():
-                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
-                _db.engine.dispose()
-            if limiter._storage is not None:  # pylint: disable=protected-access
-                limiter.reset()
-            limiter.enabled = False
+                    assert response.status_code == 429
+                    retry_after = int(response.headers["Retry-After"])
+                    assert 895 <= retry_after <= 900, (
+                        f"Retry-After should be ~900s (15-min window), "
+                        f"got {retry_after}"
+                    )
+            finally:
+                with rate_app.app_context():
+                    from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                    _db.engine.dispose()
+                if limiter._storage is not None:  # pylint: disable=protected-access
+                    limiter.reset()
+                limiter.enabled = False
 
     def test_429_emits_rate_limit_exceeded_event(self, app, seed_user):
         """429 handler emits a structured ``rate_limit_exceeded`` event.
