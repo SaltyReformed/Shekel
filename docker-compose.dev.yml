@@ -25,7 +25,7 @@ name: shekel-dev
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: shekel-dev-db
     restart: unless-stopped
     environment:
@@ -45,7 +45,19 @@ services:
       # not from anywhere off-host.
       - "127.0.0.1:5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Mount target is the PARENT directory ``/var/lib/postgresql``,
+      # not the legacy ``/var/lib/postgresql/data`` path used under
+      # PG 16.  PG 18+ docker-library images (docker-library/postgres
+      # PR #1259) switched to the pg_ctlcluster layout: PGDATA
+      # defaults to ``/var/lib/postgresql/$PG_MAJOR/docker`` and the
+      # entrypoint refuses to start when a legacy mount exists at
+      # ``/var/lib/postgresql/data``.  Mounting at the parent lets
+      # the per-major-version subdirectory live inside the named
+      # volume and stays correct across future major-version bumps
+      # (PG 19, PG 20...) without another mount-path edit.  Mirrors
+      # the same migration applied to the ``test-db`` tmpfs in
+      # Phase 2a (see the test-db service comment block below).
+      - pgdata:/var/lib/postgresql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
