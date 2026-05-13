@@ -628,32 +628,32 @@ Each entry pairs two or more watchlist claims that touch the same code location 
 C-01: Carry-forward envelope semantics: data-layer settle vs display-layer envelope view
 - Entries in tension: W-095 / W-096 / W-101 (in `carry_fwd_design`), W-118 (in `carry_fwd_impl`), W-127 / W-128 / W-130 / W-131 / W-145 (in `envelope_view`).
 - Disagreement: `carry_fwd_design` Option F (and `carry_fwd_impl`'s implementation of it) settles the source row to status DONE/RECEIVED with `actual_amount = entries_sum`, leaves `pay_period_id` unchanged, and bumps the target canonical's estimate; `envelope_view` keeps the post-33cd21e behavior where the source moves whole into the target period and the cell aggregates canonical + carried members for display, with a new `carried_from_period_id` column. Both architectural shapes cannot coexist for the same envelope template.
-- Adjudication: pending; see Q-02 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- `carry_fwd_impl` (Option F) is current. `envelope_view` is superseded: its display goal was reached by Option F's bumped-canonical mechanism and its data-model additions (`carried_from_period_id`, `EnvelopeCell`, `grid_aggregation`) were never built. See A-02 in `09_open_questions.md`.
 
 C-02: Recurrence skip rule for `is_override` rows
 - Entries in tension: W-120 (in `carry_fwd_impl`), W-133 / W-134 / W-147 (in `envelope_view`).
 - Disagreement: `carry_fwd_impl` leans on the existing skip-on-override rule (`is_override=True` blocks regeneration regardless of provenance); `envelope_view` narrows the rule so carried-only overrides do NOT block canonical generation, only non-carried overrides (manual edits) do.
-- Adjudication: pending; see Q-03 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- skip rule unchanged; any `is_override=True` row continues to block regeneration. `envelope_view`'s narrowing was never implemented because its data model never landed (see C-01); under Option F a single override flag is sufficient because the target canonical IS the canonical, not a separate carried sibling. See A-03 in `09_open_questions.md`.
 
 C-03: ARM `current_principal` source for projection and debt strategy
 - Entries in tension: W-222 (in `section5`), W-060 (in `arm_anchor`).
 - Disagreement: `section5` says current principal must be derived from confirmed payments via engine replay and used in place of the static `LoanParams.current_principal` for projections; `arm_anchor` says for ARM loans `_compute_real_principal()` must return `current_principal` directly, skipping the payment replay because forward-from-origination is mathematically wrong without rate history.
-- Adjudication: pending; see Q-04 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- both rules apply by loan type. ARM loans use the stored `current_principal` directly (per `arm_anchor` 3F); fixed-rate loans walk the schedule from origination using confirmed `PaymentRecord`s (per `section5`). This dual policy is documented at `app/services/amortization_engine.py:848-861`. See A-04 in `09_open_questions.md`.
 
 C-04: ARM monthly payment computation method
 - Entries in tension: W-218 / W-219 / W-220 / W-234 (in `section5`), W-042 / W-043 / W-044 / W-047 / W-048 (in `arm_anchor`).
 - Disagreement: `section5` describes the engine as replaying actual payments from origination through to today and re-amortizing at every rate change; `arm_anchor` introduces an anchor-reset at today (using `current_principal` and `current_rate`) and recomputes monthly payment from there forward, treating pre-anchor rows as approximate. These produce different monthly payment values inside an ARM's fixed-rate window when rate history is incomplete.
-- Adjudication: pending; see Q-05 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- `arm_anchor`'s anchor-reset is current at all eight ARM monthly-payment call sites (`amortization_engine.py:440, :491, :512, :697, :952`; `balance_calculator.py:225`; `loan_payment_service.py:251`; `routes/loan.py:1225`). Fluctuation symptom is inconsistent inputs across these sites, not method conflict; Phase 3 must verify all eight receive the same `(current_principal, current_rate, remaining_months)` triple and Phase 6 should record the DRY violation. See A-05 in `09_open_questions.md`.
 
 C-05: Year-end mortgage interest source
 - Entries in tension: W-293 (in `section8`), W-362 (in `year_end_fixes`).
 - Disagreement: `section8` defines mortgage interest as the sum of interest portions from amortization schedule rows whose `payment_date` falls in the calendar year; `year_end_fixes` adds escrow subtraction and biweekly-month redistribution as preconditions, implying the simpler `section8` rule produces a different (incorrect) total under biweekly payments.
-- Adjudication: pending; see Q-06 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- both plans apply as different pipeline layers. `year_end_fixes` is preprocessing (`loan_payment_service.py:263-353`: escrow subtraction at 305-318, biweekly redistribution at 321-351); `section8` is aggregation (`year_end_summary_service.py:380-408`). The pipeline is verified end-to-end by the exact-value test at `tests/test_services/test_year_end_summary_service.py:1399` (`Decimal("15356.80")`). See A-06 in `09_open_questions.md`.
 
 C-06: Source row pay_period_id under envelope carry-forward
 - Entries in tension: W-118 (in `carry_fwd_impl`), W-192 (in `prod_readiness_v1`).
 - Disagreement: `carry_fwd_impl` says envelope source row stays in its original period as a settled record (pay_period_id unchanged); `prod_readiness_v1`'s description of `carry_forward_unpaid` says template-linked transactions are flagged as overrides when MOVED, implying pay_period_id changes to target. The two plans describe different generations of carry-forward behavior; verifying which the code now embodies is a Phase 3 question.
-- Adjudication: pending; see Q-07 in `09_open_questions.md`.
+- Adjudication: resolved (2026-05-13) -- both plans apply to different branches of the same partition in `carry_forward_service.py` (lines 273-277). Envelope rows (`carry_fwd_impl` W-118) stay in source period via `settle_from_entries`; discrete template-linked rows (`prod_readiness_v1` W-192) move to target with `is_override = True` at lines 415-416. Neither plan supersedes the other. See A-07 in `09_open_questions.md`.
 
 ## 0.6 Open prior-audit findings still in scope
 
